@@ -1,0 +1,11 @@
+--- boost/thread/pthread/thread_data.hpp.orig
++++ boost/thread/pthread/thread_data.hpp
+@@ -57,7 +57,7 @@
+     }
+     static unsigned get_min_stack_size()
+     {
+-#if PTHREAD_STACK_MIN > 0
++#if defined(PTHREAD_STACK_MIN) && PTHREAD_STACK_MIN > 0
+         return PTHREAD_STACK_MIN;
+ #else
+         return 0;

@@ -1,0 +1,146 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build and publish'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: debian11
+            container: debian:11
+            artifact: linux-debian11-x64
+          - name: ubuntu22.04
+            container: ubuntu:22.04
+            artifact: linux-ubuntu22.04-x64
+          - name: arch
+            container: archlinux:latest
+            artifact: linux-arch-x64
+
+    container:
+      image: ${{ matrix.container }}
+
+    steps:
+      - name: Install dependencies (Debian/Ubuntu)
+        if: matrix.name != 'arch'
+        run: |
+          apt update
+          apt -y install build-essential cmake libboost-all-dev libunbound-dev graphviz doxygen libunwind8-dev pkg-config libssl-dev libzmq3-dev libsodium-dev libhidapi-dev libusb-1.0-0-dev libprotobuf-dev protobuf-compiler ccache git ca-certificates bzip2
+
+      - name: Install dependencies (Arch)
+        if: matrix.name == 'arch'
+        run: |
+          pacman -Syyu --noconfirm base-devel git cmake boost boost-libs openssl zeromq unbound libsodium readline expat python3 doxygen graphviz hidapi libusb protobuf bzip2
+
+      - name: Configure git
+        run: git config --global --add safe.directory '*'
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.tag }}
+          submodules: recursive
+
+      - uses: ./.github/actions/set-make-job-count
+      - uses: ./.github/actions/build-secp256k1
+
+      - name: Build
+        run: |
+          cmake -S . -B build -D ARCH="default" -D BUILD_TESTS=OFF -D CMAKE_BUILD_TYPE=Release
+          cmake --build build --target all
+          cmake --build build --target wallet_api
+
+      - name: Package binaries
+        run: |
+          mkdir -p dist
+          for f in vnsd vns-wallet-cli vns-wallet-rpc; do
+            found=$(find build -type f -name "$f" -print -quit)
+            test -n "$found" || { echo "Binary $f not found"; exit 1; }
+            cp "$found" dist/
+          done
+          tar -cjf "veilroot-${{ matrix.artifact }}-${{ github.event.inputs.tag }}.tar.bz2" -C dist .
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: veilroot-${{ matrix.artifact }}-${{ github.event.inputs.tag }}
+          path: veilroot-${{ matrix.artifact }}-${{ github.event.inputs.tag }}.tar.bz2
+
+  build-macos-arm64:
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.tag }}
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          brew uninstall cmake
+          brew update
+          brew install --quiet cmake boost hidapi openssl zmq libpgm expat libunwind-headers protobuf ccache unbound
+
+      - uses: ./.github/actions/set-make-job-count
+      - uses: ./.github/actions/build-secp256k1
+
+      - name: Build
+        run: |
+          make release -j${{env.MAKE_JOB_COUNT}}
+
+      - name: Package binaries
+        run: |
+          mkdir -p dist
+          for f in vnsd vns-wallet-cli vns-wallet-rpc; do
+            found=$(find build -type f -name "$f" -print -quit)
+            test -n "$found" || { echo "Binary $f not found"; exit 1; }
+            cp "$found" dist/
+          done
+          tar -cjf "veilroot-mac-arm64-${{ github.event.inputs.tag }}.tar.bz2" -C dist .
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: veilroot-mac-arm64-${{ github.event.inputs.tag }}
+          path: veilroot-mac-arm64-${{ github.event.inputs.tag }}.tar.bz2
+
+  create-draft-release:
+    needs:
+      - build-linux
+      - build-macos-arm64
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v5
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS
+        run: |
+          cd release-assets
+          sha256sum * > veilroot-${{ github.event.inputs.tag }}-SHA256SUMS.txt
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag }}
+          draft: true
+          files: release-assets/*
+          body: |
+            ## Download Hashes
+
+            If you would like to verify that you have downloaded the correct file, please use the following SHA256 hashes:
+
+            <!-- SHA256 hashes will be listed here after build -->
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

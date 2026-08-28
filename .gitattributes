@@ -1,0 +1,12 @@
+* text=auto eol=lf
+
+*.sh        text eol=lf
+*.bash      text eol=lf
+*.py        text eol=lf
+*.cmake     text eol=lf
+*.cmake.in  text eol=lf
+Makefile    text eol=lf
+makefile    text eol=lf
+config.guess text eol=lf
+config.sub   text eol=lf
+*.patch     text eol=lf

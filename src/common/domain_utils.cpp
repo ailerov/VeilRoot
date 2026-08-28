@@ -1,0 +1,1 @@
+// domain_utils.cpp – intentionally empty, all definitions are in the header.

@@ -1,0 +1,136 @@
+*:Zone.Identifier
+.DS_Store
+/doc
+/build
+/tags
+log/
+
+# vim swap files
+*.swp
+*.swo
+TAGS
+!TAGS/
+tags
+!tags/
+gtags.files
+GTAGS
+GRTAGS
+GPATH
+cscope.files
+cscope.out
+cscope.in.out
+cscope.po.out
+
+version/
+ClangBuildAnalyzerSession.txt
+
+# gitian
+contrib/gitian/builder/
+contrib/gitian/docker/
+contrib/gitian/sigs/
+
+# Created by https://www.gitignore.io
+
+### C++ ###
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+
+### CMake ###
+CMakeCache.txt
+CMakeFiles
+cmake_install.cmake
+install_manifest.txt
+cmake-build-debug/
+
+### Linux ###
+*~
+
+# KDE directory preferences
+.directory
+
+### VSCode ###
+.vscode/
+
+### Eclipse ###
+*.pydevproject
+.metadata
+.gradle
+bin/
+tmp/
+*.tmp
+*.bak
+*.swp
+*~.nib
+local.properties
+.settings/
+.loadpath
+
+# External tool builders
+.externalToolBuilders/
+
+# Locally stored "Eclipse launch configurations"
+*.launch
+
+# CDT-specific
+.cproject
+
+# PDT-specific
+.buildpath
+
+# Netbeans-specific
+nbproject
+
+# sbteclipse plugin
+.target
+
+# TeXlipse plugin
+.texlipse
+.idea/
+
+/testnet
+
+__pycache__/
+*.pyc
+*.log
+external/libsecp256k1/install/
+
+# VeilRoot generated dependency/build artifacts
+/build/
+/build-*/
+/cmake-build-*/
+
+/external/libsecp256k1/build/
+/external/libsecp256k1/build-win/
+/external/libsecp256k1/install/
+/external/libsecp256k1/install-win/
+
+/contrib/depends/work/
+/contrib/depends/*-*/
+/contrib/depends/sources/*.tar.gz
