@@ -15,6 +15,6 @@ set(governance_sources
 )
 
 monero_add_library(obj_governance OBJECT ${governance_sources})
-target_link_libraries(obj_governance PUBLIC)
+target_link_libraries(obj_obj_governance PRIVATE secp256k1)
 
 target_include_directories(obj_governance PRIVATE ${CMAKE_SOURCE_DIR}/src)

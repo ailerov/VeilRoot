@@ -47,6 +47,7 @@ monero_private_headers(wallet
 monero_add_library(wallet
   ${wallet_sources}
   ${wallet_private_headers})
+target_link_libraries(obj_wallet PRIVATE secp256k1)
 target_link_libraries(wallet
   PUBLIC
     rpc_base
@@ -65,7 +66,7 @@ target_link_libraries(wallet
     ${Boost_REGEX_LIBRARY}
   PRIVATE
     ${EXTRA_LIBRARIES}
-    ${SECP256K1_LIBRARY})
+    secp256k1)
 
 if(NOT IOS)
   set(wallet_rpc_sources

@@ -69,7 +69,7 @@ target_link_libraries(daemon
     ${GNU_READLINE_LIBRARY}
     ${EXTRA_LIBRARIES}
     ${Blocks}
-    ${SECP256K1_LIBRARY})
+    secp256k1)
 set_property(TARGET daemon
   PROPERTY
     OUTPUT_NAME "vnsd")

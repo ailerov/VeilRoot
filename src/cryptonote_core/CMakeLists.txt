@@ -67,8 +67,9 @@ target_link_libraries(cryptonote_core
     obj_governance
 	${EXTRA_LIBRARIES})
 
-# Add ixwebsocket include path for object library
+# Add ixwebsocket and secp256k1 include paths for object library
 if(TARGET obj_cryptonote_core)
     target_include_directories(obj_cryptonote_core PRIVATE ${CMAKE_SOURCE_DIR}/external/ixwebsocket)
+    target_link_libraries(obj_cryptonote_core PRIVATE secp256k1)
 endif()
 target_include_directories(cryptonote_core PRIVATE ${CMAKE_SOURCE_DIR}/external/ixwebsocket)

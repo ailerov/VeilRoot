@@ -69,6 +69,7 @@ monero_add_library(common
   ${common_headers}
   ${common_private_headers}
   DEPENDS generate_translations_header)
+target_link_libraries(obj_common PRIVATE secp256k1)
 target_link_libraries(common
   PUBLIC
     cncrypto
@@ -80,12 +81,10 @@ target_link_libraries(common
     ${Boost_THREAD_LIBRARY}
     ${Boost_REGEX_LIBRARY}
     ${Boost_CHRONO_LIBRARY}
-    ${SECP256K1_LIBRARY}
+    secp256k1
   PRIVATE
     ${OPENSSL_LIBRARIES}
     ${EXTRA_LIBRARIES})
-
-    target_include_directories(common PRIVATE ${CMAKE_SOURCE_DIR}/external/libsecp256k1/include)
 
 
 #monero_install_headers(common
