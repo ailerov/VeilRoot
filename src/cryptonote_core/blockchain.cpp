@@ -4835,18 +4835,21 @@ domain_registration_result Blockchain::process_domain_registration(const transac
                 if (!validate_domain_name_format(domain_name)) return domain_registration_result::invalid_format;
 
                 // BEGIN_VNS_VALIDATE_DOMAIN_FEE_BURN
-                uint64_t burn_total = 0;
-                for (const auto& out : tx.vout)
+                if (height >= VNS_DOMAIN_FEE_BURN_HEIGHT)
                 {
-                    if (out.target.type() == typeid(txout_to_burn))
-                        burn_total += out.amount;
-                }
-                if (burn_total != policy.fee)
-                {
-                    MINFO("VNS: Burn amount " << burn_total
-                          << " does not match required fee " << policy.fee
-                          << " for domain " << domain_name);
-                    return domain_registration_result::invalid_fee_tier;
+                    uint64_t burn_total = 0;
+                    for (const auto& out : tx.vout)
+                    {
+                        if (out.target.type() == typeid(txout_to_burn))
+                            burn_total += out.amount;
+                    }
+                    if (burn_total != policy.fee)
+                    {
+                        MINFO("VNS: Burn amount " << burn_total
+                              << " does not match required fee " << policy.fee
+                              << " for domain " << domain_name);
+                        return domain_registration_result::invalid_fee_tier;
+                    }
                 }
                 // END_VNS_VALIDATE_DOMAIN_FEE_BURN
 
@@ -7026,14 +7029,8 @@ bool Blockchain::prepare_handle_incoming_blocks(const std::vector<block_complete
   m_tx_pool.lock();
   CRITICAL_REGION_LOCAL1(m_blockchain_lock);
 
-  MINFO("VNS PREPARE ENTER entries=" << blocks_entry.size()
-        << " db_height=" << m_db->height());
-
   if(blocks_entry.size() == 0)
-  {
-    MERROR("VNS PREPARE FAIL #01 blocks_entry.size() == 0");
     return false;
-  }
 
   for (const auto &entry : blocks_entry)
   {
@@ -7085,15 +7082,7 @@ bool Blockchain::prepare_handle_incoming_blocks(const std::vector<block_complete
         crypto::hash block_hash;
 
         if (!parse_and_validate_block_from_blob(it->block, block, block_hash))
-        {
-          MERROR("VNS PREPARE FAIL #02 block parse failed blockidx=" << blockidx
-                 << " height=" << (height + blockidx));
           return false;
-        }
-        MDEBUG("VNS PREPARE BLOCK " << blockidx
-               << " height=" << (height + blockidx)
-               << " hash=" << block_hash
-               << " tx_count=" << block.tx_hashes.size());
 
         // check first block and skip all blocks if its not chained properly
         if (blockidx == 0)
@@ -7118,15 +7107,7 @@ bool Blockchain::prepare_handle_incoming_blocks(const std::vector<block_complete
           crypto::hash block_hash;
 
           if (!parse_and_validate_block_from_blob(it->block, block, block_hash))
-          {
-            MERROR("VNS PREPARE FAIL #03 block parse failed extra blockidx=" << blockidx
-                   << " height=" << (height + blockidx));
             return false;
-          }
-          MDEBUG("VNS PREPARE BLOCK " << blockidx
-                 << " height=" << (height + blockidx)
-                 << " hash=" << block_hash
-                 << " tx_count=" << block.tx_hashes.size());
 
           if (have_block(block_hash))
             blocks_exist = true;
@@ -7154,17 +7135,11 @@ bool Blockchain::prepare_handle_incoming_blocks(const std::vector<block_complete
       }
 
       if (!waiter.wait())
-      {
-        MERROR("VNS PREPARE FAIL #04 longhash waiter failed");
         return false;
-      }
       m_prepare_height = 0;
 
       if (m_cancel)
-      {
-        MERROR("VNS PREPARE FAIL #05 cancelled after longhash");
-        return false;
-      }
+         return false;
 
       for (const auto & map : maps)
       {
@@ -7174,10 +7149,7 @@ bool Blockchain::prepare_handle_incoming_blocks(const std::vector<block_complete
   }
 
       if (m_cancel)
-      {
-        MERROR("VNS PREPARE FAIL #06 cancelled before scan table");
         return false;
-      }
 
       if (blocks_exist)
       {
@@ -7208,7 +7180,7 @@ bool Blockchain::prepare_handle_incoming_blocks(const std::vector<block_complete
 
 #define SCAN_TABLE_QUIT(m) \
         do { \
-            MERROR_VER("VNS PREPARE FAIL SCAN_TABLE: " << m) ;\
+            MERROR_VER(m) ;\
             m_scan_table.clear(); \
             return false; \
         } while(0); \
@@ -7218,10 +7190,7 @@ bool Blockchain::prepare_handle_incoming_blocks(const std::vector<block_complete
   for (const auto &entry : blocks_entry)
   {
     if (m_cancel)
-    {
-      MERROR("VNS PREPARE FAIL #07 cancelled in first tx scan");
       return false;
-    }
 
     for (const auto &tx_blob : entry.txs)
     {
@@ -7234,24 +7203,6 @@ bool Blockchain::prepare_handle_incoming_blocks(const std::vector<block_complete
       if (!parse_and_validate_tx_base_from_blob(tx_blob.blob, tx))
         SCAN_TABLE_QUIT("Could not parse tx from incoming blocks.");
       cryptonote::get_transaction_prefix_hash(tx, tx_prefix_hash);
-
-      MDEBUG("VNS PREPARE TX block_height=" << (height + block_index)
-             << " tx_index=" << (tx_index - 1)
-             << " tx_hash=" << tx_prefix_hash
-             << " vin=" << tx.vin.size()
-             << " vout=" << tx.vout.size()
-             << " version=" << tx.version
-             << " rct_type=" << (unsigned)tx.rct_signatures.type);
-
-      for (const auto &in : tx.vin)
-      {
-        if (in.type() == typeid(cryptonote::txin_vns_vote))
-          MDEBUG("VNS PREPARE TX type=vote");
-        else if (in.type() == typeid(cryptonote::txin_vns_eligible))
-          MDEBUG("VNS PREPARE TX type=eligible");
-        else if (in.type() == typeid(cryptonote::txin_treasury))
-          MDEBUG("VNS PREPARE TX type=treasury");
-      }
 
       auto its = m_scan_table.find(tx_prefix_hash);
       if (its != m_scan_table.end())
@@ -7338,10 +7289,7 @@ bool Blockchain::prepare_handle_incoming_blocks(const std::vector<block_complete
       tpool.submit(&waiter, boost::bind(&Blockchain::output_scan_worker, this, amount, std::cref(offset_map[amount]), std::ref(tx_map[amount])), true);
     }
     if (!waiter.wait())
-    {
-      MERROR("VNS PREPARE FAIL #08 output scan waiter failed");
       return false;
-    }
   }
   else
   {
@@ -7357,10 +7305,7 @@ bool Blockchain::prepare_handle_incoming_blocks(const std::vector<block_complete
   for (const auto &entry : blocks_entry)
   {
     if (m_cancel)
-    {
-      MERROR("VNS PREPARE FAIL #09 cancelled in second tx scan");
       return false;
-    }
 
     for (size_t i = 0; i < entry.txs.size(); ++i)
     {

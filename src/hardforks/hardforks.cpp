@@ -37,7 +37,7 @@ const hardfork_t mainnet_hard_forks[] = {
   { 1, 1, 0, 1780743998 },
   // version 16 (treasury fork) at height 22000
   { HF_VERSION_VNS_TREASURY, 22000, 0, 1780743998 + 22000 * 120 },
-  // version 6 (ring size 2) from height 50000
+  // version 6 from height 50000: ring size 2 + mandatory VNS domain fee burn
   { HF_VERSION_MIN_MIXIN_4, 50000, 0, 1780743998 + 50000 * 120 },
   // version 7 (ring size 3) from height 100000
   { HF_VERSION_MIN_MIXIN_6, 100000, 0, 1780743998 + 100000 * 120 },

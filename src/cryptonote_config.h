@@ -179,6 +179,7 @@
 #define VNS_TREASURY_SPLIT_PERCENT              18
 #define VNS_BASE_REGISTRATION_FEE               0.1
 #define VNS_FEE_TIER_MULTIPLIER                 10
+constexpr uint64_t VNS_DOMAIN_FEE_BURN_HEIGHT = 50000;
 #define VNS_DYNAMIC_REWARD_STAKED_ADJ           0.12
 #define VNS_DYNAMIC_REWARD_BURN_ADJ             0.08
 #define VNS_CENTER_BURN_RATE                    10.0
