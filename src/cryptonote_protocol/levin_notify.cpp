@@ -837,7 +837,7 @@ namespace levin
        but the mempool/stempool needs to know the zone a tx originated from to
        work properly. */
 
-    if (!zone_->noise.empty() && !zone_->channels.empty())
+    if (!zone_->noise.empty() && !zone_->channels.empty() && zone_->connection_count > 0)
     {
       // covert send in "noise" channel
       static_assert(
