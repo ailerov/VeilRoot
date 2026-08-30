@@ -442,8 +442,10 @@ namespace levin
         {
           auto &id = e.first;
           auto &context = e.second;
-          // When i2p/tor, only fluff to outbound connections
-          if (source != id && (zone->nzone == epee::net_utils::zone::public_ || !context.m_is_income))
+          // Allow relay to any suitable connected peer; public zone already
+          // permitted both, and this removes the outbound-only restriction for
+          // anonymous zones (Tor/I2P) at the fluff stage.
+          if (source != id)
           {
             if (context.fluff_txs.empty())
               context.flush_time = now + (context.m_is_income ? in_duration() : out_duration());
