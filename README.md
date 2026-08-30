@@ -85,7 +85,7 @@ The donation address (XMR) is:
 
 ## Scheduled software upgrades
 
-VNS uses a hard-fork schedule similar to Monero's, but upgrades will be announced on the project website and IRC. The current version is v0.18.5.0 (fork point). Future upgrades may adjust fee tiers, health parameters, or introduce new features.
+VNS uses a hard-fork schedule similar to Monero's, but upgrades will be announced on the project website and IRC. The current version is v0.26.1.0. Future upgrades may adjust fee tiers, health parameters, or introduce new features.
 
 ## Compiling VNS from source
 
