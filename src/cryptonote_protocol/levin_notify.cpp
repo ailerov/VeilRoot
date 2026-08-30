@@ -417,13 +417,18 @@ namespace levin
       std::shared_ptr<detail::zone> zone_;
       std::vector<blobdata> txs_;
       boost::uuids::uuid source_;
+      bool only_inbound_;
+
+      fluff_notify(std::shared_ptr<detail::zone> zone, std::vector<blobdata> txs, const boost::uuids::uuid& source, bool only_inbound = false)
+        : zone_(std::move(zone)), txs_(std::move(txs)), source_(source), only_inbound_(only_inbound)
+      {}
 
       void operator()()
       {
-        run(std::move(zone_), epee::to_span(txs_), source_);
+        run(std::move(zone_), epee::to_span(txs_), source_, only_inbound_);
       }
 
-      static void run(std::shared_ptr<detail::zone> zone, epee::span<const blobdata> txs, const boost::uuids::uuid& source)
+      static void run(std::shared_ptr<detail::zone> zone, epee::span<const blobdata> txs, const boost::uuids::uuid& source, bool only_inbound)
       {
         if (!zone || !zone->p2p || txs.empty())
           return;
@@ -436,16 +441,13 @@ namespace levin
         crypto::random_poisson_subseconds in_duration(fluff_average_in);
         crypto::random_poisson_subseconds out_duration(fluff_average_out);
 
-
-        MDEBUG("Queueing " << txs.size() << " transaction(s) for Dandelion++ fluffing");
+        MDEBUG("Queueing " << txs.size() << " transaction(s) for Dandelion++ fluffing"
+               << (only_inbound ? " (inbound only)" : ""));
         for (auto &e: zone->contexts)
         {
           auto &id = e.first;
           auto &context = e.second;
-          // Allow relay to any suitable connected peer; public zone already
-          // permitted both, and this removes the outbound-only restriction for
-          // anonymous zones (Tor/I2P) at the fluff stage.
-          if (source != id)
+          if (source != id && (zone->nzone == epee::net_utils::zone::public_ || !only_inbound || context.m_is_income))
           {
             if (context.fluff_txs.empty())
               context.flush_time = now + (context.m_is_income ? in_duration() : out_duration());
@@ -578,7 +580,7 @@ namespace levin
         }
 
         core_->on_transactions_relayed(epee::to_span(txs_), relay_method::fluff);
-        fluff_notify::run(std::move(zone_), epee::to_span(txs_), source_);
+        fluff_notify::run(std::move(zone_), epee::to_span(txs_), source_, false);
       }
     };
 
@@ -852,6 +854,9 @@ namespace levin
 
       core_->on_transactions_relayed(epee::to_span(txs), tx_relay);
 
+      // Copy txs for later fluff delivery to inbound peers
+      std::vector<blobdata> txs_for_fluff = txs;
+
       // Padding is not useful when using noise mode. Send as stem so receiver
       // forwards in Dandelion++ mode.
       epee::byte_slice message = epee::levin::make_fragmented_notify(
@@ -868,6 +873,16 @@ namespace levin
         boost::asio::dispatch(
           zone_->channels[channel].strand,
           queue_covert_notify{zone_, message.clone(), channel}
+        );
+      }
+
+      // VeilRoot: deliver the transaction to inbound anonymous peers
+      // using the fluff mechanism with its randomized delay.
+      if (zone_->nzone != epee::net_utils::zone::public_)
+      {
+        boost::asio::dispatch(
+          zone_->strand,
+          fluff_notify{zone_, std::move(txs_for_fluff), source, true}
         );
       }
     }
