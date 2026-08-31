@@ -979,9 +979,11 @@ namespace rct {
 
                 i = i + 1;
             }
-            sc_sub(c_new.bytes,c.bytes,sig.c1.bytes);
-            bool result = (sc_isnonzero(c_new.bytes) == 0);
-            MERROR("verRctCLSAGSimple: subtraction result = " << c_new << ", nonzero? " << (sc_isnonzero(c_new.bytes) != 0));
+            sc_sub(c_new.bytes, c.bytes, sig.c1.bytes);
+            const bool result = (sc_isnonzero(c_new.bytes) == 0);
+
+            if (!result)
+                MERROR("verRctCLSAGSimple: CLSAG verification failed, subtraction result = " << c_new);
 
             return result;
         }
