@@ -45,8 +45,6 @@ const hardfork_t mainnet_hard_forks[] = {
   { HF_VERSION_MIN_MIXIN_10, 200000, 0, 1780743998 + 200000 * 120 },
   // version 15 (ring size 7) from height 400000
   { HF_VERSION_MIN_MIXIN_15, 400000, 0, 1780743998 + 400000 * 120 },
-  // version 15 already; bulletproofs plus from height 1600000
-  { HF_VERSION_BULLETPROOF_PLUS, 1600000, 0, 1780743998 + 1600000 * 120 },
 };
 const size_t num_mainnet_hard_forks = sizeof(mainnet_hard_forks) / sizeof(mainnet_hard_forks[0]);
 

@@ -915,7 +915,7 @@ uint8_t get_bulletproof_fork()
 
 uint8_t get_bulletproof_plus_fork()
 {
-  return HF_VERSION_BULLETPROOF_PLUS;
+  return HF_VERSION_ENFORCE_BULLETPROOF_PLUS;
 }
 
 uint8_t get_clsag_fork()

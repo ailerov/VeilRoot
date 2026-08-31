@@ -200,6 +200,7 @@ constexpr uint64_t VNS_DOMAIN_FEE_BURN_HEIGHT = 50000;
 #define HF_VERSION_MIN_MIXIN_10                 8
 #define HF_VERSION_MIN_MIXIN_15                 15
 #define HF_VERSION_ENFORCE_RCT                  6
+#define HF_VERSION_ENFORCE_BULLETPROOF_PLUS     6
 #define HF_VERSION_PER_BYTE_FEE                 8
 #define HF_VERSION_SMALLER_BP                   10
 #define HF_VERSION_LONG_TERM_BLOCK_WEIGHT       10
