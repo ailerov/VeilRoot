@@ -85,10 +85,15 @@ jobs:
           submodules: recursive
 
       - name: Install dependencies
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
         run: |
-          brew uninstall cmake
-          brew update
-          brew install --quiet cmake boost hidapi openssl zmq libpgm expat libunwind-headers protobuf ccache unbound
+          for i in 1 2 3; do
+            brew install --quiet cmake boost hidapi openssl zmq libpgm expat libunwind-headers protobuf ccache unbound && break || {
+              echo "brew install failed, retrying in 15s"
+              sleep 15
+            }
+          done
 
       - uses: ./.github/actions/set-make-job-count
       - uses: ./.github/actions/build-secp256k1
