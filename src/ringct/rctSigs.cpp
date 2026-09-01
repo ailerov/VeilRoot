@@ -152,15 +152,15 @@ namespace rct {
         CHECK_AND_ASSERT_THROW_MES(amounts.size() == sk.size(), "Invalid amounts/sk sizes");
         masks.resize(amounts.size());
         for (size_t i = 0; i < masks.size(); ++i)
-        {
-            // Burn/treasury outputs use rct::identity() as amount key. Force
-            // a zero commitment mask so the resulting commitment is
-            // deterministic and can be verified by consensus.
-            if (memcmp(sk[i].bytes, rct::identity().bytes, sizeof(sk[i].bytes)) == 0)
-                masks[i] = rct::zero();
-            else
-                masks[i] = hwdev.genCommitmentMask(sk[i]);
-        }
+            masks[i] = hwdev.genCommitmentMask(sk[i]);
+        BulletproofPlus proof = bulletproof_plus_PROVE(amounts, masks);
+        CHECK_AND_ASSERT_THROW_MES(proof.V.size() == amounts.size(), "V does not have the expected size");
+        C = proof.V;
+        return proof;
+    }
+
+    BulletproofPlus proveRangeBulletproofPlusWithMasks(keyV &C, const keyV &masks, const std::vector<uint64_t> &amounts)
+    {
         BulletproofPlus proof = bulletproof_plus_PROVE(amounts, masks);
         CHECK_AND_ASSERT_THROW_MES(proof.V.size() == amounts.size(), "V does not have the expected size");
         C = proof.V;
@@ -1186,7 +1186,15 @@ namespace rct {
             size_t amounts_proved = 0;
             if (rct_config.range_proof_type == RangeProofPaddedBulletproof)
             {
-                rct::keyV C, masks;
+                rct::keyV C, masks(outamounts.size());
+                for (size_t j = 0; j < outamounts.size(); ++j)
+                {
+                    // Burn/treasury outputs use identity amount key; force zero mask.
+                    if (memcmp(amount_keys[j].bytes, rct::identity().bytes, sizeof(amount_keys[j].bytes)) == 0)
+                        masks[j] = rct::zero();
+                    else
+                        masks[j] = hwdev.genCommitmentMask(amount_keys[j]);
+                }
                 if (hwdev.get_mode() == hw::device::TRANSACTION_CREATE_FAKE)
                 {
                     // use a fake bulletproof for speed
@@ -1199,7 +1207,7 @@ namespace rct {
                 {
                     const epee::span<const key> keys{&amount_keys[0], amount_keys.size()};
                     if (plus)
-                      rv.p.bulletproofs_plus.push_back(proveRangeBulletproofPlus(C, masks, outamounts, keys, hwdev));
+                      rv.p.bulletproofs_plus.push_back(proveRangeBulletproofPlusWithMasks(C, masks, outamounts));
                     else
                       rv.p.bulletproofs.push_back(proveRangeBulletproof(C, masks, outamounts, keys, hwdev));
                     #ifdef DBG

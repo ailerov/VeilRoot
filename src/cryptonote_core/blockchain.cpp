@@ -4859,7 +4859,7 @@ domain_registration_result Blockchain::process_domain_registration(const transac
 
                     if (tx.version >= 2)
                     {
-                        const rct::key expected = rct::scalarmult8(rct::zeroCommit(policy.fee));
+                        const rct::key expected = rct::commit(policy.fee, rct::zero());
                         const rct::key& actual = tx.rct_signatures.outPk[burn_index].mask;
                         if (memcmp(actual.bytes, expected.bytes, sizeof(actual.bytes)) != 0)
                         {
