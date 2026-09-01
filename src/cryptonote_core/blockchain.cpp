@@ -4837,18 +4837,53 @@ domain_registration_result Blockchain::process_domain_registration(const transac
                 // BEGIN_VNS_VALIDATE_DOMAIN_FEE_BURN
                 if (height >= VNS_DOMAIN_FEE_BURN_HEIGHT)
                 {
-                    uint64_t burn_total = 0;
-                    for (const auto& out : tx.vout)
+                    size_t burn_index = SIZE_MAX;
+                    for (size_t i = 0; i < tx.vout.size(); ++i)
                     {
-                        if (out.target.type() == typeid(txout_to_burn))
-                            burn_total += out.amount;
+                        if (tx.vout[i].target.type() == typeid(txout_to_burn))
+                        {
+                            if (burn_index != SIZE_MAX)
+                            {
+                                MINFO("VNS: Multiple burn outputs for domain " << domain_name);
+                                return domain_registration_result::invalid_fee_tier;
+                            }
+                            burn_index = i;
+                        }
                     }
-                    if (burn_total != policy.fee)
+
+                    if (burn_index == SIZE_MAX)
                     {
-                        MINFO("VNS: Burn amount " << burn_total
-                              << " does not match required fee " << policy.fee
-                              << " for domain " << domain_name);
+                        MINFO("VNS: Missing burn output for domain " << domain_name);
                         return domain_registration_result::invalid_fee_tier;
+                    }
+
+                    if (tx.version >= 2)
+                    {
+                        const rct::key expected = rct::scalarmult8(rct::zeroCommit(policy.fee));
+                        const rct::key& actual = tx.rct_signatures.outPk[burn_index].mask;
+                        if (memcmp(actual.bytes, expected.bytes, sizeof(actual.bytes)) != 0)
+                        {
+                            MINFO("VNS: Burn commitment does not match required fee "
+                                  << policy.fee << " for domain " << domain_name);
+                            return domain_registration_result::invalid_fee_tier;
+                        }
+                    }
+                    else
+                    {
+                        // Historical pre-RingCT domain registration
+                        uint64_t burn_total = 0;
+                        for (const auto& out : tx.vout)
+                        {
+                            if (out.target.type() == typeid(txout_to_burn))
+                                burn_total += out.amount;
+                        }
+                        if (burn_total != policy.fee)
+                        {
+                            MINFO("VNS: Burn amount " << burn_total
+                                  << " does not match required fee " << policy.fee
+                                  << " for domain " << domain_name);
+                            return domain_registration_result::invalid_fee_tier;
+                        }
                     }
                 }
                 // END_VNS_VALIDATE_DOMAIN_FEE_BURN
