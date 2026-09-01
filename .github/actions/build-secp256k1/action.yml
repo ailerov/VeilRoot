@@ -1,0 +1,59 @@
+name: 'build-secp256k1'
+description: 'Build the vendored libsecp256k1 static library into the path expected by CMakeLists.txt'
+runs:
+  using: "composite"
+  steps:
+    - name: Build libsecp256k1 on Linux
+      if: runner.os == 'Linux'
+      shell: bash
+      working-directory: external/libsecp256k1
+      run: |
+        set -e
+        mkdir -p build
+        cd build
+        cmake -DCMAKE_BUILD_TYPE=Release \
+              -DBUILD_SHARED_LIBS=OFF \
+              -DSECP256K1_BUILD_BENCHMARK=OFF \
+              -DSECP256K1_BUILD_TESTS=OFF \
+              -DCMAKE_INSTALL_PREFIX=../install \
+              ..
+        make -j"${MAKE_JOB_COUNT:-1}"
+        make install
+        test -f ../install/lib/libsecp256k1.a
+
+    - name: Build libsecp256k1 on macOS
+      if: runner.os == 'macOS'
+      shell: bash
+      working-directory: external/libsecp256k1
+      run: |
+        set -e
+        mkdir -p build
+        cd build
+        cmake -DCMAKE_BUILD_TYPE=Release \
+              -DBUILD_SHARED_LIBS=OFF \
+              -DSECP256K1_BUILD_BENCHMARK=OFF \
+              -DSECP256K1_BUILD_TESTS=OFF \
+              -DCMAKE_INSTALL_PREFIX=../install \
+              ..
+        make -j"${MAKE_JOB_COUNT:-1}"
+        make install
+        test -f ../install/lib/libsecp256k1.a
+
+    - name: Build libsecp256k1 on Windows/MSYS2
+      if: runner.os == 'Windows'
+      shell: msys2 {0}
+      working-directory: external/libsecp256k1
+      run: |
+        set -e
+        mkdir -p build-win
+        cd build-win
+        cmake -G "MSYS Makefiles" \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DBUILD_SHARED_LIBS=OFF \
+              -DSECP256K1_BUILD_BENCHMARK=OFF \
+              -DSECP256K1_BUILD_TESTS=OFF \
+              -DCMAKE_INSTALL_PREFIX=../install-win \
+              ..
+        make -j"${MAKE_JOB_COUNT:-1}"
+        make install
+        test -f ../install-win/lib/libsecp256k1.a
