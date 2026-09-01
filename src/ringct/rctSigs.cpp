@@ -152,7 +152,15 @@ namespace rct {
         CHECK_AND_ASSERT_THROW_MES(amounts.size() == sk.size(), "Invalid amounts/sk sizes");
         masks.resize(amounts.size());
         for (size_t i = 0; i < masks.size(); ++i)
-            masks[i] = hwdev.genCommitmentMask(sk[i]);
+        {
+            // Burn/treasury outputs use rct::identity() as amount key. Force
+            // a zero commitment mask so the resulting commitment is
+            // deterministic and can be verified by consensus.
+            if (memcmp(sk[i].bytes, rct::identity().bytes, sizeof(sk[i].bytes)) == 0)
+                masks[i] = rct::zero();
+            else
+                masks[i] = hwdev.genCommitmentMask(sk[i]);
+        }
         BulletproofPlus proof = bulletproof_plus_PROVE(amounts, masks);
         CHECK_AND_ASSERT_THROW_MES(proof.V.size() == amounts.size(), "V does not have the expected size");
         C = proof.V;
