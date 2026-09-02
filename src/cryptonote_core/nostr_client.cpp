@@ -35,6 +35,46 @@ static bool hex_to_hash(const std::string& hex, crypto::hash& h)
 
 // secp256k1 signature verification
 
+static bool recompute_nostr_event_id(const rapidjson::Value& ev, crypto::hash& out_id)
+{
+    using namespace rapidjson;
+    if (!ev.IsObject())
+        return false;
+
+    if (!ev.HasMember("pubkey") || !ev["pubkey"].IsString())
+        return false;
+    if (!ev.HasMember("created_at") || !ev["created_at"].IsInt64())
+        return false;
+    if (!ev.HasMember("kind") || !ev["kind"].IsInt())
+        return false;
+    if (!ev.HasMember("tags") || !ev["tags"].IsArray())
+        return false;
+    if (!ev.HasMember("content") || !ev["content"].IsString())
+        return false;
+
+    Document canon;
+    canon.SetArray();
+    Document::AllocatorType& alloc = canon.GetAllocator();
+
+    canon.PushBack(0, alloc);
+    canon.PushBack(Value(ev["pubkey"].GetString(), alloc).Move(), alloc);
+    canon.PushBack(Value(ev["created_at"].GetInt64()).Move(), alloc);
+    canon.PushBack(Value(ev["kind"].GetInt()).Move(), alloc);
+
+    Value tags_copy;
+    tags_copy.CopyFrom(ev["tags"], alloc);
+    canon.PushBack(tags_copy, alloc);
+
+    canon.PushBack(Value(ev["content"].GetString(), alloc).Move(), alloc);
+
+    StringBuffer buffer;
+    Writer<StringBuffer> writer(buffer);
+    canon.Accept(writer);
+
+    crypto::cn_fast_hash(buffer.GetString(), buffer.GetSize(), out_id);
+    return true;
+}
+
 static bool verify_nostr_signature(const std::string& full_message_json,
                                    const std::array<unsigned char, 33>& registrant_pubkey)
 {
@@ -47,7 +87,7 @@ static bool verify_nostr_signature(const std::string& full_message_json,
     }
     if (!doc.IsArray() || doc.Size() < 3)
     {
-        MERROR("DEBUG: Not array or size<2, size=" << (doc.IsArray() ? "n/a" : "not array"));
+        MERROR("DEBUG: Not array or size<3");
         return false;
     }
     if (!doc[0].IsString() || doc[0].GetString() != std::string("EVENT"))
@@ -55,6 +95,7 @@ static bool verify_nostr_signature(const std::string& full_message_json,
         MERROR("DEBUG: doc[0] not EVENT string");
         return false;
     }
+
     const Value& ev = doc[2];
     if (!ev.IsObject())
     {
@@ -72,38 +113,47 @@ static bool verify_nostr_signature(const std::string& full_message_json,
         return false;
     }
 
-    // Parse event ID (32 bytes)
-    crypto::hash event_id;
+    crypto::hash supplied_id;
     std::string id_hex = ev["id"].GetString();
     if (id_hex.size() != 2 * sizeof(crypto::hash))
     {
-        MERROR("DEBUG: id_hex size mismatch: " << id_hex.size() << " vs " << (2*sizeof(crypto::hash)));
+        MERROR("DEBUG: id_hex size mismatch");
         return false;
     }
-    if (!epee::string_tools::hex_to_pod(id_hex, event_id))
+    if (!epee::string_tools::hex_to_pod(id_hex, supplied_id))
     {
-        MERROR("DEBUG: hex_to_pod failed for id_hex: " << id_hex);
+        MERROR("DEBUG: hex_to_pod failed for id_hex");
         return false;
     }
 
-    // Parse BIP340 signature (64 bytes)
-    std::string sig_hex = ev["sig"].GetString();
-    if (sig_hex.size() != 128) // 64 bytes * 2
+    crypto::hash computed_id;
+    if (!recompute_nostr_event_id(ev, computed_id))
     {
-        MERROR("DEBUG: sig_hex size mismatch: " << sig_hex.size() << " vs 128");
+        MERROR("DEBUG: failed to recompute event id");
         return false;
     }
+
+    if (!(computed_id == supplied_id))
+    {
+        MERROR("DEBUG: event id mismatch");
+        return false;
+    }
+
+    std::string sig_hex = ev["sig"].GetString();
+    if (sig_hex.size() != 128)
+    {
+        MERROR("DEBUG: sig_hex size mismatch");
+        return false;
+    }
+
     std::array<unsigned char, 64> sig;
-    for (size_t i = 0; i < 64; ++i) {
+    for (size_t i = 0; i < 64; ++i)
+    {
         std::string byte_str = sig_hex.substr(i*2, 2);
         sig[i] = static_cast<unsigned char>(std::stoi(byte_str, nullptr, 16));
     }
 
-    // Debug: log the values being verified
-    std::string pubkey_hex = epee::string_tools::buff_to_hex_nodelimer(std::string((const char*)registrant_pubkey.data(), 33));
-    std::string id_hex_log = epee::string_tools::pod_to_hex(event_id);
-    std::string sig_hex_log = epee::string_tools::buff_to_hex_nodelimer(std::string((const char*)sig.data(), 64));
-    bool result = bip340::verify(registrant_pubkey.data(), (const unsigned char*)&event_id, sig.data());
+    bool result = bip340::verify(registrant_pubkey.data(), (const unsigned char*)&computed_id, sig.data());
     return result;
 }
 
@@ -460,7 +510,7 @@ bool nostr_client::fetch_heartbeat(const std::string& relay_url,
 
 bool nostr_client::fetch_service_descriptor(const std::string& relay_url,
                                             const std::string& domain_name,
-                                            const crypto::public_key& registrant_pubkey,
+                                            const std::array<unsigned char, 33>& registrant_pubkey,
                                             service_descriptor_event& out_event,
                                             int timeout_seconds)
 {
@@ -487,10 +537,16 @@ bool nostr_client::fetch_service_descriptor(const std::string& relay_url,
     service_descriptor_event ev;
     if (parse_service_descriptor_event(msg->str, domain_name, ev))
     {
-        // Optionally verify signature (skipped for now, as in heartbeat)
-        // We could call verify_nostr_signature with the full event JSON
-        events.push_back(ev);
-        MINFO("Nostr: service descriptor event pushed, events size: " << events.size());
+        const bool verified = verify_nostr_signature(msg->str, registrant_pubkey);
+        if (verified)
+        {
+            events.push_back(ev);
+            MINFO("Nostr: service descriptor event accepted, events size: " << events.size());
+        }
+        else
+        {
+            MERROR("Nostr: service descriptor signature verification failed for domain " << domain_name);
+        }
     }
     else
     {
