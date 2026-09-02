@@ -4201,6 +4201,7 @@ bool core_rpc_server::on_publish_service_descriptor(const COMMAND_RPC_PUBLISH_SE
     std::string fingerprint_hex;
     std::string block_hash_hex;
     std::string leaf_index_str;
+    std::string version_str;
     std::vector<std::string> sibling_hexes;
 
     for (const auto& tag : doc["tags"].GetArray())
@@ -4211,6 +4212,7 @@ bool core_rpc_server::on_publish_service_descriptor(const COMMAND_RPC_PUBLISH_SE
         else if (tagname == "fingerprint" && tag.Size() > 1) fingerprint_hex = tag[1].GetString();
         else if (tagname == "block_hash" && tag.Size() > 1) block_hash_hex = tag[1].GetString();
         else if (tagname == "leaf_index" && tag.Size() > 1) leaf_index_str = tag[1].GetString();
+        else if (tagname == "version" && tag.Size() > 1) version_str = tag[1].GetString();
         else if (tagname == "sibling_path" && tag.Size() > 1)
         {
             // tag may have multiple values; collect all after the first
@@ -4221,10 +4223,29 @@ bool core_rpc_server::on_publish_service_descriptor(const COMMAND_RPC_PUBLISH_SE
             }
         }
     }
-    if (domain.empty() || fingerprint_hex.empty() || block_hash_hex.empty() || leaf_index_str.empty() || sibling_hexes.empty())
+    if (domain.empty() || fingerprint_hex.empty() || block_hash_hex.empty() || leaf_index_str.empty() || sibling_hexes.empty() || version_str.empty())
     {
         error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
-        error_resp.message = "Missing required tags (d, fingerprint, block_hash, leaf_index, sibling_path)";
+        error_resp.message = "Missing required tags (d, fingerprint, block_hash, leaf_index, sibling_path, version)";
+        return false;
+    }
+
+    uint64_t descriptor_version = 0;
+    try
+    {
+        descriptor_version = std::stoull(version_str);
+    }
+    catch (...)
+    {
+        error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
+        error_resp.message = "Invalid version tag";
+        return false;
+    }
+
+    if (descriptor_version == 0)
+    {
+        error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
+        error_resp.message = "Version tag must be greater than zero";
         return false;
     }
 
@@ -4315,29 +4336,34 @@ bool core_rpc_server::on_publish_service_descriptor(const COMMAND_RPC_PUBLISH_SE
         return false;
     }
 
-    // 8. Publish to relay
-    std::string relay_url(rec.relays[0].url);
-    if (relay_url.empty())
+    // 8. Publish to all configured relays. Success requires at least one relay
+    //    to accept the event. Relays are untrusted transport; publication is
+    //    for redundancy only and does not create authority.
+    size_t published_count = 0;
+    size_t attempted_count = 0;
+
+    for (size_t ri = 0; ri < VNS_MAX_RELAYS; ++ri)
     {
-        error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
-        error_resp.message = "Domain has no relay URL configured";
-        return false;
+        const std::string relay_url(rec.relays[ri].url);
+        if (relay_url.empty())
+            continue;
+
+        ++attempted_count;
+        try
+        {
+            if (m_core.get_blockchain_storage().get_nostr_client().publish_event(relay_url, req.event_json))
+                ++published_count;
+        }
+        catch (const std::exception &e)
+        {
+            MERROR("Failed to publish service descriptor to relay " << relay_url << ": " << e.what());
+        }
     }
-    bool published = false;
-    try
-    {
-    published = m_core.get_blockchain_storage().get_nostr_client().publish_event(relay_url, req.event_json);
-    }
-    catch (const std::exception &e)
-    {
-    error_resp.code = CORE_RPC_ERROR_CODE_INTERNAL_ERROR;
-    error_resp.message = std::string("Exception while publishing: ") + e.what();
-    return false;
-    }
-    if (!published)
+
+    if (attempted_count == 0 || published_count == 0)
     {
         error_resp.code = CORE_RPC_ERROR_CODE_INTERNAL_ERROR;
-        error_resp.message = "Failed to publish event to relay";
+        error_resp.message = "Failed to publish event to any configured relay";
         return false;
     }
 

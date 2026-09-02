@@ -16575,6 +16575,14 @@ bool wallet2::build_service_descriptor_event(const std::string& domain, const st
     uint64_t height = res.registered_height;
     uint8_t fee_tier = static_cast<uint8_t>(res.fee_tier);
 
+    uint64_t current_height = 0;
+    boost::optional<std::string> height_result = m_node_rpc_proxy.get_height(current_height);
+    if (height_result || current_height == 0)
+    {
+        MERROR("Failed to get current daemon height for descriptor version");
+        return false;
+    }
+
     // 3. Compute fingerprint using 33‑byte compressed public key
     // Derive compressed secp256k1 public key from private key
     unsigned char pubkey_compressed[33];
@@ -16678,6 +16686,12 @@ bool wallet2::build_service_descriptor_event(const std::string& domain, const st
         sp_tag.PushBack(rapidjson::Value(hash_hex.c_str(), alloc).Move(), alloc);
     }
     tags.PushBack(sp_tag, alloc);
+
+    // version
+    rapidjson::Value version_tag(rapidjson::kArrayType);
+    version_tag.PushBack("version", alloc);
+    version_tag.PushBack(rapidjson::Value(std::to_string(current_height).c_str(), alloc).Move(), alloc);
+    tags.PushBack(version_tag, alloc);
 
     // 7. Build canonical array: [0, pubkey, created_at, kind, tags, content]
     rapidjson::Document canon_doc;

@@ -5349,56 +5349,83 @@ void Blockchain::fetch_all_nostr_heartbeats(bool selective)
         const std::string& domain = pair.first;
         vns_domain_record& rec = pair.second;
         if (rec.status == 2) continue;
-        std::string relay_url_str(rec.relays[0].url);
-        if (relay_url_str.empty()) continue;
+
         // Selective mode: skip domains whose last heartbeat is newer than 190 blocks
         if (selective && (current_height - rec.last_heartbeat_block) < 190)
             continue;
-        if (relay_url_str.find("ws://") != 0 && relay_url_str.find("wss://") != 0) {
-            MDEBUG("Domain " << domain << " has invalid relay URL: '" << relay_url_str << "', skipping.");
-            continue;
-        }
 
-        nostr_client::heartbeat_event ev;
-        bool ok = m_nostr_client->fetch_heartbeat(relay_url_str, domain,
-                                                  rec.registrant_key, ev, 30);
-        if (!ok)
+        std::vector<nostr_client::heartbeat_event> candidates;
+
+        for (size_t ri = 0; ri < VNS_MAX_RELAYS; ++ri)
         {
-            MDEBUG("Nostr: no valid heartbeat for " << domain << " from " << rec.relays[0].url);
-            continue;
+            const std::string relay_url_str(rec.relays[ri].url);
+            if (relay_url_str.empty())
+                continue;
+
+            if (relay_url_str.find("ws://") != 0 && relay_url_str.find("wss://") != 0)
+            {
+                MDEBUG("Domain " << domain << " has invalid relay URL: '" << relay_url_str << "', skipping.");
+                continue;
+            }
+
+            nostr_client::heartbeat_event ev;
+            bool ok = m_nostr_client->fetch_heartbeat(relay_url_str, domain,
+                                                      rec.registrant_key, ev, 30);
+            if (!ok)
+            {
+                MDEBUG("Nostr: no valid heartbeat for " << domain << " from " << relay_url_str);
+                continue;
+            }
+
+            if (ev.fingerprint != rec.genesis_fingerprint)
+            {
+                MERROR("Nostr: fingerprint mismatch for " << domain << " from " << relay_url_str);
+                continue;
+            }
+
+            candidates.push_back(ev);
         }
 
-        if (ev.fingerprint != rec.genesis_fingerprint)
+        if (candidates.empty())
+            continue;
+
+        // Select the newest valid heartbeat: prefer greater heartbeat_height,
+        // then greater heartbeat_count. This gives deterministic relay-independent
+        // selection without granting relay authority.
+        nostr_client::heartbeat_event best = candidates[0];
+        for (size_t i = 1; i < candidates.size(); ++i)
         {
-            MERROR("Nostr: fingerprint mismatch for " << domain);
-            continue;
+            const auto& ev = candidates[i];
+            if (ev.heartbeat_height > best.heartbeat_height ||
+                (ev.heartbeat_height == best.heartbeat_height && ev.heartbeat_count > best.heartbeat_count))
+            {
+                best = ev;
+            }
         }
 
-        // Only update if the proof (event_id) is different from what we already have.
-        // This prevents re‑applying the same heartbeat on every daemon start or fetch cycle.
         crypto::hash last_proof;
         bool known = m_db->get_vns_heartbeat_proof(domain, last_proof);
-        if (known && last_proof == ev.event_id)
+        if (known && last_proof == best.event_id)
         {
             MINFO("Nostr: heartbeat event already processed for " << domain << ", skipping update.");
+            continue;
+        }
+
+        uint64_t hb_height = best.heartbeat_height ? best.heartbeat_height : current_height;
+        if (hb_height > current_height)
+        {
+            MWARNING("Nostr: future heartbeat height " << hb_height
+                     << " for " << domain << ", using current height " << current_height);
+            hb_height = current_height;
+        }
+
+        if (!update_domain_heartbeat(domain, hb_height, best.event_id, best.heartbeat_count))
+        {
+            MERROR("Nostr: failed to update heartbeat for " << domain);
         }
         else
         {
-            uint64_t hb_height = ev.heartbeat_height ? ev.heartbeat_height : current_height;
-            if (hb_height > current_height)
-            {
-                MWARNING("Nostr: future heartbeat height " << hb_height
-                         << " for " << domain << ", using current height " << current_height);
-                hb_height = current_height;
-            }
-            if (!update_domain_heartbeat(domain, hb_height, ev.event_id, ev.heartbeat_count))
-            {
-                MERROR("Nostr: failed to update heartbeat for " << domain);
-            }
-            else
-            {
-                MINFO("Nostr: successfully updated heartbeat for " << domain);
-            }
+            MINFO("Nostr: successfully updated heartbeat for " << domain);
         }
     }
 }
