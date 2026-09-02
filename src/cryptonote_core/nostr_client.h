@@ -45,7 +45,7 @@ public:
     // Fetches the most recent kind:30003 event for a domain.
     bool fetch_service_descriptor(const std::string& relay_url,
                                   const std::string& domain_name,
-                                  const crypto::public_key& registrant_pubkey,
+                                  const std::array<unsigned char, 33>& registrant_pubkey,
                                   service_descriptor_event& out_event,
                                   int timeout_seconds = 10);
 
