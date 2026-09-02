@@ -3821,10 +3821,8 @@ bool core_rpc_server::on_resolve_domain(const COMMAND_RPC_RESOLVE_DOMAIN::reques
 
     // Use nostr_client to fetch latest kind 30003
     nostr_client::service_descriptor_event sd_event;
-    crypto::public_key registrant_pubkey;
-    memcpy(registrant_pubkey.data, rec.registrant_key.data() + 1, 32);
     bool ok = m_core.get_blockchain_storage().get_nostr_client().fetch_service_descriptor(
-        relay_url, req.domain_name, registrant_pubkey, sd_event, 10 // timeout seconds
+        relay_url, req.domain_name, rec.registrant_key, sd_event, 10 // timeout seconds
     );
     if (!ok)
     {
