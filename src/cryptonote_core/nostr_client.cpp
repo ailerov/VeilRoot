@@ -13,6 +13,7 @@
 #include "string_tools.h"
 #include "crypto/crypto.h"
 #include "common/bip340.h"
+#include <openssl/evp.h>
 
 static std::string ensure_websocket_scheme(const std::string& url)
 {
@@ -71,7 +72,18 @@ static bool recompute_nostr_event_id(const rapidjson::Value& ev, crypto::hash& o
     Writer<StringBuffer> writer(buffer);
     canon.Accept(writer);
 
-    crypto::cn_fast_hash(buffer.GetString(), buffer.GetSize(), out_id);
+    unsigned int out_len = sizeof(out_id);
+    EVP_MD_CTX* mdctx = EVP_MD_CTX_new();
+    if (!mdctx)
+        return false;
+
+    const bool ok =
+        EVP_DigestInit_ex(mdctx, EVP_sha256(), nullptr) == 1 &&
+        EVP_DigestUpdate(mdctx, buffer.GetString(), buffer.GetSize()) == 1 &&
+        EVP_DigestFinal_ex(mdctx, reinterpret_cast<unsigned char*>(out_id.data), &out_len) == 1;
+
+    EVP_MD_CTX_free(mdctx);
+    return ok;
     return true;
 }
 

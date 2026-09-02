@@ -70,7 +70,18 @@ namespace
         canon.Accept(writer);
 
         crypto::hash id;
-        crypto::cn_fast_hash(buffer.GetString(), buffer.GetSize(), id);
+        unsigned int out_len = sizeof(id);
+        EVP_MD_CTX* mdctx = EVP_MD_CTX_new();
+        EXPECT_NE(mdctx, nullptr);
+
+        const bool ok =
+            EVP_DigestInit_ex(mdctx, EVP_sha256(), nullptr) == 1 &&
+            EVP_DigestUpdate(mdctx, buffer.GetString(), buffer.GetSize()) == 1 &&
+            EVP_DigestFinal_ex(mdctx, reinterpret_cast<unsigned char*>(id.data), &out_len) == 1;
+
+        EVP_MD_CTX_free(mdctx);
+        EXPECT_TRUE(ok);
+
         return hash_to_hex(id);
     }
 
