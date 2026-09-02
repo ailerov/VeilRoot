@@ -705,4 +705,27 @@ bool nostr_client::publish_event(const std::string& relay_url,
     return published;
 }
 
+bool nostr_client::verify_nostr_signature_for_test(
+    const std::string& full_message_json,
+    const std::array<unsigned char, 33>& registrant_pubkey)
+{
+    return verify_nostr_signature(full_message_json, registrant_pubkey);
+}
+
+bool nostr_client::parse_service_descriptor_event_for_test(
+    const std::string& json_line,
+    const std::string& expected_domain,
+    service_descriptor_event& out_event)
+{
+    return parse_service_descriptor_event(json_line, expected_domain, out_event);
+}
+
+bool nostr_client::parse_heartbeat_event_for_test(
+    const std::string& json_line,
+    const std::string& expected_domain,
+    heartbeat_event& out_event)
+{
+    return parse_event(json_line, expected_domain, out_event);
+}
+
 } // namespace cryptonote

@@ -39,6 +39,7 @@
 #include "blockchain_db/blockchain_db.h"
 #include "blockchain_db/lmdb/db_lmdb.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
+#include "cryptonote_core/blockchain.h"
 
 using namespace cryptonote;
 using epee::string_tools::pod_to_hex;

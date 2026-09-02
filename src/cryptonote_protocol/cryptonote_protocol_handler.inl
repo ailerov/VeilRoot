@@ -895,7 +895,7 @@ namespace cryptonote
     MLOG_P2P_MESSAGE("Received NOTIFY_DKG_SHARE (round " << arg.dkg_round << ")");
     if(context.m_state != cryptonote_connection_context::state_normal)
       return 1;
-    m_core.get_blockchain_storage().handle_dkg_share(arg.proposal_id, arg.recipient, arg.encrypted_share);
+    m_core.handle_dkg_share(arg.proposal_id, arg.recipient, arg.encrypted_share);
     return 1;
   }
   //------------------------------------------------------------------------------------------------------------------------
@@ -905,7 +905,7 @@ namespace cryptonote
     MLOG_P2P_MESSAGE("Received NOTIFY_DKG_CONFIRM (round " << arg.dkg_round << ")");
     if(context.m_state != cryptonote_connection_context::state_normal)
       return 1;
-    m_core.get_blockchain_storage().handle_dkg_confirm(arg.proposal_id, arg.member);
+    m_core.handle_dkg_confirm(arg.proposal_id, arg.member);
     return 1;
   }
   //------------------------------------------------------------------------------------------------------------------------
@@ -915,7 +915,7 @@ namespace cryptonote
     MLOG_P2P_MESSAGE("Received NOTIFY_DECRYPTION_SHARE for proposal " << arg.proposal_id);
     if(context.m_state != cryptonote_connection_context::state_normal)
       return 1;
-    m_core.get_blockchain_storage().handle_decryption_share(arg.proposal_id, arg.member, arg.partial_yes, arg.partial_no);
+    m_core.handle_decryption_share(arg.proposal_id, arg.member, arg.partial_yes, arg.partial_no);
     return 1;
   }
   // END_VNS_DKG

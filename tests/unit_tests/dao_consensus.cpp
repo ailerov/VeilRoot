@@ -76,7 +76,7 @@ TEST(dao_grant_validation, no_grants_pass)
 
 TEST(dao_grant_validation, single_grant_pass)
 {
-  auto payouts = std::vector{grant_payout_info{ID1, account_public_address{}, 500}};
+  auto payouts = std::vector<grant_payout_info>{grant_payout_info{ID1, account_public_address{}, 500}};
   transaction tx = make_miner_tx_with_grants(payouts, 1000);
   grant_validation_result r = validate_grant_payouts(tx, payouts, 1000);
   ASSERT_TRUE(r.success) << r.message;
@@ -98,7 +98,7 @@ TEST(dao_grant_validation, multiple_grants_pass)
 // ---------- Missing/extra tx_extra ----------
 TEST(dao_grant_validation, missing_extra_reject)
 {
-  auto payouts = std::vector{grant_payout_info{ID1, account_public_address{}, 500}};
+  auto payouts = std::vector<grant_payout_info>{grant_payout_info{ID1, account_public_address{}, 500}};
   transaction tx = make_miner_tx_with_grants(payouts, 1000);
   tx.extra.clear(); // remove extra
   grant_validation_result r = validate_grant_payouts(tx, payouts, 1000);
@@ -123,7 +123,7 @@ TEST(dao_grant_validation, extra_without_grants_reject)
 // ---------- Mismatched entries ----------
 TEST(dao_grant_validation, extra_entry_missing_reject)
 {
-  auto payouts = std::vector{grant_payout_info{ID1, account_public_address{}, 500}};
+  auto payouts = std::vector<grant_payout_info>{grant_payout_info{ID1, account_public_address{}, 500}};
   transaction tx = make_miner_tx_with_grants(payouts, 1000);
   std::vector<grant_payout_info> expected = {
       grant_payout_info{ID1, account_public_address{}, 500},
@@ -150,7 +150,7 @@ TEST(dao_grant_validation, extra_entry_extra_reject)
 // ---------- Amount mismatch ----------
 TEST(dao_grant_validation, wrong_amount_reject)
 {
-  auto payouts = std::vector{grant_payout_info{ID1, account_public_address{}, 500}};
+  auto payouts = std::vector<grant_payout_info>{grant_payout_info{ID1, account_public_address{}, 500}};
   transaction tx = make_miner_tx_with_grants(payouts, 1000);
   std::vector<grant_payout_info> bad = {
       grant_payout_info{ID1, account_public_address{}, 501}
@@ -174,7 +174,7 @@ TEST(dao_grant_validation, duplicate_proposal_id_reject)
 // ---------- Zero amount ----------
 TEST(dao_grant_validation, zero_amount_reject)
 {
-  auto payouts = std::vector{grant_payout_info{ID1, account_public_address{}, 0}};
+  auto payouts = std::vector<grant_payout_info>{grant_payout_info{ID1, account_public_address{}, 0}};
   transaction tx = make_miner_tx_with_grants(payouts, 1000);
   grant_validation_result r = validate_grant_payouts(tx, payouts, 1000);
   ASSERT_FALSE(r.success);
@@ -183,7 +183,7 @@ TEST(dao_grant_validation, zero_amount_reject)
 // ---------- Output count mismatch ----------
 TEST(dao_grant_validation, missing_output_reject)
 {
-  auto payouts = std::vector{grant_payout_info{ID1, account_public_address{}, 500}};
+  auto payouts = std::vector<grant_payout_info>{grant_payout_info{ID1, account_public_address{}, 500}};
   transaction tx = make_miner_tx_with_grants(payouts, 1000);
   tx.vout.pop_back(); // remove the grant output
   grant_validation_result r = validate_grant_payouts(tx, payouts, 1000);
@@ -192,7 +192,7 @@ TEST(dao_grant_validation, missing_output_reject)
 
 TEST(dao_grant_validation, extra_output_reject)
 {
-  auto payouts = std::vector{grant_payout_info{ID1, account_public_address{}, 500}};
+  auto payouts = std::vector<grant_payout_info>{grant_payout_info{ID1, account_public_address{}, 500}};
   transaction tx = make_miner_tx_with_grants(payouts, 1000);
   // add an extra output
   tx_out extra;

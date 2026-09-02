@@ -60,6 +60,21 @@ public:
     bool publish_event(const std::string& relay_url,
                        const std::string& event_json,
                        int timeout_seconds = 10);
+
+    // Test-only wrappers around internal Nostr validation/parsing helpers.
+    static bool verify_nostr_signature_for_test(
+        const std::string& full_message_json,
+        const std::array<unsigned char, 33>& registrant_pubkey);
+
+    static bool parse_service_descriptor_event_for_test(
+        const std::string& json_line,
+        const std::string& expected_domain,
+        service_descriptor_event& out_event);
+
+    static bool parse_heartbeat_event_for_test(
+        const std::string& json_line,
+        const std::string& expected_domain,
+        heartbeat_event& out_event);
  };
 
  } // namespace cryptonote

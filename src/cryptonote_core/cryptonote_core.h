@@ -680,6 +680,27 @@ namespace cryptonote
       */
      Blockchain& get_blockchain_storage(){return m_blockchain_storage;}
 
+     void handle_dkg_share(const crypto::hash& proposal_id,
+                           const crypto::public_key& sender,
+                           const std::string& encrypted_share)
+     {
+       m_blockchain_storage.handle_dkg_share(proposal_id, sender, encrypted_share);
+     }
+
+     void handle_dkg_confirm(const crypto::hash& proposal_id,
+                             const crypto::public_key& sender)
+     {
+       m_blockchain_storage.handle_dkg_confirm(proposal_id, sender);
+     }
+
+     void handle_decryption_share(const crypto::hash& proposal_id,
+                                  const crypto::public_key& member,
+                                  const rct::key& partial_yes,
+                                  const rct::key& partial_no)
+     {
+       m_blockchain_storage.handle_decryption_share(proposal_id, member, partial_yes, partial_no);
+     }
+
      /**
       * @brief gets the Blockchain instance (const)
       *

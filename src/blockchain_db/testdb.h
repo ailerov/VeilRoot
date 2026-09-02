@@ -62,6 +62,8 @@ public:
   virtual bool block_rtxn_start() const override { return true; }
   virtual void block_rtxn_stop() const override {}
   virtual void block_rtxn_abort() const override {}
+  virtual bool is_batch_active() const override { return false; }
+  virtual bool has_active_write_txn() const override { return false; }
 
   virtual void drop_hard_fork_info() override {}
   virtual bool block_exists(const crypto::hash& h, uint64_t *height) const override { return false; }
@@ -87,6 +89,7 @@ public:
   virtual uint64_t get_block_long_term_weight(const uint64_t& height) const override { return 128; }
   virtual std::vector<uint64_t> get_long_term_block_weights(uint64_t start_height, size_t count) const override { return {}; }
   virtual crypto::hash get_block_hash_from_height(const uint64_t& height) const override { return crypto::hash(); }
+  virtual bool get_block_hash_from_height_in_txn(uint64_t height, crypto::hash& hash) override { hash = get_block_hash_from_height(height); return true; }
   virtual std::vector<cryptonote::block> get_blocks_range(const uint64_t& h1, const uint64_t& h2) const override { return std::vector<cryptonote::block>(); }
   virtual std::vector<crypto::hash> get_hashes_range(const uint64_t& h1, const uint64_t& h2) const override { return std::vector<crypto::hash>(); }
   virtual crypto::hash top_block_hash(uint64_t *block_height = NULL) const override { if (block_height) *block_height = 0; return crypto::hash(); }
@@ -166,6 +169,143 @@ public:
   virtual uint64_t get_alt_block_count() override { return 0; }
   virtual void drop_alt_blocks() override {}
   virtual bool for_all_alt_blocks(std::function<bool(const crypto::hash &blkid, const alt_block_data_t &data, const cryptonote::blobdata_ref *blob)> f, bool include_blob = false) const override { return true; }
+
+  // VNS
+  virtual void add_vns_domain_record(const std::string&, const vns_domain_record&) override {}
+  virtual bool get_vns_domain_record(const std::string&, vns_domain_record&) const override { return false; }
+  virtual void remove_vns_domain_record(const std::string&) override {}
+  virtual bool for_all_vns_domain_records(std::function<bool(const std::string&, const vns_domain_record&)>) const override { return true; }
+  virtual bool get_vns_heartbeat_proof(const std::string&, crypto::hash&) const override { return false; }
+  virtual void set_vns_heartbeat_proof(const std::string&, const crypto::hash&) override {}
+  virtual void remove_vns_heartbeat_proof(const std::string&) override {}
+  virtual void add_vns_domain_heartbeat_event(const vns_domain_heartbeat_event_record&) override {}
+  virtual bool get_vns_domain_heartbeat_events_by_height(uint64_t, std::vector<vns_domain_heartbeat_event_record>&) const override { return false; }
+  virtual void remove_vns_domain_heartbeat_events_by_height(uint64_t) override {}
+  virtual void remove_vns_domain_heartbeat_events_by_domain(const std::string&) override {}
+
+  virtual void add_exact_domain_ban_policy_record(const exact_domain_ban_policy_record&) override {}
+  virtual bool get_exact_domain_ban_policy(const std::string&, uint64_t, exact_domain_ban_policy_record&) const override { return false; }
+  virtual void add_exact_domain_ban_policy_record_in_txn(const exact_domain_ban_policy_record&) override {}
+  virtual void remove_exact_domain_ban_policy_records_by_height_in_txn(uint64_t) override {}
+  virtual void remove_exact_domain_ban_policy_records_by_domain_in_txn(const std::string&) override {}
+  virtual bool for_all_exact_domain_ban_policy_records(std::function<bool(const exact_domain_ban_policy_record&)>) const override { return true; }
+
+  virtual void add_exact_domain_tier_policy_record(const exact_domain_tier_policy_record&) override {}
+  virtual bool get_exact_domain_tier_policy(const std::string&, uint64_t, exact_domain_tier_policy_record&) const override { return false; }
+  virtual void add_exact_domain_tier_policy_record_in_txn(const exact_domain_tier_policy_record&) override {}
+  virtual void remove_exact_domain_tier_policy_records_by_height_in_txn(uint64_t) override {}
+  virtual void remove_exact_domain_tier_policy_records_by_domain_in_txn(const std::string&) override {}
+  virtual bool for_all_exact_domain_tier_policy_records(std::function<bool(const exact_domain_tier_policy_record&)>) const override { return true; }
+
+  virtual void add_pending_domain_policy_record(const pending_domain_policy_record&) override {}
+  virtual bool get_pending_domain_policy(const std::string&, pending_domain_policy_record&) const override { return false; }
+  virtual bool get_pending_domain_policy_by_proposal(const crypto::hash&, pending_domain_policy_record&) const override { return false; }
+  virtual void remove_pending_domain_policy_by_domain(const std::string&) override {}
+  virtual void remove_pending_domain_policy_by_proposal(const crypto::hash&) override {}
+  virtual bool for_all_pending_domain_policy_records(std::function<bool(const pending_domain_policy_record&)>) const override { return true; }
+
+  // treasury
+  virtual uint64_t get_treasury_balance() const override { return 0; }
+  virtual uint64_t get_treasury_balance_in_txn() const override { return 0; }
+  virtual uint64_t get_total_burned_fees() const override { return 0; }
+  virtual void add_burned_fees(uint64_t) override {}
+  virtual void set_treasury_balance(uint64_t) override {}
+  virtual void set_treasury_balance_in_txn(uint64_t) override {}
+  virtual void set_governance_params(const std::string&) override {}
+  virtual bool get_governance_params(std::string&) const override { return false; }
+
+  virtual void add_proposal_record(const crypto::hash&, const proposal_record&) override {}
+  virtual void remove_proposal_record(const crypto::hash&) override {}
+  virtual bool get_proposal_record(const crypto::hash&, proposal_record&) const override { return false; }
+  virtual bool get_proposal_record_in_txn(const crypto::hash&, proposal_record&) override { return false; }
+  virtual bool for_all_proposal_records(std::function<bool(const crypto::hash&, const proposal_record&)>) const override { return true; }
+
+  virtual void add_committee_eligible(const crypto::key_image&, const committee_eligible_record&) override {}
+  virtual bool get_committee_eligible(const crypto::key_image&, committee_eligible_record&) const override { return false; }
+  virtual void remove_committee_eligible(const crypto::key_image&) override {}
+  virtual bool for_all_committee_eligible(std::function<bool(const crypto::key_image&, const committee_eligible_record&)>) const override { return true; }
+
+  virtual void add_proposal_execution_record(const proposal_execution_record&) override {}
+  virtual bool get_proposal_execution_record(const crypto::hash&, proposal_execution_record&) const override { return false; }
+  virtual bool get_proposal_execution_record_in_txn(const crypto::hash&, proposal_execution_record&) override { return false; }
+  virtual void remove_proposal_execution_record(const crypto::hash&) override {}
+  virtual bool for_all_proposal_execution_records(std::function<bool(const crypto::hash&, const proposal_execution_record&)>) const override { return true; }
+
+  virtual void add_pending_execution(uint64_t, const crypto::hash&) override {}
+  virtual void get_pending_executions(uint64_t, std::vector<std::pair<uint64_t, crypto::hash>>&) const override {}
+  virtual void remove_pending_execution(uint64_t, const crypto::hash&) override {}
+
+  virtual void store_dkg_share(const crypto::public_key&, const rct::key&) override {}
+  virtual bool get_dkg_share(const crypto::public_key&, rct::key&) const override { return false; }
+  virtual bool for_all_dkg_shares(std::function<bool(const crypto::public_key&, const rct::key&)>) const override { return true; }
+  virtual void set_committee_privkey(const crypto::secret_key&) override {}
+  virtual bool get_committee_privkey(crypto::secret_key&) const override { return false; }
+
+  virtual void set_proposal_outcome(const crypto::hash&, uint64_t, uint64_t, uint64_t, uint64_t) override {}
+  virtual bool get_proposal_outcome(const crypto::hash&, uint64_t&, uint64_t&, uint64_t&, uint64_t&) const override { return false; }
+  virtual void remove_proposal_outcome(const crypto::hash&) override {}
+  virtual void set_proposal_data(const crypto::hash&, const std::string&) override {}
+  virtual bool get_proposal_data(const crypto::hash&, std::string&) const override { return false; }
+
+  virtual void add_vote_nullifier(const crypto::hash&, const crypto::hash&) override {}
+  virtual bool has_vote_nullifier(const crypto::hash&, const crypto::hash&) const override { return false; }
+  virtual void remove_vote_nullifier(const crypto::hash&, const crypto::hash&) override {}
+  virtual void remove_all_vote_nullifiers(const crypto::hash&) override {}
+
+  virtual uint64_t add_treasury_output(uint64_t, uint64_t) override { return 0; }
+  virtual bool get_treasury_output(uint64_t, treasury_output&) const override { return false; }
+  virtual void remove_treasury_output(uint64_t) override {}
+  virtual void remove_treasury_outputs_by_height(uint64_t) override {}
+  virtual std::vector<treasury_output> get_unspent_treasury_outputs() const override { return {}; }
+  virtual void mark_treasury_output_spent(uint64_t, bool) override {}
+
+  virtual void add_voting_end_entry(uint64_t, const crypto::hash&) override {}
+  virtual void get_voting_end_entries(uint64_t, std::vector<crypto::hash>&) const override {}
+  virtual void remove_voting_end_entry(uint64_t, const crypto::hash&) override {}
+
+  virtual void add_parameter_record(const parameter_record&) override {}
+  virtual void get_parameters_ready(uint64_t, std::vector<parameter_record>&) const override {}
+  virtual void remove_parameter_records_by_height(uint64_t) override {}
+  virtual bool get_parameter(governance_parameter, uint64_t, uint64_t&) const override { return false; }
+  virtual bool get_parameter_record(governance_parameter, uint64_t, parameter_record&) const override { return false; }
+  virtual void add_parameter_record_in_txn(const parameter_record&) override {}
+  virtual void remove_parameter_records_by_height_in_txn(uint64_t) override {}
+
+  virtual void add_extension_policy_record(const extension_policy_record&) override {}
+  virtual void get_extension_policies_ready(uint64_t, std::vector<extension_policy_record>&) const override {}
+  virtual void remove_extension_policy_records_by_height(uint64_t) override {}
+  virtual bool get_extension_policy(const std::string&, uint64_t, extension_policy_record&) const override { return false; }
+  virtual void add_extension_policy_record_in_txn(const extension_policy_record&) override {}
+  virtual void remove_extension_policy_records_by_height_in_txn(uint64_t) override {}
+  virtual bool for_all_extension_policy_records(std::function<bool(const extension_policy_record&)>) const override { return true; }
+
+  virtual void add_premium_label_policy_record(const premium_label_policy_record&) override {}
+  virtual bool get_premium_label_policy(const std::string&, uint64_t, premium_label_policy_record&) const override { return false; }
+  virtual void add_premium_label_policy_record_in_txn(const premium_label_policy_record&) override {}
+  virtual void remove_premium_label_policy_records_by_height_in_txn(uint64_t) override {}
+  virtual bool for_all_premium_label_policy_records(std::function<bool(const premium_label_policy_record&)>) const override { return true; }
+
+  virtual void add_banned_label_policy_record(const banned_label_policy_record&) override {}
+  virtual bool get_banned_label_policy(const std::string&, uint64_t, banned_label_policy_record&) const override { return false; }
+  virtual void add_banned_label_policy_record_in_txn(const banned_label_policy_record&) override {}
+  virtual void remove_banned_label_policy_records_by_height_in_txn(uint64_t) override {}
+  virtual bool for_all_banned_label_policy_records(std::function<bool(const banned_label_policy_record&)>) const override { return true; }
+
+  virtual void add_banned_extension_policy_record(const banned_extension_policy_record&) override {}
+  virtual bool get_banned_extension_policy(const std::string&, uint64_t, banned_extension_policy_record&) const override { return false; }
+  virtual void add_banned_extension_policy_record_in_txn(const banned_extension_policy_record&) override {}
+  virtual void remove_banned_extension_policy_records_by_height_in_txn(uint64_t) override {}
+  virtual bool for_all_banned_extension_policy_records(std::function<bool(const banned_extension_policy_record&)>) const override { return true; }
+
+  virtual void add_vote_record(const crypto::hash&, const crypto::key_image&, const vote_record&) override {}
+  virtual bool get_vote_record(const crypto::hash&, const crypto::key_image&, vote_record&) const override { return false; }
+  virtual void remove_vote_record(const crypto::hash&, const crypto::key_image&) override {}
+  virtual bool for_all_vote_records(std::function<bool(const crypto::hash&, const crypto::key_image&, const vote_record&)>) const override { return true; }
+
+  virtual void add_vote_ciphertext_record(const crypto::hash&, const crypto::key_image&, const crypto::elgamal_ciphertext&) override {}
+  virtual bool get_vote_ciphertext_record(const crypto::hash&, const crypto::key_image&, crypto::elgamal_ciphertext&) const override { return false; }
+  virtual bool for_all_vote_ciphertext_records(std::function<bool(const crypto::hash&, const crypto::key_image&, const crypto::elgamal_ciphertext&)>) const override { return true; }
+  virtual void remove_vote_ciphertext_record(const crypto::hash&, const crypto::key_image&) override {}
 };
 
 }

@@ -116,6 +116,11 @@ public:
   bool get_pool_transaction_hashes(std::vector<crypto::hash>& txs, bool include_unrelayed_txes = true) const { return false; }
   crypto::hash get_block_id_by_height(uint64_t height) const { return crypto::null_hash; }
   void stop() {}
+
+  void set_founder_bootstrap_mining(bool) {}
+  void handle_dkg_share(const crypto::hash&, const crypto::public_key&, const std::string&) {}
+  void handle_dkg_confirm(const crypto::hash&, const crypto::public_key&) {}
+  void handle_decryption_share(const crypto::hash&, const crypto::public_key&, const rct::key&, const rct::key&) {}
 };
 
 typedef nodetool::node_server<cryptonote::t_cryptonote_protocol_handler<test_core>> Server;
@@ -1105,6 +1110,11 @@ TEST(node_server, race_condition)
       uint64_t get_current_blockchain_height() const override { return {}; }
       bool is_synchronized() const override { return {}; }
       void on_transactions_relayed(blobs_t blobs, relay_t relay) override {}
+
+      void set_founder_bootstrap_mining(bool) {}
+      void handle_dkg_share(const crypto::hash&, const crypto::public_key&, const std::string&) {}
+      void handle_dkg_confirm(const crypto::hash&, const crypto::public_key&) {}
+      void handle_decryption_share(const crypto::hash&, const crypto::public_key&, const rct::key&, const rct::key&) {}
     };
     int handle_invoke_map(bool is_notify, int command, const span_t in, byte_stream_t &out, context_t &context, bool &handled) {
       return {};
