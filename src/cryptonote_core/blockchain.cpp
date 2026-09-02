@@ -4759,7 +4759,7 @@ domain_registration_result Blockchain::process_domain_registration(const transac
                 uint64_t fee_tier = 0;
                 std::array<unsigned char, 33> registrant_key;
                 crypto::hash genesis_fingerprint;
-                std::string relay_url;
+                std::array<std::string, VNS_MAX_RELAYS> relay_urls;
 
                 while (pos < payload_end) {
                     if (pos >= extra.size()) return domain_registration_result::invalid_format;
@@ -4789,8 +4789,19 @@ domain_registration_result Blockchain::process_domain_registration(const transac
                             memcpy(&genesis_fingerprint, &extra[pos], length);
                             break;
                         case 0x06:
-                            relay_url.assign((const char*)&extra[pos], length);
-                            MINFO("VNS: extracted relay URL from registration: " << relay_url);
+                            if (length > VNS_RELAY_URL_MAX) return domain_registration_result::invalid_format;
+                            relay_urls[0].assign((const char*)&extra[pos], length);
+                            MINFO("VNS: extracted relay[0] URL from registration: " << relay_urls[0]);
+                            break;
+                        case 0x07:
+                            if (length > VNS_RELAY_URL_MAX) return domain_registration_result::invalid_format;
+                            relay_urls[1].assign((const char*)&extra[pos], length);
+                            MINFO("VNS: extracted relay[1] URL from registration: " << relay_urls[1]);
+                            break;
+                        case 0x08:
+                            if (length > VNS_RELAY_URL_MAX) return domain_registration_result::invalid_format;
+                            relay_urls[2].assign((const char*)&extra[pos], length);
+                            MINFO("VNS: extracted relay[2] URL from registration: " << relay_urls[2]);
                             break;
                         default:
                             return domain_registration_result::invalid_format;
@@ -4833,6 +4844,28 @@ domain_registration_result Blockchain::process_domain_registration(const transac
                 if (is_null_key(registrant_key)) return domain_registration_result::invalid_key;
                 if (genesis_fingerprint == crypto::null_hash) return domain_registration_result::invalid_fingerprint;
                 if (!validate_domain_name_format(domain_name)) return domain_registration_result::invalid_format;
+
+                // Validate relay set
+                size_t relay_count = 0;
+                for (size_t ri = 0; ri < VNS_MAX_RELAYS; ++ri)
+                {
+                    const std::string& url = relay_urls[ri];
+                    if (url.empty())
+                        continue;
+
+                    if (url.find("ws://") != 0 && url.find("wss://") != 0)
+                    {
+                        MINFO("VNS: Invalid relay URL scheme for domain " << domain_name << ": " << url);
+                        return domain_registration_result::invalid_format;
+                    }
+                    relay_count++;
+                }
+
+                if (relay_count == 0)
+                {
+                    MINFO("VNS: No relay URLs provided for domain " << domain_name);
+                    return domain_registration_result::invalid_format;
+                }
 
                 // BEGIN_VNS_VALIDATE_DOMAIN_FEE_BURN
                 if (height >= VNS_DOMAIN_FEE_BURN_HEIGHT)
@@ -4918,12 +4951,22 @@ domain_registration_result Blockchain::process_domain_registration(const transac
                 rec.heartbeat_count = 0;
                 memset(rec.heartbeat_history, 0, sizeof(rec.heartbeat_history));
                 rec.heartbeat_history_count = 0;
-                size_t url_len = relay_url.size();
-                if (url_len > 254) url_len = 254;
-                memcpy(rec.relay_url, relay_url.c_str(), url_len);
-                rec.relay_url[url_len] = '\0';
+
+                memset(rec.relays, 0, sizeof(rec.relays));
+                for (size_t ri = 0; ri < VNS_MAX_RELAYS; ++ri)
+                {
+                    const std::string& url = relay_urls[ri];
+                    if (url.empty())
+                        continue;
+
+                    size_t url_len = url.size();
+                    if (url_len > VNS_RELAY_URL_MAX) url_len = VNS_RELAY_URL_MAX;
+                    memcpy(rec.relays[ri].url, url.c_str(), url_len);
+                    rec.relays[ri].url[url_len] = '\0';
+                }
+
                 rec.registration_tx_hash = cryptonote::get_transaction_hash(tx);
-                MINFO("VNS: storing domain record with relay_url = '" << rec.relay_url << "'");
+                MINFO("VNS: storing domain record with relays[0] = '" << rec.relays[0].url << "'");
                 MINFO("REGISTER DOMAIN: "
        << domain_name
        << " height=" << height);
@@ -4944,7 +4987,7 @@ domain_registration_result Blockchain::process_domain_registration(const transac
                 size_t payload_end = i + 2 + len;
                 std::string domain_name;
                 boost::optional<std::array<unsigned char, 33>> new_owner;
-                boost::optional<std::string> new_relay;
+                boost::optional<std::array<std::string, VNS_MAX_RELAYS>> new_relay_set;
                 std::array<unsigned char, 64> signature;
                 bool have_signature = false;
 
@@ -4966,9 +5009,33 @@ domain_registration_result Blockchain::process_domain_registration(const transac
                             new_owner = std::array<unsigned char, 33>();
                             memcpy(new_owner->data(), &extra[pos], length);
                             break;
-                        case 0x03: // new relay URL
-                            new_relay = std::string((const char*)&extra[pos], length);
+                        case 0x10: // replace complete relay set
+                        {
+                            if (length < 1) return domain_registration_result::invalid_format;
+                            size_t p = 0;
+                            uint8_t count = extra[pos + p++];
+                            if (count == 0 || count > VNS_MAX_RELAYS)
+                                return domain_registration_result::invalid_format;
+
+                            std::array<std::string, VNS_MAX_RELAYS> relays;
+                            for (uint8_t ri = 0; ri < count; ++ri)
+                            {
+                                if (p >= length) return domain_registration_result::invalid_format;
+                                uint8_t url_len = extra[pos + p++];
+                                if (url_len == 0 || url_len > VNS_RELAY_URL_MAX)
+                                    return domain_registration_result::invalid_format;
+                                if (p + url_len > length)
+                                    return domain_registration_result::invalid_format;
+                                relays[ri].assign((const char*)&extra[pos + p], url_len);
+                                p += url_len;
+                            }
+
+                            for (uint8_t ri = count; ri < VNS_MAX_RELAYS; ++ri)
+                                relays[ri].clear();
+
+                            new_relay_set = relays;
                             break;
+                        }
                         case 0x04: // BIP340 signature (64 bytes)
                             if (length != 64) return domain_registration_result::invalid_format;
                             memcpy(signature.data(), &extra[pos], length);
@@ -4990,7 +5057,7 @@ domain_registration_result Blockchain::process_domain_registration(const transac
 
                 if (!validate_domain_name_format(domain_name))
                     return domain_registration_result::invalid_format;
-                if (!new_owner && !new_relay)
+                if (!new_owner && !new_relay_set)
                     return domain_registration_result::invalid_format;
 
                 // Fetch existing domain record
@@ -5006,8 +5073,9 @@ domain_registration_result Blockchain::process_domain_registration(const transac
                 if (new_owner) {
                     message.append(reinterpret_cast<const char*>(new_owner->data()), new_owner->size());
                 }
-                if (new_relay) {
-                    message += *new_relay;
+                if (new_relay_set) {
+                    for (size_t ri = 0; ri < VNS_MAX_RELAYS; ++ri)
+                        message += (*new_relay_set)[ri];
                 }
                 crypto::hash message_hash;
                 crypto::cn_fast_hash(message.data(), message.size(), message_hash);
@@ -5028,11 +5096,19 @@ domain_registration_result Blockchain::process_domain_registration(const transac
                 if (new_owner) {
                     updated.registrant_key = *new_owner;
                 }
-                if (new_relay) {
-                    size_t url_len = new_relay->size();
-                    if (url_len > 254) url_len = 254;
-                    memcpy(updated.relay_url, new_relay->c_str(), url_len);
-                    updated.relay_url[url_len] = '\0';
+                if (new_relay_set) {
+                    memset(updated.relays, 0, sizeof(updated.relays));
+                    for (size_t ri = 0; ri < VNS_MAX_RELAYS; ++ri)
+                    {
+                        const std::string& url = (*new_relay_set)[ri];
+                        if (url.empty())
+                            continue;
+
+                        size_t url_len = url.size();
+                        if (url_len > VNS_RELAY_URL_MAX) url_len = VNS_RELAY_URL_MAX;
+                        memcpy(updated.relays[ri].url, url.c_str(), url_len);
+                        updated.relays[ri].url[url_len] = '\0';
+                    }
                 }
 
                 // Persist the updated record
@@ -5273,22 +5349,22 @@ void Blockchain::fetch_all_nostr_heartbeats(bool selective)
         const std::string& domain = pair.first;
         vns_domain_record& rec = pair.second;
         if (rec.status == 2) continue;
-        if (rec.relay_url[0] == '\0') continue;
+        std::string relay_url_str(rec.relays[0].url);
+        if (relay_url_str.empty()) continue;
         // Selective mode: skip domains whose last heartbeat is newer than 190 blocks
         if (selective && (current_height - rec.last_heartbeat_block) < 190)
             continue;
-        std::string relay_url_str(rec.relay_url);
         if (relay_url_str.find("ws://") != 0 && relay_url_str.find("wss://") != 0) {
             MDEBUG("Domain " << domain << " has invalid relay URL: '" << relay_url_str << "', skipping.");
             continue;
         }
 
         nostr_client::heartbeat_event ev;
-        bool ok = m_nostr_client->fetch_heartbeat(std::string(rec.relay_url), domain,
+        bool ok = m_nostr_client->fetch_heartbeat(relay_url_str, domain,
                                                   rec.registrant_key, ev, 30);
         if (!ok)
         {
-            MDEBUG("Nostr: no valid heartbeat for " << domain << " from " << rec.relay_url);
+            MDEBUG("Nostr: no valid heartbeat for " << domain << " from " << rec.relays[0].url);
             continue;
         }
 

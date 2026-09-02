@@ -81,7 +81,16 @@ namespace cryptonote
     class nostr_client;
   // ---------- VNS ADDITION START ----------
   // VNS domain record as per white paper v1.2 (label <=32, extension <=15)
-    struct vns_domain_record {
+
+  static constexpr size_t VNS_MAX_RELAYS = 3;
+  static constexpr size_t VNS_RELAY_URL_MAX = 255;
+
+  struct vns_relay_endpoint
+  {
+    char url[VNS_RELAY_URL_MAX + 1];
+  };
+
+  struct vns_domain_record {
     uint64_t fee_tier;
     uint64_t fee_burned;
     std::array<unsigned char, 33> registrant_key;
@@ -91,11 +100,11 @@ namespace cryptonote
     uint8_t status;                   // 0=ACTIVE, 1=GRACE, 2=EXPIRED
     uint64_t registered_height;
     uint64_t heartbeat_count;         // total number of received heartbeats
-    char relay_url[256];              // Nostr relay URL (zero‑terminated string)
+    vns_relay_endpoint relays[VNS_MAX_RELAYS];
     uint64_t heartbeat_history[120];  // last 120 heartbeat block heights (circular buffer)
     uint8_t heartbeat_history_count;  // number of valid entries in history (0..120)
     crypto::hash registration_tx_hash;  // hash of the registration transaction
-};
+  };
   enum class domain_registration_result {
       success,
       already_registered,

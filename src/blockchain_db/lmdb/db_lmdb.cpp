@@ -2610,6 +2610,26 @@ bool BlockchainLMDB::block_exists(const crypto::hash& h, uint64_t *height) const
 }
 
 // ---------- VNS ADDITION START ----------
+
+// Legacy V1 domain record layout with a single relay_url[256].
+// Used only to migrate existing LMDB records to the new multi-relay layout.
+struct vns_domain_record_v1
+{
+  uint64_t fee_tier;
+  uint64_t fee_burned;
+  std::array<unsigned char, 33> registrant_key;
+  crypto::hash genesis_fingerprint;
+  uint64_t last_heartbeat_block;
+  uint16_t health_score;
+  uint8_t status;
+  uint64_t registered_height;
+  uint64_t heartbeat_count;
+  char relay_url[256];
+  uint64_t heartbeat_history[120];
+  uint8_t heartbeat_history_count;
+  crypto::hash registration_tx_hash;
+};
+
 void BlockchainLMDB::add_vns_domain_record(const std::string& domain_name, const vns_domain_record& record)
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
@@ -2645,9 +2665,38 @@ bool BlockchainLMDB::get_vns_domain_record(const std::string& domain_name, vns_d
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to get VNS domain record: ", result).c_str()));
 
-  if (v.mv_size != sizeof(vns_domain_record))
+  if (v.mv_size == sizeof(vns_domain_record))
+  {
+    record = *(const vns_domain_record*)v.mv_data;
+  }
+  else if (v.mv_size == sizeof(vns_domain_record_v1))
+  {
+    const vns_domain_record_v1* v1 = (const vns_domain_record_v1*)v.mv_data;
+    record.fee_tier = v1->fee_tier;
+    record.fee_burned = v1->fee_burned;
+    record.registrant_key = v1->registrant_key;
+    record.genesis_fingerprint = v1->genesis_fingerprint;
+    record.last_heartbeat_block = v1->last_heartbeat_block;
+    record.health_score = v1->health_score;
+    record.status = v1->status;
+    record.registered_height = v1->registered_height;
+    record.heartbeat_count = v1->heartbeat_count;
+
+    memset(record.relays, 0, sizeof(record.relays));
+    size_t old_len = strnlen(v1->relay_url, sizeof(v1->relay_url));
+    if (old_len > VNS_RELAY_URL_MAX) old_len = VNS_RELAY_URL_MAX;
+    memcpy(record.relays[0].url, v1->relay_url, old_len);
+    record.relays[0].url[old_len] = '\0';
+
+    memcpy(record.heartbeat_history, v1->heartbeat_history, sizeof(record.heartbeat_history));
+    record.heartbeat_history_count = v1->heartbeat_history_count;
+    record.registration_tx_hash = v1->registration_tx_hash;
+  }
+  else
+  {
     throw0(DB_ERROR("Unexpected VNS domain record size"));
-  record = *(const vns_domain_record*)v.mv_data;
+  }
+
   TXN_POSTFIX_RDONLY();
   return true;
 }
@@ -2684,7 +2733,40 @@ bool BlockchainLMDB::for_all_vns_domain_records(std::function<bool(const std::st
   while (result == MDB_SUCCESS)
   {
     std::string domain_name((const char*)k.mv_data, k.mv_size - 1); // remove trailing null
-    const vns_domain_record& record = *(const vns_domain_record*)v.mv_data;
+
+    vns_domain_record record;
+    if (v.mv_size == sizeof(vns_domain_record))
+    {
+      record = *(const vns_domain_record*)v.mv_data;
+    }
+    else if (v.mv_size == sizeof(vns_domain_record_v1))
+    {
+      const vns_domain_record_v1* v1 = (const vns_domain_record_v1*)v.mv_data;
+      record.fee_tier = v1->fee_tier;
+      record.fee_burned = v1->fee_burned;
+      record.registrant_key = v1->registrant_key;
+      record.genesis_fingerprint = v1->genesis_fingerprint;
+      record.last_heartbeat_block = v1->last_heartbeat_block;
+      record.health_score = v1->health_score;
+      record.status = v1->status;
+      record.registered_height = v1->registered_height;
+      record.heartbeat_count = v1->heartbeat_count;
+
+      memset(record.relays, 0, sizeof(record.relays));
+      size_t old_len = strnlen(v1->relay_url, sizeof(v1->relay_url));
+      if (old_len > VNS_RELAY_URL_MAX) old_len = VNS_RELAY_URL_MAX;
+      memcpy(record.relays[0].url, v1->relay_url, old_len);
+      record.relays[0].url[old_len] = '\0';
+
+      memcpy(record.heartbeat_history, v1->heartbeat_history, sizeof(record.heartbeat_history));
+      record.heartbeat_history_count = v1->heartbeat_history_count;
+      record.registration_tx_hash = v1->registration_tx_hash;
+    }
+    else
+    {
+      throw0(DB_ERROR("Unexpected VNS domain record size"));
+    }
+
     if (!f(domain_name, record))
     {
       ret = false;

@@ -3810,7 +3810,7 @@ bool core_rpc_server::on_resolve_domain(const COMMAND_RPC_RESOLVE_DOMAIN::reques
     res.fee_tier = rec.fee_tier;
 
     // 4. Fetch service descriptor from relay
-    std::string relay_url(rec.relay_url);
+    std::string relay_url(rec.relays[0].url);
     if (relay_url.empty())
     {
         // No relay configured, return empty descriptor
@@ -3885,7 +3885,7 @@ bool core_rpc_server::on_get_domain_record(const COMMAND_RPC_GET_DOMAIN_RECORD::
         res.domain_status = rec.status;
         res.registered_height = rec.registered_height;
         res.heartbeat_count = rec.heartbeat_count;
-        res.relay_url = std::string(rec.relay_url);
+        res.relay_url = std::string(rec.relays[0].url);
         res.registration_tx_hash = epee::string_tools::pod_to_hex(rec.registration_tx_hash);
     }
     // Always return OK so the wallet doesn't treat a missing domain as a fatal error
@@ -4266,7 +4266,7 @@ bool core_rpc_server::on_publish_service_descriptor(const COMMAND_RPC_PUBLISH_SE
     }
 
     // 8. Publish to relay
-    std::string relay_url(rec.relay_url);
+    std::string relay_url(rec.relays[0].url);
     if (relay_url.empty())
     {
         error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
