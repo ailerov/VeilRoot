@@ -3299,9 +3299,9 @@ bool simple_wallet::help(const std::vector<std::string> &args/* = std::vector<st
     message_writer() << "";
 
     message_writer() << tr("VeilRoot Domain Commands:");
-    message_writer() << tr("\"register_domain <name>..<extension> --relay=<ws:// or wss:// URL>\" - Register a VNS domain.");
+    message_writer() << tr("\"register_domain <name>..<extension> --relay=<ws:// or wss:// URL> [--relay=<url>] [--relay=<url>]\" - Register a VNS domain with up to 3 Nostr relays.");
     message_writer() << tr("\"transfer_domain <name>..<extension> <new_owner_npub_or_hex>\" - Transfer a VNS domain.");
-    message_writer() << tr("\"update_domain_metadata <domain> [--new-owner=<66-hex>] [--new-relay=<ws:// or wss:// URL>]\" - Update owner or relay.");
+    message_writer() << tr("\"update_domain_metadata <domain> [--new-owner=<66-hex>] [--relay=<ws:// or wss:// URL> ...]\" - Update owner and/or replace complete relay set.");
     message_writer() << tr("\"submit_heartbeat <domain> --txid=<txid> [--private-key=<hex>]\" - Submit a domain heartbeat.");
     message_writer() << tr("\"get_domain_proof <txid>\" - Show a domain registration Merkle proof.");
     message_writer() << tr("\"publish_service_descriptor <domain> <content_json> [--private-key=<hex>]\" - Publish a domain service descriptor.");
@@ -3934,8 +3934,8 @@ simple_wallet::simple_wallet()
                            // VNS commands
   m_cmd_binder.set_handler("register_domain",
                            boost::bind(&simple_wallet::on_command, this, &simple_wallet::register_domain, _1),
-                           tr("register_domain <name>..<extension> [--relay=<ws:// or wss:// URL>]"),
-                           tr("Register a VNS domain name. Fee is determined by extension tier and burned."));
+                           tr("register_domain <name>..<extension> --relay=<ws:// or wss:// URL> [--relay=<url>] [--relay=<url>]"),
+                           tr("Register a VNS domain name with up to 3 Nostr relays. Fee is determined by extension tier and burned."));
   m_cmd_binder.set_handler("transfer_domain",
                            boost::bind(&simple_wallet::on_command, this, &simple_wallet::transfer_domain, _1),
                            tr("transfer_domain <name>..<extension> <new_owner_address>"),
@@ -4035,8 +4035,8 @@ simple_wallet::simple_wallet()
                            tr("Resolve a VNS domain to its service descriptor."));
   m_cmd_binder.set_handler("update_domain_metadata",
                            boost::bind(&simple_wallet::on_command, this, &simple_wallet::update_domain_metadata, _1),
-                           tr("update_domain_metadata <domain> [--new-owner=<66-hex>] [--new-relay=<ws:// or wss:// URL>]"),
-                           tr("Update domain metadata: change owner and/or relay URL."));
+                           tr("update_domain_metadata <domain> [--new-owner=<66-hex>] [--relay=<ws:// or wss:// URL> ...]"),
+                           tr("Update domain metadata: change owner and/or replace complete relay set."));
   m_cmd_binder.set_handler("rpc_payment_info",
                            boost::bind(&simple_wallet::on_command, this, &simple_wallet::rpc_payment_info, _1),
                            tr(USAGE_RPC_PAYMENT_INFO),
@@ -12043,10 +12043,10 @@ bool simple_wallet::mms(const std::vector<std::string> &args)
 
 bool simple_wallet::register_domain(const std::vector<std::string> &args)
 {
-    // Usage: register_domain <name>..<extension> --relay=<ws:// or wss:// URL>
-    if (args.size() != 2)
+    // Usage: register_domain <name>..<extension> --relay=<ws:// or wss:// URL> [--relay=<url>] [--relay=<url>]
+    if (args.size() < 2 || args.size() > 4)
     {
-        PRINT_USAGE("register_domain <name>..<extension> --relay=<ws:// or wss:// URL>");
+        PRINT_USAGE("register_domain <name>..<extension> --relay=<ws:// or wss:// URL> [--relay=<url>] [--relay=<url>]");
         return true;
     }
 
@@ -12059,16 +12059,37 @@ bool simple_wallet::register_domain(const std::vector<std::string> &args)
         return true;
     }
 
-    const std::string &relay_arg = args[1];
-    if (relay_arg.find("--relay=") != 0)
+    std::array<std::string, 3> relay_urls = {};
+    size_t relay_count = 0;
+
+    for (size_t i = 1; i < args.size(); ++i)
     {
-        fail_msg_writer() << tr("Missing --relay parameter. Usage: register_domain <name>..<extension> --relay=<ws:// or wss:// URL>");
-        return true;
+        const std::string &arg = args[i];
+        if (arg.find("--relay=") != 0)
+        {
+            fail_msg_writer() << tr("Invalid argument: ") << arg;
+            return true;
+        }
+
+        std::string relay_url = arg.substr(8);
+        if (relay_url.find("ws://") != 0 && relay_url.find("wss://") != 0)
+        {
+            fail_msg_writer() << tr("Invalid relay URL: must start with ws:// or wss://");
+            return true;
+        }
+
+        if (relay_count >= 3)
+        {
+            fail_msg_writer() << tr("Too many relay URLs. Maximum is 3.");
+            return true;
+        }
+
+        relay_urls[relay_count++] = relay_url;
     }
-    std::string relay_url = relay_arg.substr(8);
-    if (relay_url.find("ws://") != 0 && relay_url.find("wss://") != 0)
+
+    if (relay_count == 0)
     {
-        fail_msg_writer() << tr("Invalid relay URL: must start with ws:// or wss://");
+        fail_msg_writer() << tr("Missing --relay parameter. Usage: register_domain <name>..<extension> --relay=<ws:// or wss:// URL> [--relay=<url>] [--relay=<url>]");
         return true;
     }
 
@@ -12192,7 +12213,8 @@ bool simple_wallet::register_domain(const std::vector<std::string> &args)
     fingerprint_data.push_back(static_cast<char>(tier));
     crypto::hash genesis_fingerprint;
     crypto::cn_fast_hash(fingerprint_data.data(), fingerprint_data.size(), genesis_fingerprint);
-    std::vector<uint8_t> extra = domain_utils::build_registration_extra(domain, tier, registrant_key, genesis_fingerprint, relay_url);
+
+    std::vector<uint8_t> extra = domain_utils::build_registration_extra(domain, tier, registrant_key, genesis_fingerprint, relay_urls);
     MINFO("VNS wallet: built extra with " << extra.size() << " bytes");
 
     SCOPED_WALLET_UNLOCK_ON_BAD_PASSWORD(return true;);
@@ -12244,7 +12266,7 @@ bool simple_wallet::register_domain(const std::vector<std::string> &args)
         reg.fingerprint = genesis_fingerprint;
         reg.fee_tier = static_cast<uint8_t>(tier);
         reg.registrant_key = registrant_key;
-        reg.relay_url = relay_url;
+        reg.relay_urls.assign(relay_urls.begin(), relay_urls.end());
         m_wallet->add_pending_domain_registration(reg);
 
         m_wallet->commit_tx(ptx_vector[0]);
@@ -14631,7 +14653,7 @@ bool simple_wallet::update_domain_metadata(const std::vector<std::string> &args)
  {
     if (args.empty())
     {
-        PRINT_USAGE("update_domain_metadata <domain> [--new-owner=<66-hex>] [--new-relay=<ws:// or wss:// URL>]");
+        PRINT_USAGE("update_domain_metadata <domain> [--new-owner=<66-hex>] [--relay=<ws:// or wss:// URL> ...]");
         return true;
     }
 
@@ -14646,7 +14668,8 @@ bool simple_wallet::update_domain_metadata(const std::vector<std::string> &args)
 
     // Parse optional arguments
     std::string new_owner_hex;
-    std::string new_relay_url;
+    std::array<std::string, 3> new_relay_urls = {};
+    size_t relay_count = 0;
     bool has_new_owner = false, has_new_relay = false;
     for (size_t i = 1; i < args.size(); ++i)
     {
@@ -14656,21 +14679,26 @@ bool simple_wallet::update_domain_metadata(const std::vector<std::string> &args)
             new_owner_hex = arg.substr(12);
             has_new_owner = true;
         }
-        else if (arg.find("--new-relay=") == 0)
+        else if (arg.find("--relay=") == 0)
         {
-            new_relay_url = arg.substr(12);
+            if (relay_count >= 3)
+            {
+                fail_msg_writer() << tr("Too many relay URLs. Maximum is 3.");
+                return true;
+            }
+            new_relay_urls[relay_count++] = arg.substr(8);
             has_new_relay = true;
         }
         else
         {
-            PRINT_USAGE("update_domain_metadata <domain> [--new-owner=<66-hex>] [--new-relay=<ws:// or wss:// URL>]");
+            PRINT_USAGE("update_domain_metadata <domain> [--new-owner=<66-hex>] [--relay=<ws:// or wss:// URL> ...]");
             return true;
         }
     }
 
     if (!has_new_owner && !has_new_relay)
     {
-        fail_msg_writer() << tr("At least one of --new-owner or --new-relay must be provided.");
+        fail_msg_writer() << tr("At least one of --new-owner or --relay must be provided.");
         return true;
     }
 
@@ -14736,13 +14764,17 @@ bool simple_wallet::update_domain_metadata(const std::vector<std::string> &args)
         }
     }
 
-    // Validate relay URL if provided
+    // Validate relay URLs if provided
     if (has_new_relay)
     {
-        if (new_relay_url.find("ws://") != 0 && new_relay_url.find("wss://") != 0)
+        for (size_t i = 0; i < relay_count; ++i)
         {
-            fail_msg_writer() << tr("Relay URL must start with ws:// or wss://");
-            return true;
+            const std::string& url = new_relay_urls[i];
+            if (url.find("ws://") != 0 && url.find("wss://") != 0)
+            {
+                fail_msg_writer() << tr("Relay URL must start with ws:// or wss://");
+                return true;
+            }
         }
     }
 
@@ -14846,7 +14878,8 @@ bool simple_wallet::update_domain_metadata(const std::vector<std::string> &args)
     }
     if (has_new_relay)
     {
-        message += new_relay_url;
+        for (size_t i = 0; i < relay_count; ++i)
+            message += new_relay_urls[i];
     }
     crypto::hash message_hash;
     crypto::cn_fast_hash(message.data(), message.size(), message_hash);
@@ -14867,10 +14900,16 @@ bool simple_wallet::update_domain_metadata(const std::vector<std::string> &args)
     {
         new_owner_pubkey = new_owner_key; // already 33 bytes
     }
-    boost::optional<std::string> new_relay_opt;
-    if (has_new_relay) new_relay_opt = new_relay_url;
+    boost::optional<std::array<std::string, 3>> new_relay_set;
+    if (has_new_relay)
+    {
+        std::array<std::string, 3> relays = {};
+        for (size_t i = 0; i < relay_count; ++i)
+            relays[i] = new_relay_urls[i];
+        new_relay_set = relays;
+    }
 
-    std::vector<uint8_t> extra = domain_utils::build_update_extra(domain, new_owner_pubkey, new_relay_opt, sig_array);
+    std::vector<uint8_t> extra = domain_utils::build_update_extra(domain, new_owner_pubkey, new_relay_set, sig_array);
     if (extra.empty())
     {
         fail_msg_writer() << tr("Failed to build update extra data");

@@ -601,11 +601,10 @@ namespace domain_utils
         uint8_t fee_tier,
         const std::array<unsigned char, 33>& registrant_key,
         const crypto::hash& genesis_fingerprint,
-        const std::string& relay_url = "")
+        const std::array<std::string, 3>& relay_urls = {})
     {
         std::vector<uint8_t> extra;
 
-        // Build registration data payload (to go inside nonce)
         std::vector<uint8_t> payload;
         const char MAGIC[] = "DOMAIN_REG";
         payload.insert(payload.end(), MAGIC, MAGIC + strlen(MAGIC));
@@ -620,17 +619,27 @@ namespace domain_utils
         append_tlv(0x01, domain_name.data(), domain_name.size());
         append_tlv(0x02, &fee_tier, 1);
         append_tlv(0x03, registrant_key.data(), registrant_key.size());
-        // Add fingerprint TLV inside nonce (type 0x04)
         append_tlv(0x04, &genesis_fingerprint, sizeof(genesis_fingerprint));
-        if (!relay_url.empty())
-            append_tlv(0x06, relay_url.data(), relay_url.size());
 
-        payload.push_back(0x00); // end marker
+        static constexpr uint8_t relay_tags[3] = {0x06, 0x07, 0x08};
+        for (size_t i = 0; i < relay_urls.size(); ++i)
+        {
+            const std::string& url = relay_urls[i];
+            if (url.empty())
+                continue;
 
-        if (payload.size() > 255) return {};
+            if (url.size() > 255)
+                return {};
 
-        // Wrap in a nonce TLV (tag 0x02)
-        extra.push_back(0x02); // TX_EXTRA_TAG_NONCE
+            append_tlv(relay_tags[i], url.data(), url.size());
+        }
+
+        payload.push_back(0x00);
+
+        if (payload.size() > 255)
+            return {};
+
+        extra.push_back(0x02);
         extra.push_back(static_cast<uint8_t>(payload.size()));
         extra.insert(extra.end(), payload.begin(), payload.end());
 
@@ -640,7 +649,7 @@ namespace domain_utils
     inline std::vector<uint8_t> build_update_extra(
         const std::string& domain_name,
         const boost::optional<std::array<unsigned char, 33>>& new_owner_key,
-        const boost::optional<std::string>& new_relay_url,
+        const boost::optional<std::array<std::string, 3>>& new_relay_set,
         const std::array<unsigned char, 64>& signature)
     {
         std::vector<uint8_t> payload;
@@ -655,20 +664,46 @@ namespace domain_utils
         };
 
         append_tlv(0x01, domain_name.data(), domain_name.size());
+
         if (new_owner_key) {
-            append_tlv(0x02, new_owner_key->data(), new_owner_key->size()); // 33 bytes
+            append_tlv(0x02, new_owner_key->data(), new_owner_key->size());
         }
-        if (new_relay_url) {
-            append_tlv(0x03, new_relay_url->data(), new_relay_url->size());
+
+        if (new_relay_set) {
+            size_t count = 0;
+            for (const auto& url : *new_relay_set)
+                if (!url.empty()) ++count;
+
+            if (count > 0 && count <= 3)
+            {
+                std::vector<uint8_t> relay_data;
+                relay_data.push_back(static_cast<uint8_t>(count));
+
+                for (const auto& url : *new_relay_set)
+                {
+                    if (url.empty())
+                        continue;
+
+                    if (url.size() > 255)
+                        return {};
+
+                    relay_data.push_back(static_cast<uint8_t>(url.size()));
+                    relay_data.insert(relay_data.end(), url.begin(), url.end());
+                }
+
+                append_tlv(0x10, relay_data.data(), relay_data.size());
+            }
         }
+
         append_tlv(0x04, signature.data(), signature.size());
 
-        payload.push_back(0x00); // end marker
+        payload.push_back(0x00);
 
-        if (payload.size() > 255) return {};
+        if (payload.size() > 255)
+            return {};
 
         std::vector<uint8_t> extra;
-        extra.push_back(0x02); // TX_EXTRA_TAG_NONCE
+        extra.push_back(0x02);
         extra.push_back(static_cast<uint8_t>(payload.size()));
         extra.insert(extra.end(), payload.begin(), payload.end());
         return extra;

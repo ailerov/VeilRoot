@@ -3809,57 +3809,107 @@ bool core_rpc_server::on_resolve_domain(const COMMAND_RPC_RESOLVE_DOMAIN::reques
     res.last_heartbeat = rec.last_heartbeat_block;
     res.fee_tier = rec.fee_tier;
 
-    // 4. Fetch service descriptor from relay
-    std::string relay_url(rec.relays[0].url);
-    if (relay_url.empty())
+    // 4. Fetch service descriptor candidates from all configured relays
+    struct candidate
     {
-        // No relay configured, return empty descriptor
-        res.service_descriptor = "";
-        res.status = CORE_RPC_STATUS_OK;
-        return true;
+        nostr_client::service_descriptor_event sd_event;
+        std::string relay_url;
+    };
+
+    std::vector<candidate> candidates;
+    for (size_t ri = 0; ri < VNS_MAX_RELAYS; ++ri)
+    {
+        const std::string relay_url(rec.relays[ri].url);
+        if (relay_url.empty())
+            continue;
+
+        nostr_client::service_descriptor_event sd_event;
+        bool ok = m_core.get_blockchain_storage().get_nostr_client().fetch_service_descriptor(
+            relay_url, req.domain_name, rec.registrant_key, sd_event, 10
+        );
+
+        if (ok)
+            candidates.push_back({sd_event, relay_url});
     }
 
-    // Use nostr_client to fetch latest kind 30003
-    nostr_client::service_descriptor_event sd_event;
-    bool ok = m_core.get_blockchain_storage().get_nostr_client().fetch_service_descriptor(
-        relay_url, req.domain_name, rec.registrant_key, sd_event, 10 // timeout seconds
-    );
-    if (!ok)
+    if (candidates.empty())
     {
         error_resp.code = CORE_RPC_ERROR_CODE_INTERNAL_ERROR;
-        error_resp.message = "Failed to fetch service descriptor from relay";
+        error_resp.message = "No valid service descriptor found from any configured relay";
         return false;
     }
 
-    // 5. Verify fingerprint using 33‑byte compressed key
-    std::string fingerprint_data;
-    fingerprint_data += req.domain_name;
-    fingerprint_data.append(reinterpret_cast<const char*>(rec.registrant_key.data()), rec.registrant_key.size());
-    uint64_t height_le = rec.registered_height;
-    fingerprint_data.append(reinterpret_cast<const char*>(&height_le), sizeof(height_le));
-    fingerprint_data.push_back(static_cast<char>(rec.fee_tier));
-    crypto::hash expected_fingerprint;
-    crypto::cn_fast_hash(fingerprint_data.data(), fingerprint_data.size(), expected_fingerprint);
-    std::string expected_hex = epee::string_tools::pod_to_hex(expected_fingerprint);
-    if (expected_hex != sd_event.fingerprint_hex)
+    // 5. Validate each candidate against on-chain domain state
+    std::vector<candidate> authenticated;
+    for (const auto& c : candidates)
+    {
+        // 5.1 Verify fingerprint using 33-byte compressed key
+        std::string fingerprint_data;
+        fingerprint_data += req.domain_name;
+        fingerprint_data.append(reinterpret_cast<const char*>(rec.registrant_key.data()), rec.registrant_key.size());
+        uint64_t height_le = rec.registered_height;
+        fingerprint_data.append(reinterpret_cast<const char*>(&height_le), sizeof(height_le));
+        fingerprint_data.push_back(static_cast<char>(rec.fee_tier));
+        crypto::hash expected_fingerprint;
+        crypto::cn_fast_hash(fingerprint_data.data(), fingerprint_data.size(), expected_fingerprint);
+        const std::string expected_hex = epee::string_tools::pod_to_hex(expected_fingerprint);
+
+        if (expected_hex != c.sd_event.fingerprint_hex)
+        {
+            MDEBUG("Rejecting descriptor from relay " << c.relay_url << ": fingerprint mismatch");
+            continue;
+        }
+
+        // 5.2 Verify Merkle proof
+        if (!m_core.get_blockchain_storage().verify_merkle_proof(
+                rec.registration_tx_hash,
+                c.sd_event.leaf_index,
+                c.sd_event.sibling_hashes,
+                c.sd_event.block_hash
+            ))
+        {
+            MDEBUG("Rejecting descriptor from relay " << c.relay_url << ": Merkle proof failed");
+            continue;
+        }
+
+        authenticated.push_back(c);
+    }
+
+    if (authenticated.empty())
     {
         error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
-        error_resp.message = "Fingerprint mismatch";
+        error_resp.message = "No authenticated service descriptor found";
         return false;
     }
 
-    // 6. Verify Merkle proof
-    if (!m_core.get_blockchain_storage().verify_merkle_proof(
-            rec.registration_tx_hash,
-            sd_event.leaf_index,
-            sd_event.sibling_hashes,
-            sd_event.block_hash
-        ))
+    // 6. Select highest valid descriptor version.
+    //    If multiple distinct events have the same highest version, treat as conflict.
+    const candidate* best = nullptr;
+    bool conflict = false;
+
+    for (const auto& c : authenticated)
+    {
+        if (best == nullptr || c.sd_event.version > best->sd_event.version)
+        {
+            best = &c;
+            conflict = false;
+        }
+        else if (c.sd_event.version == best->sd_event.version)
+        {
+            // Same version. If event id differs, conflict.
+            if (c.sd_event.event_id != best->sd_event.event_id)
+                conflict = true;
+        }
+    }
+
+    if (conflict || best == nullptr)
     {
         error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
-        error_resp.message = "Merkle proof verification failed";
+        error_resp.message = "Conflicting service descriptors with the same version";
         return false;
     }
+
+    const nostr_client::service_descriptor_event& sd_event = best->sd_event;
 
     // 7. Return the content
     res.service_descriptor = sd_event.content;

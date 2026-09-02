@@ -3,7 +3,9 @@
 
 #pragma once
 
+#include <array>
 #include <string>
+#include <vector>
 #include "crypto/hash.h"
 #include "cryptonote_basic/cryptonote_basic.h"
 
@@ -40,6 +42,9 @@ public:
         uint64_t leaf_index;
         std::vector<crypto::hash> sibling_hashes;
         uint64_t created_at;
+        uint64_t version = 0;                 // monotonic descriptor version
+        crypto::hash event_id = crypto::null_hash;
+        std::string pubkey_hex;
     };
 
     // Fetches the most recent kind:30003 event for a domain.

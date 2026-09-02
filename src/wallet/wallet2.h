@@ -481,7 +481,7 @@ private:
     crypto::hash fingerprint;
     uint8_t fee_tier;
     std::array<unsigned char, 33> registrant_key;
-    std::string relay_url;
+    std::vector<std::string> relay_urls;
 
     BEGIN_SERIALIZE_OBJECT()
       FIELD(domain)
@@ -489,7 +489,7 @@ private:
       FIELD(fingerprint)
       VARINT_FIELD(fee_tier)
       FIELD(registrant_key)
-      FIELD(relay_url)
+      FIELD(relay_urls)
     END_SERIALIZE()
   };
 

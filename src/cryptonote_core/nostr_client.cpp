@@ -366,6 +366,20 @@ static bool parse_service_descriptor_event(const std::string& json_line,
             }
             MINFO("parse_service_descriptor_event: found sibling_path tag = " << sibling_path_str);
         }
+        else if (tagname == "version" && tag[1].IsString())
+        {
+            const std::string version_str = tag[1].GetString();
+            try
+            {
+                out_event.version = std::stoull(version_str);
+                MINFO("parse_service_descriptor_event: found version tag = " << version_str);
+            }
+            catch (...)
+            {
+                MINFO("parse_service_descriptor_event: invalid version tag = " << version_str);
+                out_event.version = 0;
+            }
+        }
     }
     if (domain_found != expected_domain) {
         MINFO("parse_service_descriptor_event: domain mismatch: found '" << domain_found << "', expected '" << expected_domain << "'");
@@ -433,7 +447,24 @@ static bool parse_service_descriptor_event(const std::string& json_line,
     }
     out_event.created_at = ev["created_at"].GetInt64();
 
-    MINFO("parse_service_descriptor_event: parsing successful for domain " << expected_domain);
+    if (ev.HasMember("id") && ev["id"].IsString())
+    {
+        const std::string id_hex = ev["id"].GetString();
+        if (id_hex.size() == 2 * sizeof(crypto::hash))
+            epee::string_tools::hex_to_pod(id_hex, out_event.event_id);
+    }
+
+    if (ev.HasMember("pubkey") && ev["pubkey"].IsString())
+        out_event.pubkey_hex = ev["pubkey"].GetString();
+
+    if (out_event.version == 0)
+    {
+        MINFO("parse_service_descriptor_event: missing or invalid version");
+        return false;
+    }
+
+    MINFO("parse_service_descriptor_event: parsing successful for domain " << expected_domain
+          << " version=" << out_event.version);
     return true;
 }
 

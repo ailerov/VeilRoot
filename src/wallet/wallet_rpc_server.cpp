@@ -4976,6 +4976,26 @@ bool wallet_rpc_server::on_register_domain(const wallet_rpc::COMMAND_RPC_REGISTE
         extra.insert(extra.end(), 32, 0);
     }
 
+    // Append up to 3 relay URLs as tags 0x06, 0x07, 0x08
+    static constexpr uint8_t relay_tags[3] = {0x06, 0x07, 0x08};
+    size_t relay_count = req.relay_urls.size();
+    if (relay_count > 3) relay_count = 3;
+    for (size_t ri = 0; ri < relay_count; ++ri)
+    {
+        const std::string& relay_url = req.relay_urls[ri];
+        if (relay_url.empty())
+            continue;
+        if (relay_url.size() > 255)
+        {
+            er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM;
+            er.message = "Relay URL too long";
+            return false;
+        }
+        extra.push_back(relay_tags[ri]);
+        extra.push_back(static_cast<uint8_t>(relay_url.size()));
+        extra.insert(extra.end(), relay_url.begin(), relay_url.end());
+    }
+
     extra.push_back(0x00);
     extra[len_pos] = extra.size() - (len_pos + 1);
 

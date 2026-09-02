@@ -2834,12 +2834,14 @@ namespace wallet_rpc
       uint64_t fee_tier;
       std::string registrant_key;
       std::string genesis_fingerprint;
+      std::vector<std::string> relay_urls;
       uint32_t priority;
       BEGIN_KV_SERIALIZE_MAP()
         KV_SERIALIZE(domain_name)
         KV_SERIALIZE(fee_tier)
         KV_SERIALIZE(registrant_key)
         KV_SERIALIZE(genesis_fingerprint)
+        KV_SERIALIZE(relay_urls)
         KV_SERIALIZE(priority)
       END_KV_SERIALIZE_MAP()
     };
