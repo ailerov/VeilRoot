@@ -5009,6 +5009,19 @@ domain_registration_result Blockchain::process_domain_registration(const transac
                             new_owner = std::array<unsigned char, 33>();
                             memcpy(new_owner->data(), &extra[pos], length);
                             break;
+                        case 0x03: // legacy single relay URL
+                        {
+                            if (length == 0 || length > VNS_RELAY_URL_MAX)
+                                return domain_registration_result::invalid_format;
+
+                            std::array<std::string, VNS_MAX_RELAYS> relays;
+                            relays[0].assign((const char*)&extra[pos], length);
+                            relays[1].clear();
+                            relays[2].clear();
+
+                            new_relay_set = relays;
+                            break;
+                        }
                         case 0x10: // replace complete relay set
                         {
                             if (length < 1) return domain_registration_result::invalid_format;
