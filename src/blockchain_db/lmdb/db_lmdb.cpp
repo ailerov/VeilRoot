@@ -3156,13 +3156,13 @@ void BlockchainLMDB::remove_proposal_record(const crypto::hash& proposal_id)
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(proposals)
+
+  lmdb_cursor_guard cur_proposals(m_write_txn->m_txn, m_proposals);
 
   MDB_val k = { sizeof(proposal_id), (void*)&proposal_id };
-  int result = mdb_cursor_get(m_cur_proposals, &k, NULL, MDB_SET);
+  int result = mdb_cursor_get(cur_proposals.get(), &k, NULL, MDB_SET);
   if (result == MDB_SUCCESS)
-    mdb_cursor_del(m_cur_proposals, 0);
+    mdb_cursor_del(cur_proposals.get(), 0);
 }
 // END_VNS_REMOVE_PROPOSAL_RECORD
 
@@ -3171,17 +3171,17 @@ void BlockchainLMDB::add_proposal_record(const crypto::hash& proposal_id, const 
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(proposals)
+
+  lmdb_cursor_guard cur_proposals(m_write_txn->m_txn, m_proposals);
 
   // BEGIN_VNS_PROPOSAL_KEY_FIX
   // Store the 32‑byte hash as the LMDB key, not an 8‑byte pointer.
   MDB_val k = { sizeof(proposal_id), (void*)&proposal_id };
   // END_VNS_PROPOSAL_KEY_FIX
   MDB_val v = {sizeof(record), (void*)&record};
-  int result = mdb_cursor_put(m_cur_proposals, &k, &v, MDB_NODUPDATA);
+  int result = mdb_cursor_put(cur_proposals.get(), &k, &v, MDB_NODUPDATA);
   if (result == MDB_KEYEXIST)
-    result = mdb_cursor_put(m_cur_proposals, &k, &v, MDB_CURRENT);
+    result = mdb_cursor_put(cur_proposals.get(), &k, &v, MDB_CURRENT);
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to add/update proposal record: ", result).c_str()));
 }
@@ -3324,15 +3324,15 @@ void BlockchainLMDB::add_vote_record(const crypto::hash& proposal_id, const cryp
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(votes)
+
+  lmdb_cursor_guard cur_votes(m_write_txn->m_txn, m_votes);
 
   struct { crypto::hash pid; crypto::key_image ki; } key = { proposal_id, ki };
   MDB_val k = { sizeof(key), &key };
   MDB_val v = { sizeof(record), (void*)&record };
-  int result = mdb_cursor_put(m_cur_votes, &k, &v, MDB_NODUPDATA);
+  int result = mdb_cursor_put(cur_votes.get(), &k, &v, MDB_NODUPDATA);
   if (result == MDB_KEYEXIST)
-    result = mdb_cursor_put(m_cur_votes, &k, &v, MDB_CURRENT);
+    result = mdb_cursor_put(cur_votes.get(), &k, &v, MDB_CURRENT);
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to add vote record: ", result).c_str()));
 }
@@ -3341,17 +3341,17 @@ void BlockchainLMDB::remove_vote_record(const crypto::hash& proposal_id, const c
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(votes)
+
+  lmdb_cursor_guard cur_votes(m_write_txn->m_txn, m_votes);
 
   struct { crypto::hash pid; crypto::key_image ki; } key = { proposal_id, ki };
   MDB_val k = { sizeof(key), &key };
-  int result = mdb_cursor_get(m_cur_votes, &k, NULL, MDB_SET);
+  int result = mdb_cursor_get(cur_votes.get(), &k, NULL, MDB_SET);
   if (result == MDB_NOTFOUND)
     return;
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to find vote record for removal: ", result).c_str()));
-  result = mdb_cursor_del(m_cur_votes, 0);
+  result = mdb_cursor_del(cur_votes.get(), 0);
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to remove vote record: ", result).c_str()));
 }
@@ -3452,15 +3452,15 @@ void BlockchainLMDB::add_vote_ciphertext_record(const crypto::hash& proposal_id,
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(vote_ciphertexts)
+
+  lmdb_cursor_guard cur_vote_ciphertexts(m_write_txn->m_txn, m_vote_ciphertexts);
 
   struct { crypto::hash pid; crypto::key_image ki; } key = { proposal_id, ki };
   MDB_val k = { sizeof(key), &key };
   MDB_val v = { sizeof(ct), (void*)&ct };
-  int result = mdb_cursor_put(m_cur_vote_ciphertexts, &k, &v, MDB_NODUPDATA);
+  int result = mdb_cursor_put(cur_vote_ciphertexts.get(), &k, &v, MDB_NODUPDATA);
   if (result == MDB_KEYEXIST)
-    result = mdb_cursor_put(m_cur_vote_ciphertexts, &k, &v, MDB_CURRENT);
+    result = mdb_cursor_put(cur_vote_ciphertexts.get(), &k, &v, MDB_CURRENT);
   if (result)
     LOG_ERROR("Failed to add vote ciphertext record: " << mdb_strerror(result));
 }
@@ -3469,17 +3469,17 @@ void BlockchainLMDB::remove_vote_ciphertext_record(const crypto::hash& proposal_
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(vote_ciphertexts)
+
+  lmdb_cursor_guard cur_vote_ciphertexts(m_write_txn->m_txn, m_vote_ciphertexts);
 
   struct { crypto::hash pid; crypto::key_image ki; } key = { proposal_id, ki };
   MDB_val k = { sizeof(key), &key };
-  int result = mdb_cursor_get(m_cur_vote_ciphertexts, &k, NULL, MDB_SET);
+  int result = mdb_cursor_get(cur_vote_ciphertexts.get(), &k, NULL, MDB_SET);
   if (result == MDB_NOTFOUND)
     return;
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to find vote ciphertext record for removal: ", result).c_str()));
-  result = mdb_cursor_del(m_cur_vote_ciphertexts, 0);
+  result = mdb_cursor_del(cur_vote_ciphertexts.get(), 0);
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to remove vote ciphertext record: ", result).c_str()));
 }
@@ -3543,14 +3543,14 @@ void BlockchainLMDB::add_committee_eligible(const crypto::key_image& ki, const c
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(committee_eligible)
+
+  lmdb_cursor_guard cur_committee_eligible(m_write_txn->m_txn, m_committee_eligible);
 
   MDB_val k = {sizeof(ki), (void*)&ki};
   MDB_val v = {sizeof(rec), (void*)&rec};
-  int result = mdb_cursor_put(m_cur_committee_eligible, &k, &v, MDB_NODUPDATA);
+  int result = mdb_cursor_put(cur_committee_eligible.get(), &k, &v, MDB_NODUPDATA);
   if (result == MDB_KEYEXIST)
-    result = mdb_cursor_put(m_cur_committee_eligible, &k, &v, MDB_CURRENT);
+    result = mdb_cursor_put(cur_committee_eligible.get(), &k, &v, MDB_CURRENT);
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to add committee eligible record: ", result).c_str()));
 }
@@ -3580,16 +3580,16 @@ void BlockchainLMDB::remove_committee_eligible(const crypto::key_image& ki)
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(committee_eligible)
+
+  lmdb_cursor_guard cur_committee_eligible(m_write_txn->m_txn, m_committee_eligible);
 
   MDB_val k = {sizeof(ki), (void*)&ki};
-  int result = mdb_cursor_get(m_cur_committee_eligible, &k, NULL, MDB_SET);
+  int result = mdb_cursor_get(cur_committee_eligible.get(), &k, NULL, MDB_SET);
   if (result == MDB_NOTFOUND)
     return;
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to find committee eligible record for removal: ", result).c_str()));
-  result = mdb_cursor_del(m_cur_committee_eligible, 0);
+  result = mdb_cursor_del(cur_committee_eligible.get(), 0);
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to remove committee eligible record: ", result).c_str()));
 }
@@ -3900,13 +3900,14 @@ void BlockchainLMDB::store_dkg_share(const crypto::public_key& member, const rct
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(dkg_shares)
+
+  lmdb_cursor_guard cur_dkg_shares(m_write_txn->m_txn, m_dkg_shares);
+
   MDB_val k = {sizeof(member), (void*)&member};
   MDB_val v = {sizeof(share), (void*)&share};
-  int result = mdb_cursor_put(m_cur_dkg_shares, &k, &v, MDB_NODUPDATA);
+  int result = mdb_cursor_put(cur_dkg_shares.get(), &k, &v, MDB_NODUPDATA);
   if (result == MDB_KEYEXIST) {
-    result = mdb_cursor_put(m_cur_dkg_shares, &k, &v, MDB_CURRENT);
+    result = mdb_cursor_put(cur_dkg_shares.get(), &k, &v, MDB_CURRENT);
   }
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to store dkg share: ", result).c_str()));
@@ -4007,17 +4008,17 @@ void BlockchainLMDB::set_proposal_outcome(const crypto::hash& proposal_id,
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(proposal_outcomes)
+
+  lmdb_cursor_guard cur_proposal_outcomes(m_write_txn->m_txn, m_proposal_outcomes);
 
   // BEGIN_VNS_PARTICIPATION_BALANCE
   struct outcome { uint64_t yes; uint64_t no; uint64_t yes_bal; uint64_t no_bal; } rec = {yes_weight, no_weight, yes_balance, no_balance};
   // END_VNS_PARTICIPATION_BALANCE
   MDB_val k = {sizeof(proposal_id), (void*)&proposal_id};
   MDB_val v = {sizeof(rec), (void*)&rec};
-  int result = mdb_cursor_put(m_cur_proposal_outcomes, &k, &v, MDB_NODUPDATA);
+  int result = mdb_cursor_put(cur_proposal_outcomes.get(), &k, &v, MDB_NODUPDATA);
   if (result == MDB_KEYEXIST)
-    result = mdb_cursor_put(m_cur_proposal_outcomes, &k, &v, MDB_CURRENT);
+    result = mdb_cursor_put(cur_proposal_outcomes.get(), &k, &v, MDB_CURRENT);
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to set proposal outcome: ", result).c_str()));
 }
@@ -4075,16 +4076,16 @@ void BlockchainLMDB::remove_proposal_outcome(const crypto::hash& proposal_id)
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(proposal_outcomes)
+
+  lmdb_cursor_guard cur_proposal_outcomes(m_write_txn->m_txn, m_proposal_outcomes);
 
   MDB_val k = {sizeof(proposal_id), (void*)&proposal_id};
-  int result = mdb_cursor_get(m_cur_proposal_outcomes, &k, NULL, MDB_SET);
+  int result = mdb_cursor_get(cur_proposal_outcomes.get(), &k, NULL, MDB_SET);
   if (result == MDB_NOTFOUND)
     return;
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to find proposal outcome for removal: ", result).c_str()));
-  result = mdb_cursor_del(m_cur_proposal_outcomes, 0);
+  result = mdb_cursor_del(cur_proposal_outcomes.get(), 0);
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to remove proposal outcome: ", result).c_str()));
 }
