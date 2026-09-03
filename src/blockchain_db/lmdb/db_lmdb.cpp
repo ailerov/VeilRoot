@@ -1985,21 +1985,20 @@ void BlockchainLMDB::add_txpool_tx(const crypto::hash &txid, const cryptonote::b
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
 
-  CURSOR(txpool_meta)
-  CURSOR(txpool_blob)
+  lmdb_cursor_guard cur_txpool_meta(m_write_txn->m_txn, m_txpool_meta);
+  lmdb_cursor_guard cur_txpool_blob(m_write_txn->m_txn, m_txpool_blob);
 
   MDB_val k = {sizeof(txid), (void *)&txid};
   MDB_val v = {sizeof(meta), (void *)&meta};
-  if (auto result = mdb_cursor_put(m_cur_txpool_meta, &k, &v, MDB_NODUPDATA)) {
+  if (auto result = mdb_cursor_put(cur_txpool_meta.get(), &k, &v, MDB_NODUPDATA)) {
     if (result == MDB_KEYEXIST)
       throw1(DB_ERROR("Attempting to add txpool tx metadata that's already in the db"));
     else
       throw1(DB_ERROR(lmdb_error("Error adding txpool tx metadata to db transaction: ", result).c_str()));
   }
   MDB_val_sized(blob_val, blob);
-  if (auto result = mdb_cursor_put(m_cur_txpool_blob, &k, &blob_val, MDB_NODUPDATA)) {
+  if (auto result = mdb_cursor_put(cur_txpool_blob.get(), &k, &blob_val, MDB_NODUPDATA)) {
     if (result == MDB_KEYEXIST)
       throw1(DB_ERROR("Attempting to add txpool tx blob that's already in the db"));
     else
@@ -2011,21 +2010,19 @@ void BlockchainLMDB::update_txpool_tx(const crypto::hash &txid, const txpool_tx_
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
 
-  CURSOR(txpool_meta)
-  CURSOR(txpool_blob)
+  lmdb_cursor_guard cur_txpool_meta(m_write_txn->m_txn, m_txpool_meta);
 
   MDB_val k = {sizeof(txid), (void *)&txid};
   MDB_val v;
-  auto result = mdb_cursor_get(m_cur_txpool_meta, &k, &v, MDB_SET);
+  auto result = mdb_cursor_get(cur_txpool_meta.get(), &k, &v, MDB_SET);
   if (result != 0)
     throw1(DB_ERROR(lmdb_error("Error finding txpool tx meta to update: ", result).c_str()));
-  result = mdb_cursor_del(m_cur_txpool_meta, 0);
+  result = mdb_cursor_del(cur_txpool_meta.get(), 0);
   if (result)
     throw1(DB_ERROR(lmdb_error("Error adding removal of txpool tx metadata to db transaction: ", result).c_str()));
   v = MDB_val({sizeof(meta), (void *)&meta});
-  if ((result = mdb_cursor_put(m_cur_txpool_meta, &k, &v, MDB_NODUPDATA)) != 0) {
+  if ((result = mdb_cursor_put(cur_txpool_meta.get(), &k, &v, MDB_NODUPDATA)) != 0) {
     if (result == MDB_KEYEXIST)
       throw1(DB_ERROR("Attempting to add txpool tx metadata that's already in the db"));
     else
@@ -2108,27 +2105,26 @@ void BlockchainLMDB::remove_txpool_tx(const crypto::hash& txid)
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
 
-  CURSOR(txpool_meta)
-  CURSOR(txpool_blob)
+  lmdb_cursor_guard cur_txpool_meta(m_write_txn->m_txn, m_txpool_meta);
+  lmdb_cursor_guard cur_txpool_blob(m_write_txn->m_txn, m_txpool_blob);
 
   MDB_val k = {sizeof(txid), (void *)&txid};
-  auto result = mdb_cursor_get(m_cur_txpool_meta, &k, NULL, MDB_SET);
+  auto result = mdb_cursor_get(cur_txpool_meta.get(), &k, NULL, MDB_SET);
   if (result != 0 && result != MDB_NOTFOUND)
     throw1(DB_ERROR(lmdb_error("Error finding txpool tx meta to remove: ", result).c_str()));
   if (!result)
   {
-    result = mdb_cursor_del(m_cur_txpool_meta, 0);
+    result = mdb_cursor_del(cur_txpool_meta.get(), 0);
     if (result)
       throw1(DB_ERROR(lmdb_error("Error adding removal of txpool tx metadata to db transaction: ", result).c_str()));
   }
-  result = mdb_cursor_get(m_cur_txpool_blob, &k, NULL, MDB_SET);
+  result = mdb_cursor_get(cur_txpool_blob.get(), &k, NULL, MDB_SET);
   if (result != 0 && result != MDB_NOTFOUND)
     throw1(DB_ERROR(lmdb_error("Error finding txpool tx blob to remove: ", result).c_str()));
   if (!result)
   {
-    result = mdb_cursor_del(m_cur_txpool_blob, 0);
+    result = mdb_cursor_del(cur_txpool_blob.get(), 0);
     if (result)
       throw1(DB_ERROR(lmdb_error("Error adding removal of txpool tx blob to db transaction: ", result).c_str()));
   }
@@ -2680,16 +2676,16 @@ void BlockchainLMDB::add_vns_domain_record(const std::string& domain_name, const
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(vns_domains)
+
+  lmdb_cursor_guard cur_vns_domains(m_write_txn->m_txn, m_vns_domains);
 
   MDB_val_copy<const char*> k(domain_name.c_str());
   MDB_val v = {sizeof(record), (void*)&record};
-  int result = mdb_cursor_put(m_cur_vns_domains, &k, &v, MDB_NODUPDATA);
+  int result = mdb_cursor_put(cur_vns_domains.get(), &k, &v, MDB_NODUPDATA);
   if (result == MDB_KEYEXIST)
   {
     // Update existing record
-    result = mdb_cursor_put(m_cur_vns_domains, &k, &v, MDB_CURRENT);
+    result = mdb_cursor_put(cur_vns_domains.get(), &k, &v, MDB_CURRENT);
   }
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to add/update VNS domain record: ", result).c_str()));
@@ -2853,15 +2849,15 @@ void BlockchainLMDB::set_vns_heartbeat_proof(const std::string& domain_name, con
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(vns_heartbeat_proofs)
+
+  lmdb_cursor_guard cur_vns_heartbeat_proofs(m_write_txn->m_txn, m_vns_heartbeat_proofs);
 
   MDB_val_copy<const char*> k(domain_name.c_str());
   MDB_val v = {sizeof(proof), (void*)&proof};
-  int result = mdb_cursor_put(m_cur_vns_heartbeat_proofs, &k, &v, MDB_NODUPDATA);
+  int result = mdb_cursor_put(cur_vns_heartbeat_proofs.get(), &k, &v, MDB_NODUPDATA);
   if (result == MDB_KEYEXIST)
   {
-    result = mdb_cursor_put(m_cur_vns_heartbeat_proofs, &k, &v, MDB_CURRENT);
+    result = mdb_cursor_put(cur_vns_heartbeat_proofs.get(), &k, &v, MDB_CURRENT);
   }
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to set VNS heartbeat proof: ", result).c_str()));
@@ -2871,17 +2867,17 @@ void BlockchainLMDB::remove_vns_heartbeat_proof(const std::string& domain_name)
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(vns_heartbeat_proofs)
+
+  lmdb_cursor_guard cur_vns_heartbeat_proofs(m_write_txn->m_txn, m_vns_heartbeat_proofs);
 
   MDB_val_copy<const char*> k(domain_name.c_str());
-  int result = mdb_cursor_get(m_cur_vns_heartbeat_proofs, &k, NULL, MDB_SET);
+  int result = mdb_cursor_get(cur_vns_heartbeat_proofs.get(), &k, NULL, MDB_SET);
   if (result == MDB_NOTFOUND)
     return;
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to locate VNS heartbeat proof for removal: ", result).c_str()));
 
-  result = mdb_cursor_del(m_cur_vns_heartbeat_proofs, 0);
+  result = mdb_cursor_del(cur_vns_heartbeat_proofs.get(), 0);
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to remove VNS heartbeat proof: ", result).c_str()));
 }
@@ -2891,12 +2887,12 @@ void BlockchainLMDB::add_vns_domain_heartbeat_event(const vns_domain_heartbeat_e
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(vns_domain_heartbeat_events)
+
+  lmdb_cursor_guard cur_vns_domain_heartbeat_events(m_write_txn->m_txn, m_vns_domain_heartbeat_events);
 
   MDB_val k = {sizeof(rec.observed_height), (void*)&rec.observed_height};
   MDB_val v = {sizeof(rec), (void*)&rec};
-  int result = mdb_cursor_put(m_cur_vns_domain_heartbeat_events, &k, &v, MDB_NODUPDATA);
+  int result = mdb_cursor_put(cur_vns_domain_heartbeat_events.get(), &k, &v, MDB_NODUPDATA);
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to add VNS domain heartbeat event: ", result).c_str()));
 }
@@ -2936,19 +2932,19 @@ void BlockchainLMDB::remove_vns_domain_heartbeat_events_by_height(uint64_t heigh
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(vns_domain_heartbeat_events)
+
+  lmdb_cursor_guard cur_vns_domain_heartbeat_events(m_write_txn->m_txn, m_vns_domain_heartbeat_events);
 
   MDB_val k, v;
   k.mv_data = (void*)&height;
   k.mv_size = sizeof(height);
-  int result = mdb_cursor_get(m_cur_vns_domain_heartbeat_events, &k, &v, MDB_SET);
+  int result = mdb_cursor_get(cur_vns_domain_heartbeat_events.get(), &k, &v, MDB_SET);
   while (result == MDB_SUCCESS)
   {
     if (*(uint64_t*)k.mv_data != height)
       break;
-    mdb_cursor_del(m_cur_vns_domain_heartbeat_events, 0);
-    result = mdb_cursor_get(m_cur_vns_domain_heartbeat_events, &k, &v, MDB_NEXT_DUP);
+    mdb_cursor_del(cur_vns_domain_heartbeat_events.get(), 0);
+    result = mdb_cursor_get(cur_vns_domain_heartbeat_events.get(), &k, &v, MDB_NEXT_DUP);
   }
 }
 
