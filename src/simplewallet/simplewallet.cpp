@@ -13217,8 +13217,18 @@ bool simple_wallet::domain_info(const std::vector<std::string> &args)
         success_msg_writer() << tr("Registration tx hash: ") << rec_res.registration_tx_hash;
         success_msg_writer() << tr("Registrant public key: ") << rec_res.registrant_key;
         success_msg_writer() << tr("Genesis fingerprint: ") << rec_res.genesis_fingerprint;
-        success_msg_writer() << tr("Relay URL: ")
-                             << (rec_res.relay_url.empty() ? "(none)" : rec_res.relay_url);
+        if (rec_res.relay_urls.empty())
+        {
+            success_msg_writer() << tr("Relay URL: ") << "(none)";
+        }
+        else
+        {
+            for (size_t ri = 0; ri < rec_res.relay_urls.size(); ++ri)
+            {
+                success_msg_writer() << tr("Relay URL ") << (ri + 1) << ": "
+                                     << rec_res.relay_urls[ri];
+            }
+        }
         success_msg_writer() << tr("Last heartbeat block: ") << rec_res.last_heartbeat_block;
         success_msg_writer() << tr("Heartbeat count: ") << rec_res.heartbeat_count;
         success_msg_writer() << tr("Health score: ") << (rec_res.health_score / 100) << "/100";

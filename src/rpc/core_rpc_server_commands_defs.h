@@ -2804,6 +2804,7 @@ struct COMMAND_RPC_GET_DOMAIN_RECORD
         uint64_t registered_height;
         uint64_t heartbeat_count;
         std::string relay_url;
+        std::vector<std::string> relay_urls;
         std::string registration_tx_hash;
         BEGIN_KV_SERIALIZE_MAP()
             KV_SERIALIZE_PARENT(rpc_response_base)
@@ -2818,6 +2819,7 @@ struct COMMAND_RPC_GET_DOMAIN_RECORD
             KV_SERIALIZE(registered_height)
             KV_SERIALIZE(heartbeat_count)
             KV_SERIALIZE(relay_url)
+            KV_SERIALIZE(relay_urls)
             KV_SERIALIZE(registration_tx_hash)
         END_KV_SERIALIZE_MAP()
     };

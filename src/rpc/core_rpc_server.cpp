@@ -3935,7 +3935,14 @@ bool core_rpc_server::on_get_domain_record(const COMMAND_RPC_GET_DOMAIN_RECORD::
         res.domain_status = rec.status;
         res.registered_height = rec.registered_height;
         res.heartbeat_count = rec.heartbeat_count;
-        res.relay_url = std::string(rec.relays[0].url);
+        res.relay_urls.clear();
+        for (size_t ri = 0; ri < VNS_MAX_RELAYS; ++ri)
+        {
+            const std::string url(rec.relays[ri].url);
+            if (!url.empty())
+                res.relay_urls.push_back(url);
+        }
+        res.relay_url = res.relay_urls.empty() ? std::string() : res.relay_urls[0];
         res.registration_tx_hash = epee::string_tools::pod_to_hex(rec.registration_tx_hash);
     }
     // Always return OK so the wallet doesn't treat a missing domain as a fatal error

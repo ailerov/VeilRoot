@@ -4748,13 +4748,22 @@ domain_registration_result Blockchain::process_domain_registration(const transac
         if (tag == 0x01) { i += 1 + 32; continue; }
         if (tag == 0x02) {
             if (i + 2 >= extra.size()) break;
-            size_t len = extra[i+1];
-            if (len < 10 || i + 2 + len > extra.size()) { i += 2 + len; continue; }
+            size_t len = 0;
+            size_t len_bytes = 0;
+            size_t p = i + 1;
+            while (p < extra.size() && len_bytes < 2) {
+                uint8_t b = extra[p++];
+                len |= static_cast<size_t>(b & 0x7f) << (7 * len_bytes);
+                ++len_bytes;
+                if (!(b & 0x80)) break;
+            }
+            if (len_bytes == 0 || len < 10 || p + len > extra.size()) { i = p + len; continue; }
+            size_t payload_start = p;
+            size_t payload_end = p + len;
             // Check for domain registration magic
-            if (memcmp(&extra[i+2], "DOMAIN_REG", 10) == 0) {
+            if (memcmp(&extra[payload_start], "DOMAIN_REG", 10) == 0) {
                 // ---- Registration handling ----
-                size_t pos = i + 2 + 10;
-                size_t payload_end = i + 2 + len;
+                size_t pos = payload_start + 10;
                 std::string domain_name;
                 uint64_t fee_tier = 0;
                 std::array<unsigned char, 33> registrant_key;
@@ -4981,10 +4990,9 @@ domain_registration_result Blockchain::process_domain_registration(const transac
                 return domain_registration_result::success;
             }
             // Check for domain update magic
-            else if (memcmp(&extra[i+2], DOMAIN_UPDATE_MAGIC, strlen(DOMAIN_UPDATE_MAGIC)) == 0) {
+            else if (memcmp(&extra[payload_start], DOMAIN_UPDATE_MAGIC, strlen(DOMAIN_UPDATE_MAGIC)) == 0) {
                 // ---- Update handling ----
-                size_t pos = i + 2 + strlen(DOMAIN_UPDATE_MAGIC);
-                size_t payload_end = i + 2 + len;
+                size_t pos = payload_start + strlen(DOMAIN_UPDATE_MAGIC);
                 std::string domain_name;
                 boost::optional<std::array<unsigned char, 33>> new_owner;
                 boost::optional<std::array<std::string, VNS_MAX_RELAYS>> new_relay_set;
@@ -5135,9 +5143,8 @@ domain_registration_result Blockchain::process_domain_registration(const transac
                 MINFO("VNS: successfully updated domain " << domain_name << " at height " << height);
                 return domain_registration_result::success;
             }
-            else if (memcmp(&extra[i+2], "DOMAIN_XFER", 11) == 0) {
-                size_t pos = i + 2 + 11;
-                size_t payload_end = i + 2 + len;
+            else if (memcmp(&extra[payload_start], "DOMAIN_XFER", 11) == 0) {
+                size_t pos = payload_start + 11;
                 std::string domain_name;
                 crypto::public_key new_owner_key;
                 std::array<unsigned char, 64> signature;
