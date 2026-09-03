@@ -640,7 +640,15 @@ namespace domain_utils
             return {};
 
         extra.push_back(0x02);
-        extra.push_back(static_cast<uint8_t>(payload.size()));
+        if (payload.size() < 0x80)
+        {
+            extra.push_back(static_cast<uint8_t>(payload.size()));
+        }
+        else
+        {
+            extra.push_back(static_cast<uint8_t>(payload.size() | 0x80));
+            extra.push_back(static_cast<uint8_t>(payload.size() >> 7));
+        }
         extra.insert(extra.end(), payload.begin(), payload.end());
 
         return extra;
@@ -704,7 +712,15 @@ namespace domain_utils
 
         std::vector<uint8_t> extra;
         extra.push_back(0x02);
-        extra.push_back(static_cast<uint8_t>(payload.size()));
+        if (payload.size() < 0x80)
+        {
+            extra.push_back(static_cast<uint8_t>(payload.size()));
+        }
+        else
+        {
+            extra.push_back(static_cast<uint8_t>(payload.size() | 0x80));
+            extra.push_back(static_cast<uint8_t>(payload.size() >> 7));
+        }
         extra.insert(extra.end(), payload.begin(), payload.end());
         return extra;
     }
@@ -734,7 +750,15 @@ namespace domain_utils
 
         std::vector<uint8_t> extra;
         extra.push_back(0x02); // TX_EXTRA_TAG_NONCE
-        extra.push_back(static_cast<uint8_t>(payload.size()));
+        if (payload.size() < 0x80)
+        {
+            extra.push_back(static_cast<uint8_t>(payload.size()));
+        }
+        else
+        {
+            extra.push_back(static_cast<uint8_t>(payload.size() | 0x80));
+            extra.push_back(static_cast<uint8_t>(payload.size() >> 7));
+        }
         extra.insert(extra.end(), payload.begin(), payload.end());
         return extra;
     }
