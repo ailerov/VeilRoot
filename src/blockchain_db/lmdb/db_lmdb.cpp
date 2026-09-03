@@ -3764,13 +3764,13 @@ void BlockchainLMDB::add_pending_execution(
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(pending_executions)
+
+  lmdb_cursor_guard cur_pending_executions(m_write_txn->m_txn, m_pending_executions);
 
   MDB_val k = {sizeof(execution_height), (void*)&execution_height};
   MDB_val v = {sizeof(proposal_id), (void*)&proposal_id};
 
-  int result = mdb_cursor_put(m_cur_pending_executions, &k, &v, MDB_NODUPDATA);
+  int result = mdb_cursor_put(cur_pending_executions.get(), &k, &v, MDB_NODUPDATA);
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to add pending execution: ", result).c_str()));
 }
@@ -3803,15 +3803,15 @@ void BlockchainLMDB::remove_pending_execution(
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(pending_executions)
+
+  lmdb_cursor_guard cur_pending_executions(m_write_txn->m_txn, m_pending_executions);
 
   MDB_val k = {sizeof(execution_height), (void*)&execution_height};
   MDB_val v = {sizeof(proposal_id), (void*)&proposal_id};
 
-  int result = mdb_cursor_get(m_cur_pending_executions, &k, &v, MDB_GET_BOTH);
+  int result = mdb_cursor_get(cur_pending_executions.get(), &k, &v, MDB_GET_BOTH);
   if (result == MDB_SUCCESS)
-    mdb_cursor_del(m_cur_pending_executions, 0);
+    mdb_cursor_del(cur_pending_executions.get(), 0);
 }
 
 // BEGIN_VNS_VOTING_END_QUEUE
@@ -3819,12 +3819,12 @@ void BlockchainLMDB::add_voting_end_entry(uint64_t voting_end_height, const cryp
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(voting_end_queue)
+
+  lmdb_cursor_guard cur_voting_end_queue(m_write_txn->m_txn, m_voting_end_queue);
 
   MDB_val k = {sizeof(voting_end_height), (void*)&voting_end_height};
   MDB_val v = {sizeof(proposal_id), (void*)&proposal_id};
-  int result = mdb_cursor_put(m_cur_voting_end_queue, &k, &v, MDB_NODUPDATA);
+  int result = mdb_cursor_put(cur_voting_end_queue.get(), &k, &v, MDB_NODUPDATA);
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to add voting end entry: ", result).c_str()));
 }
@@ -3859,14 +3859,14 @@ void BlockchainLMDB::remove_voting_end_entry(uint64_t voting_end_height, const c
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(voting_end_queue)
+
+  lmdb_cursor_guard cur_voting_end_queue(m_write_txn->m_txn, m_voting_end_queue);
 
   MDB_val k = {sizeof(voting_end_height), (void*)&voting_end_height};
   MDB_val v = {sizeof(proposal_id), (void*)&proposal_id};
-  int result = mdb_cursor_get(m_cur_voting_end_queue, &k, &v, MDB_GET_BOTH);
+  int result = mdb_cursor_get(cur_voting_end_queue.get(), &k, &v, MDB_GET_BOTH);
   if (result == MDB_SUCCESS)
-    mdb_cursor_del(m_cur_voting_end_queue, 0);
+    mdb_cursor_del(cur_voting_end_queue.get(), 0);
 }
 // END_VNS_VOTING_END_QUEUE
 
@@ -4335,12 +4335,12 @@ void BlockchainLMDB::add_parameter_record(const parameter_record& rec)
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(governance_parameters)
+
+  lmdb_cursor_guard cur_governance_parameters(m_write_txn->m_txn, m_governance_parameters);
 
   MDB_val k = {sizeof(rec.activation_height), (void*)&rec.activation_height};
   MDB_val v = {sizeof(rec), (void*)&rec};
-  int result = mdb_cursor_put(m_cur_governance_parameters, &k, &v, MDB_NODUPDATA);
+  int result = mdb_cursor_put(cur_governance_parameters.get(), &k, &v, MDB_NODUPDATA);
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to add parameter record: ", result).c_str()));
 }
@@ -4394,19 +4394,19 @@ void BlockchainLMDB::remove_parameter_records_by_height(uint64_t height)
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(governance_parameters)
+
+  lmdb_cursor_guard cur_governance_parameters(m_write_txn->m_txn, m_governance_parameters);
 
   MDB_val k, v;
   k.mv_data = (void*)&height;
   k.mv_size = sizeof(height);
-  int result = mdb_cursor_get(m_cur_governance_parameters, &k, &v, MDB_SET);
+  int result = mdb_cursor_get(cur_governance_parameters.get(), &k, &v, MDB_SET);
   while (result == MDB_SUCCESS)
   {
     if (*(uint64_t*)k.mv_data != height)
       break;
-    mdb_cursor_del(m_cur_governance_parameters, 0);
-    result = mdb_cursor_get(m_cur_governance_parameters, &k, &v, MDB_NEXT_DUP);
+    mdb_cursor_del(cur_governance_parameters.get(), 0);
+    result = mdb_cursor_get(cur_governance_parameters.get(), &k, &v, MDB_NEXT_DUP);
   }
 }
 // BEGIN_VNS_PARAMETER_RECORD_REMOVE_IN_TXN
@@ -4440,12 +4440,12 @@ void BlockchainLMDB::add_extension_policy_record(const extension_policy_record& 
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(extension_policy)
+
+  lmdb_cursor_guard cur_extension_policy(m_write_txn->m_txn, m_extension_policy);
 
   MDB_val k = {sizeof(rec.activation_height), (void*)&rec.activation_height};
   MDB_val v = {sizeof(rec), (void*)&rec};
-  int result = mdb_cursor_put(m_cur_extension_policy, &k, &v, MDB_NODUPDATA);
+  int result = mdb_cursor_put(cur_extension_policy.get(), &k, &v, MDB_NODUPDATA);
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to add extension policy record: ", result).c_str()));
 }
@@ -4480,19 +4480,19 @@ void BlockchainLMDB::remove_extension_policy_records_by_height(uint64_t height)
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(extension_policy)
+
+  lmdb_cursor_guard cur_extension_policy(m_write_txn->m_txn, m_extension_policy);
 
   MDB_val k, v;
   k.mv_data = (void*)&height;
   k.mv_size = sizeof(height);
-  int result = mdb_cursor_get(m_cur_extension_policy, &k, &v, MDB_SET);
+  int result = mdb_cursor_get(cur_extension_policy.get(), &k, &v, MDB_SET);
   while (result == MDB_SUCCESS)
   {
     if (*(uint64_t*)k.mv_data != height)
       break;
-    mdb_cursor_del(m_cur_extension_policy, 0);
-    result = mdb_cursor_get(m_cur_extension_policy, &k, &v, MDB_NEXT_DUP);
+    mdb_cursor_del(cur_extension_policy.get(), 0);
+    result = mdb_cursor_get(cur_extension_policy.get(), &k, &v, MDB_NEXT_DUP);
   }
 }
 
@@ -4623,12 +4623,12 @@ void BlockchainLMDB::add_premium_label_policy_record(const premium_label_policy_
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(premium_label_policy)
+
+  lmdb_cursor_guard cur_premium_label_policy(m_write_txn->m_txn, m_premium_label_policy);
 
   MDB_val k = {sizeof(rec.activation_height), (void*)&rec.activation_height};
   MDB_val v = {sizeof(rec), (void*)&rec};
-  int result = mdb_cursor_put(m_cur_premium_label_policy, &k, &v, MDB_NODUPDATA);
+  int result = mdb_cursor_put(cur_premium_label_policy.get(), &k, &v, MDB_NODUPDATA);
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to add premium label policy record: ", result).c_str()));
 }
@@ -4760,12 +4760,12 @@ void BlockchainLMDB::add_banned_label_policy_record(const banned_label_policy_re
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(banned_label_policy)
+
+  lmdb_cursor_guard cur_banned_label_policy(m_write_txn->m_txn, m_banned_label_policy);
 
   MDB_val k = {sizeof(rec.activation_height), (void*)&rec.activation_height};
   MDB_val v = {sizeof(rec), (void*)&rec};
-  int result = mdb_cursor_put(m_cur_banned_label_policy, &k, &v, MDB_NODUPDATA);
+  int result = mdb_cursor_put(cur_banned_label_policy.get(), &k, &v, MDB_NODUPDATA);
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to add banned label policy record: ", result).c_str()));
 }
@@ -4897,12 +4897,12 @@ void BlockchainLMDB::add_banned_extension_policy_record(const banned_extension_p
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(banned_extension_policy)
+
+  lmdb_cursor_guard cur_banned_extension_policy(m_write_txn->m_txn, m_banned_extension_policy);
 
   MDB_val k = {sizeof(rec.activation_height), (void*)&rec.activation_height};
   MDB_val v = {sizeof(rec), (void*)&rec};
-  int result = mdb_cursor_put(m_cur_banned_extension_policy, &k, &v, MDB_NODUPDATA);
+  int result = mdb_cursor_put(cur_banned_extension_policy.get(), &k, &v, MDB_NODUPDATA);
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to add banned extension policy record: ", result).c_str()));
 }
@@ -5034,12 +5034,12 @@ void BlockchainLMDB::add_exact_domain_ban_policy_record(const exact_domain_ban_p
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(exact_domain_ban_policy)
+
+  lmdb_cursor_guard cur_exact_domain_ban_policy(m_write_txn->m_txn, m_exact_domain_ban_policy);
 
   MDB_val k = {sizeof(rec.activation_height), (void*)&rec.activation_height};
   MDB_val v = {sizeof(rec), (void*)&rec};
-  int result = mdb_cursor_put(m_cur_exact_domain_ban_policy, &k, &v, MDB_NODUPDATA);
+  int result = mdb_cursor_put(cur_exact_domain_ban_policy.get(), &k, &v, MDB_NODUPDATA);
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to add exact domain ban policy record: ", result).c_str()));
 }
@@ -5204,12 +5204,12 @@ void BlockchainLMDB::add_exact_domain_tier_policy_record(const exact_domain_tier
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(exact_domain_tier_policy)
+
+  lmdb_cursor_guard cur_exact_domain_tier_policy(m_write_txn->m_txn, m_exact_domain_tier_policy);
 
   MDB_val k = {sizeof(rec.activation_height), (void*)&rec.activation_height};
   MDB_val v = {sizeof(rec), (void*)&rec};
-  int result = mdb_cursor_put(m_cur_exact_domain_tier_policy, &k, &v, MDB_NODUPDATA);
+  int result = mdb_cursor_put(cur_exact_domain_tier_policy.get(), &k, &v, MDB_NODUPDATA);
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to add exact domain tier policy record: ", result).c_str()));
 }
@@ -5374,12 +5374,12 @@ void BlockchainLMDB::add_pending_domain_policy_record(const pending_domain_polic
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(pending_domain_policy)
+
+  lmdb_cursor_guard cur_pending_domain_policy(m_write_txn->m_txn, m_pending_domain_policy);
 
   MDB_val_copy<const char*> k(rec.domain);
   MDB_val v = {sizeof(rec), (void*)&rec};
-  int result = mdb_cursor_put(m_cur_pending_domain_policy, &k, &v, MDB_NOOVERWRITE);
+  int result = mdb_cursor_put(cur_pending_domain_policy.get(), &k, &v, MDB_NOOVERWRITE);
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to add pending domain policy record: ", result).c_str()));
 }
@@ -5439,16 +5439,16 @@ void BlockchainLMDB::remove_pending_domain_policy_by_domain(const std::string& d
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(pending_domain_policy)
+
+  lmdb_cursor_guard cur_pending_domain_policy(m_write_txn->m_txn, m_pending_domain_policy);
 
   MDB_val_copy<const char*> k(domain.c_str());
-  int result = mdb_cursor_get(m_cur_pending_domain_policy, &k, NULL, MDB_SET);
+  int result = mdb_cursor_get(cur_pending_domain_policy.get(), &k, NULL, MDB_SET);
   if (result == MDB_NOTFOUND)
     return;
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to locate pending domain policy for removal: ", result).c_str()));
-  result = mdb_cursor_del(m_cur_pending_domain_policy, 0);
+  result = mdb_cursor_del(cur_pending_domain_policy.get(), 0);
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to remove pending domain policy: ", result).c_str()));
 }
@@ -5619,14 +5619,14 @@ void BlockchainLMDB::set_proposal_data(const crypto::hash& proposal_id, const st
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(proposal_data)
+
+  lmdb_cursor_guard cur_proposal_data(m_write_txn->m_txn, m_proposal_data);
 
   MDB_val k = {sizeof(proposal_id), (void*)&proposal_id};
   MDB_val v = {data_blob.size(), (void*)data_blob.data()};
-  int result = mdb_cursor_put(m_cur_proposal_data, &k, &v, MDB_NODUPDATA);
+  int result = mdb_cursor_put(cur_proposal_data.get(), &k, &v, MDB_NODUPDATA);
   if (result == MDB_KEYEXIST)
-    result = mdb_cursor_put(m_cur_proposal_data, &k, &v, MDB_CURRENT);
+    result = mdb_cursor_put(cur_proposal_data.get(), &k, &v, MDB_CURRENT);
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to set proposal data: ", result).c_str()));
 }
@@ -5946,13 +5946,12 @@ void BlockchainLMDB::add_max_block_size(uint64_t sz)
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
 
-  CURSOR(properties)
+  lmdb_cursor_guard cur_properties(m_write_txn->m_txn, m_properties);
 
   MDB_val_str(k, "max_block_size");
   MDB_val v;
-  int result = mdb_cursor_get(m_cur_properties, &k, &v, MDB_SET);
+  int result = mdb_cursor_get(cur_properties.get(), &k, &v, MDB_SET);
   if (result && result != MDB_NOTFOUND)
     throw0(DB_ERROR(lmdb_error("Failed to retrieve max block size: ", result).c_str()));
   uint64_t max_block_size = 0;
@@ -5966,7 +5965,7 @@ void BlockchainLMDB::add_max_block_size(uint64_t sz)
     max_block_size = sz;
   v.mv_data = (void*)&max_block_size;
   v.mv_size = sizeof(max_block_size);
-  result = mdb_cursor_put(m_cur_properties, &k, &v, 0);
+  result = mdb_cursor_put(cur_properties.get(), &k, &v, 0);
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to set max_block_size: ", result).c_str()));
 }
