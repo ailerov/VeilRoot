@@ -2747,16 +2747,16 @@ void BlockchainLMDB::remove_vns_domain_record(const std::string& domain_name)
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(vns_domains)
+
+  lmdb_cursor_guard cur_vns_domains(m_write_txn->m_txn, m_vns_domains);
 
   MDB_val_copy<const char*> k(domain_name.c_str());
-  int result = mdb_cursor_get(m_cur_vns_domains, &k, NULL, MDB_SET);
+  int result = mdb_cursor_get(cur_vns_domains.get(), &k, NULL, MDB_SET);
   if (result == MDB_NOTFOUND)
     return;
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to locate VNS domain record for removal: ", result).c_str()));
-  result = mdb_cursor_del(m_cur_vns_domains, 0);
+  result = mdb_cursor_del(cur_vns_domains.get(), 0);
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to delete VNS domain record: ", result).c_str()));
 }
@@ -7892,9 +7892,8 @@ void BlockchainLMDB::add_alt_block(const crypto::hash &blkid, const cryptonote::
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
 
-  CURSOR(alt_blocks)
+  lmdb_cursor_guard cur_alt_blocks(m_write_txn->m_txn, m_alt_blocks);
 
   MDB_val k = {sizeof(blkid), (void *)&blkid};
   const size_t val_size = sizeof(alt_block_data_t) + blob.size();
@@ -7902,7 +7901,7 @@ void BlockchainLMDB::add_alt_block(const crypto::hash &blkid, const cryptonote::
   memcpy(val.get(), &data, sizeof(alt_block_data_t));
   memcpy(val.get() + sizeof(alt_block_data_t), blob.data(), blob.size());
   MDB_val v = {val_size, (void *)val.get()};
-  if (auto result = mdb_cursor_put(m_cur_alt_blocks, &k, &v, MDB_NODUPDATA)) {
+  if (auto result = mdb_cursor_put(cur_alt_blocks.get(), &k, &v, MDB_NODUPDATA)) {
     if (result == MDB_KEYEXIST)
       throw1(DB_ERROR("Attempting to add alternate block that's already in the db"));
     else
@@ -7943,16 +7942,15 @@ void BlockchainLMDB::remove_alt_block(const crypto::hash &blkid)
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
 
-  CURSOR(alt_blocks)
+  lmdb_cursor_guard cur_alt_blocks(m_write_txn->m_txn, m_alt_blocks);
 
   MDB_val k = {sizeof(blkid), (void *)&blkid};
   MDB_val v;
-  int result = mdb_cursor_get(m_cur_alt_blocks, &k, &v, MDB_SET);
+  int result = mdb_cursor_get(cur_alt_blocks.get(), &k, &v, MDB_SET);
   if (result)
     throw0(DB_ERROR(lmdb_error("Error locating alternate block " + epee::string_tools::pod_to_hex(blkid) + " in the db: ", result).c_str()));
-  result = mdb_cursor_del(m_cur_alt_blocks, 0);
+  result = mdb_cursor_del(cur_alt_blocks.get(), 0);
   if (result)
     throw0(DB_ERROR(lmdb_error("Error deleting alternate block " + epee::string_tools::pod_to_hex(blkid) + " from the db: ", result).c_str()));
 }
