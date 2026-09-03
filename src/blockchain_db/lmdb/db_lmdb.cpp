@@ -3581,25 +3581,34 @@ void BlockchainLMDB::add_proposal_execution_record(const proposal_execution_reco
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(proposal_executions)
 
-  MDB_val k = {sizeof(rec.proposal_id), (void*)&rec.proposal_id};
-  MDB_val v = {sizeof(rec), (void*)&rec};
-  int result = mdb_cursor_put(m_cur_proposal_executions, &k, &v, MDB_NODUPDATA);
-  if (result == MDB_KEYEXIST)
-    result = mdb_cursor_put(m_cur_proposal_executions, &k, &v, MDB_CURRENT);
+  if (!m_write_txn || !m_write_txn->m_txn)
+    throw0(DB_ERROR("No active write transaction in add_proposal_execution_record"));
+
+  MDB_cursor* cur = nullptr;
+  int result = mdb_cursor_open(m_write_txn->m_txn, m_proposal_executions, &cur);
   if (result)
-    throw0(DB_ERROR(lmdb_error("Failed to add proposal execution record: ", result).c_str()));
-  // BEGIN_VNS_CURSOR_LEAK_FIX
-  // Close the cursor opened by CURSOR(proposal_executions) so that
-  // later operations in the same batch transaction can open their own cursors.
-  if (m_cur_proposal_executions)
+    throw0(DB_ERROR(lmdb_error("Failed to open proposal_executions cursor: ", result).c_str()));
+
+  try
   {
-    mdb_cursor_close(m_cur_proposal_executions);
-    m_cur_proposal_executions = nullptr;
+    MDB_val k = {sizeof(rec.proposal_id), (void*)&rec.proposal_id};
+    MDB_val v = {sizeof(rec), (void*)&rec};
+
+    result = mdb_cursor_put(cur, &k, &v, MDB_NODUPDATA);
+    if (result == MDB_KEYEXIST)
+      result = mdb_cursor_put(cur, &k, &v, MDB_CURRENT);
+
+    if (result)
+      throw0(DB_ERROR(lmdb_error("Failed to add proposal execution record: ", result).c_str()));
   }
-  // END_VNS_CURSOR_LEAK_FIX
+  catch (...)
+  {
+    mdb_cursor_close(cur);
+    throw;
+  }
+
+  mdb_cursor_close(cur);
 }
 
 bool BlockchainLMDB::get_proposal_execution_record(const crypto::hash& proposal_id, proposal_execution_record& rec) const
@@ -3673,18 +3682,38 @@ void BlockchainLMDB::remove_proposal_execution_record(const crypto::hash& propos
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(proposal_executions)
 
-  MDB_val k = {sizeof(proposal_id), (void*)&proposal_id};
-  int result = mdb_cursor_get(m_cur_proposal_executions, &k, NULL, MDB_SET);
-  if (result == MDB_NOTFOUND)
-    return;
+  if (!m_write_txn || !m_write_txn->m_txn)
+    throw0(DB_ERROR("No active write transaction in remove_proposal_execution_record"));
+
+  MDB_cursor* cur = nullptr;
+  int result = mdb_cursor_open(m_write_txn->m_txn, m_proposal_executions, &cur);
   if (result)
-    throw0(DB_ERROR(lmdb_error("Failed to find proposal execution record for removal: ", result).c_str()));
-  result = mdb_cursor_del(m_cur_proposal_executions, 0);
-  if (result)
-    throw0(DB_ERROR(lmdb_error("Failed to remove proposal execution record: ", result).c_str()));
+    throw0(DB_ERROR(lmdb_error("Failed to open proposal_executions cursor: ", result).c_str()));
+
+  try
+  {
+    MDB_val k = {sizeof(proposal_id), (void*)&proposal_id};
+    result = mdb_cursor_get(cur, &k, nullptr, MDB_SET);
+    if (result == MDB_NOTFOUND)
+    {
+      mdb_cursor_close(cur);
+      return;
+    }
+    if (result)
+      throw0(DB_ERROR(lmdb_error("Failed to find proposal execution record for removal: ", result).c_str()));
+
+    result = mdb_cursor_del(cur, 0);
+    if (result)
+      throw0(DB_ERROR(lmdb_error("Failed to remove proposal execution record: ", result).c_str()));
+  }
+  catch (...)
+  {
+    mdb_cursor_close(cur);
+    throw;
+  }
+
+  mdb_cursor_close(cur);
 }
 
 void BlockchainLMDB::add_pending_execution(
