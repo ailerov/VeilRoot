@@ -69,6 +69,8 @@
 #include "governance/vote_result.h"
 #include "governance/domain_policy.h"
 #include <array>
+#include <deque>
+#include "nostr_client.h"
 
 #include <boost/asio/deadline_timer.hpp>
 #include <memory>
@@ -1339,6 +1341,8 @@ namespace cryptonote
   uint16_t calculate_health_score(const vns_domain_record& domain, uint64_t current_height);
   std::string resolve_domain(const std::string& domain_name);
   bool update_domain_heartbeat(const std::string& domain_name, uint64_t heartbeat_height, const crypto::hash& proof, uint64_t new_count = 0);
+  void queue_validated_heartbeat(const nostr_client::heartbeat_event& hb);
+  void process_pending_heartbeats();
   bool verify_merkle_proof(const crypto::hash& leaf, uint64_t leaf_index, const std::vector<crypto::hash>& siblings, const crypto::hash& block_hash) const;
   uint64_t get_stake_age_weight(uint64_t amount, uint64_t unlock_height, uint64_t current_height) const;
   uint64_t get_total_stake_age_weighted_supply(uint64_t height) const;
@@ -1510,6 +1514,12 @@ namespace cryptonote
     std::unordered_map<crypto::key_image, committee_eligible_record> m_committee_eligible;
     std::vector<std::pair<crypto::public_key, uint64_t>> m_committee_eligible_sorted;
     // END_VNS_ELIGIBLE
+
+    // Nostr validated heartbeat queue (producer: Nostr fetcher thread, consumer: blockchain owner thread)
+    mutable std::mutex m_heartbeat_queue_mutex;
+    std::deque<nostr_client::heartbeat_event> m_pending_heartbeats;
+
+    // ---------- VNS ADDITION END ----------
 
     // DKG ceremony state (only populated on the dealer node)
     crypto::hash m_dkg_current_proposal_id;

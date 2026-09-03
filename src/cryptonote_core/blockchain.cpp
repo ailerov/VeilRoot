@@ -5336,6 +5336,36 @@ bool Blockchain::update_domain_heartbeat(const std::string& domain_name_in, uint
 }
 
 // ---------- VNS NOSTR FETCHER START ----------
+
+void Blockchain::queue_validated_heartbeat(const nostr_client::heartbeat_event& hb)
+{
+    std::lock_guard<std::mutex> lock(m_heartbeat_queue_mutex);
+    m_pending_heartbeats.push_back(hb);
+}
+
+void Blockchain::process_pending_heartbeats()
+{
+    std::vector<nostr_client::heartbeat_event> heartbeats;
+    {
+        std::lock_guard<std::mutex> lock(m_heartbeat_queue_mutex);
+        heartbeats.assign(m_pending_heartbeats.begin(), m_pending_heartbeats.end());
+        m_pending_heartbeats.clear();
+    }
+
+    for (const auto& hb : heartbeats)
+    {
+        uint64_t current_height = m_db->height();
+        uint64_t hb_height = hb.heartbeat_height ? hb.heartbeat_height : current_height;
+        if (hb_height > current_height)
+            hb_height = current_height;
+
+        if (!update_domain_heartbeat(hb.domain, hb_height, hb.event_id, hb.heartbeat_count))
+        {
+            MERROR("Failed to apply queued heartbeat for " << hb.domain);
+        }
+    }
+}
+
 void Blockchain::start_nostr_fetcher()
 {
     MINFO("Nostr fetcher starting in a separate thread");
@@ -5416,30 +5446,10 @@ void Blockchain::fetch_all_nostr_heartbeats(bool selective)
             }
         }
 
-        crypto::hash last_proof;
-        bool known = m_db->get_vns_heartbeat_proof(domain, last_proof);
-        if (known && last_proof == best.event_id)
-        {
-            MINFO("Nostr: heartbeat event already processed for " << domain << ", skipping update.");
-            continue;
-        }
-
-        uint64_t hb_height = best.heartbeat_height ? best.heartbeat_height : current_height;
-        if (hb_height > current_height)
-        {
-            MWARNING("Nostr: future heartbeat height " << hb_height
-                     << " for " << domain << ", using current height " << current_height);
-            hb_height = current_height;
-        }
-
-        if (!update_domain_heartbeat(domain, hb_height, best.event_id, best.heartbeat_count))
-        {
-            MERROR("Nostr: failed to update heartbeat for " << domain);
-        }
-        else
-        {
-            MINFO("Nostr: successfully updated heartbeat for " << domain);
-        }
+        // Queue the validated heartbeat for the blockchain owner thread.
+        // We no longer open a write transaction from this Nostr fetcher thread.
+        queue_validated_heartbeat(best);
+        MINFO("Nostr: queued validated heartbeat for " << domain);
     }
 }
 // ---------- VNS NOSTR FETCHER END ----------
@@ -6650,6 +6660,10 @@ leave:
   // Grant execution is committed atomically during block storage.
   // No deferred execution is performed here.
   // END_VNS_DAO_EXEC
+
+  // Apply any queued Nostr heartbeats now that block processing is complete
+  // and we are on the blockchain-state owner thread.
+  process_pending_heartbeats();
 
   return true;
 }
