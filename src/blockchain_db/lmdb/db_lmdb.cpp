@@ -1306,15 +1306,15 @@ void BlockchainLMDB::prune_outputs(uint64_t amount)
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(output_amounts);
-  CURSOR(output_txs);
+
+  lmdb_cursor_guard cur_output_amounts(m_write_txn->m_txn, m_output_amounts);
+  lmdb_cursor_guard cur_output_txs(m_write_txn->m_txn, m_output_txs);
 
   MINFO("Pruning outputs for amount " << amount);
 
   MDB_val v;
   MDB_val_set(k, amount);
-  int result = mdb_cursor_get(m_cur_output_amounts, &k, &v, MDB_SET);
+  int result = mdb_cursor_get(cur_output_amounts.get(), &k, &v, MDB_SET);
   if (result == MDB_NOTFOUND)
     return;
   if (result)
@@ -1322,7 +1322,7 @@ void BlockchainLMDB::prune_outputs(uint64_t amount)
 
   // gather output ids
   mdb_size_t num_elems;
-  mdb_cursor_count(m_cur_output_amounts, &num_elems);
+  mdb_cursor_count(cur_output_amounts.get(), &num_elems);
   MINFO(num_elems << " outputs found");
   std::vector<uint64_t> output_ids;
   output_ids.reserve(num_elems);
@@ -1331,7 +1331,7 @@ void BlockchainLMDB::prune_outputs(uint64_t amount)
     const pre_rct_outkey *okp = (const pre_rct_outkey *)v.mv_data;
     output_ids.push_back(okp->output_id);
     MDEBUG("output id " << okp->output_id);
-    result = mdb_cursor_get(m_cur_output_amounts, &k, &v, MDB_NEXT_DUP);
+    result = mdb_cursor_get(cur_output_amounts.get(), &k, &v, MDB_NEXT_DUP);
     if (result == MDB_NOTFOUND)
       break;
     if (result)
@@ -1340,17 +1340,17 @@ void BlockchainLMDB::prune_outputs(uint64_t amount)
   if (output_ids.size() != num_elems)
     throw0(DB_ERROR("Unexpected number of outputs"));
 
-  result = mdb_cursor_del(m_cur_output_amounts, MDB_NODUPDATA);
+  result = mdb_cursor_del(cur_output_amounts.get(), MDB_NODUPDATA);
   if (result)
     throw0(DB_ERROR(lmdb_error("Error deleting outputs: ", result).c_str()));
 
   for (uint64_t output_id: output_ids)
   {
     MDB_val_set(v, output_id);
-    result = mdb_cursor_get(m_cur_output_txs, (MDB_val *)&zerokval, &v, MDB_GET_BOTH);
+    result = mdb_cursor_get(cur_output_txs.get(), (MDB_val *)&zerokval, &v, MDB_GET_BOTH);
     if (result)
       throw0(DB_ERROR(lmdb_error("Error looking up output: ", result).c_str()));
-    result = mdb_cursor_del(m_cur_output_txs, 0);
+    result = mdb_cursor_del(cur_output_txs.get(), 0);
     if (result)
       throw0(DB_ERROR(lmdb_error("Error deleting output: ", result).c_str()));
   }
@@ -2952,11 +2952,11 @@ void BlockchainLMDB::remove_vns_domain_heartbeat_events_by_domain(const std::str
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(vns_domain_heartbeat_events)
+
+  lmdb_cursor_guard cur_vns_domain_heartbeat_events(m_write_txn->m_txn, m_vns_domain_heartbeat_events);
 
   MDB_val k, v;
-  int result = mdb_cursor_get(m_cur_vns_domain_heartbeat_events, &k, &v, MDB_FIRST);
+  int result = mdb_cursor_get(cur_vns_domain_heartbeat_events.get(), &k, &v, MDB_FIRST);
   while (result == MDB_SUCCESS)
   {
     const vns_domain_heartbeat_event_record* rec =
@@ -2965,12 +2965,12 @@ void BlockchainLMDB::remove_vns_domain_heartbeat_events_by_domain(const std::str
     if (v.mv_size == sizeof(vns_domain_heartbeat_event_record) &&
         strncmp(rec->domain, domain_name.c_str(), sizeof(rec->domain)) == 0)
     {
-      mdb_cursor_del(m_cur_vns_domain_heartbeat_events, 0);
-      result = mdb_cursor_get(m_cur_vns_domain_heartbeat_events, &k, &v, MDB_FIRST);
+      mdb_cursor_del(cur_vns_domain_heartbeat_events.get(), 0);
+      result = mdb_cursor_get(cur_vns_domain_heartbeat_events.get(), &k, &v, MDB_FIRST);
     }
     else
     {
-      result = mdb_cursor_get(m_cur_vns_domain_heartbeat_events, &k, &v, MDB_NEXT);
+      result = mdb_cursor_get(cur_vns_domain_heartbeat_events.get(), &k, &v, MDB_NEXT);
     }
   }
 }
@@ -5457,11 +5457,11 @@ void BlockchainLMDB::remove_pending_domain_policy_by_proposal(const crypto::hash
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
-  CURSOR(pending_domain_policy)
+
+  lmdb_cursor_guard cur_pending_domain_policy(m_write_txn->m_txn, m_pending_domain_policy);
 
   MDB_val k, v;
-  int result = mdb_cursor_get(m_cur_pending_domain_policy, &k, &v, MDB_FIRST);
+  int result = mdb_cursor_get(cur_pending_domain_policy.get(), &k, &v, MDB_FIRST);
   while (result == MDB_SUCCESS)
   {
     const pending_domain_policy_record* rec =
@@ -5469,12 +5469,12 @@ void BlockchainLMDB::remove_pending_domain_policy_by_proposal(const crypto::hash
     if (v.mv_size == sizeof(pending_domain_policy_record) &&
         rec->proposal_id == proposal_id)
     {
-      mdb_cursor_del(m_cur_pending_domain_policy, 0);
-      result = mdb_cursor_get(m_cur_pending_domain_policy, &k, &v, MDB_FIRST);
+      mdb_cursor_del(cur_pending_domain_policy.get(), 0);
+      result = mdb_cursor_get(cur_pending_domain_policy.get(), &k, &v, MDB_FIRST);
     }
     else
     {
-      result = mdb_cursor_get(m_cur_pending_domain_policy, &k, &v, MDB_NEXT);
+      result = mdb_cursor_get(cur_pending_domain_policy.get(), &k, &v, MDB_NEXT);
     }
   }
 }
@@ -6027,11 +6027,9 @@ void BlockchainLMDB::correct_block_cumulative_difficulties(const uint64_t& start
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-  mdb_txn_cursors *m_cursors = &m_wcursors;
 
   int result = 0;
   block_wtxn_start();
-  CURSOR(block_info)
 
   const uint64_t bc_height = height();
   if (start_height + new_cumulative_difficulties.size() != bc_height)
@@ -6040,24 +6038,29 @@ void BlockchainLMDB::correct_block_cumulative_difficulties(const uint64_t& start
     throw0(DB_ERROR("Incorrect new_cumulative_difficulties size"));
   }
 
-  for (uint64_t height = start_height; height < bc_height; ++height)
   {
-    MDB_val_set(key, height);
-    result = mdb_cursor_get(m_cur_block_info, (MDB_val *)&zerokval, &key, MDB_GET_BOTH);
-    if (result)
-      throw1(BLOCK_DNE(lmdb_error("Failed to get block info: ", result).c_str()));
+    lmdb_cursor_guard cur_block_info(m_write_txn->m_txn, m_block_info);
 
-    mdb_block_info bi = *(mdb_block_info*)key.mv_data;
-    const difficulty_type d = new_cumulative_difficulties[height - start_height];
-    bi.bi_diff_hi = ((d >> 64) & 0xffffffffffffffff).convert_to<uint64_t>();
-    bi.bi_diff_lo = (d & 0xffffffffffffffff).convert_to<uint64_t>();
+    for (uint64_t height = start_height; height < bc_height; ++height)
+    {
+      MDB_val_set(key, height);
+      result = mdb_cursor_get(cur_block_info.get(), (MDB_val *)&zerokval, &key, MDB_GET_BOTH);
+      if (result)
+        throw1(BLOCK_DNE(lmdb_error("Failed to get block info: ", result).c_str()));
 
-    MDB_val_set(key2, height);
-    MDB_val_set(val, bi);
-    result = mdb_cursor_put(m_cur_block_info, &key2, &val, MDB_CURRENT);
-    if (result)
-      throw0(DB_ERROR(lmdb_error("Failed to overwrite block info to db transaction: ", result).c_str()));
+      mdb_block_info bi = *(mdb_block_info*)key.mv_data;
+      const difficulty_type d = new_cumulative_difficulties[height - start_height];
+      bi.bi_diff_hi = ((d >> 64) & 0xffffffffffffffff).convert_to<uint64_t>();
+      bi.bi_diff_lo = (d & 0xffffffffffffffff).convert_to<uint64_t>();
+
+      MDB_val_set(key2, height);
+      MDB_val_set(val, bi);
+      result = mdb_cursor_put(cur_block_info.get(), &key2, &val, MDB_CURRENT);
+      if (result)
+        throw0(DB_ERROR(lmdb_error("Failed to overwrite block info to db transaction: ", result).c_str()));
+    }
   }
+
   block_wtxn_stop();
 }
 
