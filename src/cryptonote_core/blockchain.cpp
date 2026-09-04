@@ -5501,6 +5501,14 @@ bool Blockchain::verify_merkle_proof(const crypto::hash& leaf, uint64_t leaf_ind
     crypto::hash computed;
     uint64_t actual_index = leaf_index + 1;   // include miner tx
     size_t count = full_tx_hashes.size();
+
+    if (actual_index >= count)
+    {
+        MERROR("Invalid Merkle leaf index: " << leaf_index
+               << " for transaction count " << (count - 1));
+        return false;
+    }
+
     uint32_t path = 0;
     if (!tree_path(count, actual_index, &path))
     {
