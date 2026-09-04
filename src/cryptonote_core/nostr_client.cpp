@@ -105,7 +105,7 @@ static bool verify_nostr_signature(const std::string& full_message_json,
         return false;
     }
 
-    if (!doc[0].IsString() || doc[0].GetString() != "EVENT")
+    if (!doc[0].IsString() || std::strcmp(doc[0].GetString(), "EVENT") != 0)
     {
         MERROR("Nostr: message is not an EVENT");
         return false;
