@@ -16601,16 +16601,23 @@ bool wallet2::build_service_descriptor_event(const std::string& domain, const st
     secp256k1_ec_pubkey_serialize(secp_ctx, pubkey_compressed, &out_len, &secp_pubkey, SECP256K1_EC_COMPRESSED);
     secp256k1_context_destroy(secp_ctx);
 
-    // Compute fingerprint using the STORED registrant key (daemon verifies against this)
+    // VNS V1 fingerprint: domain + registrant_key + fee_tier.
+    // This must match the fingerprint committed by the original registration transaction.
     std::string fingerprint_data;
     fingerprint_data += domain;
-    fingerprint_data.append(reinterpret_cast<const char*>(registrant_key.data()), registrant_key.size()); // stored key
-    uint64_t height_le = height;
-    fingerprint_data.append(reinterpret_cast<const char*>(&height_le), sizeof(height_le));
+    fingerprint_data.append(
+        reinterpret_cast<const char*>(registrant_key.data()),
+        registrant_key.size());
     fingerprint_data.push_back(static_cast<char>(fee_tier));
+
     crypto::hash fingerprint;
-    crypto::cn_fast_hash(fingerprint_data.data(), fingerprint_data.size(), fingerprint);
-    std::string fingerprint_hex = epee::string_tools::pod_to_hex(fingerprint);
+    crypto::cn_fast_hash(
+        fingerprint_data.data(),
+        fingerprint_data.size(),
+        fingerprint);
+
+    std::string fingerprint_hex =
+        epee::string_tools::pod_to_hex(fingerprint);
 
     // 4. Get Merkle proof for registration tx
     crypto::hash txid;

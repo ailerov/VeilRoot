@@ -61,6 +61,11 @@ public:
                        const std::string& event_json,
                        int timeout_seconds = 10);
 
+    // Verify a raw Nostr event object using the domain's legacy 33-byte registrant key.
+    static bool verify_nostr_event_signature(
+        const std::string& event_json,
+        const std::array<unsigned char, 33>& registrant_pubkey);
+
     // Test-only wrappers around internal Nostr validation/parsing helpers.
     static bool verify_nostr_signature_for_test(
         const std::string& full_message_json,

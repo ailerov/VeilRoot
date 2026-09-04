@@ -91,82 +91,136 @@ static bool verify_nostr_signature(const std::string& full_message_json,
                                    const std::array<unsigned char, 33>& registrant_pubkey)
 {
     using namespace rapidjson;
+
     Document doc;
     if (doc.Parse(full_message_json.c_str()).HasParseError())
     {
-        MERROR("DEBUG: JSON parse error");
+        MERROR("Nostr: JSON parse error");
         return false;
     }
+
     if (!doc.IsArray() || doc.Size() < 3)
     {
-        MERROR("DEBUG: Not array or size<3");
+        MERROR("Nostr: invalid EVENT message");
         return false;
     }
-    if (!doc[0].IsString() || doc[0].GetString() != std::string("EVENT"))
+
+    if (!doc[0].IsString() || doc[0].GetString() != "EVENT")
     {
-        MERROR("DEBUG: doc[0] not EVENT string");
+        MERROR("Nostr: message is not an EVENT");
         return false;
     }
 
     const Value& ev = doc[2];
     if (!ev.IsObject())
     {
-        MERROR("DEBUG: ev not object");
+        MERROR("Nostr: event object missing");
         return false;
     }
+
     if (!ev.HasMember("id") || !ev["id"].IsString())
     {
-        MERROR("DEBUG: id missing or not string");
+        MERROR("Nostr: event id missing");
         return false;
     }
+
+    if (!ev.HasMember("pubkey") || !ev["pubkey"].IsString())
+    {
+        MERROR("Nostr: event pubkey missing");
+        return false;
+    }
+
     if (!ev.HasMember("sig") || !ev["sig"].IsString())
     {
-        MERROR("DEBUG: sig missing or not string");
+        MERROR("Nostr: event signature missing");
+        return false;
+    }
+
+    // Nostr uses a 32-byte x-only public key encoded as 64 hex characters.
+    const std::string event_pubkey_hex = ev["pubkey"].GetString();
+    if (event_pubkey_hex.size() != 64)
+    {
+        MERROR("Nostr: invalid event pubkey length");
+        return false;
+    }
+
+    std::array<unsigned char, 32> event_pubkey;
+    if (!epee::string_tools::hex_to_pod(event_pubkey_hex, event_pubkey))
+    {
+        MERROR("Nostr: invalid event pubkey hex");
+        return false;
+    }
+
+    // The legacy VNS registrant key is a 33-byte compressed secp256k1 key.
+    // Its x-coordinate is the last 32 bytes and is the Nostr/BIP340 key.
+    if (memcmp(event_pubkey.data(), registrant_pubkey.data() + 1, 32) != 0)
+    {
+        MERROR("Nostr: event pubkey does not match domain registrant key");
         return false;
     }
 
     crypto::hash supplied_id;
-    std::string id_hex = ev["id"].GetString();
+    const std::string id_hex = ev["id"].GetString();
+
     if (id_hex.size() != 2 * sizeof(crypto::hash))
     {
-        MERROR("DEBUG: id_hex size mismatch");
-        return false;
-    }
-    if (!epee::string_tools::hex_to_pod(id_hex, supplied_id))
-    {
-        MERROR("DEBUG: hex_to_pod failed for id_hex");
+        MERROR("Nostr: invalid event id length");
         return false;
     }
 
+    if (!epee::string_tools::hex_to_pod(id_hex, supplied_id))
+    {
+        MERROR("Nostr: invalid event id hex");
+        return false;
+    }
+
+    // Reconstruct the exact NIP-01 serialized event and hash it with SHA-256.
     crypto::hash computed_id;
     if (!recompute_nostr_event_id(ev, computed_id))
     {
-        MERROR("DEBUG: failed to recompute event id");
+        MERROR("Nostr: failed to recompute event id");
         return false;
     }
 
-    if (!(computed_id == supplied_id))
+    if (computed_id != supplied_id)
     {
-        MERROR("DEBUG: event id mismatch");
+        MERROR("Nostr: event id mismatch");
         return false;
     }
 
-    std::string sig_hex = ev["sig"].GetString();
+    const std::string sig_hex = ev["sig"].GetString();
     if (sig_hex.size() != 128)
     {
-        MERROR("DEBUG: sig_hex size mismatch");
+        MERROR("Nostr: invalid signature length");
         return false;
     }
 
-    std::array<unsigned char, 64> sig;
-    for (size_t i = 0; i < 64; ++i)
+    std::array<unsigned char, 64> signature{};
+    for (size_t i = 0; i < signature.size(); ++i)
     {
-        std::string byte_str = sig_hex.substr(i*2, 2);
-        sig[i] = static_cast<unsigned char>(std::stoi(byte_str, nullptr, 16));
+        const std::string byte_str = sig_hex.substr(i * 2, 2);
+        try
+        {
+            signature[i] = static_cast<unsigned char>(
+                std::stoul(byte_str, nullptr, 16));
+        }
+        catch (...)
+        {
+            MERROR("Nostr: invalid signature hex");
+            return false;
+        }
     }
 
-    bool result = bip340::verify(registrant_pubkey.data(), (const unsigned char*)&computed_id, sig.data());
-    return result;
+    if (!bip340::verify(
+            registrant_pubkey.data(),
+            reinterpret_cast<const unsigned char*>(&computed_id),
+            signature.data()))
+    {
+        MERROR("Nostr: BIP340 signature verification failed");
+        return false;
+    }
+
+    return true;
 }
 
 static bool parse_event(const std::string& json_line,
@@ -715,6 +769,17 @@ bool nostr_client::publish_event(const std::string& relay_url,
     ws.stop();
 
     return published;
+}
+
+bool nostr_client::verify_nostr_event_signature(
+    const std::string& event_json,
+    const std::array<unsigned char, 33>& registrant_pubkey)
+{
+    // The internal verifier operates on the standard Nostr relay EVENT envelope.
+    const std::string full_message =
+        "[\"EVENT\",\"vns_verify\"," + event_json + "]";
+
+    return verify_nostr_signature(full_message, registrant_pubkey);
 }
 
 bool nostr_client::verify_nostr_signature_for_test(

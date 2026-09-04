@@ -3843,16 +3843,23 @@ bool core_rpc_server::on_resolve_domain(const COMMAND_RPC_RESOLVE_DOMAIN::reques
     std::vector<candidate> authenticated;
     for (const auto& c : candidates)
     {
-        // 5.1 Verify fingerprint using 33-byte compressed key
+        // 5.1 Verify VNS V1 fingerprint.
+        // Must match the fingerprint committed by the registration transaction.
         std::string fingerprint_data;
         fingerprint_data += req.domain_name;
-        fingerprint_data.append(reinterpret_cast<const char*>(rec.registrant_key.data()), rec.registrant_key.size());
-        uint64_t height_le = rec.registered_height;
-        fingerprint_data.append(reinterpret_cast<const char*>(&height_le), sizeof(height_le));
+        fingerprint_data.append(
+            reinterpret_cast<const char*>(rec.registrant_key.data()),
+            rec.registrant_key.size());
         fingerprint_data.push_back(static_cast<char>(rec.fee_tier));
+
         crypto::hash expected_fingerprint;
-        crypto::cn_fast_hash(fingerprint_data.data(), fingerprint_data.size(), expected_fingerprint);
-        const std::string expected_hex = epee::string_tools::pod_to_hex(expected_fingerprint);
+        crypto::cn_fast_hash(
+            fingerprint_data.data(),
+            fingerprint_data.size(),
+            expected_fingerprint);
+
+        const std::string expected_hex =
+            epee::string_tools::pod_to_hex(expected_fingerprint);
 
         if (expected_hex != c.sd_event.fingerprint_hex)
         {
@@ -4271,37 +4278,33 @@ bool core_rpc_server::on_publish_service_descriptor(const COMMAND_RPC_PUBLISH_SE
         return false;
     }
 
-    // 5. Verify event signature (BIP340)
-    std::string pubkey_hex = doc["pubkey"].GetString();
-    if (pubkey_hex.size() != 64) {
+    // 5. Verify event signature and pubkey (BIP340)
+    if (!nostr_client::verify_nostr_event_signature(
+            req.event_json,
+            rec.registrant_key))
+    {
         error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
-        error_resp.message = "Invalid pubkey length, expected 64 hex chars";
-        return false;
-    }
-    std::array<unsigned char, 32> pubkey_x;
-    if (!epee::string_tools::hex_to_pod(pubkey_hex, pubkey_x)) {
-        error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
-        error_resp.message = "Invalid pubkey hex";
-        return false;
-    }
-    // Compare x-coordinate with stored registrant key (skip the first byte)
-    if (memcmp(pubkey_x.data(), rec.registrant_key.data() + 1, 32) != 0) {
-        error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
-        error_resp.message = "Event pubkey does not match domain registrant";
+        error_resp.message = "Invalid Nostr event signature or pubkey";
         return false;
     }
 
-    // 6. Verify fingerprint
-    // Compute expected fingerprint = SHA256(domain + registrant_key + registration_height + fee_tier)
+    // 6. Verify VNS V1 fingerprint.
+    // Must match the fingerprint committed by the registration transaction.
     std::string fingerprint_data;
     fingerprint_data += domain;
-    fingerprint_data.append(reinterpret_cast<const char*>(rec.registrant_key.data()), rec.registrant_key.size());
-    uint64_t height_le = rec.registered_height;
-    fingerprint_data.append(reinterpret_cast<const char*>(&height_le), sizeof(height_le));
+    fingerprint_data.append(
+        reinterpret_cast<const char*>(rec.registrant_key.data()),
+        rec.registrant_key.size());
     fingerprint_data.push_back(static_cast<char>(rec.fee_tier));
+
     crypto::hash expected_fingerprint;
-    crypto::cn_fast_hash(fingerprint_data.data(), fingerprint_data.size(), expected_fingerprint);
-    std::string expected_hex = epee::string_tools::pod_to_hex(expected_fingerprint);
+    crypto::cn_fast_hash(
+        fingerprint_data.data(),
+        fingerprint_data.size(),
+        expected_fingerprint);
+
+    std::string expected_hex =
+        epee::string_tools::pod_to_hex(expected_fingerprint);
     if (expected_hex != fingerprint_hex)
     {
         error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
