@@ -248,6 +248,9 @@ static bool parse_event(const std::string& json_line,
     std::string domain_found;
     crypto::hash proof_hash = crypto::null_hash;
     crypto::hash fingerprint_hash = crypto::null_hash;
+    crypto::hash block_hash = crypto::null_hash;
+    uint64_t leaf_index = 0;
+    std::vector<crypto::hash> sibling_hashes;
     for (const auto& tag : tags.GetArray())
     {
         if (!tag.IsArray() || tag.Size() < 2) continue;
@@ -256,10 +259,38 @@ static bool parse_event(const std::string& json_line,
         {
             domain_found = tag[1].GetString();
         }
-        else if ((tagname == "proof" || tagname == "block_hash") && tag[1].IsString())
+        else if (tagname == "proof" && tag[1].IsString())
         {
             if (!hex_to_hash(tag[1].GetString(), proof_hash))
                 return false;
+        }
+        else if (tagname == "block_hash" && tag[1].IsString())
+        {
+            if (!hex_to_hash(tag[1].GetString(), block_hash))
+                return false;
+        }
+        else if (tagname == "leaf_index" && tag[1].IsString())
+        {
+            try
+            {
+                leaf_index = std::stoull(tag[1].GetString());
+            }
+            catch (...)
+            {
+                return false;
+            }
+        }
+        else if (tagname == "sibling_path" && tag[1].IsString())
+        {
+            std::stringstream ss(tag[1].GetString());
+            std::string item;
+            while (std::getline(ss, item, ','))
+            {
+                crypto::hash h;
+                if (!hex_to_hash(item, h))
+                    return false;
+                sibling_hashes.push_back(h);
+            }
         }
         else if (tagname == "fingerprint" && tag[1].IsString())
         {
@@ -294,6 +325,18 @@ static bool parse_event(const std::string& json_line,
         return false;
     }
 
+    if (block_hash == crypto::null_hash)
+    {
+        MERROR("parse_event: block_hash is null");
+        return false;
+    }
+
+    if (sibling_hashes.empty())
+    {
+        MERROR("parse_event: sibling_path is empty");
+        return false;
+    }
+
     if (!ev.HasMember("created_at") || !ev["created_at"].IsInt64())
     {
         MERROR("parse_event: missing created_at");
@@ -313,6 +356,9 @@ static bool parse_event(const std::string& json_line,
     out_event.event_id = event_id;
     out_event.proof = proof_hash;
     out_event.fingerprint = fingerprint_hash;
+    out_event.block_hash = block_hash;
+    out_event.leaf_index = leaf_index;
+    out_event.sibling_hashes = sibling_hashes;
     out_event.created_at = created_at;
     return true;
 }

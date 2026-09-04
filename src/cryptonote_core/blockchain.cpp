@@ -5433,6 +5433,17 @@ void Blockchain::fetch_all_nostr_heartbeats(bool selective)
                 continue;
             }
 
+            if (!verify_merkle_proof(
+                    rec.registration_tx_hash,
+                    ev.leaf_index,
+                    ev.sibling_hashes,
+                    ev.block_hash))
+            {
+                MERROR("Nostr: Merkle proof verification failed for "
+                       << domain << " from " << relay_url_str);
+                continue;
+            }
+
             candidates.push_back(ev);
         }
 

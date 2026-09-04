@@ -19,6 +19,9 @@ public:
         std::string domain;
         crypto::hash proof;
         crypto::hash fingerprint;
+        crypto::hash block_hash;
+        uint64_t leaf_index = 0;
+        std::vector<crypto::hash> sibling_hashes;
         uint64_t created_at;   // Unix timestamp
         uint64_t heartbeat_height = 0;
         uint64_t heartbeat_count = 0;
