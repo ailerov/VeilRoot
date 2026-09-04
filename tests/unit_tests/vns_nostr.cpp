@@ -200,6 +200,39 @@ TEST(VnsNostr, ValidServiceDescriptorAccepted)
     EXPECT_TRUE(cryptonote::nostr_client::verify_nostr_signature_for_test(json, registrant_key));
 }
 
+TEST(VnsNostr, ValidHeartbeatProofFieldsAccepted)
+{
+    const auto kp = make_secp_keypair();
+
+    std::vector<std::pair<std::string, std::string>> tags = {
+        {"d", DOMAIN},
+        {"fingerprint", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+        {"block_hash", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+        {"leaf_index", "1"},
+        {"heartbeat_height", "12345"},
+        {"heartbeat_count", "7"},
+        {"sibling_path", "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc,dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}
+    };
+
+    const std::string id_hex = canonical_event_id_hex(kp.pubkey_hex, NOW, 30001, "heartbeat", tags);
+    const std::string sig_hex = sign_event_id_hex(kp.secret, id_hex);
+    const std::string json = make_event_json(
+        id_hex, kp.pubkey_hex, NOW, 30001, tags, "heartbeat", sig_hex);
+
+    cryptonote::nostr_client::heartbeat_event ev;
+
+    EXPECT_TRUE(
+        cryptonote::nostr_client::parse_heartbeat_event_for_test(
+            json, DOMAIN, ev));
+
+    EXPECT_EQ(ev.domain, DOMAIN);
+    EXPECT_EQ(ev.heartbeat_height, 12345u);
+    EXPECT_EQ(ev.heartbeat_count, 7u);
+    EXPECT_EQ(ev.leaf_index, 1u);
+    EXPECT_FALSE(ev.block_hash == crypto::null_hash);
+    EXPECT_EQ(ev.sibling_hashes.size(), 2u);
+}
+
 TEST(VnsNostr, WrongRegistrantKeyRejected)
 {
     const auto kp = make_secp_keypair(1);
