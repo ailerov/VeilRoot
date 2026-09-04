@@ -786,7 +786,7 @@ bool nostr_client::verify_nostr_signature_for_test(
     const std::string& full_message_json,
     const std::array<unsigned char, 33>& registrant_pubkey)
 {
-    return verify_nostr_event_signature(full_message_json, registrant_pubkey);
+    return verify_nostr_signature(full_message_json, registrant_pubkey);
 }
 
 bool nostr_client::parse_service_descriptor_event_for_test(
