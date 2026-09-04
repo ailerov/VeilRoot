@@ -18,9 +18,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: debian11
-            container: debian:11
-            artifact: linux-debian11-x64
+          - name: debian12
+            container: debian:12
+            artifact: linux-debian12-x64
           - name: ubuntu22.04
             container: ubuntu:22.04
             artifact: linux-ubuntu22.04-x64
