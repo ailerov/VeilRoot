@@ -268,6 +268,9 @@ static bool parse_event(const std::string& json_line,
         {
             if (!hex_to_hash(tag[1].GetString(), block_hash))
                 return false;
+
+            // Legacy proof field is the registration proof block hash.
+            proof_hash = block_hash;
         }
         else if (tagname == "leaf_index" && tag[1].IsString())
         {
