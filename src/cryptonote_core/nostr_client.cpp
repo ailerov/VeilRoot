@@ -687,7 +687,12 @@ bool nostr_client::fetch_service_descriptor(const std::string& relay_url,
         if (verified)
         {
             events.push_back(ev);
-            MINFO("Nostr: service descriptor event accepted, events size: " << events.size());
+
+            MINFO("Nostr: signature verified for service descriptor of "
+                  << domain_name);
+
+            MINFO("Nostr: service descriptor event accepted, events size: "
+                  << events.size());
         }
         else
         {

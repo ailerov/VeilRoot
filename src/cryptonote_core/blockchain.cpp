@@ -5501,7 +5501,7 @@ bool Blockchain::verify_merkle_proof(const crypto::hash& leaf, uint64_t leaf_ind
     crypto::hash computed;
     size_t count = full_tx_hashes.size();
 
-    if (leaf_index >= count - 1)
+    if (count <= 1 || leaf_index >= count - 1)
     {
         MERROR("Invalid Merkle leaf index: " << leaf_index
                << " for transaction count " << (count - 1));
@@ -5518,6 +5518,15 @@ bool Blockchain::verify_merkle_proof(const crypto::hash& leaf, uint64_t leaf_ind
     }
 
     size_t depth = siblings.size();
+
+    // tree_branch_hash() uses a uint32_t path and shifts it by depth.
+    // Reject malformed proofs that exceed the representable path depth.
+    if (depth > 32)
+    {
+        MERROR("Invalid Merkle proof depth: " << depth);
+        return false;
+    }
+
     if (depth > 0)
     {
         std::vector<char> branch_flat(HASH_SIZE * depth);

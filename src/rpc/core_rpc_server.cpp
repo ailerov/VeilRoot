@@ -3867,6 +3867,9 @@ bool core_rpc_server::on_resolve_domain(const COMMAND_RPC_RESOLVE_DOMAIN::reques
             continue;
         }
 
+        MINFO("VNS: fingerprint verified for " << req.domain_name
+              << " from " << c.relay_url);
+
         // 5.2 Verify Merkle proof
         if (!m_core.get_blockchain_storage().verify_merkle_proof(
                 rec.registration_tx_hash,
@@ -3878,6 +3881,9 @@ bool core_rpc_server::on_resolve_domain(const COMMAND_RPC_RESOLVE_DOMAIN::reques
             MDEBUG("Rejecting descriptor from relay " << c.relay_url << ": Merkle proof failed");
             continue;
         }
+
+        MINFO("VNS: Merkle proof verified for " << req.domain_name
+              << " from " << c.relay_url);
 
         authenticated.push_back(c);
     }
