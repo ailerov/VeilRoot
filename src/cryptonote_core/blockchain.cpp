@@ -5450,7 +5450,7 @@ void Blockchain::start_nostr_fetcher()
 
             const auto now = std::chrono::steady_clock::now();
 
-            if (now - last_descriptor_fetch >= std::chrono::seconds(60))
+            if (now - last_descriptor_fetch >= std::chrono::seconds(600))
             {
                 fetch_all_nostr_service_descriptors();
                 last_descriptor_fetch = now;
