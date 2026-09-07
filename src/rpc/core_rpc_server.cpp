@@ -3782,12 +3782,18 @@ bool core_rpc_server::on_send_raw_tx_json(const COMMAND_RPC_SEND_RAW_TX::request
     return true;
   }
     // ---------- VNS ADDITION START ----------
-bool core_rpc_server::on_resolve_domain(const COMMAND_RPC_RESOLVE_DOMAIN::request& req, COMMAND_RPC_RESOLVE_DOMAIN::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx)
+bool core_rpc_server::on_resolve_domain(
+    const COMMAND_RPC_RESOLVE_DOMAIN::request& req,
+    COMMAND_RPC_RESOLVE_DOMAIN::response& res,
+    epee::json_rpc::error& error_resp,
+    const connection_context *ctx)
 {
     RPC_TRACKER(resolve_domain);
 
-    // 1. Get domain record from blockchain
-    vns_domain_record rec = m_core.get_blockchain_storage().get_domain_record(req.domain_name);
+    // 1. Get domain record from blockchain.
+    const vns_domain_record rec =
+        m_core.get_blockchain_storage().get_domain_record(req.domain_name);
+
     if (is_null_key(rec.registrant_key))
     {
         error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
@@ -3795,136 +3801,66 @@ bool core_rpc_server::on_resolve_domain(const COMMAND_RPC_RESOLVE_DOMAIN::reques
         return false;
     }
 
-    // 2. Check status
-    if (rec.status == 2) // EXPIRED
+    // 2. Check status.
+    if (rec.status == 2)
     {
         error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
         error_resp.message = "Domain is expired";
         return false;
     }
 
-    // 3. Fill basic info
+    // 3. Fill basic information.
     res.address = epee::string_tools::pod_to_hex(rec.registrant_key);
     res.health_score = rec.health_score;
     res.last_heartbeat = rec.last_heartbeat_block;
     res.fee_tier = rec.fee_tier;
 
-    // 4. Fetch service descriptor candidates from all configured relays
-    struct candidate
-    {
-        nostr_client::service_descriptor_event sd_event;
-        std::string relay_url;
-    };
+    // 4. Resolve only from an already-authenticated local descriptor cache.
+    // Nostr relay access is deliberately NOT performed in the RPC request path.
+    nostr_client::service_descriptor_event sd_event;
 
-    std::vector<candidate> candidates;
-    for (size_t ri = 0; ri < VNS_MAX_RELAYS; ++ri)
-    {
-        const std::string relay_url(rec.relays[ri].url);
-        if (relay_url.empty())
-            continue;
-
-        nostr_client::service_descriptor_event sd_event;
-        bool ok = m_core.get_blockchain_storage().get_nostr_client().fetch_service_descriptor(
-            relay_url, req.domain_name, rec.registrant_key, sd_event, 10
-        );
-
-        if (ok)
-            candidates.push_back({sd_event, relay_url});
-    }
-
-    if (candidates.empty())
+if (!m_core.get_blockchain_storage().get_cached_service_descriptor(
+        req.domain_name,
+        rec.registration_tx_hash,
+        sd_event))
     {
         error_resp.code = CORE_RPC_ERROR_CODE_INTERNAL_ERROR;
-        error_resp.message = "No valid service descriptor found from any configured relay";
+        error_resp.message =
+            "Service descriptor is not yet available; resolver is warming up";
         return false;
     }
 
-    // 5. Validate each candidate against on-chain domain state
-    std::vector<candidate> authenticated;
-    for (const auto& c : candidates)
-    {
-        // 5.1 Verify VNS V1 fingerprint.
-        // Must match the fingerprint committed by the registration transaction.
-        std::string fingerprint_data;
-        fingerprint_data += req.domain_name;
-        fingerprint_data.append(
-            reinterpret_cast<const char*>(rec.registrant_key.data()),
-            rec.registrant_key.size());
-        fingerprint_data.push_back(static_cast<char>(rec.fee_tier));
+    // 5. The descriptor in this cache was authenticated before insertion:
+    //    - Nostr signature / registrant pubkey
+    //    - VNS V1 fingerprint
+    //    - Merkle proof
+    //
+    // Recheck the fingerprint against current on-chain state in case the
+    // domain record changed.
+    std::string fingerprint_data;
+    fingerprint_data += req.domain_name;
+    fingerprint_data.append(
+        reinterpret_cast<const char*>(rec.registrant_key.data()),
+        rec.registrant_key.size());
+    fingerprint_data.push_back(static_cast<char>(rec.fee_tier));
 
-        crypto::hash expected_fingerprint;
-        crypto::cn_fast_hash(
-            fingerprint_data.data(),
-            fingerprint_data.size(),
-            expected_fingerprint);
+    crypto::hash expected_fingerprint;
+    crypto::cn_fast_hash(
+        fingerprint_data.data(),
+        fingerprint_data.size(),
+        expected_fingerprint);
 
-        const std::string expected_hex =
-            epee::string_tools::pod_to_hex(expected_fingerprint);
+    const std::string expected_hex =
+        epee::string_tools::pod_to_hex(expected_fingerprint);
 
-        if (expected_hex != c.sd_event.fingerprint_hex)
-        {
-            MDEBUG("Rejecting descriptor from relay " << c.relay_url << ": fingerprint mismatch");
-            continue;
-        }
-
-        MINFO("VNS: fingerprint verified for " << req.domain_name
-              << " from " << c.relay_url);
-
-        // 5.2 Verify Merkle proof
-        if (!m_core.get_blockchain_storage().verify_merkle_proof(
-                rec.registration_tx_hash,
-                c.sd_event.leaf_index,
-                c.sd_event.sibling_hashes,
-                c.sd_event.block_hash
-            ))
-        {
-            MDEBUG("Rejecting descriptor from relay " << c.relay_url << ": Merkle proof failed");
-            continue;
-        }
-
-        MINFO("VNS: Merkle proof verified for " << req.domain_name
-              << " from " << c.relay_url);
-
-        authenticated.push_back(c);
-    }
-
-    if (authenticated.empty())
+    if (expected_hex != sd_event.fingerprint_hex)
     {
         error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
-        error_resp.message = "No authenticated service descriptor found";
+        error_resp.message = "Cached service descriptor fingerprint mismatch";
         return false;
     }
 
-    // 6. Select highest valid descriptor version.
-    //    If multiple distinct events have the same highest version, treat as conflict.
-    const candidate* best = nullptr;
-    bool conflict = false;
-
-    for (const auto& c : authenticated)
-    {
-        if (best == nullptr || c.sd_event.version > best->sd_event.version)
-        {
-            best = &c;
-            conflict = false;
-        }
-        else if (c.sd_event.version == best->sd_event.version)
-        {
-            // Same version. If event id differs, conflict.
-            if (c.sd_event.event_id != best->sd_event.event_id)
-                conflict = true;
-        }
-    }
-
-    if (conflict || best == nullptr)
-    {
-        error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
-        error_resp.message = "Conflicting service descriptors with the same version";
-        return false;
-    }
-
-    const nostr_client::service_descriptor_event& sd_event = best->sd_event;
-
-    // 7. Return the content
+    // 6. Return the authenticated descriptor immediately.
     res.service_descriptor = sd_event.content;
     res.status = CORE_RPC_STATUS_OK;
     return true;
@@ -4351,6 +4287,31 @@ bool core_rpc_server::on_publish_service_descriptor(const COMMAND_RPC_PUBLISH_SE
         error_resp.message = "Merkle proof verification failed";
         return false;
     }
+
+    // Cache the authenticated descriptor locally before publishing to relays.
+    // The event has already passed signature, fingerprint and Merkle validation.
+    nostr_client::service_descriptor_event cached_event;
+    cached_event.content = doc["content"].GetString();
+    cached_event.fingerprint_hex = fingerprint_hex;
+    cached_event.block_hash = block_hash;
+    cached_event.leaf_index = leaf_index;
+    cached_event.sibling_hashes = siblings;
+    cached_event.version = descriptor_version;
+    cached_event.created_at =
+        doc.HasMember("created_at") && doc["created_at"].IsUint64()
+            ? doc["created_at"].GetUint64()
+            : 0;
+
+    if (doc.HasMember("id") && doc["id"].IsString())
+        epee::string_tools::hex_to_pod(doc["id"].GetString(), cached_event.event_id);
+
+    if (doc.HasMember("pubkey") && doc["pubkey"].IsString())
+        cached_event.pubkey_hex = doc["pubkey"].GetString();
+
+    m_core.get_blockchain_storage().cache_service_descriptor(
+        domain,
+        rec.registration_tx_hash,
+        cached_event);
 
     // 8. Publish to all configured relays. Success requires at least one relay
     //    to accept the event. Relays are untrusted transport; publication is

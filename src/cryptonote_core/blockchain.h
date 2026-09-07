@@ -1350,6 +1350,16 @@ namespace cryptonote
 
   nostr_client& get_nostr_client() { return *m_nostr_client; }
 
+  bool get_cached_service_descriptor(
+      const std::string& domain_name,
+      const crypto::hash& registration_tx_hash,
+      nostr_client::service_descriptor_event& out_event) const;
+
+  void cache_service_descriptor(
+      const std::string& domain_name,
+      const crypto::hash& registration_tx_hash,
+      const nostr_client::service_descriptor_event& event);
+
     /**
      * @brief returns the timestamps of the last N blocks
      */
@@ -1398,7 +1408,8 @@ namespace cryptonote
     uint64_t get_adjusted_time(uint64_t height) const;
 
     void start_nostr_fetcher();
-    void fetch_all_nostr_heartbeats(bool selective = false);
+    void fetch_all_nostr_heartbeats(bool selective);
+    void fetch_all_nostr_service_descriptors();
 
     // BEGIN_VNS_NON_CONSUMING_TX
     bool is_non_consuming_tx(const transaction& tx) const;
@@ -1518,6 +1529,18 @@ namespace cryptonote
     // Nostr validated heartbeat queue (producer: Nostr fetcher thread, consumer: blockchain owner thread)
     mutable std::mutex m_heartbeat_queue_mutex;
     std::deque<nostr_client::heartbeat_event> m_pending_heartbeats;
+
+    // Authenticated service descriptors cached from Nostr.
+    // The cache is populated only after signature, fingerprint and Merkle
+    // proof validation. Nostr relays are therefore transport only.
+struct cached_service_descriptor
+{
+    nostr_client::service_descriptor_event event;
+    crypto::hash registration_tx_hash;
+};
+
+mutable std::mutex m_service_descriptor_cache_mutex;
+std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_cache;
 
     // ---------- VNS ADDITION END ----------
 

@@ -4487,6 +4487,62 @@ vns_domain_record Blockchain::get_domain_record(const std::string& domain_name)
     return it->second;
 }
 
+bool Blockchain::get_cached_service_descriptor(
+    const std::string& domain_name,
+    const crypto::hash& registration_tx_hash,
+    nostr_client::service_descriptor_event& out_event) const
+{
+    const std::string normalized =
+        domain_utils::normalize_vns_domain(domain_name);
+
+    if (normalized.empty())
+        return false;
+
+    std::lock_guard<std::mutex> lock(m_service_descriptor_cache_mutex);
+
+    const auto it = m_service_descriptor_cache.find(normalized);
+    if (it == m_service_descriptor_cache.end())
+        return false;
+
+    if (it->second.registration_tx_hash != registration_tx_hash)
+        return false;
+
+    out_event = it->second.event;
+    return true;
+}
+
+void Blockchain::cache_service_descriptor(
+    const std::string& domain_name,
+    const crypto::hash& registration_tx_hash,
+    const nostr_client::service_descriptor_event& event)
+{
+    const std::string normalized =
+        domain_utils::normalize_vns_domain(domain_name);
+
+    if (normalized.empty())
+        return;
+
+    std::lock_guard<std::mutex> lock(m_service_descriptor_cache_mutex);
+
+    const auto it = m_service_descriptor_cache.find(normalized);
+
+    if (it == m_service_descriptor_cache.end() ||
+        it->second.registration_tx_hash != registration_tx_hash ||
+        event.version > it->second.event.version ||
+        (event.version == it->second.event.version &&
+         event.created_at > it->second.event.created_at))
+    {
+        cached_service_descriptor cached;
+        cached.event = event;
+        cached.registration_tx_hash = registration_tx_hash;
+
+        m_service_descriptor_cache[normalized] = std::move(cached);
+
+        MINFO("VNS: cached authenticated service descriptor for "
+              << normalized << " version=" << event.version);
+    }
+}
+
 // BEGIN_VNS_DOMAIN_POLICY_RESOLVER
 bool Blockchain::resolve_domain_policy(const std::string& domain, uint64_t height, domain_policy_result& result) const
 {
@@ -5376,15 +5432,158 @@ void Blockchain::process_pending_heartbeats()
 void Blockchain::start_nostr_fetcher()
 {
     MINFO("Nostr fetcher starting in a separate thread");
+
     std::thread([this]() {
         std::this_thread::sleep_for(std::chrono::seconds(5));
+
+        // Populate the authenticated descriptor cache immediately.
+        fetch_all_nostr_service_descriptors();
+
+        // Existing heartbeat refresh.
         fetch_all_nostr_heartbeats(true);
-        while (true) {
-            std::this_thread::sleep_for(std::chrono::seconds(21600));
-            fetch_all_nostr_heartbeats(true);
+
+        auto last_descriptor_fetch = std::chrono::steady_clock::now();
+
+        while (true)
+        {
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+
+            const auto now = std::chrono::steady_clock::now();
+
+            if (now - last_descriptor_fetch >= std::chrono::seconds(60))
+            {
+                fetch_all_nostr_service_descriptors();
+                last_descriptor_fetch = now;
+            }
+
+            static auto last_heartbeat_fetch = now;
+
+            if (now - last_heartbeat_fetch >= std::chrono::seconds(21600))
+            {
+                fetch_all_nostr_heartbeats(true);
+                last_heartbeat_fetch = now;
+            }
         }
     }).detach();
 }
+
+// ---------- VNS NOSTR SERVICE DESCRIPTOR FETCHER ----------
+void Blockchain::fetch_all_nostr_service_descriptors()
+{
+    MINFO("Nostr: starting batch service descriptor fetch for all active domains");
+
+    for (auto& pair : m_vns_domain_registry)
+    {
+        const std::string& domain = pair.first;
+        const vns_domain_record& rec = pair.second;
+
+        if (rec.status == 2)
+            continue;
+
+        std::vector<nostr_client::service_descriptor_event> candidates;
+
+        for (size_t ri = 0; ri < VNS_MAX_RELAYS; ++ri)
+        {
+            const std::string relay_url_str(rec.relays[ri].url);
+            if (relay_url_str.empty())
+                continue;
+
+            if (relay_url_str.find("ws://") != 0 &&
+                relay_url_str.find("wss://") != 0)
+            {
+                MDEBUG("Domain " << domain
+                        << " has invalid relay URL: '"
+                        << relay_url_str << "', skipping.");
+                continue;
+            }
+
+            nostr_client::service_descriptor_event ev;
+
+            if (!m_nostr_client->fetch_service_descriptor(
+                    relay_url_str,
+                    domain,
+                    rec.registrant_key,
+                    ev,
+                    10))
+            {
+                MDEBUG("Nostr: no valid service descriptor for "
+                       << domain << " from " << relay_url_str);
+                continue;
+            }
+
+            // Validate the descriptor fingerprint against current on-chain
+            // domain state before putting it into the local cache.
+            std::string fingerprint_data;
+            fingerprint_data += domain;
+            fingerprint_data.append(
+                reinterpret_cast<const char*>(rec.registrant_key.data()),
+                rec.registrant_key.size());
+            fingerprint_data.push_back(
+                static_cast<char>(rec.fee_tier));
+
+            crypto::hash expected_fingerprint;
+            crypto::cn_fast_hash(
+                fingerprint_data.data(),
+                fingerprint_data.size(),
+                expected_fingerprint);
+
+            const std::string expected_hex =
+                epee::string_tools::pod_to_hex(expected_fingerprint);
+
+            if (expected_hex != ev.fingerprint_hex)
+            {
+                MERROR("Nostr: service descriptor fingerprint mismatch for "
+                       << domain << " from " << relay_url_str);
+                continue;
+            }
+
+            // Validate the Merkle proof against the current registration.
+            if (!verify_merkle_proof(
+                    rec.registration_tx_hash,
+                    ev.leaf_index,
+                    ev.sibling_hashes,
+                    ev.block_hash))
+            {
+                MERROR("Nostr: service descriptor Merkle proof verification "
+                       "failed for " << domain << " from " << relay_url_str);
+                continue;
+            }
+
+            candidates.push_back(ev);
+        }
+
+        if (candidates.empty())
+            continue;
+
+        // Select the newest authenticated descriptor deterministically.
+        nostr_client::service_descriptor_event best = candidates[0];
+
+        for (size_t i = 1; i < candidates.size(); ++i)
+        {
+            const auto& ev = candidates[i];
+
+            if (ev.version > best.version ||
+                (ev.version == best.version &&
+                 ev.created_at > best.created_at))
+            {
+                best = ev;
+            }
+            else if (ev.version == best.version &&
+                     ev.created_at == best.created_at &&
+                     ev.event_id != best.event_id)
+            {
+                MERROR("Nostr: conflicting service descriptors for "
+                       << domain << " at version " << ev.version);
+            }
+        }
+
+        cache_service_descriptor(
+            domain,
+            rec.registration_tx_hash,
+            best);
+    }
+}
+// ---------- VNS NOSTR SERVICE DESCRIPTOR FETCHER END ----------
 
 void Blockchain::fetch_all_nostr_heartbeats(bool selective)
 {
