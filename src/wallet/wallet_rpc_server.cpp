@@ -4916,88 +4916,89 @@ bool wallet_rpc_server::on_register_domain(const wallet_rpc::COMMAND_RPC_REGISTE
         return false;
     }
 
-    // Build tx_extra for registration
-    std::vector<uint8_t> extra;
-    extra.push_back(0xFD);
-    size_t len_pos = extra.size();
-    extra.push_back(0);
-    const char* magic = "DOMAIN_REG";
-    extra.insert(extra.end(), magic, magic + 10);
-
-    extra.push_back(0x01);
-    extra.push_back(domain.size());
-    extra.insert(extra.end(), domain.begin(), domain.end());
-
-    extra.push_back(0x02);
-    uint64_t tier = req.fee_tier;
-    uint8_t varint_buf[9];
-    size_t varint_len = 0;
-    while (tier > 0) {
-        varint_buf[varint_len++] = tier & 0x7F;
-        tier >>= 7;
-    }
-    if (varint_len == 0) varint_buf[varint_len++] = 0;
-    extra.push_back(varint_len);
-    extra.insert(extra.end(), varint_buf, varint_buf + varint_len);
-
-    extra.push_back(0x03);
-    extra.push_back(32);
-    if (!req.registrant_key.empty())
+    // registrant_key must be exactly 33 bytes (66 hex chars), compressed secp256k1
+    if (req.registrant_key.size() != 66)
     {
-        crypto::public_key pkey;
-        if (!epee::string_tools::hex_to_pod(req.registrant_key, pkey))
-        {
-            er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM;
-            er.message = "Invalid registrant public key (hex)";
-            return false;
-        }
-        extra.insert(extra.end(), (const uint8_t*)&pkey, (const uint8_t*)&pkey + 32);
+        er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM;
+        er.message = "registrant_key must be 66 hex characters (33-byte compressed key)";
+        return false;
     }
-    else
+    std::array<unsigned char, 33> registrant_key{};
+    if (!epee::string_tools::hex_to_pod(req.registrant_key, registrant_key))
     {
-        extra.insert(extra.end(), 32, 0);
+        er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM;
+        er.message = "registrant_key is not valid hex";
+        return false;
+    }
+    if (registrant_key[0] != 0x02 && registrant_key[0] != 0x03)
+    {
+        er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM;
+        er.message = "registrant_key is not a compressed secp256k1 point (expected 0x02/0x03 prefix)";
+        return false;
     }
 
-    extra.push_back(0x04);
-    extra.push_back(32);
+    // Canonical fingerprint — must match what CLI computes.
+    crypto::hash computed_fingerprint =
+        domain_utils::compute_vns_registration_fingerprint(
+            domain, registrant_key, static_cast<uint8_t>(req.fee_tier));
+
     if (!req.genesis_fingerprint.empty())
     {
-        crypto::hash fingerprint;
-        if (!epee::string_tools::hex_to_pod(req.genesis_fingerprint, fingerprint))
+        crypto::hash supplied{};
+        if (!epee::string_tools::hex_to_pod(req.genesis_fingerprint, supplied))
         {
             er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM;
-            er.message = "Invalid genesis fingerprint (hex)";
+            er.message = "Invalid genesis_fingerprint hex";
             return false;
         }
-        extra.insert(extra.end(), (const uint8_t*)&fingerprint, (const uint8_t*)&fingerprint + 32);
-    }
-    else
-    {
-        extra.insert(extra.end(), 32, 0);
+        if (supplied != computed_fingerprint)
+        {
+            er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM;
+            er.message = "genesis_fingerprint does not match canonical fingerprint";
+            return false;
+        }
     }
 
-    // Append up to 3 relay URLs as tags 0x06, 0x07, 0x08
-    static constexpr uint8_t relay_tags[3] = {0x06, 0x07, 0x08};
-    size_t relay_count = req.relay_urls.size();
-    if (relay_count > 3) relay_count = 3;
-    for (size_t ri = 0; ri < relay_count; ++ri)
+    if (req.relay_urls.size() > 3)
     {
-        const std::string& relay_url = req.relay_urls[ri];
-        if (relay_url.empty())
-            continue;
-        if (relay_url.size() > 255)
+        er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM;
+        er.message = "At most 3 relay URLs are allowed";
+        return false;
+    }
+    std::array<std::string, 3> relay_set{};
+    for (size_t i = 0; i < req.relay_urls.size(); ++i)
+    {
+        if (req.relay_urls[i].size() > 255)
         {
             er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM;
             er.message = "Relay URL too long";
             return false;
         }
-        extra.push_back(relay_tags[ri]);
-        extra.push_back(static_cast<uint8_t>(relay_url.size()));
-        extra.insert(extra.end(), relay_url.begin(), relay_url.end());
+        relay_set[i] = req.relay_urls[i];
+    }
+    {
+        size_t non_empty = 0;
+        for (const auto& u : relay_set) if (!u.empty()) ++non_empty;
+        if (non_empty == 0)
+        {
+            er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM;
+            er.message = "At least one relay URL is required";
+            return false;
+        }
     }
 
-    extra.push_back(0x00);
-    extra[len_pos] = extra.size() - (len_pos + 1);
+    std::vector<uint8_t> extra = domain_utils::build_registration_extra(
+        domain,
+        static_cast<uint8_t>(req.fee_tier),
+        registrant_key,
+        computed_fingerprint,
+        relay_set);
+    if (extra.empty())
+    {
+        er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM;
+        er.message = "Failed to build registration tx_extra";
+        return false;
+    }
 
     cryptonote::account_public_address burn_address;
     memset(&burn_address, 0, sizeof(burn_address));
