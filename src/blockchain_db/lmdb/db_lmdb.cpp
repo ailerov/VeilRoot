@@ -1619,8 +1619,8 @@ void BlockchainLMDB::open(const std::string& filename, const int db_flags)
   lmdb_db_open(txn, LMDB_VOTES, MDB_CREATE, m_votes, "Failed to open db handle for votes");
   mdb_set_compare(txn, m_votes, compare_hash64);
   lmdb_db_open(txn, LMDB_COMMITTEE_ELIGIBLE, MDB_CREATE, m_committee_eligible, "Failed to open db handle for committee_eligible");
-  mdb_set_compare(txn, m_vote_ciphertexts, compare_hash64);
   lmdb_db_open(txn, LMDB_VOTE_CIPHERTEXTS, MDB_CREATE, m_vote_ciphertexts, "Failed to open db handle for vote_ciphertexts");
+  mdb_set_compare(txn, m_vote_ciphertexts, compare_hash64);
   mdb_set_compare(txn, m_committee_eligible, compare_hash32);
   lmdb_db_open(txn, LMDB_PROPOSAL_EXECUTIONS, MDB_CREATE, m_proposal_executions, "Failed to open db handle for proposal_executions");
   mdb_set_compare(txn, m_proposal_executions, compare_hash32);
