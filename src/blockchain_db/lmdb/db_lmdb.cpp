@@ -450,19 +450,10 @@ std::atomic_flag mdb_txn_safe::creation_gate = ATOMIC_FLAG_INIT;
 
 mdb_threadinfo::~mdb_threadinfo()
 {
-if (m_ti_rcursors.m_txc_vns_domains)
-    { mdb_cursor_close(m_ti_rcursors.m_txc_vns_domains);
-      mdb_cursor_close(m_ti_rcursors.m_txc_vns_heartbeat_proofs);
-      mdb_cursor_close(m_ti_rcursors.m_txc_proposals);
-      mdb_cursor_close(m_ti_rcursors.m_txc_votes);
-      mdb_cursor_close(m_ti_rcursors.m_txc_vote_ciphertexts);
-      mdb_cursor_close(m_ti_rcursors.m_txc_dkg_shares);
-      mdb_cursor_close(m_ti_rcursors.m_txc_committee_key);
-      mdb_cursor_close(m_ti_rcursors.m_txc_proposal_outcomes);
-      mdb_cursor_close(m_ti_rcursors.m_txc_proposal_data);
-      mdb_cursor_close(m_ti_rcursors.m_txc_committee_eligible);
-      mdb_cursor_close(m_ti_rcursors.m_txc_proposal_executions);
-    }
+  // The m_ti_rcursors struct contains every cursor pointer, including
+  // the VNS / governance ones. Closing each once via the loop is
+  // sufficient; an explicit second pass over the VNS cursors would
+  // close them twice (double free).
   MDB_cursor **cur = &m_ti_rcursors.m_txc_blocks;
   unsigned i;
   for (i=0; i<sizeof(mdb_txn_cursors)/sizeof(MDB_cursor *); i++)
