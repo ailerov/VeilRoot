@@ -2919,6 +2919,9 @@ namespace wallet_rpc
       uint8_t domain_status;
       uint64_t registered_height;
       uint64_t heartbeat_count;
+      std::string relay_url;                 // compatibility
+      std::vector<std::string> relay_urls;   // canonical
+      std::string registration_tx_hash;
       BEGIN_KV_SERIALIZE_MAP()
         KV_SERIALIZE_PARENT(cryptonote::rpc_response_base)
         KV_SERIALIZE(domain_name)
@@ -2931,6 +2934,9 @@ namespace wallet_rpc
         KV_SERIALIZE(domain_status)
         KV_SERIALIZE(registered_height)
         KV_SERIALIZE(heartbeat_count)
+        KV_SERIALIZE(relay_url)
+        KV_SERIALIZE(relay_urls)
+        KV_SERIALIZE(registration_tx_hash)
       END_KV_SERIALIZE_MAP()
     };
   };

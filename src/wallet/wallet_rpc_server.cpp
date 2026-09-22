@@ -5219,6 +5219,9 @@ bool wallet_rpc_server::on_get_domain_info(const wallet_rpc::COMMAND_RPC_GET_DOM
     res.domain_status = daemon_res.domain_status;
     res.registered_height = daemon_res.registered_height;
     res.heartbeat_count = daemon_res.heartbeat_count;
+    res.relay_url = daemon_res.relay_url;
+    res.relay_urls = daemon_res.relay_urls;
+    res.registration_tx_hash = daemon_res.registration_tx_hash;
     res.status = "OK";
 
     return true;
