@@ -12206,13 +12206,8 @@ bool simple_wallet::register_domain(const std::vector<std::string> &args)
         return true;
     }
 
-    // Compute fingerprint = SHA256(domain + registrant_key (raw) + fee_tier)
-    std::string fingerprint_data;
-    fingerprint_data += domain;
-    fingerprint_data.append(reinterpret_cast<const char*>(&registrant_key), sizeof(registrant_key));
-    fingerprint_data.push_back(static_cast<char>(tier));
-    crypto::hash genesis_fingerprint;
-    crypto::cn_fast_hash(fingerprint_data.data(), fingerprint_data.size(), genesis_fingerprint);
+    crypto::hash genesis_fingerprint =
+        domain_utils::compute_vns_registration_fingerprint(domain, registrant_key, tier);
 
     std::vector<uint8_t> extra = domain_utils::build_registration_extra(domain, tier, registrant_key, genesis_fingerprint, relay_urls);
     MINFO("VNS wallet: built extra with " << extra.size() << " bytes");

@@ -105,7 +105,8 @@ set(unit_tests_sources
   aligned.cpp
   rpc_version_str.cpp
   zmq_rpc.cpp
-  vns_nostr.cpp)
+  vns_nostr.cpp
+  vns_fingerprint.cpp)
 
 set(unit_tests_headers
   unit_tests_utils.h)

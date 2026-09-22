@@ -596,6 +596,31 @@ namespace domain_utils
     // ------------------------------------------------------------------
     // tx_extra builders using separate TLVs (0x07 for fingerprint, 0x06 for domain data)
     // ------------------------------------------------------------------
+    // ----------------------------------------------------------------
+    // Canonical VNS registration fingerprint (FROZEN)
+    //
+    //   input  = normalized_domain || raw 33-byte registrant_key || 1-byte fee_tier
+    //   result = crypto::cn_fast_hash(input)
+    //
+    // Do NOT add registration height. Do NOT hex-encode the key.
+    // Do NOT substitute OpenSSL SHA-256. Any change here is a protocol bump.
+    // ----------------------------------------------------------------
+    inline crypto::hash compute_vns_registration_fingerprint(
+        const std::string& normalized_domain,
+        const std::array<unsigned char, 33>& registrant_key,
+        uint8_t fee_tier)
+    {
+        std::string data;
+        data.reserve(normalized_domain.size() + registrant_key.size() + 1);
+        data += normalized_domain;
+        data.append(reinterpret_cast<const char*>(registrant_key.data()), registrant_key.size());
+        data.push_back(static_cast<char>(fee_tier));
+
+        crypto::hash result;
+        crypto::cn_fast_hash(data.data(), data.size(), result);
+        return result;
+    }
+
     inline std::vector<uint8_t> build_registration_extra(
         const std::string& domain_name,
         uint8_t fee_tier,
