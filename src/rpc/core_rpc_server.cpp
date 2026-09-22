@@ -3837,18 +3837,9 @@ if (!m_core.get_blockchain_storage().get_cached_service_descriptor(
     //
     // Recheck the fingerprint against current on-chain state in case the
     // domain record changed.
-    std::string fingerprint_data;
-    fingerprint_data += req.domain_name;
-    fingerprint_data.append(
-        reinterpret_cast<const char*>(rec.registrant_key.data()),
-        rec.registrant_key.size());
-    fingerprint_data.push_back(static_cast<char>(rec.fee_tier));
-
-    crypto::hash expected_fingerprint;
-    crypto::cn_fast_hash(
-        fingerprint_data.data(),
-        fingerprint_data.size(),
-        expected_fingerprint);
+    crypto::hash expected_fingerprint =
+        domain_utils::compute_vns_registration_fingerprint(
+            req.domain_name, rec.registrant_key, rec.fee_tier);
 
     const std::string expected_hex =
         epee::string_tools::pod_to_hex(expected_fingerprint);
