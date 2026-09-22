@@ -1,9 +1,9 @@
 # VeilRoot Name System (VNS): A Fully Private, Decentralized Alternative to ICANN - by Ailerov Thuypan
 
-**Technical White Paper v1.4**  
+**Technical White Paper v1.5**  
 *Updated with Resolution & Merkle Proof Specifications*
 
-**Modified:** 10/07/2026  
+**Modified:** 20/09/2026  
 **Created:** 06/03/2025
 
 ---
@@ -78,11 +78,35 @@ The VNS blockchain inherits and extends Monero's privacy architecture:
 
 ### 2.2.3 Domain-Specific Extensions
 
-We introduce new opcodes tailored for naming:
+VNS payloads are not EVM-style opcodes. They are magic-tagged TLV blobs carried inside the standard Monero transaction `extra` field. Three magic prefixes are currently defined: `DOMAIN_REG`, `DOMAIN_UPDATE`, and `DOMAIN_XFER`.
 
-- `OP_REGISTER_DOMAIN`: Creates a new domain record containing domain label, namespace extension, registrant's Nostr public key, genesis block fingerprint, and applied fee tier.
-- `OP_RENEW_DOMAIN`: Updates the genesis fingerprint (used when migrating relays).
-- `OP_TRANSFER_DOMAIN`: Changes ownership by associating a new Nostr public key.
+**`DOMAIN_REG` - Registration.** TLV fields:
+
+- `0x01` domain (UTF-8, `label..extension`)
+- `0x02` fee tier (one raw byte, 0-5)
+- `0x03` registrant key (**33-byte compressed secp256k1 public key**)
+- `0x04` genesis fingerprint (32-byte `crypto::hash`)
+- `0x06` relay[0] URL (UTF-8)
+- `0x07` relay[1] URL (optional)
+- `0x08` relay[2] URL (optional)
+
+At least one relay is required; at most three are permitted.
+
+**`DOMAIN_UPDATE` - Record mutation.** TLV fields:
+
+- `0x01` domain
+- `0x02` new 33-byte owner key (optional)
+- `0x03` legacy single relay URL (accepted for compatibility)
+- `0x10` complete relay-set replacement (count byte followed by length-prefixed URLs)
+- `0x04` 64-byte BIP340 signature over the update message
+
+**`DOMAIN_XFER` - Ownership transfer.** TLV fields:
+
+- `0x01` domain
+- `0x05` new owner x-only key (32 bytes)
+- `0x04` 64-byte BIP340 signature
+
+The transfer signature is verified against the **current** on-chain registrant key before ownership is changed.
 
 ### 2.2.4 DAO Governance Layer (New)
 
@@ -135,57 +159,75 @@ This separation keeps the blockchain lean while enabling flexible updates.
 
 ### 2.3.2 Heartbeat Events (Kind: 30001)
 
-Each registered domain MUST maintain an associated Nostr relay that publishes heartbeat events at regular intervals (configurable, default: every 6 hours).
+Each registered domain has **one to three** registered Nostr relay endpoints. Relays are transport/retrieval locations; they do **not** possess domain authority. The heartbeat event is authorized by the domain's registered Nostr/BIP340 signing key.
+
+The relay set is stored on-chain as `relay_urls[0..2]`. Order represents preference/failover only, not authority.
 
 ```json
 {
+  "kind": 30001,
   "tags": [
-    ["d", "example.free"],
-    ["fingerprint", "<blockchain genesis hash>"],
-    ["proof", "<Merkle proof linking to genesis block>"],
-    ["fee_tier", "1"]
+    ["d", "example..free"],
+    ["fingerprint", "<32-byte fingerprint, hex>"],
+    ["block_hash", "<32-byte block hash, hex>"],
+    ["leaf_index", "<zero-based index of registration tx among non-miner txs>"],
+    ["heartbeat_height", "<block height at which heartbeat was generated>"],
+    ["heartbeat_count", "<monotonic counter>"],
+    ["sibling_path", "<comma-separated 32-byte sibling hashes, hex>"]
   ],
-  "content": {
-    "service_type": "onion",
-    "address": "abcdefg12345.onion",
-    "tls_fingerprint": "sha256$PKI hash"
-  }
+  "content": "heartbeat"
 }
 ```
 
-The heartbeat proves the relay operator controls the linked Nostr private key, maintains awareness of the blockchain anchor, and ensures the service is operational.
+The event is signed with BIP340 over the SHA-256 of the canonical NIP-01 serialization. A valid heartbeat proves the signer controls the domain's registered Nostr key and is aware of the current blockchain anchor.
 
-**Merkle proof specification for heartbeats:**  
-The `proof` field contains a transaction inclusion proof (see Section 6.5) linking the domain’s genesis fingerprint to a specific block hash. This prevents any relay from claiming authority over a domain without knowledge of the fingerprint, which is only known to the original registrant.
+**Merkle proof specification for heartbeats:**
+The `block_hash`, `leaf_index`, and `sibling_path` fields together form a transaction-inclusion proof (Section 6.5) linking the domain's registration transaction to a specific block.
 
 ### 2.3.3 Service Descriptor Events (Kind: 30003)
 
-Replaceable events of kind 30003 carry the actual service endpoint (onion address, IPFS hash, HTTPS URL, etc.). Each event MUST include the same fingerprint and proof tags as heartbeats. Resolvers verify this proof before accepting the descriptor as authentic.
+Replaceable events of kind 30003 carry the actual service endpoint (onion address, IPFS hash, HTTPS URL, etc.).
+
+Kind 30003 events **MUST** be cryptographically authenticated by the domain's registered Nostr/BIP340 public key. The relay is only a distribution mechanism. A relay cannot authorize a descriptor merely by possessing the fingerprint.
+
+Acceptance rule:
+
+```text
+valid Nostr event
+  + valid event ID
+  + valid BIP340 signature
+  + event pubkey == on-chain registrant key
+  + correct domain (d tag)
+  + correct fingerprint
+  + valid Merkle registration proof
+  -> accepted descriptor
+```
 
 ### 2.3.4 Resolution Flow
 
 A resolver (client or API) resolves a domain `[label]..[extension]` as follows:
 
-1. Query the VNS blockchain for the domain’s on-chain record (using RPC `get_domain_record`). Obtain:
-   - `status` (ACTIVE/GRACE/EXPIRED)
-   - `relay_url`
-   - `registrant_nostr_pubkey`
-   - `registration_height`
-   - `fee_tier`
-   - `registration_tx_hash` (the transaction ID of the registration)
-2. If status is not ACTIVE, return an error or warning.
-3. Connect to the Nostr relay at `relay_url` and fetch the latest replaceable event of kind 30003 whose `d` tag matches the domain name.
-4. Extract the fingerprint, proof, and `block_hash` tags from the event.
-5. Recompute the expected fingerprint:
+1. Query the VNS blockchain for the domain's on-chain record (`get_domain_record`). Obtain `status` (ACTIVE/GRACE/EXPIRED), `relay_urls`, `registrant_key`, `fee_tier`, and `registration_tx_hash`.
+2. If status is not ACTIVE (or GRACE), return an error or warning.
+3. Query each entry in `relay_urls[0..2]` for replaceable kind:30003 events whose `d` tag matches the domain.
+4. For each candidate event:
+   - Validate the event ID and BIP340 signature.
+   - Require event pubkey == on-chain `registrant_key`.
+   - Require matching domain and fingerprint.
+   - Verify the registration Merkle proof (Section 6.5).
+   - Discard any candidate that fails any check.
+5. From the remaining valid candidates, select the descriptor using the deterministic event-selection rule (highest `version`, tie-broken by `created_at`).
+6. Return only an authenticated descriptor.
+
+Explicit trust model:
 
 ```text
-SHA256(domain_name + registrant_nostr_pubkey + registration_height + fee_tier)
+Relay agreement is NOT a trust quorum.
+Relay majority does NOT establish ownership.
+Cryptographic signature + on-chain registrant binding establishes event authority.
 ```
 
-6. Verify the Merkle proof (Section 6.5) against the provided `block_hash` and the on-chain transaction Merkle root.
-7. If all checks pass, return the content of the event (service address, TLS fingerprint, etc.) to the user.
-
-This design ensures that only the domain’s authorized relay – the one that knows the fingerprint – can publish a valid service descriptor, and that the descriptor is anchored to an immutable blockchain record.
+An unreachable relay is ignored. A relay that returns invalid or unauthorized events has them discarded. Relay order does not confer authority.
 
 ### 2.3.5 Bridge Pool & Fee Mechanics
 
@@ -442,38 +484,40 @@ To bind a domain’s genesis fingerprint to an immutable block, VNS uses a trans
 For each domain registration, the wallet computes:
 
 ```text
-fingerprint = SHA256(
-    domain_name || registrant_nostr_pubkey || registration_height || fee_tier
+fingerprint = cn_fast_hash(
+    domain_name || registrant_key || fee_tier
 )
 ```
 
-where `||` denotes concatenation. All fields are in binary form:
+where `||` denotes concatenation. All fields are in raw binary form:
 
 - `domain_name`: UTF-8 string (e.g., `"example..free"`)
-- `registrant_nostr_pubkey`: 32-byte Schnorr public key
-- `registration_height`: 64-bit little-endian block height
-- `fee_tier`: 8-bit integer (0–5)
+- `registrant_key`: **raw 33-byte compressed secp256k1 public key** (not its hexadecimal text form)
+- `fee_tier`: one raw byte (0-5)
 
-The fingerprint is embedded in the registration transaction’s `tx_extra` field using a new TLV type `0x07` (fingerprint).
+The current VeilRoot implementation uses the chain's `crypto::cn_fast_hash` function, not SHA-256. Registration height is **not** part of the fingerprint. A later re-registration of the same domain under the same key and tier is a distinct registration generation anchored by its own `registration_tx_hash`, which is the unique blockchain anchor used by the Merkle-proof machinery.
+
+The fingerprint is embedded in the registration transaction's `extra` field as TLV type `0x04` inside the `DOMAIN_REG` payload.
 
 ### 6.5.2 Proof Structure
 
 A Merkle proof for a domain consists of:
 
 - `block_hash` (32 bytes): hash of the block containing the registration transaction.
-- `leaf_index` (uint32): 0-based index of the registration transaction within the block’s transaction list.
+- `leaf_index` (uint32): **zero-based index of the registration transaction among the block's non-miner transactions**. The verifier adds one to obtain the corresponding index in the full transaction tree, because the miner transaction occupies tree index zero.
 - `sibling_path` (array of 32-byte hashes): the sibling hashes needed to recompute the Merkle root, ordered from leaf to root.
 
-The proof does not include the transaction hash itself – it is recomputed as `SHA256(registration_tx_hash)` where `registration_tx_hash` is the actual transaction ID (stored in the domain record).
+The leaf is the raw `registration_tx_hash` itself. It is **not** re-hashed with SHA-256 or any other function. The `registration_tx_hash` is stored in the domain record.
 
 ### 6.5.3 Verification Procedure
 
 Given a domain record providing `registration_tx_hash`, and a Nostr event providing `block_hash`, `leaf_index`, and `sibling_path`, the verifier:
 
-1. Retrieves the block header for `block_hash` from the VNS blockchain (via RPC). Extracts the `merkle_root` field.
-2. Computes `leaf = SHA256(registration_tx_hash)`.
-3. Iteratively combines leaf with each sibling hash in `sibling_path` according to the position bits of `leaf_index` (standard Merkle tree inclusion algorithm).
-4. Compares the final computed root with the block’s `merkle_root`. If they match, the proof is valid.
+1. Retrieves the block for `block_hash` and builds the full transaction-hash list: miner transaction first, then the block's `tx_hashes`.
+2. Uses `leaf = registration_tx_hash` directly (no additional hashing).
+3. Computes `actual_index = leaf_index + 1` (to account for the miner transaction at tree index 0).
+4. Iteratively combines the leaf with each sibling hash in `sibling_path` using `tree_branch_hash()` with the path derived from `actual_index` and the total transaction count.
+5. Compares the computed root with the block's actual Merkle root (which is recomputed the same way). If they match, the proof is valid.
 
 This proves that the registration transaction was included in the block, and therefore the fingerprint (embedded in that transaction) was committed to the blockchain at that height.
 
@@ -605,6 +649,7 @@ The double-dot namespace provides a ***clean break from ICANN's*** hierarchical 
 - **v1.2 (25/03/2025):** Original whitepaper with added on heartbeat mechanism.
 - **v1.3 (15/12/2025):** Added resolution flow (Section 2.3.4), service descriptor proof requirement (2.3.3), Merkle proof specification (6.5), and resolver verification steps (6.4).
 - **v1.4 (10/07/2026):** Added DAO governance with threshold-decrypted voting (Section 2.2.4). Updated bridge pool mechanics to remove xmr_reserve and clarify LP accounting (2.3.5). Moved extension tiers, premium labels, and banned terms to on-chain governance (4.2). Added DAO parameters to blockchain specs (6.1). Expanded governance section with permissionless committee selection and DAO-controlled parameters (9.4–9.6).
+- **v1.5 (22/09/2026):** Frozen VNS wire protocol (2.2.3) to DOMAIN_REG/DOMAIN_UPDATE/DOMAIN_XFER TLV payloads. Multi-relay heartbeat and descriptor sections rewritten (2.3.2-2.3.4). Nostr descriptor authentication made signature-required and relay-authority-independent (2.3.3). Fingerprint definition corrected to cn_fast_hash(domain || raw 33-byte compressed key || 1-byte tier) with no registration height and no SHA-256 (6.5.1). Merkle leaf corrected to the raw registration_tx_hash (6.5.2-6.5.3). Relay terminology normalized to relay_urls with relay_url marked compatibility-only.
 
 ---
 
