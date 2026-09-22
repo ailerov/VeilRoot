@@ -5066,28 +5066,84 @@ bool wallet_rpc_server::on_transfer_domain(const wallet_rpc::COMMAND_RPC_TRANSFE
         return false;
     }
 
-    cryptonote::address_parse_info info;
-    if (!cryptonote::get_account_address_from_str(info, m_wallet->nettype(), req.new_owner))
+    // Parse new-owner x-only pubkey (32 bytes, 64 hex chars)
+    if (req.new_owner_pubkey.size() != 64)
     {
-        er.code = WALLET_RPC_ERROR_CODE_WRONG_ADDRESS;
-        er.message = "Invalid new owner address";
+        er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM;
+        er.message = "new_owner_pubkey must be 64 hex characters (32-byte x-only)";
+        return false;
+    }
+    std::array<unsigned char, 32> new_owner_xonly{};
+    if (!epee::string_tools::hex_to_pod(req.new_owner_pubkey, new_owner_xonly))
+    {
+        er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM;
+        er.message = "new_owner_pubkey is not valid hex";
         return false;
     }
 
-    std::vector<uint8_t> extra;
-    extra.push_back(0xFD);
-    size_t len_pos = extra.size();
-    extra.push_back(0);
-    const char* magic = "DOMAIN_TRANSFER";
-    extra.insert(extra.end(), magic, magic + 14);
-    extra.push_back(0x01);
-    extra.push_back(domain.size());
-    extra.insert(extra.end(), domain.begin(), domain.end());
-    extra.push_back(0x03);
-    extra.push_back(32);
-    extra.insert(extra.end(), (const uint8_t*)&info.address.m_spend_public_key, (const uint8_t*)&info.address.m_spend_public_key + 32);
-    extra.push_back(0x00);
-    extra[len_pos] = extra.size() - (len_pos + 1);
+    // Parse ownership signature (64 bytes, 128 hex chars)
+    if (req.ownership_signature.size() != 128)
+    {
+        er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM;
+        er.message = "ownership_signature must be 128 hex characters (64-byte BIP340)";
+        return false;
+    }
+    std::array<unsigned char, 64> ownership_signature{};
+    if (!epee::string_tools::hex_to_pod(req.ownership_signature, ownership_signature))
+    {
+        er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM;
+        er.message = "ownership_signature is not valid hex";
+        return false;
+    }
+
+    // Fetch current on-chain domain record (authoritative registrant key)
+    cryptonote::COMMAND_RPC_GET_DOMAIN_RECORD::request dreq;
+    cryptonote::COMMAND_RPC_GET_DOMAIN_RECORD::response dres;
+    dreq.domain_name = domain;
+    if (!m_wallet->invoke_http_json_rpc("/json_rpc", "get_domain_record", dreq, dres) || dres.status != CORE_RPC_STATUS_OK)
+    {
+        er.code = WALLET_RPC_ERROR_CODE_INTERNAL;
+        er.message = "Failed to query domain record: " + (dres.status.empty() ? "RPC error" : dres.status);
+        return false;
+    }
+    if (dres.domain_name.empty() || dres.registrant_key.size() != 66)
+    {
+        er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM;
+        er.message = "Domain not registered or registrant key unavailable";
+        return false;
+    }
+    std::array<unsigned char, 33> registrant_key{};
+    if (!epee::string_tools::hex_to_pod(dres.registrant_key, registrant_key))
+    {
+        er.code = WALLET_RPC_ERROR_CODE_INTERNAL;
+        er.message = "Domain record has invalid registrant_key";
+        return false;
+    }
+
+    // Reconstruct consensus transfer message and verify BIP340 against current registrant key
+    crypto::hash message_hash =
+        domain_utils::compute_vns_transfer_message_hash(domain, new_owner_xonly);
+
+    if (!bip340::verify(registrant_key.data(),
+                        (const unsigned char*)&message_hash,
+                        ownership_signature.data()))
+    {
+        er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM;
+        er.message = "Ownership signature does not verify against current registrant key";
+        return false;
+    }
+
+    crypto::public_key new_owner_pub{};
+    memcpy(new_owner_pub.data, new_owner_xonly.data(), 32);
+
+    std::vector<uint8_t> extra =
+        domain_utils::build_transfer_extra(domain, new_owner_pub, ownership_signature);
+    if (extra.empty())
+    {
+        er.code = WALLET_RPC_ERROR_CODE_INTERNAL;
+        er.message = "Failed to build DOMAIN_XFER tx_extra";
+        return false;
+    }
 
     std::vector<cryptonote::tx_destination_entry> dsts;
     cryptonote::account_public_address burn_address;

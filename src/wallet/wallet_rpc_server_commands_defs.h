@@ -2870,11 +2870,13 @@ namespace wallet_rpc
     struct request
     {
       std::string domain_name;
-      std::string new_owner;
+      std::string new_owner_pubkey;     // 64 hex chars: 32-byte x-only
+      std::string ownership_signature;  // 128 hex chars: 64-byte BIP340
       uint32_t priority;
       BEGIN_KV_SERIALIZE_MAP()
         KV_SERIALIZE(domain_name)
-        KV_SERIALIZE(new_owner)
+        KV_SERIALIZE(new_owner_pubkey)
+        KV_SERIALIZE(ownership_signature)
         KV_SERIALIZE(priority)
       END_KV_SERIALIZE_MAP()
     };

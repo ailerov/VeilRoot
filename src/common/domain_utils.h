@@ -621,6 +621,28 @@ namespace domain_utils
         return result;
     }
 
+    // ----------------------------------------------------------------
+    // Canonical VNS transfer message hash (FROZEN)
+    //
+    //   input  = normalized_domain || raw 32-byte new-owner x-only key
+    //   result = crypto::cn_fast_hash(input)
+    //
+    // Do NOT change encoding. Any change here is a protocol bump.
+    // ----------------------------------------------------------------
+    inline crypto::hash compute_vns_transfer_message_hash(
+        const std::string& normalized_domain,
+        const std::array<unsigned char, 32>& new_owner_xonly)
+    {
+        std::string data;
+        data.reserve(normalized_domain.size() + new_owner_xonly.size());
+        data += normalized_domain;
+        data.append(reinterpret_cast<const char*>(new_owner_xonly.data()), new_owner_xonly.size());
+
+        crypto::hash result;
+        crypto::cn_fast_hash(data.data(), data.size(), result);
+        return result;
+    }
+
     inline std::vector<uint8_t> build_registration_extra(
         const std::string& domain_name,
         uint8_t fee_tier,

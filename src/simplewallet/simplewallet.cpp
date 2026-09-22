@@ -12608,10 +12608,10 @@ bool simple_wallet::transfer_domain(const std::vector<std::string> &args)
     }
 
     // Sign the transfer message
-    std::string message = domain;
-    message.append(reinterpret_cast<const char*>(&new_owner_pub), sizeof(new_owner_pub));
-    crypto::hash message_hash;
-    crypto::cn_fast_hash(message.data(), message.size(), message_hash);
+    std::array<unsigned char, 32> new_owner_xonly{};
+    memcpy(new_owner_xonly.data(), new_owner_pub.data, 32);
+    crypto::hash message_hash =
+        domain_utils::compute_vns_transfer_message_hash(domain, new_owner_xonly);
     unsigned char sig64[64];
     if (!bip340::sign((const unsigned char*)&private_key, (const unsigned char*)&message_hash, sig64))
     {

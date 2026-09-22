@@ -5249,10 +5249,10 @@ domain_registration_result Blockchain::process_domain_registration(const transac
                 const vns_domain_record& existing = it->second;
                 if (existing.status == 2) return domain_registration_result::domain_expired;
 
-                std::string message = domain_name;
-                message.append(reinterpret_cast<const char*>(&new_owner_key), sizeof(new_owner_key));
-                crypto::hash message_hash;
-                crypto::cn_fast_hash(message.data(), message.size(), message_hash);
+                std::array<unsigned char, 32> new_owner_xonly{};
+                memcpy(new_owner_xonly.data(), &new_owner_key, 32);
+                crypto::hash message_hash =
+                    domain_utils::compute_vns_transfer_message_hash(domain_name, new_owner_xonly);
 
                 const std::array<unsigned char, 33>& pubkey = existing.registrant_key;
 
