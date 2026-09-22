@@ -332,3 +332,103 @@ TEST(VnsNostr, WrongDomainRejected)
     cryptonote::nostr_client::service_descriptor_event ev;
     EXPECT_FALSE(cryptonote::nostr_client::parse_service_descriptor_event_for_test(json, DOMAIN, ev));
 }
+
+TEST(VnsNostr, CopiedFingerprintAttackerSignatureRejected)
+{
+    const auto legit_kp = make_secp_keypair(1);
+    const auto attacker_kp = make_secp_keypair(2);
+
+    std::vector<std::pair<std::string, std::string>> tags = {
+        {"d", DOMAIN},
+        {"fingerprint", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+        {"block_hash", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+        {"leaf_index", "1"},
+        {"sibling_path", "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
+        {"version", "5"}
+    };
+
+    // Attacker signs an event that carries the legitimate domain's fingerprint.
+    const std::string id_hex = canonical_event_id_hex(attacker_kp.pubkey_hex, NOW, 30003, CONTENT, tags);
+    const std::string sig_hex = sign_event_id_hex(attacker_kp.secret, id_hex);
+    const std::string json = make_event_json(id_hex, attacker_kp.pubkey_hex, NOW, 30003, tags, CONTENT, sig_hex);
+
+    std::array<unsigned char, 33> legit_key = legit_kp.compressed_key;
+    EXPECT_FALSE(cryptonote::nostr_client::verify_nostr_signature_for_test(json, legit_key));
+}
+
+TEST(VnsNostr, AlteredContentRejected)
+{
+    const auto kp = make_secp_keypair();
+
+    std::vector<std::pair<std::string, std::string>> tags = {
+        {"d", DOMAIN},
+        {"fingerprint", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+        {"block_hash", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+        {"leaf_index", "1"},
+        {"sibling_path", "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
+        {"version", "5"}
+    };
+
+    const std::string id_hex = canonical_event_id_hex(kp.pubkey_hex, NOW, 30003, CONTENT, tags);
+    const std::string sig_hex = sign_event_id_hex(kp.secret, id_hex);
+
+    // Reuse id + sig but substitute attacker-controlled content.
+    const std::string json = make_event_json(
+        id_hex, kp.pubkey_hex, NOW, 30003, tags,
+        "https://attacker.example", sig_hex);
+
+    std::array<unsigned char, 33> registrant_key = kp.compressed_key;
+    EXPECT_FALSE(cryptonote::nostr_client::verify_nostr_signature_for_test(json, registrant_key));
+}
+
+TEST(VnsNostr, AlteredFingerprintRejected)
+{
+    const auto kp = make_secp_keypair();
+
+    std::vector<std::pair<std::string, std::string>> tags_ok = {
+        {"d", DOMAIN},
+        {"fingerprint", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+        {"block_hash", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+        {"leaf_index", "1"},
+        {"sibling_path", "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
+        {"version", "5"}
+    };
+
+    const std::string id_hex = canonical_event_id_hex(kp.pubkey_hex, NOW, 30003, CONTENT, tags_ok);
+    const std::string sig_hex = sign_event_id_hex(kp.secret, id_hex);
+
+    // Swap the fingerprint tag but keep the original id + sig.
+    std::vector<std::pair<std::string, std::string>> tags_bad = tags_ok;
+    tags_bad[1].second = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+
+    const std::string json = make_event_json(id_hex, kp.pubkey_hex, NOW, 30003, tags_bad, CONTENT, sig_hex);
+
+    std::array<unsigned char, 33> registrant_key = kp.compressed_key;
+    EXPECT_FALSE(cryptonote::nostr_client::verify_nostr_signature_for_test(json, registrant_key));
+}
+
+TEST(VnsNostr, AlteredMerkleProofRejected)
+{
+    const auto kp = make_secp_keypair();
+
+    std::vector<std::pair<std::string, std::string>> tags_ok = {
+        {"d", DOMAIN},
+        {"fingerprint", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+        {"block_hash", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+        {"leaf_index", "1"},
+        {"sibling_path", "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
+        {"version", "5"}
+    };
+
+    const std::string id_hex = canonical_event_id_hex(kp.pubkey_hex, NOW, 30003, CONTENT, tags_ok);
+    const std::string sig_hex = sign_event_id_hex(kp.secret, id_hex);
+
+    // Swap the block_hash tag but keep the original id + sig.
+    std::vector<std::pair<std::string, std::string>> tags_bad = tags_ok;
+    tags_bad[2].second = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+
+    const std::string json = make_event_json(id_hex, kp.pubkey_hex, NOW, 30003, tags_bad, CONTENT, sig_hex);
+
+    std::array<unsigned char, 33> registrant_key = kp.compressed_key;
+    EXPECT_FALSE(cryptonote::nostr_client::verify_nostr_signature_for_test(json, registrant_key));
+}
