@@ -736,6 +736,13 @@ bool Blockchain::deinit()
 
   MTRACE("Stopping blockchain read/write activity");
 
+  // Stop the Nostr worker thread before anything it touches is torn down.
+  // m_nostr_fetcher_thread is joinable, not detached; join it here so
+  // the worker cannot dereference `this` after destruction.
+  m_nostr_fetcher_stop = true;
+  if (m_nostr_fetcher_thread.joinable())
+    m_nostr_fetcher_thread.join();
+
  // stop async service
   m_async_work_idle.reset();
   m_async_pool.join_all();
@@ -5443,37 +5450,42 @@ void Blockchain::start_nostr_fetcher()
 {
     MINFO("Nostr fetcher starting in a separate thread");
 
-    std::thread([this]() {
+    m_nostr_fetcher_stop = false;
+    m_nostr_fetcher_thread = std::thread([this]() {
         // Do not compete with initial chain synchronization. Require:
         //   (a) at least one block stored, and
         //   (b) block height stable for 60 consecutive seconds.
-        while (m_db->height() == 0)
+        while (!m_nostr_fetcher_stop && m_db->height() == 0)
             std::this_thread::sleep_for(std::chrono::seconds(10));
+        if (m_nostr_fetcher_stop) return;
 
         {
             uint64_t last_h = m_db->height();
-            while (true)
+            while (!m_nostr_fetcher_stop)
             {
                 std::this_thread::sleep_for(std::chrono::seconds(60));
+                if (m_nostr_fetcher_stop) return;
                 uint64_t h = m_db->height();
                 if (h == last_h)
                     break;
                 last_h = h;
             }
         }
+        if (m_nostr_fetcher_stop) return;
 
-        // Populate the authenticated descriptor cache immediately.
         fetch_all_nostr_service_descriptors();
-
-        // Existing heartbeat refresh.
+        if (m_nostr_fetcher_stop) return;
         fetch_all_nostr_heartbeats(true);
 
         auto last_descriptor_fetch = std::chrono::steady_clock::now();
         auto last_heartbeat_fetch  = std::chrono::steady_clock::now();
 
-        while (true)
+        while (!m_nostr_fetcher_stop)
         {
-            std::this_thread::sleep_for(std::chrono::seconds(5));
+            // Short sleeps so stop is responsive.
+            for (int i = 0; i < 5 && !m_nostr_fetcher_stop; ++i)
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            if (m_nostr_fetcher_stop) return;
 
             const auto now = std::chrono::steady_clock::now();
 
@@ -5489,7 +5501,7 @@ void Blockchain::start_nostr_fetcher()
                 last_heartbeat_fetch = now;
             }
         }
-    }).detach();
+    });
 }
 
 // ---------- VNS NOSTR SERVICE DESCRIPTOR FETCHER ----------

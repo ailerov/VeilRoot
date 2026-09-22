@@ -43,6 +43,7 @@
 #include <boost/multi_index/hashed_index.hpp>
 #include <boost/multi_index/member.hpp>
 #include <atomic>
+#include <thread>
 #include <functional>
 #include <unordered_map>
 #include <unordered_set>
@@ -1530,6 +1531,12 @@ namespace cryptonote
     // Nostr validated heartbeat queue (producer: Nostr fetcher thread, consumer: blockchain owner thread)
     mutable std::mutex m_heartbeat_queue_mutex;
     std::deque<nostr_client::heartbeat_event> m_pending_heartbeats;
+
+    // Nostr fetcher worker: joinable, stopped in deinit() before any
+    // member is destroyed. Never detach: the worker dereferences `this`
+    // and would outlive the Blockchain object.
+    std::atomic<bool> m_nostr_fetcher_stop{false};
+    std::thread m_nostr_fetcher_thread;
 
     // Immutable VNS registry snapshot consumed by the Nostr fetcher thread.
     // Published by the blockchain owner thread only. The Nostr thread never
