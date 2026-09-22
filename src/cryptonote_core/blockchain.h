@@ -1333,6 +1333,7 @@ namespace cryptonote
 
   void update_domain_health(const std::string& domain_name, uint64_t heartbeat_block_height);
   void check_domain_expiry(uint64_t current_height);
+  void refresh_vns_domain_snapshot();
   bool validate_domain_name_format(const std::string& domain_name);
   bool validate_domain_fee_tier(const transaction& tx, uint64_t tier);
   bool resolve_domain_policy(const std::string& domain, uint64_t height, domain_policy_result& result) const;
@@ -1529,6 +1530,12 @@ namespace cryptonote
     // Nostr validated heartbeat queue (producer: Nostr fetcher thread, consumer: blockchain owner thread)
     mutable std::mutex m_heartbeat_queue_mutex;
     std::deque<nostr_client::heartbeat_event> m_pending_heartbeats;
+
+    // Immutable VNS registry snapshot consumed by the Nostr fetcher thread.
+    // Published by the blockchain owner thread only. The Nostr thread never
+    // reads or mutates m_vns_domain_registry or LMDB directly.
+    mutable std::mutex m_vns_snapshot_mutex;
+    std::unordered_map<std::string, vns_domain_record> m_vns_domain_snapshot;
 
     // Authenticated service descriptors cached from Nostr.
     // The cache is populated only after signature, fingerprint and Merkle

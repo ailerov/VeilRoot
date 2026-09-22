@@ -659,6 +659,10 @@ MINFO("Loaded " << m_vns_domain_registry.size()
 
 // ---------- VNS ADDITION END ----------
 
+  // Publish an initial VNS snapshot so the Nostr fetcher has data to work
+  // with as soon as it is allowed to run.
+  refresh_vns_domain_snapshot();
+
   MINFO("About to start Nostr fetcher...");
   try {
       MERROR("INIT: About to call start_nostr_fetcher()");
@@ -4795,6 +4799,12 @@ void Blockchain::check_domain_expiry(uint64_t current_height)
     }
 }
 
+void Blockchain::refresh_vns_domain_snapshot()
+{
+    std::lock_guard<std::mutex> lock(m_vns_snapshot_mutex);
+    m_vns_domain_snapshot = m_vns_domain_registry;
+}
+
 // ---------- VNS ADDITION START ----------
 domain_registration_result Blockchain::process_domain_registration(const transaction& tx, uint64_t height, bool dry_run)
 {
@@ -5434,7 +5444,23 @@ void Blockchain::start_nostr_fetcher()
     MINFO("Nostr fetcher starting in a separate thread");
 
     std::thread([this]() {
-        std::this_thread::sleep_for(std::chrono::seconds(5));
+        // Do not compete with initial chain synchronization. Require:
+        //   (a) at least one block stored, and
+        //   (b) block height stable for 60 consecutive seconds.
+        while (m_db->height() == 0)
+            std::this_thread::sleep_for(std::chrono::seconds(10));
+
+        {
+            uint64_t last_h = m_db->height();
+            while (true)
+            {
+                std::this_thread::sleep_for(std::chrono::seconds(60));
+                uint64_t h = m_db->height();
+                if (h == last_h)
+                    break;
+                last_h = h;
+            }
+        }
 
         // Populate the authenticated descriptor cache immediately.
         fetch_all_nostr_service_descriptors();
@@ -5443,6 +5469,7 @@ void Blockchain::start_nostr_fetcher()
         fetch_all_nostr_heartbeats(true);
 
         auto last_descriptor_fetch = std::chrono::steady_clock::now();
+        auto last_heartbeat_fetch  = std::chrono::steady_clock::now();
 
         while (true)
         {
@@ -5455,8 +5482,6 @@ void Blockchain::start_nostr_fetcher()
                 fetch_all_nostr_service_descriptors();
                 last_descriptor_fetch = now;
             }
-
-            static auto last_heartbeat_fetch = now;
 
             if (now - last_heartbeat_fetch >= std::chrono::seconds(21600))
             {
@@ -5472,7 +5497,15 @@ void Blockchain::fetch_all_nostr_service_descriptors()
 {
     MINFO("Nostr: starting batch service descriptor fetch for all active domains");
 
-    for (auto& pair : m_vns_domain_registry)
+    std::vector<std::pair<std::string, vns_domain_record>> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(m_vns_snapshot_mutex);
+        snapshot.reserve(m_vns_domain_snapshot.size());
+        for (const auto& kv : m_vns_domain_snapshot)
+            snapshot.emplace_back(kv.first, kv.second);
+    }
+
+    for (const auto& pair : snapshot)
     {
         const std::string& domain = pair.first;
         const vns_domain_record& rec = pair.second;
@@ -5513,19 +5546,9 @@ void Blockchain::fetch_all_nostr_service_descriptors()
 
             // Validate the descriptor fingerprint against current on-chain
             // domain state before putting it into the local cache.
-            std::string fingerprint_data;
-            fingerprint_data += domain;
-            fingerprint_data.append(
-                reinterpret_cast<const char*>(rec.registrant_key.data()),
-                rec.registrant_key.size());
-            fingerprint_data.push_back(
-                static_cast<char>(rec.fee_tier));
-
-            crypto::hash expected_fingerprint;
-            crypto::cn_fast_hash(
-                fingerprint_data.data(),
-                fingerprint_data.size(),
-                expected_fingerprint);
+            crypto::hash expected_fingerprint =
+                domain_utils::compute_vns_registration_fingerprint(
+                    domain, rec.registrant_key, rec.fee_tier);
 
             const std::string expected_hex =
                 epee::string_tools::pod_to_hex(expected_fingerprint);
@@ -5590,13 +5613,21 @@ void Blockchain::fetch_all_nostr_heartbeats(bool selective)
     MINFO("Nostr: starting batch heartbeat fetch for all active domains");
     uint64_t current_height = m_db->height();
 
-    // Ensure health scores are decayed before attempting fetches
-    check_domain_expiry(current_height);
+    // check_domain_expiry() is owner-thread only; invoked from add_block().
+    // Do NOT call it from the Nostr fetcher thread.
 
-    for (auto& pair : m_vns_domain_registry)
+    std::vector<std::pair<std::string, vns_domain_record>> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(m_vns_snapshot_mutex);
+        snapshot.reserve(m_vns_domain_snapshot.size());
+        for (const auto& kv : m_vns_domain_snapshot)
+            snapshot.emplace_back(kv.first, kv.second);
+    }
+
+    for (const auto& pair : snapshot)
     {
         const std::string& domain = pair.first;
-        vns_domain_record& rec = pair.second;
+        const vns_domain_record& rec = pair.second;
         if (rec.status == 2) continue;
 
         // Selective mode: skip domains whose last heartbeat is newer than 190 blocks
@@ -6687,6 +6718,8 @@ leave:
       // ---------- VNS ADDITION START ----------
     // Update domain health status for all domains
     check_domain_expiry(new_height);
+    // Publish an immutable snapshot for the Nostr fetcher thread.
+    refresh_vns_domain_snapshot();
     // ---------- VNS ADDITION END ----------
 
   // BEGIN_VNS_GOVERNANCE_PROCESS
@@ -6899,6 +6932,10 @@ leave:
   // Apply any queued Nostr heartbeats now that block processing is complete
   // and we are on the blockchain-state owner thread.
   process_pending_heartbeats();
+
+  // Republish the VNS snapshot so the Nostr fetcher sees the updated
+  // heartbeat state on its next cycle.
+  refresh_vns_domain_snapshot();
 
   return true;
 }
