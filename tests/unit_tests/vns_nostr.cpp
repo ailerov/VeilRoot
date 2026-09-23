@@ -432,3 +432,163 @@ TEST(VnsNostr, AlteredMerkleProofRejected)
     std::array<unsigned char, 33> registrant_key = kp.compressed_key;
     EXPECT_FALSE(cryptonote::nostr_client::verify_nostr_signature_for_test(json, registrant_key));
 }
+// ---------------------------------------------------------------------------
+// Phase 3: real websocket-level multi-relay tests
+//
+// These tests exercise the actual ix::WebSocket fetch path against local
+// mock Nostr relays. They do NOT stub fetch_heartbeat(); they stand up a
+// real IXWebSocketServer, connect to it, and let the production code path
+// open the socket, send the REQ, receive the EVENT, and verify the
+// signature before returning.
+// ---------------------------------------------------------------------------
+
+#include "ixwebsocket/IXWebSocketServer.h"
+#include "ixwebsocket/IXNetSystem.h"
+
+namespace
+{
+    class MockRelay
+    {
+    public:
+        MockRelay(int port, std::string payload)
+            : m_server(port, "127.0.0.1")
+            , m_payload(std::move(payload))
+        {
+            ix::initNetSystem();
+            m_server.setOnClientMessageCallback(
+                [this](std::shared_ptr<ix::ConnectionState> /*state*/,
+                       ix::WebSocket& ws,
+                       const ix::WebSocketMessagePtr& msg)
+                {
+                    if (msg->type == ix::WebSocketMessageType::Message)
+                    {
+                        if (!m_payload.empty())
+                            ws.sendText(m_payload);
+                    }
+                });
+            m_server.listenAndStart();
+        }
+
+        ~MockRelay()
+        {
+            m_server.stop();
+        }
+
+    private:
+        ix::WebSocketServer m_server;
+        std::string m_payload;
+    };
+
+    template <typename KP>
+    std::string make_heartbeat_json(const KP& kp,
+                                    const std::string& domain,
+                                    uint64_t height,
+                                    uint64_t count)
+    {
+        std::vector<std::pair<std::string, std::string>> tags = {
+            {"d", domain},
+            {"fingerprint", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            {"block_hash", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+            {"leaf_index", "1"},
+            {"heartbeat_height", std::to_string(height)},
+            {"heartbeat_count", std::to_string(count)},
+            {"sibling_path", "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
+        };
+        const std::string id_hex = canonical_event_id_hex(kp.pubkey_hex, NOW, 30001, "heartbeat", tags);
+        const std::string sig_hex = sign_event_id_hex(kp.secret, id_hex);
+        return make_event_json(id_hex, kp.pubkey_hex, NOW, 30001, tags, "heartbeat", sig_hex);
+    }
+
+    bool fetch_hb(const std::string& url,
+                  const std::string& domain,
+                  const std::array<unsigned char, 33>& pubkey,
+                  cryptonote::nostr_client::heartbeat_event& out)
+    {
+        cryptonote::nostr_client cli;
+        return cli.fetch_heartbeat(url, domain, pubkey, out, 3);
+    }
+}
+
+TEST(VnsNostr, WebsocketRelayServesValidHeartbeat)
+{
+    const auto kp = make_secp_keypair();
+    const std::string json = make_heartbeat_json(kp, DOMAIN, 12345u, 7u);
+
+    MockRelay relay(18090, json);
+
+    cryptonote::nostr_client::heartbeat_event ev;
+    EXPECT_TRUE(fetch_hb("ws://127.0.0.1:18090", DOMAIN, kp.compressed_key, ev));
+    EXPECT_EQ(ev.heartbeat_height, 12345u);
+    EXPECT_EQ(ev.heartbeat_count, 7u);
+}
+
+TEST(VnsNostr, WebsocketRelayRejectsWrongKeySigner)
+{
+    const auto legit    = make_secp_keypair(1);
+    const auto attacker = make_secp_keypair(2);
+    const std::string json = make_heartbeat_json(attacker, DOMAIN, 12345u, 7u);
+
+    MockRelay relay(18091, json);
+
+    cryptonote::nostr_client::heartbeat_event ev;
+    EXPECT_FALSE(fetch_hb("ws://127.0.0.1:18091", DOMAIN, legit.compressed_key, ev));
+}
+
+TEST(VnsNostr, WebsocketRelayUnreachableReturnsFalse)
+{
+    // Nothing listening on 18092.
+    const auto kp = make_secp_keypair();
+
+    cryptonote::nostr_client::heartbeat_event ev;
+    EXPECT_FALSE(fetch_hb("ws://127.0.0.1:18092", DOMAIN, kp.compressed_key, ev));
+}
+
+TEST(VnsNostr, MultiRelayFallsBackWhenOneIsDown)
+{
+    const auto kp = make_secp_keypair();
+    const std::string json = make_heartbeat_json(kp, DOMAIN, 12345u, 7u);
+
+    MockRelay relay_b(18094, json);
+    // relay_a on 18093 is intentionally not started
+
+    std::vector<std::string> relays = {
+        "ws://127.0.0.1:18093",  // down
+        "ws://127.0.0.1:18094"   // valid
+    };
+
+    std::vector<cryptonote::nostr_client::heartbeat_event> candidates;
+    for (const auto& url : relays) {
+        cryptonote::nostr_client::heartbeat_event ev;
+        if (fetch_hb(url, DOMAIN, kp.compressed_key, ev))
+            candidates.push_back(ev);
+    }
+    ASSERT_EQ(candidates.size(), 1u);
+    EXPECT_EQ(candidates[0].heartbeat_height, 12345u);
+}
+
+TEST(VnsNostr, MultiRelayDiscardsMaliciousEventWithoutQuorum)
+{
+    const auto legit    = make_secp_keypair(1);
+    const auto attacker = make_secp_keypair(2);
+    const std::string legit_json  = make_heartbeat_json(legit,    DOMAIN, 20000u, 9u);
+    const std::string attack_json = make_heartbeat_json(attacker, DOMAIN, 99999u, 999u);
+
+    MockRelay relay_a(18095, attack_json);   // malicious
+    MockRelay relay_b(18096, legit_json);    // honest
+
+    std::vector<std::string> relays = {
+        "ws://127.0.0.1:18095",
+        "ws://127.0.0.1:18096"
+    };
+
+    std::vector<cryptonote::nostr_client::heartbeat_event> candidates;
+    for (const auto& url : relays) {
+        cryptonote::nostr_client::heartbeat_event ev;
+        if (fetch_hb(url, DOMAIN, legit.compressed_key, ev))
+            candidates.push_back(ev);
+    }
+    // Only the honest relay's event survives — no 2-of-3 quorum needed.
+    ASSERT_EQ(candidates.size(), 1u);
+    EXPECT_EQ(candidates[0].heartbeat_height, 20000u);
+    EXPECT_EQ(candidates[0].heartbeat_count, 9u);
+}
