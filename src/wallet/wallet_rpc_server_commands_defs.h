@@ -3010,6 +3010,77 @@ namespace wallet_rpc
     };
   };
 
+  struct COMMAND_RPC_SUBMIT_PROPOSAL
+  {
+    struct param_update_entry_rpc
+    {
+      uint64_t parameter;
+      uint64_t value;
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE(parameter)
+        KV_SERIALIZE(value)
+      END_KV_SERIALIZE_MAP()
+    };
+    struct request
+    {
+      std::string type;                 // "grant" | "param_update" | "bridge_config"
+      std::string title;
+      std::string description;
+      std::string recipient;            // empty for param_update / bridge_config
+      uint64_t amount = 0;
+      uint64_t voting_period_days = 1;
+      uint32_t priority = 0;
+      std::string data_blob;            // optional hex, advanced callers only
+      std::vector<param_update_entry_rpc> param_updates;  // structured alternative
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE(type)
+        KV_SERIALIZE(title)
+        KV_SERIALIZE(description)
+        KV_SERIALIZE(recipient)
+        KV_SERIALIZE(amount)
+        KV_SERIALIZE(voting_period_days)
+        KV_SERIALIZE(priority)
+        KV_SERIALIZE(data_blob)
+        KV_SERIALIZE(param_updates)
+      END_KV_SERIALIZE_MAP()
+    };
+    struct response : public cryptonote::rpc_response_base
+    {
+      std::string tx_hash;
+      std::string proposal_id;
+      uint64_t fee = 0;
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE_PARENT(cryptonote::rpc_response_base)
+        KV_SERIALIZE(tx_hash)
+        KV_SERIALIZE(proposal_id)
+        KV_SERIALIZE(fee)
+      END_KV_SERIALIZE_MAP()
+    };
+  };
+
+  struct COMMAND_RPC_VOTE
+  {
+    struct request
+    {
+      std::string proposal_id;
+      bool support = true;
+      uint32_t priority = 0;
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE(proposal_id)
+        KV_SERIALIZE(support)
+        KV_SERIALIZE(priority)
+      END_KV_SERIALIZE_MAP()
+    };
+    struct response : public cryptonote::rpc_response_base
+    {
+      std::string tx_hash;
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE_PARENT(cryptonote::rpc_response_base)
+        KV_SERIALIZE(tx_hash)
+      END_KV_SERIALIZE_MAP()
+    };
+  };
+
   struct COMMAND_RPC_SUBMIT_HEARTBEAT
   {
     struct request
