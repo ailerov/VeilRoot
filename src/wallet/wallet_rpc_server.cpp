@@ -488,6 +488,28 @@ namespace tools
       return false;
   }
   //------------------------------------------------------------------------------------------------------------------------------
+  static const char* classify_vns_tx_extra(const std::vector<uint8_t>& extra)
+  {
+    // Scan for VNS / governance magic strings carried in tx_extra.
+    // The magics are distinctive enough that a plain scan is unambiguous.
+    for (size_t i = 0; i + 8 <= extra.size(); ++i)
+    {
+      if (i + 10 <= extra.size() && std::memcmp(&extra[i], "DOMAIN_REG", 10) == 0)
+        return "domain_registration";
+      if (i + 14 <= extra.size() && std::memcmp(&extra[i], "DOMAIN_TRANSFER", 14) == 0)
+        return "domain_transfer";
+      if (i + 11 <= extra.size() && std::memcmp(&extra[i], "DOMAIN_XFER", 11) == 0)
+        return "domain_transfer";
+      if (i + 12 <= extra.size() && std::memcmp(&extra[i], "DOMAIN_UPDATE", 12) == 0)
+        return "domain_update";
+      if (i + 12 <= extra.size() && std::memcmp(&extra[i], "DAO_PROPOSAL", 12) == 0)
+        return "governance_proposal";
+      if (i + 8 <= extra.size() && std::memcmp(&extra[i], "DAO_VOTE", 8) == 0)
+        return "governance_vote";
+    }
+    return "funds";
+  }
+
   void wallet_rpc_server::fill_transfer_entry(tools::wallet_rpc::transfer_entry &entry, const crypto::hash &txid, const crypto::hash &payment_id, const tools::wallet2::payment_details &pd)
   {
     entry.txid = string_tools::pod_to_hex(pd.m_tx_hash);
@@ -536,6 +558,7 @@ namespace tools
     for (uint32_t i: pd.m_subaddr_indices)
       entry.subaddr_indices.push_back({pd.m_subaddr_account, i});
     entry.address = m_wallet->get_subaddress_as_str({pd.m_subaddr_account, 0});
+    entry.category = classify_vns_tx_extra(pd.m_tx.extra);
     set_confirmations(entry, m_wallet->get_blockchain_current_height(), m_wallet->get_last_block_reward(), pd.m_unlock_time);
   }
   //------------------------------------------------------------------------------------------------------------------------------
@@ -567,6 +590,7 @@ namespace tools
     for (uint32_t i: pd.m_subaddr_indices)
       entry.subaddr_indices.push_back({pd.m_subaddr_account, i});
     entry.address = m_wallet->get_subaddress_as_str({pd.m_subaddr_account, 0});
+    entry.category = classify_vns_tx_extra(pd.m_tx.extra);
     set_confirmations(entry, m_wallet->get_blockchain_current_height(), m_wallet->get_last_block_reward(), pd.m_tx.unlock_time);
   }
   //------------------------------------------------------------------------------------------------------------------------------
@@ -2953,6 +2977,12 @@ namespace tools
         fill_transfer_entry(res.pool.back(), i->first, i->second);
       }
     }
+
+    // Category is populated in fill_transfer_entry for outbound entries,
+    // which have the local tx prefix. Inbound entries are receipts from
+    // another party and are classified as "funds" by default.
+    for (auto& e : res.in)   if (e.category.empty()) e.category = "funds";
+    for (auto& e : res.pool) if (e.category.empty()) e.category = "funds";
 
     return true;
   }
