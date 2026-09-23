@@ -2824,6 +2824,31 @@ struct COMMAND_RPC_GET_DOMAIN_RECORD
         END_KV_SERIALIZE_MAP()
     };
 };
+
+// BEGIN_VNS_LIST_VNS_DOMAINS
+struct COMMAND_RPC_LIST_VNS_DOMAINS
+{
+    struct request
+    {
+        std::vector<std::string> registrant_keys;  // 66-hex compressed pubkeys, max 16
+
+        BEGIN_KV_SERIALIZE_MAP()
+            KV_SERIALIZE(registrant_keys)
+        END_KV_SERIALIZE_MAP()
+    };
+
+    struct response : public rpc_response_base
+    {
+        std::vector<COMMAND_RPC_GET_DOMAIN_RECORD::response> domains;
+
+        BEGIN_KV_SERIALIZE_MAP()
+            KV_SERIALIZE_PARENT(rpc_response_base)
+            KV_SERIALIZE(domains)
+        END_KV_SERIALIZE_MAP()
+    };
+};
+// END_VNS_LIST_VNS_DOMAINS
+
 // BEGIN_VNS_GET_DOMAIN_POLICY
 struct COMMAND_RPC_GET_DOMAIN_POLICY
 {

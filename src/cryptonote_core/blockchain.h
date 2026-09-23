@@ -1340,6 +1340,10 @@ namespace cryptonote
   bool resolve_domain_policy(const std::string& domain, uint64_t height, domain_policy_result& result) const;
   bool is_domain_registered(const std::string& domain_name);
   vns_domain_record get_domain_record(const std::string& domain_name);
+  std::vector<std::pair<std::string, vns_domain_record>>
+  get_domain_records_by_registrant_keys(
+      const std::vector<std::array<unsigned char, 33>>& keys,
+      bool active_or_grace_only = true) const;
   uint16_t calculate_health_score(const vns_domain_record& domain, uint64_t current_height);
   std::string resolve_domain(const std::string& domain_name);
   bool update_domain_heartbeat(const std::string& domain_name, uint64_t heartbeat_height, const crypto::hash& proof, uint64_t new_count = 0);

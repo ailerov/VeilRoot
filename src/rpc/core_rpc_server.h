@@ -193,6 +193,7 @@ namespace cryptonote
         MAP_JON_RPC_WE("resolve_domain",         on_resolve_domain,             COMMAND_RPC_RESOLVE_DOMAIN)
         MAP_JON_RPC_WE("get_domain_record",      on_get_domain_record,          COMMAND_RPC_GET_DOMAIN_RECORD)
         MAP_JON_RPC_WE("get_domain_policy",      on_get_domain_policy,          COMMAND_RPC_GET_DOMAIN_POLICY)
+        MAP_JON_RPC_WE("list_vns_domains_by_registrant_key", on_list_vns_domains, COMMAND_RPC_LIST_VNS_DOMAINS)
         MAP_JON_RPC_WE("get_treasury_balance",   on_get_treasury_balance,     COMMAND_RPC_GET_TREASURY_BALANCE)
         MAP_JON_RPC_WE("get_total_burned_fees",  on_get_total_burned_fees,    COMMAND_RPC_GET_TOTAL_BURNED_FEES)
         MAP_JON_RPC_WE("get_governance_params",  on_get_governance_params,    COMMAND_RPC_GET_GOVERNANCE_PARAMS)
@@ -291,6 +292,7 @@ namespace cryptonote
     bool on_resolve_domain(const COMMAND_RPC_RESOLVE_DOMAIN::request& req, COMMAND_RPC_RESOLVE_DOMAIN::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx = NULL);
     bool on_get_domain_record(const COMMAND_RPC_GET_DOMAIN_RECORD::request& req, COMMAND_RPC_GET_DOMAIN_RECORD::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx = NULL);
     bool on_get_domain_policy(const COMMAND_RPC_GET_DOMAIN_POLICY::request& req, COMMAND_RPC_GET_DOMAIN_POLICY::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx = NULL);
+    bool on_list_vns_domains(const COMMAND_RPC_LIST_VNS_DOMAINS::request& req, COMMAND_RPC_LIST_VNS_DOMAINS::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx = NULL);
     bool on_submit_heartbeat(const COMMAND_RPC_SUBMIT_HEARTBEAT::request& req, COMMAND_RPC_SUBMIT_HEARTBEAT::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx = NULL);
     bool on_publish_nostr_event(const COMMAND_RPC_PUBLISH_NOSTR_EVENT::request& req, COMMAND_RPC_PUBLISH_NOSTR_EVENT::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx = NULL);
     bool on_publish_service_descriptor(const COMMAND_RPC_PUBLISH_SERVICE_DESCRIPTOR::request& req, COMMAND_RPC_PUBLISH_SERVICE_DESCRIPTOR::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx = NULL);

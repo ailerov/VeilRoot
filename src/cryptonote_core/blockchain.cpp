@@ -4498,6 +4498,33 @@ vns_domain_record Blockchain::get_domain_record(const std::string& domain_name)
     return it->second;
 }
 
+std::vector<std::pair<std::string, vns_domain_record>>
+Blockchain::get_domain_records_by_registrant_keys(
+    const std::vector<std::array<unsigned char, 33>>& keys,
+    bool active_or_grace_only) const
+{
+    std::vector<std::pair<std::string, vns_domain_record>> out;
+    if (keys.empty())
+        return out;
+
+    for (const auto& kv : m_vns_domain_registry)
+    {
+        const vns_domain_record& rec = kv.second;
+        if (active_or_grace_only && rec.status == 2)   // EXPIRED
+            continue;
+
+        for (const auto& k : keys)
+        {
+            if (std::memcmp(rec.registrant_key.data(), k.data(), k.size()) == 0)
+            {
+                out.emplace_back(kv.first, rec);
+                break;
+            }
+        }
+    }
+    return out;
+}
+
 bool Blockchain::get_cached_service_descriptor(
     const std::string& domain_name,
     const crypto::hash& registration_tx_hash,

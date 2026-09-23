@@ -3857,6 +3857,35 @@ if (!m_core.get_blockchain_storage().get_cached_service_descriptor(
     return true;
 }
 
+namespace {
+void vns_record_to_rpc_response(const std::string& domain_name,
+                                const cryptonote::vns_domain_record& rec,
+                                cryptonote::COMMAND_RPC_GET_DOMAIN_RECORD::response& res)
+{
+    res.domain_name = domain_name;
+    res.fee_tier = rec.fee_tier;
+    res.fee_burned = rec.fee_burned;
+    res.registrant_key = epee::string_tools::buff_to_hex_nodelimer(
+        std::string((const char*)rec.registrant_key.data(), rec.registrant_key.size()));
+    res.genesis_fingerprint = epee::string_tools::pod_to_hex(rec.genesis_fingerprint);
+    res.last_heartbeat_block = rec.last_heartbeat_block;
+    res.health_score = rec.health_score;
+    res.domain_status = rec.status;
+    res.registered_height = rec.registered_height;
+    res.heartbeat_count = rec.heartbeat_count;
+    res.relay_urls.clear();
+    for (size_t ri = 0; ri < cryptonote::VNS_MAX_RELAYS; ++ri)
+    {
+        const std::string url(rec.relays[ri].url);
+        if (!url.empty())
+            res.relay_urls.push_back(url);
+    }
+    res.relay_url = res.relay_urls.empty() ? std::string() : res.relay_urls[0];
+    res.registration_tx_hash = epee::string_tools::pod_to_hex(rec.registration_tx_hash);
+    res.status = CORE_RPC_STATUS_OK;
+}
+}  // namespace
+
 bool core_rpc_server::on_get_domain_record(const COMMAND_RPC_GET_DOMAIN_RECORD::request& req, COMMAND_RPC_GET_DOMAIN_RECORD::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx)
 {
     RPC_TRACKER(get_domain_record);
@@ -3865,27 +3894,63 @@ bool core_rpc_server::on_get_domain_record(const COMMAND_RPC_GET_DOMAIN_RECORD::
     // A valid domain has a non‑null registrant key (the default-constructed record has null key)
     if (!is_null_key(rec.registrant_key))
     {
-        res.domain_name = req.domain_name;   // domain name is known from request
-        res.fee_tier = rec.fee_tier;
-        res.fee_burned = rec.fee_burned;
-        res.registrant_key = epee::string_tools::buff_to_hex_nodelimer(std::string((const char*)rec.registrant_key.data(), rec.registrant_key.size()));
-        res.genesis_fingerprint = epee::string_tools::pod_to_hex(rec.genesis_fingerprint);
-        res.last_heartbeat_block = rec.last_heartbeat_block;
-        res.health_score = rec.health_score;
-        res.domain_status = rec.status;
-        res.registered_height = rec.registered_height;
-        res.heartbeat_count = rec.heartbeat_count;
-        res.relay_urls.clear();
-        for (size_t ri = 0; ri < VNS_MAX_RELAYS; ++ri)
-        {
-            const std::string url(rec.relays[ri].url);
-            if (!url.empty())
-                res.relay_urls.push_back(url);
-        }
-        res.relay_url = res.relay_urls.empty() ? std::string() : res.relay_urls[0];
-        res.registration_tx_hash = epee::string_tools::pod_to_hex(rec.registration_tx_hash);
+        vns_record_to_rpc_response(req.domain_name, rec, res);
     }
     // Always return OK so the wallet doesn't treat a missing domain as a fatal error
+    res.status = CORE_RPC_STATUS_OK;
+    return true;
+}
+
+bool core_rpc_server::on_list_vns_domains(const COMMAND_RPC_LIST_VNS_DOMAINS::request& req, COMMAND_RPC_LIST_VNS_DOMAINS::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx)
+{
+    RPC_TRACKER(list_vns_domains);
+
+    constexpr size_t MAX_KEYS = 16;
+
+    if (req.registrant_keys.empty())
+    {
+        error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
+        error_resp.message = "registrant_keys must not be empty";
+        return false;
+    }
+    if (req.registrant_keys.size() > MAX_KEYS)
+    {
+        error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
+        error_resp.message = "registrant_keys exceeds the maximum of 16";
+        return false;
+    }
+
+    std::vector<std::array<unsigned char, 33>> keys;
+    keys.reserve(req.registrant_keys.size());
+    for (const auto& hex : req.registrant_keys)
+    {
+        if (hex.size() != 66)
+        {
+            error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
+            error_resp.message = "registrant_key must be 66 hex characters";
+            return false;
+        }
+        std::array<unsigned char, 33> k{};
+        if (!epee::string_tools::hex_to_pod(hex, k))
+        {
+            error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
+            error_resp.message = "registrant_key is not valid hex";
+            return false;
+        }
+        keys.push_back(k);
+    }
+
+    auto records = m_core.get_blockchain_storage()
+        .get_domain_records_by_registrant_keys(keys, true);
+
+    res.domains.clear();
+    res.domains.reserve(records.size());
+    for (const auto& pr : records)
+    {
+        COMMAND_RPC_GET_DOMAIN_RECORD::response entry;
+        vns_record_to_rpc_response(pr.first, pr.second, entry);
+        res.domains.push_back(std::move(entry));
+    }
     res.status = CORE_RPC_STATUS_OK;
     return true;
 }

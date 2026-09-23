@@ -5189,6 +5189,42 @@ bool wallet_rpc_server::on_transfer_domain(const wallet_rpc::COMMAND_RPC_TRANSFE
     return true;
 }
 
+bool wallet_rpc_server::on_list_my_domains(const wallet_rpc::COMMAND_RPC_LIST_MY_DOMAINS::request& req, wallet_rpc::COMMAND_RPC_LIST_MY_DOMAINS::response& res, epee::json_rpc::error& er, const connection_context *ctx)
+{
+    if (!m_wallet) return not_open(er);
+
+    constexpr size_t MAX_KEYS = 16;
+    if (req.registrant_keys.empty())
+    {
+        er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM;
+        er.message = "registrant_keys must not be empty";
+        return false;
+    }
+    if (req.registrant_keys.size() > MAX_KEYS)
+    {
+        er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM;
+        er.message = "registrant_keys exceeds the maximum of 16";
+        return false;
+    }
+
+    cryptonote::COMMAND_RPC_LIST_VNS_DOMAINS::request daemon_req;
+    cryptonote::COMMAND_RPC_LIST_VNS_DOMAINS::response daemon_res;
+    daemon_req.registrant_keys = req.registrant_keys;
+
+    if (!m_wallet->invoke_http_json_rpc("/json_rpc", "list_vns_domains_by_registrant_key",
+                                        daemon_req, daemon_res) ||
+        daemon_res.status != CORE_RPC_STATUS_OK)
+    {
+        er.code = WALLET_RPC_ERROR_CODE_INTERNAL;
+        er.message = "Failed to query daemon for domains: " + daemon_res.status;
+        return false;
+    }
+
+    res.domains = std::move(daemon_res.domains);
+    res.status = CORE_RPC_STATUS_OK;
+    return true;
+}
+
 bool wallet_rpc_server::on_get_domain_info(const wallet_rpc::COMMAND_RPC_GET_DOMAIN_INFO::request& req, wallet_rpc::COMMAND_RPC_GET_DOMAIN_INFO::response& res, epee::json_rpc::error& er, const connection_context *ctx)
 {
     if (!m_wallet) return not_open(er);
