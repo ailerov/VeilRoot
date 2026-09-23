@@ -112,10 +112,10 @@ jobs:
 
   build-debian:
     # Oldest supported Debian version
-    name: 'Debian 11'
+    name: 'Debian 12'
     runs-on: ubuntu-latest
     container:
-      image: debian:11
+      image: debian:12
       env:
         DEBIAN_FRONTEND: noninteractive
     steps:
@@ -145,12 +145,12 @@ jobs:
       matrix:
         include:
           # Oldest supported Ubuntu LTS version
-          - name: Ubuntu 20.04
-            container: ubuntu:20.04
-
-          # Most popular Ubuntu LTS version
           - name: Ubuntu 22.04
             container: ubuntu:22.04
+
+          # Current Ubuntu LTS version
+          - name: Ubuntu 24.04
+            container: ubuntu:24.04
     container:
       image: ${{ matrix.container }}
       env:
@@ -187,7 +187,7 @@ jobs:
     name: "source archive"
     runs-on: ubuntu-latest
     container:
-      image: ubuntu:20.04
+      image: ubuntu:22.04
       env:
         DEBIAN_FRONTEND: noninteractive
     steps:
