@@ -139,6 +139,10 @@ Blockchain::Blockchain(tx_memory_pool& tx_pool) :
 //------------------------------------------------------------------
 Blockchain::~Blockchain()
 {
+  // Defensive: if a caller destroyed Blockchain without calling deinit(),
+  // join the Nostr worker before anything else is torn down. stop_nostr_fetcher()
+  // is idempotent and noexcept, so this is safe even when deinit() also ran.
+  stop_nostr_fetcher();
   try { deinit(); }
   catch (const std::exception &e) { /* ignore */ }
 }
@@ -737,11 +741,7 @@ bool Blockchain::deinit()
   MTRACE("Stopping blockchain read/write activity");
 
   // Stop the Nostr worker thread before anything it touches is torn down.
-  // m_nostr_fetcher_thread is joinable, not detached; join it here so
-  // the worker cannot dereference `this` after destruction.
-  m_nostr_fetcher_stop = true;
-  if (m_nostr_fetcher_thread.joinable())
-    m_nostr_fetcher_thread.join();
+  stop_nostr_fetcher();
 
  // stop async service
   m_async_work_idle.reset();
@@ -5443,6 +5443,18 @@ void Blockchain::process_pending_heartbeats()
         {
             MERROR("Failed to apply queued heartbeat for " << hb.domain);
         }
+    }
+}
+
+void Blockchain::stop_nostr_fetcher() noexcept
+{
+    // Idempotent: safe to call from deinit() and again from ~Blockchain().
+    // After a successful join, joinable() returns false and re-entry is a no-op.
+    m_nostr_fetcher_stop.store(true, std::memory_order_relaxed);
+    if (m_nostr_fetcher_thread.joinable())
+    {
+        try { m_nostr_fetcher_thread.join(); }
+        catch (...) { /* never propagate from a noexcept teardown path */ }
     }
 }
 

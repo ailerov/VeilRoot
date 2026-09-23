@@ -1410,6 +1410,7 @@ namespace cryptonote
     uint64_t get_adjusted_time(uint64_t height) const;
 
     void start_nostr_fetcher();
+    void stop_nostr_fetcher() noexcept;
     void fetch_all_nostr_heartbeats(bool selective);
     void fetch_all_nostr_service_descriptors();
 
