@@ -2983,6 +2983,25 @@ namespace wallet_rpc
   };
   // END_VNS_ELIGIBLE
 
+  struct COMMAND_RPC_LIST_MY_DOMAINS
+  {
+    struct request
+    {
+      std::vector<std::string> registrant_keys;
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE(registrant_keys)
+      END_KV_SERIALIZE_MAP()
+    };
+    struct response : public cryptonote::rpc_response_base
+    {
+      std::vector<cryptonote::COMMAND_RPC_GET_DOMAIN_RECORD::response> domains;
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE_PARENT(cryptonote::rpc_response_base)
+        KV_SERIALIZE(domains)
+      END_KV_SERIALIZE_MAP()
+    };
+  };
+
   // ---------- VNS ADDITION END ----------
 }
 }

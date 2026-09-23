@@ -170,6 +170,7 @@ namespace tools
         MAP_JON_RPC_WE("register_domain",      on_register_domain,      wallet_rpc::COMMAND_RPC_REGISTER_DOMAIN)
         MAP_JON_RPC_WE("transfer_domain",      on_transfer_domain,      wallet_rpc::COMMAND_RPC_TRANSFER_DOMAIN)
         MAP_JON_RPC_WE("get_domain_info",      on_get_domain_info,      wallet_rpc::COMMAND_RPC_GET_DOMAIN_INFO)
+        MAP_JON_RPC_WE("list_my_domains",      on_list_my_domains,      wallet_rpc::COMMAND_RPC_LIST_MY_DOMAINS)
         MAP_JON_RPC_WE("get_tier_fees",        on_get_tier_fees,        wallet_rpc::COMMAND_RPC_GET_TIER_FEES)
         MAP_JON_RPC_WE("register_committee_eligible", on_register_committee_eligible, wallet_rpc::COMMAND_RPC_REGISTER_COMMITTEE_ELIGIBLE)
         // ---------- VNS ADDITION END ----------
@@ -274,6 +275,7 @@ namespace tools
       bool on_register_domain(const wallet_rpc::COMMAND_RPC_REGISTER_DOMAIN::request& req, wallet_rpc::COMMAND_RPC_REGISTER_DOMAIN::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
       bool on_transfer_domain(const wallet_rpc::COMMAND_RPC_TRANSFER_DOMAIN::request& req, wallet_rpc::COMMAND_RPC_TRANSFER_DOMAIN::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
       bool on_get_domain_info(const wallet_rpc::COMMAND_RPC_GET_DOMAIN_INFO::request& req, wallet_rpc::COMMAND_RPC_GET_DOMAIN_INFO::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
+      bool on_list_my_domains(const wallet_rpc::COMMAND_RPC_LIST_MY_DOMAINS::request& req, wallet_rpc::COMMAND_RPC_LIST_MY_DOMAINS::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
       bool on_get_tier_fees(const wallet_rpc::COMMAND_RPC_GET_TIER_FEES::request& req, wallet_rpc::COMMAND_RPC_GET_TIER_FEES::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
       bool on_register_committee_eligible(const wallet_rpc::COMMAND_RPC_REGISTER_COMMITTEE_ELIGIBLE::request& req, wallet_rpc::COMMAND_RPC_REGISTER_COMMITTEE_ELIGIBLE::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
       // ---------- VNS ADDITION END ----------
