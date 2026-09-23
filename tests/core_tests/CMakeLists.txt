@@ -46,7 +46,8 @@ set(core_tests_sources
   bulletproofs.cpp
   bulletproof_plus.cpp
   rct2.cpp
-  wallet_tools.cpp)
+  wallet_tools.cpp
+  vns.cpp)
 
 set(core_tests_headers
   block_reward.h
@@ -68,7 +69,8 @@ set(core_tests_headers
   bulletproofs.h
   bulletproof_plus.h
   rct2.h
-  wallet_tools.h)
+  wallet_tools.h
+  vns.h)
 
 monero_add_minimal_executable(core_tests
   ${core_tests_sources}

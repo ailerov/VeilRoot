@@ -4865,6 +4865,8 @@ domain_registration_result Blockchain::process_domain_registration(const transac
                         case 0x03:
                             if (length != 33) return domain_registration_result::invalid_key;
                             memcpy(registrant_key.data(), &extra[pos], length);
+                            if (!domain_utils::is_valid_compressed_pubkey(registrant_key))
+                                return domain_registration_result::invalid_key;
                             break;
                         case 0x04:
                             if (length != sizeof(crypto::hash)) return domain_registration_result::invalid_fingerprint;
@@ -5089,6 +5091,8 @@ domain_registration_result Blockchain::process_domain_registration(const transac
                             if (length != 33) return domain_registration_result::invalid_key;
                             new_owner = std::array<unsigned char, 33>();
                             memcpy(new_owner->data(), &extra[pos], length);
+                            if (!domain_utils::is_valid_compressed_pubkey(*new_owner))
+                                return domain_registration_result::invalid_key;
                             break;
                         case 0x03: // legacy single relay URL
                         {

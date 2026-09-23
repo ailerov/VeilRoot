@@ -302,6 +302,7 @@ int main(int argc, char* argv[])
     GENERATE_AND_PLAY(gen_rct2_tx_clsag_malleability);
 
     GENERATE_AND_PLAY(gen_block_low_coinbase);
+    GENERATE_AND_PLAY(vns_protocol_tests);
 
     el::Level level = (failed_tests.empty() ? el::Level::Info : el::Level::Error);
     if (!list_tests)

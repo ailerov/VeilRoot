@@ -605,6 +605,28 @@ namespace domain_utils
     // Do NOT add registration height. Do NOT hex-encode the key.
     // Do NOT substitute OpenSSL SHA-256. Any change here is a protocol bump.
     // ----------------------------------------------------------------
+    // ----------------------------------------------------------------
+    // Validate that a 33-byte field is a real compressed secp256k1
+    // public key: correct 0x02/0x03 prefix AND a valid on-curve X.
+    // Consensus-required encoding for VNS registrant keys
+    // (DOMAIN_REG tag 0x03, DOMAIN_UPDATE tag 0x02).
+    // ----------------------------------------------------------------
+    inline bool is_valid_compressed_pubkey(
+        const std::array<unsigned char, 33>& key)
+    {
+        if (key[0] != 0x02 && key[0] != 0x03)
+            return false;
+
+        secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_VERIFY);
+        if (!ctx)
+            return false;
+
+        secp256k1_pubkey pub;
+        const int ok = secp256k1_ec_pubkey_parse(ctx, &pub, key.data(), key.size());
+        secp256k1_context_destroy(ctx);
+        return ok == 1;
+    }
+
     inline crypto::hash compute_vns_registration_fingerprint(
         const std::string& normalized_domain,
         const std::array<unsigned char, 33>& registrant_key,
