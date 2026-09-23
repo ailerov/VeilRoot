@@ -3081,6 +3081,197 @@ namespace wallet_rpc
     };
   };
 
+  struct COMMAND_RPC_SUBMIT_GOV_PROPOSAL_COMMON
+  {
+    // Not a wire type — base for the specialized governance writes below.
+  };
+
+  #define VNS_GOV_COMMON_REQ_FIELDS \
+      std::string title; \
+      std::string description; \
+      uint64_t voting_period_days = 1; \
+      uint32_t priority = 0; \
+      std::string data_blob;
+
+  #define VNS_GOV_COMMON_REQ_SER \
+      KV_SERIALIZE(title) \
+      KV_SERIALIZE(description) \
+      KV_SERIALIZE(voting_period_days) \
+      KV_SERIALIZE(priority) \
+      KV_SERIALIZE(data_blob)
+
+  struct COMMAND_RPC_SUBMIT_EXTENSION_TIER_UPDATE
+  {
+    struct request
+    {
+      VNS_GOV_COMMON_REQ_FIELDS
+      std::string extension;
+      uint64_t tier = 0;
+      BEGIN_KV_SERIALIZE_MAP()
+        VNS_GOV_COMMON_REQ_SER
+        KV_SERIALIZE(extension)
+        KV_SERIALIZE(tier)
+      END_KV_SERIALIZE_MAP()
+    };
+    struct response : public cryptonote::rpc_response_base
+    {
+      std::string tx_hash;
+      std::string proposal_id;
+      uint64_t fee = 0;
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE_PARENT(cryptonote::rpc_response_base)
+        KV_SERIALIZE(tx_hash)
+        KV_SERIALIZE(proposal_id)
+        KV_SERIALIZE(fee)
+      END_KV_SERIALIZE_MAP()
+    };
+  };
+
+  struct COMMAND_RPC_SUBMIT_PREMIUM_LABEL
+  {
+    struct request
+    {
+      VNS_GOV_COMMON_REQ_FIELDS
+      std::string term;
+      bool enable = true;
+      BEGIN_KV_SERIALIZE_MAP()
+        VNS_GOV_COMMON_REQ_SER
+        KV_SERIALIZE(term)
+        KV_SERIALIZE(enable)
+      END_KV_SERIALIZE_MAP()
+    };
+    struct response : public COMMAND_RPC_SUBMIT_EXTENSION_TIER_UPDATE::response {};
+  };
+
+  struct COMMAND_RPC_SUBMIT_BANNED_LABEL
+  {
+    struct request
+    {
+      VNS_GOV_COMMON_REQ_FIELDS
+      std::string term;
+      bool enable = true;
+      BEGIN_KV_SERIALIZE_MAP()
+        VNS_GOV_COMMON_REQ_SER
+        KV_SERIALIZE(term)
+        KV_SERIALIZE(enable)
+      END_KV_SERIALIZE_MAP()
+    };
+    struct response : public COMMAND_RPC_SUBMIT_EXTENSION_TIER_UPDATE::response {};
+  };
+
+  struct COMMAND_RPC_SUBMIT_BANNED_EXTENSION
+  {
+    struct request
+    {
+      VNS_GOV_COMMON_REQ_FIELDS
+      std::string term;
+      bool enable = true;
+      BEGIN_KV_SERIALIZE_MAP()
+        VNS_GOV_COMMON_REQ_SER
+        KV_SERIALIZE(term)
+        KV_SERIALIZE(enable)
+      END_KV_SERIALIZE_MAP()
+    };
+    struct response : public COMMAND_RPC_SUBMIT_EXTENSION_TIER_UPDATE::response {};
+  };
+
+  struct COMMAND_RPC_SUBMIT_EXACT_DOMAIN_TIER
+  {
+    struct request
+    {
+      VNS_GOV_COMMON_REQ_FIELDS
+      std::string domain;
+      bool enable = true;
+      uint64_t tier = 0;
+      BEGIN_KV_SERIALIZE_MAP()
+        VNS_GOV_COMMON_REQ_SER
+        KV_SERIALIZE(domain)
+        KV_SERIALIZE(enable)
+        KV_SERIALIZE(tier)
+      END_KV_SERIALIZE_MAP()
+    };
+    struct response : public COMMAND_RPC_SUBMIT_EXTENSION_TIER_UPDATE::response {};
+  };
+
+  struct COMMAND_RPC_SUBMIT_EXACT_DOMAIN_BAN
+  {
+    struct request
+    {
+      VNS_GOV_COMMON_REQ_FIELDS
+      std::string domain;
+      bool enable = true;
+      BEGIN_KV_SERIALIZE_MAP()
+        VNS_GOV_COMMON_REQ_SER
+        KV_SERIALIZE(domain)
+        KV_SERIALIZE(enable)
+      END_KV_SERIALIZE_MAP()
+    };
+    struct response : public COMMAND_RPC_SUBMIT_EXTENSION_TIER_UPDATE::response {};
+  };
+
+  struct COMMAND_RPC_DOMAIN_EXTENSIONS
+  {
+    struct request
+    {
+      std::string extension_filter;
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE(extension_filter)
+      END_KV_SERIALIZE_MAP()
+    };
+    struct entry
+    {
+      std::string name;
+      uint64_t tier = 0;
+      bool banned = false;
+      bool premium = false;
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE(name)
+        KV_SERIALIZE(tier)
+        KV_SERIALIZE(banned)
+        KV_SERIALIZE(premium)
+      END_KV_SERIALIZE_MAP()
+    };
+    struct response : public cryptonote::rpc_response_base
+    {
+      std::vector<entry> extensions;
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE_PARENT(cryptonote::rpc_response_base)
+        KV_SERIALIZE(extensions)
+      END_KV_SERIALIZE_MAP()
+    };
+  };
+
+  struct COMMAND_RPC_UPDATE_DOMAIN_METADATA
+  {
+    struct request
+    {
+      std::string domain_name;
+      std::string new_owner_pubkey;      // optional, 66-hex
+      std::vector<std::string> relay_urls; // optional, 1..3 when present
+      std::string ownership_signature;   // 128-hex BIP340 over the update message
+      uint32_t priority = 0;
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE(domain_name)
+        KV_SERIALIZE(new_owner_pubkey)
+        KV_SERIALIZE(relay_urls)
+        KV_SERIALIZE(ownership_signature)
+        KV_SERIALIZE(priority)
+      END_KV_SERIALIZE_MAP()
+    };
+    struct response : public cryptonote::rpc_response_base
+    {
+      std::string tx_hash;
+      std::string tx_key;
+      uint64_t fee = 0;
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE_PARENT(cryptonote::rpc_response_base)
+        KV_SERIALIZE(tx_hash)
+        KV_SERIALIZE(tx_key)
+        KV_SERIALIZE(fee)
+      END_KV_SERIALIZE_MAP()
+    };
+  };
+
   struct COMMAND_RPC_SUBMIT_HEARTBEAT
   {
     struct request

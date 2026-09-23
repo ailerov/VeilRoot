@@ -175,6 +175,14 @@ namespace tools
         MAP_JON_RPC_WE("submit_heartbeat",     on_submit_heartbeat,     wallet_rpc::COMMAND_RPC_SUBMIT_HEARTBEAT)
         MAP_JON_RPC_WE("submit_proposal",      on_submit_proposal,      wallet_rpc::COMMAND_RPC_SUBMIT_PROPOSAL)
         MAP_JON_RPC_WE("vote",                 on_vote,                 wallet_rpc::COMMAND_RPC_VOTE)
+        MAP_JON_RPC_WE("submit_extension_tier_update", on_submit_extension_tier_update, wallet_rpc::COMMAND_RPC_SUBMIT_EXTENSION_TIER_UPDATE)
+        MAP_JON_RPC_WE("submit_premium_label", on_submit_premium_label, wallet_rpc::COMMAND_RPC_SUBMIT_PREMIUM_LABEL)
+        MAP_JON_RPC_WE("submit_banned_label",  on_submit_banned_label,  wallet_rpc::COMMAND_RPC_SUBMIT_BANNED_LABEL)
+        MAP_JON_RPC_WE("submit_banned_extension", on_submit_banned_extension, wallet_rpc::COMMAND_RPC_SUBMIT_BANNED_EXTENSION)
+        MAP_JON_RPC_WE("submit_exact_domain_tier", on_submit_exact_domain_tier, wallet_rpc::COMMAND_RPC_SUBMIT_EXACT_DOMAIN_TIER)
+        MAP_JON_RPC_WE("submit_exact_domain_ban", on_submit_exact_domain_ban, wallet_rpc::COMMAND_RPC_SUBMIT_EXACT_DOMAIN_BAN)
+        MAP_JON_RPC_WE("domain_extensions",    on_domain_extensions,    wallet_rpc::COMMAND_RPC_DOMAIN_EXTENSIONS)
+        MAP_JON_RPC_WE("update_domain_metadata", on_update_domain_metadata, wallet_rpc::COMMAND_RPC_UPDATE_DOMAIN_METADATA)
         MAP_JON_RPC_WE("publish_service_descriptor", on_publish_service_descriptor, wallet_rpc::COMMAND_RPC_PUBLISH_SERVICE_DESCRIPTOR)
         MAP_JON_RPC_WE("get_tier_fees",        on_get_tier_fees,        wallet_rpc::COMMAND_RPC_GET_TIER_FEES)
         MAP_JON_RPC_WE("register_committee_eligible", on_register_committee_eligible, wallet_rpc::COMMAND_RPC_REGISTER_COMMITTEE_ELIGIBLE)
@@ -285,6 +293,14 @@ namespace tools
       bool on_submit_heartbeat(const wallet_rpc::COMMAND_RPC_SUBMIT_HEARTBEAT::request& req, wallet_rpc::COMMAND_RPC_SUBMIT_HEARTBEAT::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
       bool on_submit_proposal(const wallet_rpc::COMMAND_RPC_SUBMIT_PROPOSAL::request& req, wallet_rpc::COMMAND_RPC_SUBMIT_PROPOSAL::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
       bool on_vote(const wallet_rpc::COMMAND_RPC_VOTE::request& req, wallet_rpc::COMMAND_RPC_VOTE::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
+      bool on_submit_extension_tier_update(const wallet_rpc::COMMAND_RPC_SUBMIT_EXTENSION_TIER_UPDATE::request& req, wallet_rpc::COMMAND_RPC_SUBMIT_EXTENSION_TIER_UPDATE::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
+      bool on_submit_premium_label(const wallet_rpc::COMMAND_RPC_SUBMIT_PREMIUM_LABEL::request& req, wallet_rpc::COMMAND_RPC_SUBMIT_PREMIUM_LABEL::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
+      bool on_submit_banned_label(const wallet_rpc::COMMAND_RPC_SUBMIT_BANNED_LABEL::request& req, wallet_rpc::COMMAND_RPC_SUBMIT_BANNED_LABEL::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
+      bool on_submit_banned_extension(const wallet_rpc::COMMAND_RPC_SUBMIT_BANNED_EXTENSION::request& req, wallet_rpc::COMMAND_RPC_SUBMIT_BANNED_EXTENSION::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
+      bool on_submit_exact_domain_tier(const wallet_rpc::COMMAND_RPC_SUBMIT_EXACT_DOMAIN_TIER::request& req, wallet_rpc::COMMAND_RPC_SUBMIT_EXACT_DOMAIN_TIER::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
+      bool on_submit_exact_domain_ban(const wallet_rpc::COMMAND_RPC_SUBMIT_EXACT_DOMAIN_BAN::request& req, wallet_rpc::COMMAND_RPC_SUBMIT_EXACT_DOMAIN_BAN::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
+      bool on_domain_extensions(const wallet_rpc::COMMAND_RPC_DOMAIN_EXTENSIONS::request& req, wallet_rpc::COMMAND_RPC_DOMAIN_EXTENSIONS::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
+      bool on_update_domain_metadata(const wallet_rpc::COMMAND_RPC_UPDATE_DOMAIN_METADATA::request& req, wallet_rpc::COMMAND_RPC_UPDATE_DOMAIN_METADATA::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
       bool on_publish_service_descriptor(const wallet_rpc::COMMAND_RPC_PUBLISH_SERVICE_DESCRIPTOR::request& req, wallet_rpc::COMMAND_RPC_PUBLISH_SERVICE_DESCRIPTOR::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
       bool on_get_tier_fees(const wallet_rpc::COMMAND_RPC_GET_TIER_FEES::request& req, wallet_rpc::COMMAND_RPC_GET_TIER_FEES::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
       bool on_register_committee_eligible(const wallet_rpc::COMMAND_RPC_REGISTER_COMMITTEE_ELIGIBLE::request& req, wallet_rpc::COMMAND_RPC_REGISTER_COMMITTEE_ELIGIBLE::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);

@@ -61,6 +61,8 @@ using namespace epee;
 #include "common/domain_utils.h"
 #include "governance/parameter_update.h"
 #include "governance/governance_params.h"
+#include "governance/proposal.h"
+#include "common/bip340.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
 
 #undef MONERO_DEFAULT_LOG_CATEGORY
@@ -5283,6 +5285,297 @@ bool wallet_rpc_server::on_submit_heartbeat(const wallet_rpc::COMMAND_RPC_SUBMIT
     res.heartbeat_count = dres.heartbeat_count;
     res.health_score = dres.health_score;
     res.domain_status = dres.domain_status;
+    res.status = CORE_RPC_STATUS_OK;
+    return true;
+}
+
+namespace {
+// Shared helper: build a parameter_change proposal and commit it.
+// Used by every specialized governance write below. Returns "" on success
+// or an error string on failure.
+static std::string vns_create_and_commit_governance_proposal(
+    tools::wallet2* wallet,
+    const std::string& title,
+    const std::string& description,
+    uint64_t voting_period_days,
+    uint32_t priority,
+    const std::string& data_blob_hex,
+    std::string& out_tx_hash,
+    std::string& out_proposal_id,
+    uint64_t& out_fee)
+{
+    tools::wallet2::proposal_tx_result result = wallet->create_proposal_tx(
+        1 /* parameter_change */,
+        title, description, std::string(), 0,
+        static_cast<uint8_t>(voting_period_days),
+        data_blob_hex,
+        priority);
+    if (!result.error.empty())
+        return result.error;
+    if (!wallet->watch_only())
+        wallet->commit_tx(result.ptx);
+    out_tx_hash = result.tx_hash;
+    out_proposal_id = epee::string_tools::pod_to_hex(result.proposal_id);
+    out_fee = result.total_fee;
+    return "";
+}
+}  // namespace
+
+bool wallet_rpc_server::on_submit_extension_tier_update(const wallet_rpc::COMMAND_RPC_SUBMIT_EXTENSION_TIER_UPDATE::request& req, wallet_rpc::COMMAND_RPC_SUBMIT_EXTENSION_TIER_UPDATE::response& res, epee::json_rpc::error& er, const connection_context *ctx)
+{
+    if (!m_wallet) return not_open(er);
+    const std::string ext = domain_utils::normalize_vns_extension(req.extension);
+    if (ext.empty()) { er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM; er.message = "Invalid extension"; return false; }
+    if (req.tier > 5) { er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM; er.message = "tier must be 0..5"; return false; }
+    if (req.voting_period_days < 1 || req.voting_period_days > 30) { er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM; er.message = "voting_period_days must be 1..30"; return false; }
+
+    cryptonote::extension_update_payload payload;
+    payload.version = 2;
+    payload.extension = ext;
+    payload.tier = static_cast<uint8_t>(req.tier);
+    std::string blob = cryptonote::t_serializable_object_to_blob(payload);
+    std::string data_hex = epee::string_tools::buff_to_hex_nodelimer(blob);
+
+    std::string tx_hash, proposal_id; uint64_t fee = 0;
+    std::string err = vns_create_and_commit_governance_proposal(
+        m_wallet, req.title, req.description, req.voting_period_days,
+        req.priority, data_hex, tx_hash, proposal_id, fee);
+    if (!err.empty()) { er.code = WALLET_RPC_ERROR_CODE_TX_NOT_POSSIBLE; er.message = err; return false; }
+    res.tx_hash = tx_hash; res.proposal_id = proposal_id; res.fee = fee; res.status = CORE_RPC_STATUS_OK;
+    return true;
+}
+
+bool wallet_rpc_server::on_submit_premium_label(const wallet_rpc::COMMAND_RPC_SUBMIT_PREMIUM_LABEL::request& req, wallet_rpc::COMMAND_RPC_SUBMIT_PREMIUM_LABEL::response& res, epee::json_rpc::error& er, const connection_context *ctx)
+{
+    if (!m_wallet) return not_open(er);
+    const std::string term = domain_utils::normalize_vns_label(req.term);
+    if (term.empty()) { er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM; er.message = "Invalid label"; return false; }
+    if (req.voting_period_days < 1 || req.voting_period_days > 30) { er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM; er.message = "voting_period_days must be 1..30"; return false; }
+
+    cryptonote::label_policy_update_payload payload;
+    payload.version = 3;
+    payload.term = term;
+    payload.enable = req.enable;
+    std::string blob = cryptonote::t_serializable_object_to_blob(payload);
+    std::string data_hex = epee::string_tools::buff_to_hex_nodelimer(blob);
+
+    std::string tx_hash, proposal_id; uint64_t fee = 0;
+    std::string err = vns_create_and_commit_governance_proposal(
+        m_wallet, req.title, req.description, req.voting_period_days,
+        req.priority, data_hex, tx_hash, proposal_id, fee);
+    if (!err.empty()) { er.code = WALLET_RPC_ERROR_CODE_TX_NOT_POSSIBLE; er.message = err; return false; }
+    res.tx_hash = tx_hash; res.proposal_id = proposal_id; res.fee = fee; res.status = CORE_RPC_STATUS_OK;
+    return true;
+}
+
+bool wallet_rpc_server::on_submit_banned_label(const wallet_rpc::COMMAND_RPC_SUBMIT_BANNED_LABEL::request& req, wallet_rpc::COMMAND_RPC_SUBMIT_BANNED_LABEL::response& res, epee::json_rpc::error& er, const connection_context *ctx)
+{
+    if (!m_wallet) return not_open(er);
+    const std::string term = domain_utils::normalize_vns_label(req.term);
+    if (term.empty()) { er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM; er.message = "Invalid label"; return false; }
+    if (req.voting_period_days < 1 || req.voting_period_days > 30) { er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM; er.message = "voting_period_days must be 1..30"; return false; }
+
+    cryptonote::label_policy_update_payload payload;
+    payload.version = 4;
+    payload.term = term;
+    payload.enable = req.enable;
+    std::string blob = cryptonote::t_serializable_object_to_blob(payload);
+    std::string data_hex = epee::string_tools::buff_to_hex_nodelimer(blob);
+
+    std::string tx_hash, proposal_id; uint64_t fee = 0;
+    std::string err = vns_create_and_commit_governance_proposal(
+        m_wallet, req.title, req.description, req.voting_period_days,
+        req.priority, data_hex, tx_hash, proposal_id, fee);
+    if (!err.empty()) { er.code = WALLET_RPC_ERROR_CODE_TX_NOT_POSSIBLE; er.message = err; return false; }
+    res.tx_hash = tx_hash; res.proposal_id = proposal_id; res.fee = fee; res.status = CORE_RPC_STATUS_OK;
+    return true;
+}
+
+bool wallet_rpc_server::on_submit_banned_extension(const wallet_rpc::COMMAND_RPC_SUBMIT_BANNED_EXTENSION::request& req, wallet_rpc::COMMAND_RPC_SUBMIT_BANNED_EXTENSION::response& res, epee::json_rpc::error& er, const connection_context *ctx)
+{
+    if (!m_wallet) return not_open(er);
+    const std::string term = domain_utils::normalize_vns_extension(req.term);
+    if (term.empty()) { er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM; er.message = "Invalid extension"; return false; }
+    if (req.voting_period_days < 1 || req.voting_period_days > 30) { er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM; er.message = "voting_period_days must be 1..30"; return false; }
+
+    cryptonote::label_policy_update_payload payload;
+    payload.version = 5;
+    payload.term = term;
+    payload.enable = req.enable;
+    std::string blob = cryptonote::t_serializable_object_to_blob(payload);
+    std::string data_hex = epee::string_tools::buff_to_hex_nodelimer(blob);
+
+    std::string tx_hash, proposal_id; uint64_t fee = 0;
+    std::string err = vns_create_and_commit_governance_proposal(
+        m_wallet, req.title, req.description, req.voting_period_days,
+        req.priority, data_hex, tx_hash, proposal_id, fee);
+    if (!err.empty()) { er.code = WALLET_RPC_ERROR_CODE_TX_NOT_POSSIBLE; er.message = err; return false; }
+    res.tx_hash = tx_hash; res.proposal_id = proposal_id; res.fee = fee; res.status = CORE_RPC_STATUS_OK;
+    return true;
+}
+
+bool wallet_rpc_server::on_submit_exact_domain_tier(const wallet_rpc::COMMAND_RPC_SUBMIT_EXACT_DOMAIN_TIER::request& req, wallet_rpc::COMMAND_RPC_SUBMIT_EXACT_DOMAIN_TIER::response& res, epee::json_rpc::error& er, const connection_context *ctx)
+{
+    if (!m_wallet) return not_open(er);
+    const std::string domain = domain_utils::normalize_vns_domain(req.domain);
+    if (domain.empty()) { er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM; er.message = "Invalid domain"; return false; }
+    if (req.tier > 5) { er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM; er.message = "tier must be 0..5"; return false; }
+    if (req.voting_period_days < 1 || req.voting_period_days > 30) { er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM; er.message = "voting_period_days must be 1..30"; return false; }
+
+    cryptonote::exact_domain_tier_update_payload payload;
+    payload.version = 6;
+    payload.domain = domain;
+    payload.enable = req.enable;
+    payload.tier = static_cast<uint8_t>(req.tier);
+    std::string blob = cryptonote::t_serializable_object_to_blob(payload);
+    std::string data_hex = epee::string_tools::buff_to_hex_nodelimer(blob);
+
+    std::string tx_hash, proposal_id; uint64_t fee = 0;
+    std::string err = vns_create_and_commit_governance_proposal(
+        m_wallet, req.title, req.description, req.voting_period_days,
+        req.priority, data_hex, tx_hash, proposal_id, fee);
+    if (!err.empty()) { er.code = WALLET_RPC_ERROR_CODE_TX_NOT_POSSIBLE; er.message = err; return false; }
+    res.tx_hash = tx_hash; res.proposal_id = proposal_id; res.fee = fee; res.status = CORE_RPC_STATUS_OK;
+    return true;
+}
+
+bool wallet_rpc_server::on_submit_exact_domain_ban(const wallet_rpc::COMMAND_RPC_SUBMIT_EXACT_DOMAIN_BAN::request& req, wallet_rpc::COMMAND_RPC_SUBMIT_EXACT_DOMAIN_BAN::response& res, epee::json_rpc::error& er, const connection_context *ctx)
+{
+    if (!m_wallet) return not_open(er);
+    const std::string domain = domain_utils::normalize_vns_domain(req.domain);
+    if (domain.empty()) { er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM; er.message = "Invalid domain"; return false; }
+    if (req.voting_period_days < 1 || req.voting_period_days > 30) { er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM; er.message = "voting_period_days must be 1..30"; return false; }
+
+    cryptonote::exact_domain_ban_update_payload payload;
+    payload.version = 7;
+    payload.domain = domain;
+    payload.enable = req.enable;
+    std::string blob = cryptonote::t_serializable_object_to_blob(payload);
+    std::string data_hex = epee::string_tools::buff_to_hex_nodelimer(blob);
+
+    std::string tx_hash, proposal_id; uint64_t fee = 0;
+    std::string err = vns_create_and_commit_governance_proposal(
+        m_wallet, req.title, req.description, req.voting_period_days,
+        req.priority, data_hex, tx_hash, proposal_id, fee);
+    if (!err.empty()) { er.code = WALLET_RPC_ERROR_CODE_TX_NOT_POSSIBLE; er.message = err; return false; }
+    res.tx_hash = tx_hash; res.proposal_id = proposal_id; res.fee = fee; res.status = CORE_RPC_STATUS_OK;
+    return true;
+}
+
+bool wallet_rpc_server::on_domain_extensions(const wallet_rpc::COMMAND_RPC_DOMAIN_EXTENSIONS::request& req, wallet_rpc::COMMAND_RPC_DOMAIN_EXTENSIONS::response& res, epee::json_rpc::error& er, const connection_context *ctx)
+{
+    if (!m_wallet) return not_open(er);
+
+    cryptonote::COMMAND_RPC_GET_GOVERNANCE_PARAMS::request dreq;
+    cryptonote::COMMAND_RPC_GET_GOVERNANCE_PARAMS::response dres;
+    if (!m_wallet->invoke_http_json_rpc("/json_rpc", "get_governance_params", dreq, dres) ||
+        dres.status != CORE_RPC_STATUS_OK)
+    {
+        er.code = WALLET_RPC_ERROR_CODE_INTERNAL;
+        er.message = "Failed to query governance params from daemon";
+        return false;
+    }
+
+    const std::string filter = req.extension_filter;
+    res.extensions.clear();
+    for (size_t i = 0; i < dres.extension_tier_map_keys.size(); ++i)
+    {
+        const std::string& ext = dres.extension_tier_map_keys[i];
+        const uint8_t tier = dres.extension_tier_map_vals[i];
+        if (!filter.empty() && ext != filter) continue;
+
+        wallet_rpc::COMMAND_RPC_DOMAIN_EXTENSIONS::entry e;
+        e.name = ext;
+        e.tier = tier;
+        e.banned = (tier == 255);
+        e.premium = (tier == 6);
+        res.extensions.push_back(std::move(e));
+    }
+    res.status = CORE_RPC_STATUS_OK;
+    return true;
+}
+
+bool wallet_rpc_server::on_update_domain_metadata(const wallet_rpc::COMMAND_RPC_UPDATE_DOMAIN_METADATA::request& req, wallet_rpc::COMMAND_RPC_UPDATE_DOMAIN_METADATA::response& res, epee::json_rpc::error& er, const connection_context *ctx)
+{
+    if (!m_wallet) return not_open(er);
+    CHECK_IF_BACKGROUND_SYNCING();
+
+    const std::string domain = domain_utils::normalize_vns_domain(req.domain_name);
+    if (domain.empty()) { er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM; er.message = "Invalid domain"; return false; }
+
+    boost::optional<std::array<unsigned char, 33>> new_owner;
+    boost::optional<std::array<std::string, 3>> new_relay_set;
+
+    if (!req.new_owner_pubkey.empty())
+    {
+        if (req.new_owner_pubkey.size() != 66) { er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM; er.message = "new_owner_pubkey must be 66 hex chars"; return false; }
+        std::array<unsigned char, 33> key{};
+        if (!epee::string_tools::hex_to_pod(req.new_owner_pubkey, key)) { er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM; er.message = "Invalid new_owner_pubkey hex"; return false; }
+        if (key[0] != 0x02 && key[0] != 0x03) { er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM; er.message = "new_owner_pubkey must start with 0x02/0x03"; return false; }
+        new_owner = key;
+    }
+
+    if (!req.relay_urls.empty())
+    {
+        if (req.relay_urls.size() > 3) { er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM; er.message = "At most 3 relay URLs"; return false; }
+        std::array<std::string, 3> relays{};
+        for (size_t i = 0; i < req.relay_urls.size(); ++i)
+        {
+            const std::string& u = req.relay_urls[i];
+            if (u.size() > 255) { er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM; er.message = "Relay URL too long"; return false; }
+            if (u.find("ws://") != 0 && u.find("wss://") != 0) { er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM; er.message = "Relay URL must be ws:// or wss://"; return false; }
+            relays[i] = u;
+        }
+        new_relay_set = relays;
+    }
+
+    if (!new_owner && !new_relay_set) { er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM; er.message = "At least one of new_owner_pubkey or relay_urls is required"; return false; }
+
+    // Reconstruct the update message the same way consensus does.
+    std::string message = domain;
+    if (new_owner) message.append(reinterpret_cast<const char*>(new_owner->data()), new_owner->size());
+    if (new_relay_set) for (size_t i = 0; i < 3; ++i) message += (*new_relay_set)[i];
+    crypto::hash message_hash;
+    crypto::cn_fast_hash(message.data(), message.size(), message_hash);
+
+    if (req.ownership_signature.size() != 128) { er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM; er.message = "ownership_signature must be 128 hex chars"; return false; }
+    std::array<unsigned char, 64> sig{};
+    if (!epee::string_tools::hex_to_pod(req.ownership_signature, sig)) { er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM; er.message = "Invalid ownership_signature hex"; return false; }
+
+    // Fetch current on-chain record to verify against the current owner key.
+    cryptonote::COMMAND_RPC_GET_DOMAIN_RECORD::request dreq; dreq.domain_name = domain;
+    cryptonote::COMMAND_RPC_GET_DOMAIN_RECORD::response dres;
+    if (!m_wallet->invoke_http_json_rpc("/json_rpc", "get_domain_record", dreq, dres) || dres.status != CORE_RPC_STATUS_OK)
+    { er.code = WALLET_RPC_ERROR_CODE_INTERNAL; er.message = "Failed to query domain record"; return false; }
+    if (dres.domain_name.empty() || dres.registrant_key.size() != 66) { er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM; er.message = "Domain not registered or key unavailable"; return false; }
+    std::array<unsigned char, 33> registrant_key{};
+    if (!epee::string_tools::hex_to_pod(dres.registrant_key, registrant_key)) { er.code = WALLET_RPC_ERROR_CODE_INTERNAL; er.message = "Invalid registrant key on chain"; return false; }
+
+    if (!bip340::verify(registrant_key.data(), (const unsigned char*)&message_hash, sig.data()))
+    { er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM; er.message = "Ownership signature does not verify against current registrant key"; return false; }
+
+    std::vector<uint8_t> extra = domain_utils::build_update_extra(domain, new_owner, new_relay_set, sig);
+    if (extra.empty()) { er.code = WALLET_RPC_ERROR_CODE_INTERNAL; er.message = "Failed to build DOMAIN_UPDATE tx_extra"; return false; }
+
+    std::vector<cryptonote::tx_destination_entry> dsts;
+    cryptonote::account_public_address burn_addr; memset(&burn_addr, 0, sizeof(burn_addr));
+    dsts.push_back(cryptonote::tx_destination_entry(0, burn_addr, false));
+
+    try {
+        uint32_t priority = m_wallet->adjust_priority(req.priority);
+        auto ptx_vector = m_wallet->create_transactions_2(dsts, 0, priority, extra, 0, {});
+        if (ptx_vector.empty()) { er.code = WALLET_RPC_ERROR_CODE_TX_NOT_POSSIBLE; er.message = "Failed to create update transaction"; return false; }
+        if (ptx_vector.size() != 1) { er.code = WALLET_RPC_ERROR_CODE_TX_TOO_LARGE; er.message = "Update transaction would be too large"; return false; }
+        auto& ptx = ptx_vector[0];
+        res.tx_hash = epee::string_tools::pod_to_hex(cryptonote::get_transaction_hash(ptx.tx));
+        res.tx_key = epee::string_tools::pod_to_hex(unwrap(unwrap(ptx.tx_key)));
+        res.fee = ptx.fee;
+        if (!m_wallet->watch_only())
+            m_wallet->commit_tx(ptx);
+    } catch (const std::exception&) {
+        handle_rpc_exception(std::current_exception(), er, WALLET_RPC_ERROR_CODE_GENERIC_TRANSFER_ERROR);
+        return false;
+    }
     res.status = CORE_RPC_STATUS_OK;
     return true;
 }
