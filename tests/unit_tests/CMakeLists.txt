@@ -135,10 +135,12 @@ target_link_libraries(unit_tests
     ${GTEST_LIBRARIES}
     ${CMAKE_THREAD_LIBS_INIT}
     ${EXTRA_LIBRARIES}
+    ixwebsocket
     ${ZMQ_LIB})
 set_property(TARGET unit_tests
   PROPERTY
     FOLDER "tests")
+target_include_directories(unit_tests PRIVATE ${CMAKE_SOURCE_DIR}/external/ixwebsocket)
 
 if (NOT MSVC)
   set_property(TARGET unit_tests
