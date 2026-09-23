@@ -59,6 +59,8 @@ using namespace epee;
 #include "daemonizer/daemonizer.h"
 // ---------- VNS ADDITION START ----------
 #include "common/domain_utils.h"
+#include "governance/parameter_update.h"
+#include "governance/governance_params.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
 
 #undef MONERO_DEFAULT_LOG_CATEGORY
@@ -5281,6 +5283,116 @@ bool wallet_rpc_server::on_submit_heartbeat(const wallet_rpc::COMMAND_RPC_SUBMIT
     res.heartbeat_count = dres.heartbeat_count;
     res.health_score = dres.health_score;
     res.domain_status = dres.domain_status;
+    res.status = CORE_RPC_STATUS_OK;
+    return true;
+}
+
+bool wallet_rpc_server::on_submit_proposal(const wallet_rpc::COMMAND_RPC_SUBMIT_PROPOSAL::request& req, wallet_rpc::COMMAND_RPC_SUBMIT_PROPOSAL::response& res, epee::json_rpc::error& er, const connection_context *ctx)
+{
+    if (!m_wallet) return not_open(er);
+
+    uint8_t proposal_type;
+    if (req.type == "grant")           proposal_type = 0;
+    else if (req.type == "param_update")  proposal_type = 1;
+    else if (req.type == "bridge_config") proposal_type = 2;
+    else
+    {
+        er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM;
+        er.message = "type must be one of: grant, param_update, bridge_config";
+        return false;
+    }
+
+    if (req.voting_period_days < 1 || req.voting_period_days > 30)
+    {
+        er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM;
+        er.message = "voting_period_days must be between 1 and 30";
+        return false;
+    }
+
+    // Build data_blob from structured param_updates if provided and applicable.
+    std::string data_blob = req.data_blob;
+    if (proposal_type == 1 && data_blob.empty() && !req.param_updates.empty())
+    {
+        cryptonote::parameter_update_payload payload;
+        payload.version = 1;
+        for (const auto& e : req.param_updates)
+        {
+            cryptonote::parameter_update_entry entry;
+            entry.parameter = static_cast<::governance_parameter>(e.parameter);
+            entry.value = e.value;
+            payload.entries.push_back(entry);
+        }
+        std::string blob_bin = cryptonote::t_serializable_object_to_blob(payload);
+        data_blob = epee::string_tools::buff_to_hex_nodelimer(blob_bin);
+    }
+
+    tools::wallet2::proposal_tx_result result = m_wallet->create_proposal_tx(
+        proposal_type,
+        req.title,
+        req.description,
+        req.recipient,
+        req.amount,
+        static_cast<uint8_t>(req.voting_period_days),
+        data_blob,
+        req.priority);
+
+    if (!result.error.empty())
+    {
+        er.code = WALLET_RPC_ERROR_CODE_TX_NOT_POSSIBLE;
+        er.message = "Proposal creation failed: " + result.error;
+        return false;
+    }
+
+    if (!m_wallet->watch_only())
+        m_wallet->commit_tx(result.ptx);
+
+    res.tx_hash = result.tx_hash;
+    res.proposal_id = epee::string_tools::pod_to_hex(result.proposal_id);
+    res.fee = result.total_fee;
+    res.status = CORE_RPC_STATUS_OK;
+    return true;
+}
+
+bool wallet_rpc_server::on_vote(const wallet_rpc::COMMAND_RPC_VOTE::request& req, wallet_rpc::COMMAND_RPC_VOTE::response& res, epee::json_rpc::error& er, const connection_context *ctx)
+{
+    if (!m_wallet) return not_open(er);
+
+    crypto::hash proposal_id;
+    if (req.proposal_id.size() != 64 || !epee::string_tools::hex_to_pod(req.proposal_id, proposal_id))
+    {
+        er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM;
+        er.message = "proposal_id must be 64 hex characters";
+        return false;
+    }
+
+    const uint8_t direction = req.support ? 0 : 1;
+
+    tools::wallet2::vote_tx_result result = m_wallet->create_vote_tx(
+        proposal_id, direction, req.priority);
+
+    if (result.tx_hash.empty() || result.tx_blob.empty())
+    {
+        er.code = WALLET_RPC_ERROR_CODE_TX_NOT_POSSIBLE;
+        er.message = "Failed to create vote: " + result.error;
+        return false;
+    }
+
+    // Vote tx is submitted directly, without reserving or spending any UTXO.
+    cryptonote::COMMAND_RPC_SEND_RAW_TX::request sreq;
+    cryptonote::COMMAND_RPC_SEND_RAW_TX::response sres;
+    sreq.tx_as_hex = result.tx_blob;
+    sreq.do_not_relay = false;
+    sreq.do_sanity_checks = true;
+
+    if (!m_wallet->invoke_http_json("/sendrawtransaction", sreq, sres) ||
+        sres.status != CORE_RPC_STATUS_OK)
+    {
+        er.code = WALLET_RPC_ERROR_CODE_INTERNAL;
+        er.message = "Failed to submit vote transaction to daemon";
+        return false;
+    }
+
+    res.tx_hash = result.tx_hash;
     res.status = CORE_RPC_STATUS_OK;
     return true;
 }
