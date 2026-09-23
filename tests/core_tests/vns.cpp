@@ -148,6 +148,42 @@ namespace
         return wrap_extra(payload);
     }
 
+    // Parse the wire envelope: [0x02][varint len][payload][0x00]
+    // Then walk the payload TLVs and record (tag -> bytes) pairs.
+    bool parse_extra_tlvs(const std::vector<uint8_t>& extra,
+                          const std::string& expected_magic,
+                          std::vector<std::pair<uint8_t, std::vector<uint8_t>>>& out,
+                          std::string& err)
+    {
+        if (extra.size() < 3 || extra[0] != 0x02) { err = "missing 0x02 envelope tag"; return false; }
+        size_t len_pos = 1;
+        size_t payload_len = 0;
+        if (extra[len_pos] < 0x80) {
+            payload_len = extra[len_pos];
+            len_pos += 1;
+        } else {
+            payload_len = (size_t)(extra[len_pos] & 0x7f) | ((size_t)extra[len_pos+1] << 7);
+            len_pos += 2;
+        }
+        if (len_pos + payload_len > extra.size()) { err = "payload length exceeds extra"; return false; }
+        const uint8_t* p = extra.data() + len_pos;
+        if (payload_len < expected_magic.size() ||
+            memcmp(p, expected_magic.data(), expected_magic.size()) != 0) {
+            err = "wrong magic"; return false;
+        }
+        size_t pos = expected_magic.size();
+        while (pos < payload_len) {
+            uint8_t tag = p[pos++];
+            if (tag == 0x00) break;
+            if (pos >= payload_len) { err = "truncated TLV"; return false; }
+            uint8_t len = p[pos++];
+            if (pos + len > payload_len) { err = "TLV length overflow"; return false; }
+            out.emplace_back(tag, std::vector<uint8_t>(p + pos, p + pos + len));
+            pos += len;
+        }
+        return true;
+    }
+
     cryptonote::transaction make_tx(const std::vector<uint8_t>& extra)
     {
         cryptonote::transaction tx;
@@ -467,6 +503,109 @@ bool vns_protocol_tests::run_all(cryptonote::core& c, size_t /*ev_index*/,
         auto xfer_tx = make_tx(build_xfer_extra_raw("vt15..com", short_key, sig_vec));
         CHECK_TEST_CONDITION(reg(xfer_tx, H + 1) ==
                              domain_registration_result::invalid_key);
+    }
+
+    // ---- Test 16: DOMAIN_REG built by the production wallet-rpc builder ----
+    {
+        auto owner = make_keypair(70);
+        crypto::hash fp = domain_utils::compute_vns_registration_fingerprint(
+            "vt16..com", owner.compressed, T_GENERIC);
+
+        // This is the exact call site wallet_rpc_server::on_register_domain uses.
+        std::array<std::string, 3> relays = {"ws://a16.example", "", ""};
+        std::vector<uint8_t> extra = domain_utils::build_registration_extra(
+            "vt16..com", T_GENERIC, owner.compressed, fp, relays);
+        CHECK_TEST_CONDITION(!extra.empty());
+
+        std::vector<std::pair<uint8_t, std::vector<uint8_t>>> tlvs;
+        std::string err;
+        CHECK_TEST_CONDITION(parse_extra_tlvs(extra, "DOMAIN_REG", tlvs, err));
+        // Required tags: 0x01 domain, 0x02 tier, 0x03 key, 0x04 fingerprint, 0x06..0x08 relays
+        bool have_domain = false, have_tier = false, have_key = false,
+             have_fp = false, have_relay0 = false;
+        for (const auto& kv : tlvs) {
+            if (kv.first == 0x01) { have_domain = (std::string(kv.second.begin(), kv.second.end()) == "vt16..com"); }
+            if (kv.first == 0x02) { have_tier = (kv.second.size() == 1 && kv.second[0] == T_GENERIC); }
+            if (kv.first == 0x03) { have_key = (kv.second.size() == 33); }
+            if (kv.first == 0x04) { have_fp = (kv.second.size() == 32); }
+            if (kv.first == 0x06) { have_relay0 = (std::string(kv.second.begin(), kv.second.end()) == "ws://a16.example"); }
+        }
+        CHECK_TEST_CONDITION(have_domain);
+        CHECK_TEST_CONDITION(have_tier);
+        CHECK_TEST_CONDITION(have_key);
+        CHECK_TEST_CONDITION(have_fp);
+        CHECK_TEST_CONDITION(have_relay0);
+
+        cryptonote::transaction tx = make_tx(extra);
+        CHECK_TEST_CONDITION(reg(tx, H) == domain_registration_result::success);
+    }
+
+    // ---- Test 17: DOMAIN_XFER built by the production wallet-rpc builder ----
+    {
+        auto owner = make_keypair(80);
+        auto newowner = make_keypair(81);
+
+        crypto::hash fp = domain_utils::compute_vns_registration_fingerprint(
+            "vt17..com", owner.compressed, T_GENERIC);
+        {
+            cryptonote::transaction reg_tx = make_reg_tx(
+                "vt17..com", T_GENERIC, owner.compressed, fp, {"ws://a17.example"});
+            CHECK_TEST_CONDITION(reg(reg_tx, H) == domain_registration_result::success);
+        }
+
+        // Sign the ownership message exactly as the browser wallet service would.
+        std::array<unsigned char, 32> xonly_dest{};
+        memcpy(xonly_dest.data(), newowner.xonly.data(), 32);
+        crypto::hash msg = domain_utils::compute_vns_transfer_message_hash("vt17..com", xonly_dest);
+        unsigned char sig64[64];
+        CHECK_TEST_CONDITION(bip340::sign(owner.secret.data(),
+                                          reinterpret_cast<const unsigned char*>(&msg), sig64));
+        std::array<unsigned char, 64> sig_array;
+        std::copy(sig64, sig64 + 64, sig_array.begin());
+
+        crypto::public_key new_owner_pub{};
+        memcpy(new_owner_pub.data, xonly_dest.data(), 32);
+
+        // This is the exact call site wallet_rpc_server::on_transfer_domain uses.
+        std::vector<uint8_t> extra = domain_utils::build_transfer_extra(
+            "vt17..com", new_owner_pub, sig_array);
+        CHECK_TEST_CONDITION(!extra.empty());
+
+        std::vector<std::pair<uint8_t, std::vector<uint8_t>>> tlvs;
+        std::string err;
+        CHECK_TEST_CONDITION(parse_extra_tlvs(extra, "DOMAIN_XFER", tlvs, err));
+        bool have_domain = false, have_key = false, have_sig = false;
+        size_t tag_count = 0;
+        for (const auto& kv : tlvs) {
+            ++tag_count;
+            if (kv.first == 0x01) { have_domain = (std::string(kv.second.begin(), kv.second.end()) == "vt17..com"); }
+            if (kv.first == 0x05) { have_key = (kv.second.size() == 32); }
+            if (kv.first == 0x04) { have_sig = (kv.second.size() == 64); }
+        }
+        CHECK_TEST_CONDITION(tag_count == 3);   // exactly domain, key, sig — nothing else
+        CHECK_TEST_CONDITION(have_domain);
+        CHECK_TEST_CONDITION(have_key);
+        CHECK_TEST_CONDITION(have_sig);
+
+        cryptonote::transaction xfer_tx = make_tx(extra);
+        CHECK_TEST_CONDITION(reg(xfer_tx, H + 1) == domain_registration_result::success);
+
+        // Tamper: flip one byte of the new-owner x-only key. Signature no longer matches.
+        {
+            std::vector<uint8_t> tampered = extra;
+            // Find the 0x05 TLV inside the payload and flip its last data byte.
+            // Payload layout: envelope(0x02, len), "DOMAIN_XFER"(11), then TLVs.
+            size_t pos = 2 + 11;   // skip envelope tag + 1-byte len, then magic
+            while (pos < tampered.size()) {
+                uint8_t tag = tampered[pos];
+                if (tag == 0x00) break;
+                uint8_t len = tampered[pos + 1];
+                if (tag == 0x05) { tampered[pos + 1 + len - 1] ^= 0x01; break; }
+                pos += 2 + len;
+            }
+            cryptonote::transaction t_tx = make_tx(tampered);
+            CHECK_TEST_CONDITION(reg(t_tx, H + 2) == domain_registration_result::signature_invalid);
+        }
     }
 
     return true;
