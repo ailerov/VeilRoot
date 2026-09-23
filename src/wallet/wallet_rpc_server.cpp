@@ -5219,6 +5219,94 @@ bool wallet_rpc_server::on_transfer_domain(const wallet_rpc::COMMAND_RPC_TRANSFE
     return true;
 }
 
+bool wallet_rpc_server::on_get_domain_proof(const wallet_rpc::COMMAND_RPC_GET_DOMAIN_PROOF::request& req, wallet_rpc::COMMAND_RPC_GET_DOMAIN_PROOF::response& res, epee::json_rpc::error& er, const connection_context *ctx)
+{
+    if (!m_wallet) return not_open(er);
+
+    crypto::hash txid;
+    if (req.txid.size() != 64 || !epee::string_tools::hex_to_pod(req.txid, txid))
+    {
+        er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM;
+        er.message = "txid must be 64 hex characters";
+        return false;
+    }
+
+    tools::wallet2::domain_merkle_proof proof;
+    if (!m_wallet->get_domain_proof(txid, proof))
+    {
+        er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM;
+        er.message = "Domain proof unavailable for this txid";
+        return false;
+    }
+
+    res.leaf_index = proof.leaf_index;
+    res.block_hash = epee::string_tools::pod_to_hex(proof.block_hash);
+    // proof_hex mirrors the legacy field the CLI fills: just the block hash hex.
+    // The daemon's submit_heartbeat accepts block_hash_hex, leaf_index and
+    // sibling_hashes separately; the browser forwards them verbatim.
+    res.proof_hex = res.block_hash;
+    res.sibling_hashes.reserve(proof.sibling_path.size());
+    for (const auto& h : proof.sibling_path)
+        res.sibling_hashes.push_back(epee::string_tools::pod_to_hex(h));
+
+    res.status = CORE_RPC_STATUS_OK;
+    return true;
+}
+
+bool wallet_rpc_server::on_submit_heartbeat(const wallet_rpc::COMMAND_RPC_SUBMIT_HEARTBEAT::request& req, wallet_rpc::COMMAND_RPC_SUBMIT_HEARTBEAT::response& res, epee::json_rpc::error& er, const connection_context *ctx)
+{
+    if (!m_wallet) return not_open(er);
+
+    cryptonote::COMMAND_RPC_SUBMIT_HEARTBEAT::request dreq;
+    cryptonote::COMMAND_RPC_SUBMIT_HEARTBEAT::response dres;
+    dreq.domain_name = req.domain_name;
+    dreq.signature_hex = req.signature_hex;
+    dreq.proof_hex = req.proof_hex;
+    dreq.current_block_hash = req.current_block_hash;
+    dreq.block_hash_hex = req.block_hash_hex;
+    dreq.leaf_index = req.leaf_index;
+    dreq.sibling_hashes = req.sibling_hashes;
+    dreq.event_id_hex = req.event_id_hex;
+    dreq.heartbeat_height = req.heartbeat_height;
+    dreq.heartbeat_count = req.heartbeat_count;
+
+    if (!m_wallet->invoke_http_json_rpc("/json_rpc", "submit_heartbeat", dreq, dres) ||
+        dres.status != CORE_RPC_STATUS_OK)
+    {
+        er.code = WALLET_RPC_ERROR_CODE_INTERNAL;
+        er.message = "Daemon rejected submit_heartbeat: " + dres.status;
+        return false;
+    }
+
+    res.heartbeat_count = dres.heartbeat_count;
+    res.health_score = dres.health_score;
+    res.domain_status = dres.domain_status;
+    res.status = CORE_RPC_STATUS_OK;
+    return true;
+}
+
+bool wallet_rpc_server::on_publish_service_descriptor(const wallet_rpc::COMMAND_RPC_PUBLISH_SERVICE_DESCRIPTOR::request& req, wallet_rpc::COMMAND_RPC_PUBLISH_SERVICE_DESCRIPTOR::response& res, epee::json_rpc::error& er, const connection_context *ctx)
+{
+    if (!m_wallet) return not_open(er);
+
+    cryptonote::COMMAND_RPC_PUBLISH_SERVICE_DESCRIPTOR::request dreq;
+    cryptonote::COMMAND_RPC_PUBLISH_SERVICE_DESCRIPTOR::response dres;
+    dreq.domain_name = req.domain_name;
+    dreq.event_json = req.event_json;
+
+    if (!m_wallet->invoke_http_json_rpc("/json_rpc", "publish_service_descriptor", dreq, dres) ||
+        dres.status != CORE_RPC_STATUS_OK)
+    {
+        er.code = WALLET_RPC_ERROR_CODE_INTERNAL;
+        er.message = "Daemon rejected publish_service_descriptor: " + dres.status;
+        return false;
+    }
+
+    res.relay_response = dres.relay_response;
+    res.status = CORE_RPC_STATUS_OK;
+    return true;
+}
+
 bool wallet_rpc_server::on_list_my_domains(const wallet_rpc::COMMAND_RPC_LIST_MY_DOMAINS::request& req, wallet_rpc::COMMAND_RPC_LIST_MY_DOMAINS::response& res, epee::json_rpc::error& er, const connection_context *ctx)
 {
     if (!m_wallet) return not_open(er);

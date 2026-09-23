@@ -2985,6 +2985,93 @@ namespace wallet_rpc
   };
   // END_VNS_ELIGIBLE
 
+  struct COMMAND_RPC_GET_DOMAIN_PROOF
+  {
+    struct request
+    {
+      std::string txid;
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE(txid)
+      END_KV_SERIALIZE_MAP()
+    };
+    struct response : public cryptonote::rpc_response_base
+    {
+      std::string proof_hex;
+      uint64_t leaf_index = 0;
+      std::vector<std::string> sibling_hashes;
+      std::string block_hash;
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE_PARENT(cryptonote::rpc_response_base)
+        KV_SERIALIZE(proof_hex)
+        KV_SERIALIZE(leaf_index)
+        KV_SERIALIZE(sibling_hashes)
+        KV_SERIALIZE(block_hash)
+      END_KV_SERIALIZE_MAP()
+    };
+  };
+
+  struct COMMAND_RPC_SUBMIT_HEARTBEAT
+  {
+    struct request
+    {
+      std::string domain_name;
+      std::string signature_hex;
+      std::string proof_hex;
+      std::string current_block_hash;
+      std::string block_hash_hex;
+      uint64_t leaf_index = 0;
+      std::vector<std::string> sibling_hashes;
+      std::string event_id_hex;
+      uint64_t heartbeat_height = 0;
+      uint64_t heartbeat_count = 0;
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE(domain_name)
+        KV_SERIALIZE(signature_hex)
+        KV_SERIALIZE(proof_hex)
+        KV_SERIALIZE(current_block_hash)
+        KV_SERIALIZE(block_hash_hex)
+        KV_SERIALIZE(leaf_index)
+        KV_SERIALIZE(sibling_hashes)
+        KV_SERIALIZE(event_id_hex)
+        KV_SERIALIZE(heartbeat_height)
+        KV_SERIALIZE(heartbeat_count)
+      END_KV_SERIALIZE_MAP()
+    };
+    struct response : public cryptonote::rpc_response_base
+    {
+      uint64_t heartbeat_count = 0;
+      uint16_t health_score = 0;
+      uint8_t domain_status = 0;
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE_PARENT(cryptonote::rpc_response_base)
+        KV_SERIALIZE(heartbeat_count)
+        KV_SERIALIZE(health_score)
+        KV_SERIALIZE(domain_status)
+      END_KV_SERIALIZE_MAP()
+    };
+  };
+
+  struct COMMAND_RPC_PUBLISH_SERVICE_DESCRIPTOR
+  {
+    struct request
+    {
+      std::string domain_name;
+      std::string event_json;
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE(domain_name)
+        KV_SERIALIZE(event_json)
+      END_KV_SERIALIZE_MAP()
+    };
+    struct response : public cryptonote::rpc_response_base
+    {
+      std::string relay_response;
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE_PARENT(cryptonote::rpc_response_base)
+        KV_SERIALIZE(relay_response)
+      END_KV_SERIALIZE_MAP()
+    };
+  };
+
   struct COMMAND_RPC_LIST_MY_DOMAINS
   {
     struct request
