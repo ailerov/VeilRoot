@@ -211,8 +211,6 @@ vote_result VoteManager::process_vote(const transaction& tx, uint64_t height, bo
         return vote_result::already_voted;
     }
 
-    m_db.add_nullifier(vp.proposal_id, nullifier);
-
     // Use the totals declared by the wallet (placeholder proof trust)
     uint64_t total_balance = vp.participation_balance;
     uint64_t total_weight  = vp.voting_weight;
@@ -238,6 +236,11 @@ vote_result VoteManager::process_vote(const transaction& tx, uint64_t height, bo
         no_w += total_weight;
         no_b += total_balance;
     }
+
+    // Only persist the nullifier once all validation has passed and the
+    // vote is actually being counted. Writing it earlier would poison the
+    // nullifier table if a later validation rejected the vote.
+    m_db.add_nullifier(vp.proposal_id, nullifier);
     m_db.set_outcome(vp.proposal_id, yes_w, no_w, yes_b, no_b);
 
     MINFO("Stored vote for proposal " << vp.proposal_id << " (direction="
