@@ -35,6 +35,7 @@ set(unit_tests_sources
   block_queue.cpp
   block_reward.cpp
   dao_consensus.cpp
+  vote_lifecycle.cpp
   bootstrap_node_selector.cpp
   bulletproofs.cpp
   bulletproofs_plus.cpp
