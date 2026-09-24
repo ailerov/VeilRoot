@@ -4126,12 +4126,19 @@ bool BlockchainLMDB::has_vote_nullifier(const crypto::hash& proposal_id, const c
     k.mv_data = key_data;
     k.mv_size = 64;
 
+    // Read path: must work without an active write transaction. Use the
+    // standard thread-local read transaction (or the current thread's write
+    // transaction if one is active) via TXN_PREFIX_RDONLY.
+    TXN_PREFIX_RDONLY();
+
     MDB_cursor *cur = nullptr;
-    int result = mdb_cursor_open(m_write_txn->m_txn, m_vote_nullifiers, &cur);
+    int result = mdb_cursor_open(m_txn, m_vote_nullifiers, &cur);
     if (result) throw0(DB_ERROR(lmdb_error("Failed to open cursor for has_vote_nullifier: ", result).c_str()));
 
     result = mdb_cursor_get(cur, &k, &v, MDB_SET);
     mdb_cursor_close(cur);
+
+    TXN_POSTFIX_RDONLY();
     return (result == 0);
 }
 
