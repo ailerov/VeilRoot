@@ -1792,11 +1792,18 @@ namespace cryptonote
           continue;
         }
         coinbase = block_reward + fee + meta.fee;
-        if (coinbase < template_accept_threshold(best_coinbase))
+        // BEGIN_VNS_VOTE
+        // Non-consuming VNS txs (vote, eligible, proposal) carry zero fees by
+        // design and therefore cannot compensate for any block-reward reduction
+        // caused by their weight. They must still be mined or the DAO and
+        // committee-eligibility systems cannot function. Skip the coinbase
+        // threshold for them, matching the relay-method exemption above.
+        if (!is_vns_special && coinbase < template_accept_threshold(best_coinbase))
         {
           LOG_PRINT_L2("  would decrease coinbase to " << print_money(coinbase));
           continue;
         }
+        // END_VNS_VOTE
       }
       else
       {
