@@ -6,6 +6,7 @@ set(governance_sources
     voting_weight.cpp
     vote_serialization.cpp
     proposal.cpp
+    proposal_serialization.cpp
     lifecycle_manager.cpp
     execution.cpp
     treasury.cpp
