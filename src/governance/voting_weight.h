@@ -21,10 +21,12 @@ inline uint64_t floor_log2(uint64_t n) {
 }
 
 // Deterministic voting weight calculation as specified in DAO V2
+// Returns false on overflow to enforce validation failure
 // age_blocks = vote_height - output_height
 // age_days = age_blocks / 720
 // age_factor = floor_log2(age_days + 1)
 // voting_weight = balance * age_factor
-uint64_t calculate_voting_weight(uint64_t amount, uint64_t output_height, uint64_t vote_height);
+bool calculate_voting_weight(uint64_t amount, uint64_t output_height,
+                             uint64_t vote_height, uint64_t& result);
 
 } // namespace cryptonote

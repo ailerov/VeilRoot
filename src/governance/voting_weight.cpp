@@ -7,7 +7,9 @@
 
 namespace cryptonote {
 
-uint64_t calculate_voting_weight(uint64_t amount, uint64_t output_height, uint64_t vote_height)
+// Returns false on overflow to enforce validation failure
+bool calculate_voting_weight(uint64_t amount, uint64_t output_height,
+                             uint64_t vote_height, uint64_t& result)
 {
     // Calculate age in blocks
     uint64_t age_blocks = (vote_height > output_height) ? (vote_height - output_height) : 0;
@@ -18,15 +20,13 @@ uint64_t calculate_voting_weight(uint64_t amount, uint64_t output_height, uint64
     // Calculate age factor using floor_log2
     uint64_t age_factor = floor_log2(age_days + 1);
 
-    // Calculate voting weight: amount * age_factor
-    // Check for potential overflow before multiplication
+    // Check for potential overflow before multiplication - must fail validation, not clamp
     if (amount > 0 && age_factor > std::numeric_limits<uint64_t>::max() / amount) {
-        // Handle overflow case - return maximum value or throw an exception
-        // For now, we'll clamp to max value as a safety measure
-        return std::numeric_limits<uint64_t>::max();
+        return false;  // Overflow is a validation failure
     }
 
-    return amount * age_factor;
+    result = amount * age_factor;
+    return true;
 }
 
 } // namespace cryptonote

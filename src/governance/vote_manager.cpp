@@ -206,44 +206,41 @@ vote_result VoteManager::process_vote(const transaction& tx, uint64_t height, bo
         return vote_result::invalid_format;
     }
 
-    // Verify this is a proposal-scoped nullifier (not just any key image)
-    if (!m_db.has_nullifier(vp.proposal_id, nullifier))
-    {
-        // This check ensures we're using proposal-scoped nullifiers as required
-        MWARNING("Invalid proposal-scoped nullifier: " << nullifier);
-        return vote_result::invalid_format;
-    }
-
+    // Check for duplicate voting - reject if nullifier already exists
     if (m_db.has_nullifier(vp.proposal_id, nullifier))
     {
-        MWARNING("Duplicate nullifier: " << nullifier);
+        MWARNING("Duplicate nullifier detected: " << nullifier);
         return vote_result::already_voted;
     }
 
-    // Calculate deterministic voting weights instead of using wallet-provided values
+    // Calculate deterministic voting weights from blockchain state
     uint64_t total_balance = vp.participation_balance;
-
-    // For V2 DAO: calculate deterministic weight from output heights if available
     uint64_t total_weight = 0;
 
-    // If we have output height information, calculate deterministic weights
+    // V2 requires output heights for deterministic weight calculation
     if (!vp.output_heights.empty() && vp.output_heights.size() == vp.voting_nullifiers.size())
     {
-        // Calculate weight for each output and sum them up
+        // Calculate weight for each output - must succeed or reject vote
         for (size_t i = 0; i < vp.output_heights.size(); ++i)
         {
-            uint64_t output_weight = calculate_voting_weight(
-                vp.participation_balance / vp.voting_nullifiers.size(), // Approximate amount per output
+            uint64_t output_weight;
+            if (!calculate_voting_weight(
+                vp.participation_balance / vp.voting_nullifiers.size(),
                 vp.output_heights[i],
-                height
-            );
+                height,
+                output_weight))
+            {
+                MERROR("Voting weight calculation overflow - rejecting vote");
+                return vote_result::invalid_format;
+            }
             total_weight += output_weight;
         }
     }
     else
     {
-        // Fallback to wallet-provided weight for backward compatibility or if data missing
-        total_weight = vp.voting_weight;
+        // V2: Reject votes without proper height information (no fallback to wallet values)
+        MERROR("Vote missing required output heights for deterministic weight calculation");
+        return vote_result::invalid_format;
     }
 
     if (total_balance == 0 || total_weight == 0)
