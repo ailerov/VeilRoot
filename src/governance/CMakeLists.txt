@@ -4,6 +4,7 @@ set(governance_sources
     vote_utils.cpp
     vote_manager.cpp
     voting_weight.cpp
+    vote_serialization.cpp
     proposal.cpp
     lifecycle_manager.cpp
     execution.cpp

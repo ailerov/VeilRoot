@@ -109,6 +109,7 @@ set(unit_tests_sources
   zmq_rpc.cpp
   vns_nostr.cpp
   vns_fingerprint.cpp
+  vote_serialization.cpp
   vns_transfer.cpp)
 
 set(unit_tests_headers
