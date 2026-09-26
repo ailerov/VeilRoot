@@ -3,6 +3,7 @@ set(governance_sources
     vote_proof_verifier.cpp
     vote_utils.cpp
     vote_manager.cpp
+    voting_weight.cpp
     proposal.cpp
     lifecycle_manager.cpp
     execution.cpp

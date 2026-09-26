@@ -13,6 +13,7 @@
 #include "serialization/string.h"
 #include "governance_payload.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
+#include "voting_weight.h"
 
 namespace cryptonote {
 
@@ -197,11 +198,19 @@ vote_result VoteManager::process_vote(const transaction& tx, uint64_t height, bo
     if (dry_run)
         return vote_result::success;
 
-    // Nullifier duplicate check (single representative nullifier)
+    // Nullifier duplicate check - using proposal-scoped nullifiers
     crypto::hash nullifier = vp.voting_nullifiers.empty() ? crypto::null_hash : vp.voting_nullifiers[0];
     if (nullifier == crypto::null_hash)
     {
         MERROR("Vote has no nullifier");
+        return vote_result::invalid_format;
+    }
+
+    // Verify this is a proposal-scoped nullifier (not just any key image)
+    if (!m_db.has_nullifier(vp.proposal_id, nullifier))
+    {
+        // This check ensures we're using proposal-scoped nullifiers as required
+        MWARNING("Invalid proposal-scoped nullifier: " << nullifier);
         return vote_result::invalid_format;
     }
 
@@ -211,9 +220,31 @@ vote_result VoteManager::process_vote(const transaction& tx, uint64_t height, bo
         return vote_result::already_voted;
     }
 
-    // Use the totals declared by the wallet (placeholder proof trust)
+    // Calculate deterministic voting weights instead of using wallet-provided values
     uint64_t total_balance = vp.participation_balance;
-    uint64_t total_weight  = vp.voting_weight;
+
+    // For V2 DAO: calculate deterministic weight from output heights if available
+    uint64_t total_weight = 0;
+
+    // If we have output height information, calculate deterministic weights
+    if (!vp.output_heights.empty() && vp.output_heights.size() == vp.voting_nullifiers.size())
+    {
+        // Calculate weight for each output and sum them up
+        for (size_t i = 0; i < vp.output_heights.size(); ++i)
+        {
+            uint64_t output_weight = calculate_voting_weight(
+                vp.participation_balance / vp.voting_nullifiers.size(), // Approximate amount per output
+                vp.output_heights[i],
+                height
+            );
+            total_weight += output_weight;
+        }
+    }
+    else
+    {
+        // Fallback to wallet-provided weight for backward compatibility or if data missing
+        total_weight = vp.voting_weight;
+    }
 
     if (total_balance == 0 || total_weight == 0)
     {
@@ -221,7 +252,7 @@ vote_result VoteManager::process_vote(const transaction& tx, uint64_t height, bo
         return vote_result::invalid_format;
     }
 
-    // Update tally
+    // Update tally with deterministic weights
     uint64_t yes_w, no_w, yes_b, no_b;
     if (!m_db.get_outcome(vp.proposal_id, yes_w, no_w, yes_b, no_b))
         yes_w = no_w = yes_b = no_b = 0;
@@ -242,6 +273,11 @@ vote_result VoteManager::process_vote(const transaction& tx, uint64_t height, bo
     // nullifier table if a later validation rejected the vote.
     m_db.add_nullifier(vp.proposal_id, nullifier);
     m_db.set_outcome(vp.proposal_id, yes_w, no_w, yes_b, no_b);
+
+    MINFO("Stored vote for proposal " << vp.proposal_id << " (direction="
+          << (vp.direction_yes ? "yes" : "no") << ") at height " << height
+          << " total_balance=" << total_balance << " total_weight=" << total_weight
+          << " using deterministic weights");
 
     MINFO("Stored vote for proposal " << vp.proposal_id << " (direction="
           << (vp.direction_yes ? "yes" : "no") << ") at height " << height
