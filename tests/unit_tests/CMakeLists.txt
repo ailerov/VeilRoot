@@ -111,6 +111,7 @@ set(unit_tests_sources
   vns_fingerprint.cpp
   vote_serialization.cpp
   proposal_serialization.cpp
+  vote_v2_serialization.cpp
   vns_transfer.cpp)
 
 set(unit_tests_headers
