@@ -14,6 +14,7 @@
 #include "governance_payload.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
 #include "voting_weight.h"
+#include <limits>
 
 namespace cryptonote {
 
@@ -215,7 +216,11 @@ vote_result VoteManager::process_vote(const transaction& tx, uint64_t height, bo
 
     // Calculate deterministic voting weights from blockchain state
     uint64_t total_balance = vp.participation_balance;
-    uint64_t total_weight = 0;
+
+    // V2 helper returns exact 128-bit weight. The V1 tally storage is still
+    // 64-bit; the V2 tally rewrite will replace this boundary. Until then,
+    // accumulate wide and narrow once with an explicit range check.
+    governance_weight_t wide_total_weight = 0;
 
     // V2 requires output heights for deterministic weight calculation
     if (!vp.output_heights.empty() && vp.output_heights.size() == vp.voting_nullifiers.size())
@@ -223,17 +228,17 @@ vote_result VoteManager::process_vote(const transaction& tx, uint64_t height, bo
         // Calculate weight for each output - must succeed or reject vote
         for (size_t i = 0; i < vp.output_heights.size(); ++i)
         {
-            uint64_t output_weight;
+            governance_weight_t output_weight;
             if (!calculate_voting_weight(
                 vp.participation_balance / vp.voting_nullifiers.size(),
                 vp.output_heights[i],
                 height,
                 output_weight))
             {
-                MERROR("Voting weight calculation overflow - rejecting vote");
+                MERROR("Voting weight calculation invalid - rejecting vote");
                 return vote_result::invalid_format;
             }
-            total_weight += output_weight;
+            wide_total_weight += output_weight;
         }
     }
     else
@@ -242,6 +247,13 @@ vote_result VoteManager::process_vote(const transaction& tx, uint64_t height, bo
         MERROR("Vote missing required output heights for deterministic weight calculation");
         return vote_result::invalid_format;
     }
+
+    if (wide_total_weight > governance_weight_t(std::numeric_limits<uint64_t>::max()))
+    {
+        MERROR("Aggregate voting weight exceeds V1 tally range - rejecting vote");
+        return vote_result::invalid_format;
+    }
+    uint64_t total_weight = wide_total_weight.convert_to<uint64_t>();
 
     if (total_balance == 0 || total_weight == 0)
     {
