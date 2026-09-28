@@ -89,14 +89,27 @@ Both conditions are independent. A proposal may fail either one.
 
 ## 4. Committee
 
-Default tally committee:
+Frozen parameters:
 
-    N_committee = 16
-    threshold   = 11
+    committee_size   = 16
+    threshold        = 8-of-16
+    sharing_degree   = 7
+    Delta            = 16! = 20,922,789,888,000
 
-Any valid 11-of-16 partial decryptions suffice to produce a tally
+The threshold is fixed by the security requirements of the selected
+distributed threshold Paillier construction (Nishide-Sakurai, WISA 2010).
+That construction defines a (t+1, n) threshold system and requires
+t < n/2. For n = 16 the maximum t is 7, hence the threshold t+1 = 8.
+Any larger threshold is outside the construction's stated security
+bound; any smaller threshold reduces the number of corrupted parties
+the protocol tolerates.
+
+Any valid 8-of-16 partial decryptions suffice to produce a tally
 certificate. The committee is selected dynamically by existing stake-age
 eligibility rules at tally time. It is not a permanent administrator set.
+
+The threshold is a protocol parameter frozen here. Code MUST NOT
+hard-code a threshold value; it reads this constant.
 
 ---
 
