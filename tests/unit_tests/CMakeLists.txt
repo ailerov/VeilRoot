@@ -114,6 +114,7 @@ set(unit_tests_sources
   vote_v2_serialization.cpp
   dao_clsag_vector_gen.cpp
   dao_clsag.cpp
+  dao_weight.cpp
   voting_weight.cpp
   vns_transfer.cpp)
 
