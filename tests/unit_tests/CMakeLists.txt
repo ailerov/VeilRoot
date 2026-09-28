@@ -118,6 +118,8 @@ set(unit_tests_sources
   dao_vote_or_proof.cpp
   dao_paillier.cpp
   dao_threshold.cpp
+  dao_dkg.cpp
+  dao_dkg_e2e.cpp
   voting_weight.cpp
   vns_transfer.cpp)
 
@@ -153,6 +155,10 @@ set_property(TARGET unit_tests
   PROPERTY
     FOLDER "tests")
 target_include_directories(unit_tests PRIVATE ${CMAKE_SOURCE_DIR}/external/ixwebsocket)
+# Enable DKG test-only accessors on both the test binary and the
+# governance library object files.
+target_compile_definitions(unit_tests PRIVATE VEILROOT_DAO_DKG_TESTING=1)
+set(VEILROOT_DAO_DKG_TESTING_BUILD 1 CACHE INTERNAL "Enable DKG test-only accessors")
 
 if (NOT MSVC)
   set_property(TARGET unit_tests

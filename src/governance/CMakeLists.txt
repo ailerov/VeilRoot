@@ -19,6 +19,8 @@ set(governance_sources
     dao_vote_or_proof.cpp
     dao_paillier.cpp
     dao_threshold.cpp
+    dao_dkg.cpp
+    dao_dkg_transport.cpp
     parameter_manager.cpp
 )
 
@@ -26,3 +28,10 @@ monero_add_library(obj_governance OBJECT ${governance_sources})
 target_link_libraries(obj_obj_governance PRIVATE secp256k1)
 
 target_include_directories(obj_governance PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+# Test-only DKG accessors. Enabled only when the parent build defines
+# VEILROOT_DAO_DKG_TESTING_BUILD=1, which the unit_tests CMakeLists
+# sets before including this file.
+if (VEILROOT_DAO_DKG_TESTING_BUILD)
+  target_compile_definitions(obj_obj_governance PRIVATE VEILROOT_DAO_DKG_TESTING=1)
+endif ()
