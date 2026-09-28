@@ -115,6 +115,7 @@ set(unit_tests_sources
   dao_clsag_vector_gen.cpp
   dao_clsag.cpp
   dao_weight.cpp
+  dao_vote_or_proof.cpp
   voting_weight.cpp
   vns_transfer.cpp)
 

@@ -16,6 +16,7 @@ set(governance_sources
     governance_params.cpp
     dao_clsag.cpp
     dao_weight.cpp
+    dao_vote_or_proof.cpp
     parameter_manager.cpp
 )
 
