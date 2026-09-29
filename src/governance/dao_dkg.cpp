@@ -2523,21 +2523,38 @@ bool dkg_run_with_transport(const dkg_config& cfg,
     }
 
     // Main candidate loop.
-    BIGNUM* N = BN_new();
+    BIGNUM* attempt_N  = BN_new();
+    BIGNUM* accepted_N = BN_new();
     bool accepted = false;
 
     for (uint32_t attempt = 1; attempt <= cfg.max_attempts; ++attempt) {
         out.candidate_attempts = attempt;
 
+        // A fresh attempt always starts from zero so no state from a
+        // failed attempt can carry over.
+        BN_zero(attempt_N);
+
         // Phases 1-2: modulus shares and reconstruction.
-        if (!run_modulus_attempt(cfg, parties, transports, N)) {
+        if (!run_modulus_attempt(cfg, parties, transports, attempt_N)) {
             continue;
         }
 
         // Enforce exact target bit length.
-        if (static_cast<uint32_t>(BN_num_bits(N)) != cfg.target_N_bits) {
+        if (static_cast<uint32_t>(BN_num_bits(attempt_N)) != cfg.target_N_bits) {
             continue;
         }
+
+        // Freeze the accepted modulus. From here to the end of the
+        // loop body, `N` is const: nothing may write to it.
+        if (!BN_copy(accepted_N, attempt_N)) {
+            continue;
+        }
+        const BIGNUM* N = accepted_N;
+
+#ifdef VEILROOT_DAO_DKG_TESTING
+        std::cerr << "[dkg] ACCEPTED at attempt " << attempt
+                  << "  accepted_N bits=" << BN_num_bits(accepted_N) << "\n";
+#endif
 
         // Declare g_bar before any goto to avoid jumping over its
         // initializer.
@@ -2715,17 +2732,19 @@ bool dkg_run_with_transport(const dkg_config& cfg,
         (void)0;
     }
 
-    BN_free(N);
+    BN_free(attempt_N);
 
     if (!accepted) {
+        BN_free(accepted_N);
         out.ok = false;
         out.candidate_accepted = false;
         return false;
     }
 
-    // Phase 6-7: threshold key derivation and public record assembly
-    // are delivered in the next message. For now, record the modulus
-    // and mark the result as incomplete.
+    // The accepted modulus is frozen for the remainder of this
+    // function. Every phase below uses this exact object.
+    const BIGNUM* N = accepted_N;
+
     out.candidate_accepted = true;
     out.epoch = cfg.epoch;
 
@@ -2852,13 +2871,14 @@ bool dkg_run_with_transport(const dkg_config& cfg,
             std::cerr << "[key-phase] theta_tilde reconstructed\n";
             #endif
 
-            // theta = theta_tilde mod N
+            // theta = theta_tilde mod N, always in [0, N).
             BIGNUM* theta = BN_new();
             BN_CTX* tctx = BN_CTX_new();
-            BN_mod(theta, theta_tilde, N, tctx);
+            BN_nnmod(theta, theta_tilde, N, tctx);
             BN_CTX_free(tctx);
 
-            // gcd(theta, N) == 1?
+            // gcd(theta, N) == 1? theta is now non-negative; N is
+            // always non-negative.
             BIGNUM* gcd = BN_new();
             tctx = BN_CTX_new();
             BN_gcd(gcd, theta, N, tctx);
@@ -3134,54 +3154,6 @@ bool dkg_run_with_transport(const dkg_config& cfg,
 
             BN_free(theta_tilde);
             BN_free(theta);
-            #ifdef VEILROOT_DAO_DKG_TESTING
-            {
-                CtxGuard dctx;
-                BIGNUM* sum_p = BN_new();
-                BIGNUM* sum_q = BN_new();
-                BIGNUM* sum_beta = BN_new();
-                BN_zero(sum_p); BN_zero(sum_q); BN_zero(sum_beta);
-                for (auto& p : parties) {
-                    BN_add(sum_p, sum_p, p->test_p_i());
-                    BN_add(sum_q, sum_q, p->test_q_i());
-                    BN_add(sum_beta, sum_beta, p->test_beta_i());
-                }
-                BIGNUM* phi_d = BN_new();
-                BN_add(phi_d, N, BN_value_one());
-                BN_sub(phi_d, phi_d, sum_p);
-                BN_sub(phi_d, phi_d, sum_q);
-
-                BIGNUM* prod = BN_new();
-                BN_mul(prod, phi_d, sum_beta, dctx.ctx);
-                BN_mul(prod, prod, dao_dkg_delta(), dctx.ctx);
-                BIGNUM* theta_exp = BN_new();
-                BN_mod(theta_exp, prod, N, dctx.ctx);
-
-                BIGNUM* tt_mod = BN_new();
-                BN_mod(tt_mod, theta_tilde, N, dctx.ctx);
-
-                BIGNUM* delta_bn = BN_dup(dao_dkg_delta());
-
-                char* s1 = BN_bn2dec(theta_exp);
-                char* s2 = BN_bn2dec(tt_mod);
-                char* s3 = BN_bn2dec(theta_tilde);
-                char* s4 = BN_bn2dec(phi_d);
-                char* s5 = BN_bn2dec(sum_beta);
-                char* s6 = BN_bn2dec(delta_bn);
-                std::cerr << "[diag] expected_theta   = " << s1 << "\n";
-                std::cerr << "[diag] theta_tilde modN = " << s2 << "\n";
-                std::cerr << "[diag] theta_tilde full = " << s3 << "\n";
-                std::cerr << "[diag] phi              = " << s4 << "\n";
-                std::cerr << "[diag] beta             = " << s5 << "\n";
-                std::cerr << "[diag] delta            = " << s6 << "\n";
-
-                OPENSSL_free(s1); OPENSSL_free(s2); OPENSSL_free(s3);
-                OPENSSL_free(s4); OPENSSL_free(s5); OPENSSL_free(s6);
-                BN_free(sum_p); BN_free(sum_q); BN_free(sum_beta);
-                BN_free(phi_d); BN_free(prod); BN_free(theta_exp); BN_free(tt_mod);
-                BN_free(delta_bn);
-            }
-#endif
             key_ok = true;
         }
     }
@@ -3192,6 +3164,7 @@ after_key_phase:
         return false;
     }
 
+    BN_free(accepted_N);
     out.ok = true;
     return true;
 }

@@ -240,7 +240,7 @@ TEST(dao_dkg_e2e, decryption_roundtrip)
         BN_mul(prod, phi, beta, ctx);
         BN_mul(prod, prod, dao_dkg_delta(), ctx);
         BIGNUM* theta_exp = BN_new();
-        BN_mod(theta_exp, prod, pk.N(), ctx);
+        BN_nnmod(theta_exp, prod, pk.N(), ctx);
 
         BIGNUM* theta_rec = BN_bin2bn(out.record.theta.data(),
                                       static_cast<int>(out.record.theta.size()),
