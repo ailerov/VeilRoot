@@ -142,6 +142,23 @@ void E_to_bytes(const BIGNUM* E, std::vector<uint8_t>& out)
     BN_bn2binpad(E, out.data(), 32);
 }
 
+// Canonical V-commitment hash used both by the committer and by the
+// driver's reveal verification. Binds epoch, party id, and the
+// big-endian bytes of r_i.
+void compute_v_commit(uint32_t epoch, uint32_t party_id,
+                      const std::vector<uint8_t>& r_bytes,
+                      std::vector<uint8_t>& digest_out)
+{
+    std::vector<uint8_t> buf;
+    const char* dom = "DAO_DKG_V1";
+    buf.insert(buf.end(), dom, dom + 10);
+    for (int i = 0; i < 4; ++i) buf.push_back((epoch >> (8*i)) & 0xff);
+    for (int i = 0; i < 4; ++i) buf.push_back((party_id >> (8*i)) & 0xff);
+    buf.insert(buf.end(), r_bytes.begin(), r_bytes.end());
+    digest_out.assign(32, 0);
+    SHA256(buf.data(), buf.size(), digest_out.data());
+}
+
 // Signed BIGNUM serialization: sign byte (0 = non-negative, 1 = negative)
 // followed by big-endian magnitude. BN_bn2bin alone discards the sign,
 // which silently corrupts any wire value that can be negative.
@@ -1973,18 +1990,12 @@ bool dkg_party::do_v_commit()
     v_r_i_ = r_i;
 
     // Commitment: SHA-256 of "DAO_DKG_V1" || epoch || party_id || r_i_bytes.
-    std::vector<uint8_t> buf;
-    const char* dom = "DAO_DKG_V1";
-    buf.insert(buf.end(), dom, dom + 10);
-    for (int i = 0; i < 4; ++i) buf.push_back((epoch_ >> (8*i)) & 0xff);
-    for (int i = 0; i < 4; ++i) buf.push_back((party_id_ >> (8*i)) & 0xff);
     const int rb = BN_num_bytes(v_r_i_);
     std::vector<uint8_t> rbytes(rb, 0);
     BN_bn2bin(v_r_i_, rbytes.data());
-    buf.insert(buf.end(), rbytes.begin(), rbytes.end());
 
-    std::vector<uint8_t> digest(32, 0);
-    SHA256(buf.data(), buf.size(), digest.data());
+    std::vector<uint8_t> digest;
+    compute_v_commit(epoch_, party_id_, rbytes, digest);
 
     dkg_msg m = make_header(dkg_msg_type::v_commit, 0);
     m.tag32 = party_id_;
@@ -2940,18 +2951,30 @@ bool dkg_run_with_transport(const dkg_config& cfg,
             #ifdef VEILROOT_DAO_DKG_TESTING
             std::cerr << "[key-phase] phase 11 ok\n";
             #endif
+            // Phase 11: collect commitments, then deliver to parties.
+            std::vector<std::vector<uint8_t>> v_commits(cfg.committee_size + 1);
             {
                 std::vector<dkg_msg> vcollected;
                 drain_all(transports, vcollected);
 
-                // Verify each commitment before reveal.
                 bool commits_ok = true;
                 for (const auto& m : vcollected) {
                     if (m.hdr.type != dkg_msg_type::v_commit) continue;
                     const uint32_t j = m.tag32;
                     if (j < 1 || j > cfg.committee_size) { commits_ok = false; break; }
                     if (m.bytes_a.size() != 32) { commits_ok = false; break; }
+                    if (!v_commits[j].empty()) {
+                        // Duplicate from broadcast fan-out. Identical
+                        // copies are fine; a different value from the
+                        // same sender is a protocol violation.
+                        if (v_commits[j] != m.bytes_a) { commits_ok = false; break; }
+                        continue;
+                    }
+                    v_commits[j] = m.bytes_a;
                 }
+                for (uint32_t j = 1; j <= cfg.committee_size; ++j)
+                    if (v_commits[j].empty()) { commits_ok = false; break; }
+
                 if (!commits_ok || !deliver_all(parties, vcollected)) {
                     BN_free(theta_tilde); BN_free(theta);
                     goto after_key_phase;
@@ -2968,17 +2991,48 @@ bool dkg_run_with_transport(const dkg_config& cfg,
                     goto after_key_phase;
                 }
             }
-            #ifdef VEILROOT_DAO_DKG_TESTING
-            std::cerr << "[key-phase] phase 12 ok\n";
-            #endif
             {
                 std::vector<dkg_msg> vcollected;
                 drain_all(transports, vcollected);
+
+                // Cross-check every reveal against the party's earlier
+                // commitment. Recompute SHA-256 over the same canonical
+                // buffer and require an exact match.
+                std::vector<int> revealed(cfg.committee_size + 1, 0);
+                bool reveals_ok = true;
+                for (const auto& m : vcollected) {
+                    if (m.hdr.type != dkg_msg_type::v_reveal) continue;
+                    const uint32_t j = m.tag32;
+                    if (j < 1 || j > cfg.committee_size) { reveals_ok = false; break; }
+                    if (m.bytes_a.empty()) { reveals_ok = false; break; }
+                    if (revealed[j]) continue;   // duplicate broadcast fan-out
+
+                    std::vector<uint8_t> recomputed;
+                    compute_v_commit(cfg.epoch, j, m.bytes_a, recomputed);
+                    if (recomputed != v_commits[j]) {
+                        reveals_ok = false; break;
+                    }
+                    revealed[j] = 1;
+                }
+                for (uint32_t j = 1; j <= cfg.committee_size; ++j)
+                    if (!revealed[j]) { reveals_ok = false; break; }
+
+                if (!reveals_ok) {
+                    #ifdef VEILROOT_DAO_DKG_TESTING
+                    std::cerr << "[key-phase] V reveal does not match commitment\n";
+                    #endif
+                    BN_free(theta_tilde); BN_free(theta);
+                    goto after_key_phase;
+                }
+
                 if (!deliver_all(parties, vcollected)) {
                     BN_free(theta_tilde); BN_free(theta);
                     goto after_key_phase;
                 }
             }
+            #ifdef VEILROOT_DAO_DKG_TESTING
+            std::cerr << "[key-phase] phase 12 ok\n";
+            #endif
 
             // Phase 13: compute V.
             for (auto& p : parties) {
