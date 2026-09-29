@@ -142,6 +142,32 @@ void E_to_bytes(const BIGNUM* E, std::vector<uint8_t>& out)
     BN_bn2binpad(E, out.data(), 32);
 }
 
+// Signed BIGNUM serialization: sign byte (0 = non-negative, 1 = negative)
+// followed by big-endian magnitude. BN_bn2bin alone discards the sign,
+// which silently corrupts any wire value that can be negative.
+void bn_to_signed(const BIGNUM* b, std::vector<uint8_t>& out)
+{
+    out.clear();
+    out.push_back(BN_is_negative(b) ? 1 : 0);
+    const int n = BN_num_bytes(b);
+    if (n > 0) {
+        const size_t off = out.size();
+        out.resize(off + n);
+        BN_bn2bin(b, out.data() + off);
+    }
+}
+
+BIGNUM* bn_from_signed(const std::vector<uint8_t>& in)
+{
+    if (in.empty()) return nullptr;
+    const bool neg = in[0] != 0;
+    BIGNUM* v = BN_bin2bn(in.data() + 1,
+                          static_cast<int>(in.size() - 1), nullptr);
+    if (!v) return nullptr;
+    if (neg) BN_set_negative(v, 1);
+    return v;
+}
+
 // Return (P-1)/2 for the VSS group. Caller owns the returned BIGNUM.
 BIGNUM* vss_group_order(const dao_vss_group& g)
 {
@@ -1591,10 +1617,8 @@ bool dkg_party::handle_message(const dkg_msg& m)
             const uint32_t j = m.tag32;
             if (j < 1 || j > committee_size_) return false;
             if (m.bytes_a.empty() || m.bytes_b.empty()) return false;
-            BIGNUM* bv = BN_bin2bn(m.bytes_a.data(),
-                                   static_cast<int>(m.bytes_a.size()), nullptr);
-            BIGNUM* rv = BN_bin2bn(m.bytes_b.data(),
-                                   static_cast<int>(m.bytes_b.size()), nullptr);
+            BIGNUM* bv = bn_from_signed(m.bytes_a);
+            BIGNUM* rv = bn_from_signed(m.bytes_b);
             if (!bv || !rv) { BN_free(bv); BN_free(rv); return false; }
             if (beta_shares_received_[j]) BN_free(beta_shares_received_[j]);
             if (delta_r_shares_received_[j]) BN_free(delta_r_shares_received_[j]);
@@ -1606,13 +1630,8 @@ bool dkg_party::handle_message(const dkg_msg& m)
         case dkg_msg_type::h_theta_share: {
             const uint32_t j = m.tag32;
             if (j < 1 || j > committee_size_) return false;
-            // Two forms: broadcast commitment (payload in vec_a,
-            // bytes_a empty) and private share (payload in bytes_a).
-            // The broadcast form is retained by the driver; ignore it
-            // here without touching the private share slot.
             if (m.bytes_a.empty()) return true;
-            BIGNUM* hv = BN_bin2bn(m.bytes_a.data(),
-                                   static_cast<int>(m.bytes_a.size()), nullptr);
+            BIGNUM* hv = bn_from_signed(m.bytes_a);
             if (!hv) return false;
             if (h_theta_shares_received_[j]) BN_free(h_theta_shares_received_[j]);
             h_theta_shares_received_[j] = hv;
@@ -1806,25 +1825,13 @@ bool dkg_party::do_beta_R_generate()
         }
         dkg_msg m = make_header(dkg_msg_type::beta_share, j);
         m.tag32 = party_id_;
-        {
-            const int n = BN_num_bytes(s_beta[j - 1]);
-            m.bytes_a.assign(n, 0);
-            BN_bn2bin(s_beta[j - 1], m.bytes_a.data());
-        }
-        {
-            const int n = BN_num_bytes(s_dr[j - 1]);
-            m.bytes_b.assign(n, 0);
-            BN_bn2bin(s_dr[j - 1], m.bytes_b.data());
-        }
+        bn_to_signed(s_beta[j - 1], m.bytes_a);
+        bn_to_signed(s_dr[j - 1], m.bytes_b);
         if (!send_msg(m)) return false;
 
         dkg_msg mh = make_header(dkg_msg_type::h_theta_share, j);
         mh.tag32 = party_id_;
-        {
-            const int n = BN_num_bytes(s_h[j - 1]);
-            mh.bytes_a.assign(n, 0);
-            BN_bn2bin(s_h[j - 1], mh.bytes_a.data());
-        }
+        bn_to_signed(s_h[j - 1], mh.bytes_a);
         if (!send_msg(mh)) return false;
     }
 
@@ -1895,9 +1902,7 @@ bool dkg_party::do_compute_theta_share()
 
     dkg_msg m = make_header(dkg_msg_type::theta_share, 0);
     m.tag32 = party_id_;
-    const int n = BN_num_bytes(theta_share_);
-    m.bytes_a.assign(n, 0);
-    BN_bn2bin(theta_share_, m.bytes_a.data());
+    bn_to_signed(theta_share_, m.bytes_a);
 
     const bool sent = send_msg(m);
     BN_free(prod); BN_free(nf1);
@@ -2811,9 +2816,7 @@ bool dkg_run_with_transport(const dkg_config& cfg,
                 if (j < 1 || j > cfg.committee_size) continue;
                 if (m.bytes_a.empty()) continue;
                 if (theta_shares[j]) continue;
-                theta_shares[j] = BN_bin2bn(m.bytes_a.data(),
-                                            static_cast<int>(m.bytes_a.size()),
-                                            nullptr);
+                theta_shares[j] = bn_from_signed(m.bytes_a);
             }
             bool have_all = true;
             for (uint32_t j = 1; j <= need; ++j)
@@ -3115,8 +3118,14 @@ bool dkg_run_with_transport(const dkg_config& cfg,
                 bn_out(theta_tilde, out.test_theta_tilde);
 
                 out.test_SK.assign(cfg.committee_size, {});
-                for (size_t k = 0; k < parties.size(); ++k)
-                    bn_out(parties[k]->test_SK(), out.test_SK[k]);
+                for (size_t k = 0; k < parties.size(); ++k) {
+                    // SK_i is signed; serialize as decimal so the test
+                    // can reconstruct the sign unambiguously.
+                    char* dec = BN_bn2dec(parties[k]->test_SK());
+                    if (!dec) continue;
+                    out.test_SK[k].assign(dec, dec + strlen(dec));
+                    OPENSSL_free(dec);
+                }
 
                 BN_free(sum_p); BN_free(sum_q); BN_free(sum_beta);
                 BN_free(phi);
@@ -3125,6 +3134,54 @@ bool dkg_run_with_transport(const dkg_config& cfg,
 
             BN_free(theta_tilde);
             BN_free(theta);
+            #ifdef VEILROOT_DAO_DKG_TESTING
+            {
+                CtxGuard dctx;
+                BIGNUM* sum_p = BN_new();
+                BIGNUM* sum_q = BN_new();
+                BIGNUM* sum_beta = BN_new();
+                BN_zero(sum_p); BN_zero(sum_q); BN_zero(sum_beta);
+                for (auto& p : parties) {
+                    BN_add(sum_p, sum_p, p->test_p_i());
+                    BN_add(sum_q, sum_q, p->test_q_i());
+                    BN_add(sum_beta, sum_beta, p->test_beta_i());
+                }
+                BIGNUM* phi_d = BN_new();
+                BN_add(phi_d, N, BN_value_one());
+                BN_sub(phi_d, phi_d, sum_p);
+                BN_sub(phi_d, phi_d, sum_q);
+
+                BIGNUM* prod = BN_new();
+                BN_mul(prod, phi_d, sum_beta, dctx.ctx);
+                BN_mul(prod, prod, dao_dkg_delta(), dctx.ctx);
+                BIGNUM* theta_exp = BN_new();
+                BN_mod(theta_exp, prod, N, dctx.ctx);
+
+                BIGNUM* tt_mod = BN_new();
+                BN_mod(tt_mod, theta_tilde, N, dctx.ctx);
+
+                BIGNUM* delta_bn = BN_dup(dao_dkg_delta());
+
+                char* s1 = BN_bn2dec(theta_exp);
+                char* s2 = BN_bn2dec(tt_mod);
+                char* s3 = BN_bn2dec(theta_tilde);
+                char* s4 = BN_bn2dec(phi_d);
+                char* s5 = BN_bn2dec(sum_beta);
+                char* s6 = BN_bn2dec(delta_bn);
+                std::cerr << "[diag] expected_theta   = " << s1 << "\n";
+                std::cerr << "[diag] theta_tilde modN = " << s2 << "\n";
+                std::cerr << "[diag] theta_tilde full = " << s3 << "\n";
+                std::cerr << "[diag] phi              = " << s4 << "\n";
+                std::cerr << "[diag] beta             = " << s5 << "\n";
+                std::cerr << "[diag] delta            = " << s6 << "\n";
+
+                OPENSSL_free(s1); OPENSSL_free(s2); OPENSSL_free(s3);
+                OPENSSL_free(s4); OPENSSL_free(s5); OPENSSL_free(s6);
+                BN_free(sum_p); BN_free(sum_q); BN_free(sum_beta);
+                BN_free(phi_d); BN_free(prod); BN_free(theta_exp); BN_free(tt_mod);
+                BN_free(delta_bn);
+            }
+#endif
             key_ok = true;
         }
     }

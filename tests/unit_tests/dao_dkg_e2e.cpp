@@ -174,3 +174,137 @@ TEST(dao_dkg_e2e, sixteen_party_128bit_with_oracle)
 
     std::cerr << "[dkg-e2e] oracle passed\n";
 }
+
+// ====================================================================
+// Decryption round-trip against DKG-derived shares
+//
+// Runs the full DKG to obtain SK_i for all 16 parties and the public
+// theta. Then:
+//   - verifies theta == Delta * phi * beta mod N against the oracle
+//   - encrypts a known plaintext
+//   - partial-decrypts with 8 of 16 SK_i
+//   - combines and finalizes with theta
+//   - confirms the plaintext recovers exactly
+//
+// This is the end-to-end test that proves the entire §5 chain.
+// ====================================================================
+
+TEST(dao_dkg_e2e, decryption_roundtrip)
+{
+    seed_openssl_rng(0xFACE);
+
+    dkg_config cfg;
+    cfg.committee_size = DAO_DKG_COMMITTEE_SIZE;
+    cfg.threshold      = DAO_DKG_THRESHOLD;
+    cfg.epoch          = 1;
+    cfg.k              = 60;
+    cfg.target_N_bits  = 128;
+    cfg.security_bits  = 32;
+    cfg.qproof_rounds  = 2;
+    cfg.max_attempts   = 100000;
+
+    auto net = dkg_make_inproc_network(cfg.committee_size, nullptr);
+
+    std::vector<std::unique_ptr<dkg_transport>> pool;
+    pool.reserve(net.endpoints.size());
+    for (auto& e : net.endpoints) pool.push_back(std::move(e));
+
+    size_t next = 0;
+    dkg_transport_factory factory =
+        [&pool, &next](uint32_t) -> std::unique_ptr<dkg_transport> {
+            if (next >= pool.size()) return nullptr;
+            return std::move(pool[next++]);
+        };
+
+    dkg_result out;
+    dkg_run_with_transport(cfg, factory, out);
+
+    ASSERT_TRUE(out.ok) << "DKG did not complete";
+    ASSERT_TRUE(out.candidate_accepted);
+    ASSERT_EQ(out.test_SK.size(), DAO_DKG_COMMITTEE_SIZE);
+
+    // Rebuild Paillier public key from the record.
+    PaillierPublicKey pk;
+    ASSERT_TRUE(pk.deserialize_modulus(out.record.N));
+
+    BN_CTX* ctx = BN_CTX_new();
+    ASSERT_NE(ctx, nullptr);
+
+    // --- Oracle 1: theta == Delta * phi * beta mod N ---
+    {
+        BIGNUM* phi = BN_bin2bn(out.test_phi.data(),
+                                static_cast<int>(out.test_phi.size()), nullptr);
+        BIGNUM* beta = BN_bin2bn(out.test_beta.data(),
+                                 static_cast<int>(out.test_beta.size()), nullptr);
+        BIGNUM* prod = BN_new();
+        BN_mul(prod, phi, beta, ctx);
+        BN_mul(prod, prod, dao_dkg_delta(), ctx);
+        BIGNUM* theta_exp = BN_new();
+        BN_mod(theta_exp, prod, pk.N(), ctx);
+
+        BIGNUM* theta_rec = BN_bin2bn(out.record.theta.data(),
+                                      static_cast<int>(out.record.theta.size()),
+                                      nullptr);
+        EXPECT_EQ(BN_cmp(theta_exp, theta_rec), 0)
+            << "theta does not match Delta*phi*beta mod N";
+
+        BN_free(phi); BN_free(beta); BN_free(prod);
+        BN_free(theta_exp); BN_free(theta_rec);
+    }
+
+    // --- Encrypt a known plaintext ---
+    BIGNUM* M = BN_new();
+    BN_set_word(M, 123456789);
+    BIGNUM* r = BN_new();
+    BN_set_word(r, 7);
+
+    std::vector<uint8_t> c;
+    ASSERT_TRUE(pk.encrypt(M, r, c));
+
+    // --- Partial decrypt with 8 of 16 SK_i ---
+    std::vector<uint32_t> subset = { 1, 2, 3, 4, 5, 6, 7, 8 };
+    std::vector<std::vector<uint8_t>> partials;
+    partials.reserve(subset.size());
+
+    for (uint32_t j : subset) {
+        const std::string dec(out.test_SK[j - 1].begin(),
+                              out.test_SK[j - 1].end());
+        BIGNUM* sk = nullptr;
+        ASSERT_EQ(BN_dec2bn(&sk, dec.c_str()), static_cast<int>(dec.size()))
+            << "failed to parse SK_" << j;
+        ASSERT_NE(sk, nullptr);
+
+        std::vector<uint8_t> p;
+        ASSERT_TRUE(dao_threshold_partial_decrypt(pk, c, sk, p))
+            << "partial_decrypt failed at j=" << j;
+        partials.push_back(std::move(p));
+
+        BN_free(sk);
+    }
+
+    // --- Combine ---
+    std::vector<uint8_t> C;
+    ASSERT_TRUE(dao_threshold_combine(pk, subset, partials, C));
+
+    // --- Finalize with theta ---
+    BIGNUM* theta = BN_bin2bn(out.record.theta.data(),
+                              static_cast<int>(out.record.theta.size()),
+                              nullptr);
+    BIGNUM* M_rec = BN_new();
+    ASSERT_TRUE(dao_threshold_finalize(pk, C, theta, M_rec));
+
+    EXPECT_EQ(BN_cmp(M, M_rec), 0) << "plaintext round-trip failed";
+
+    // --- Oracle 2: 7 shares must NOT decrypt ---
+    {
+        std::vector<uint32_t> subset7 = { 1, 2, 3, 4, 5, 6, 7 };
+        std::vector<std::vector<uint8_t>> partials7(partials.begin(),
+                                                    partials.begin() + 7);
+        std::vector<uint8_t> C7;
+        // dao_threshold_combine rejects subsets below threshold.
+        EXPECT_FALSE(dao_threshold_combine(pk, subset7, partials7, C7));
+    }
+
+    BN_free(M); BN_free(r); BN_free(theta); BN_free(M_rec);
+    BN_CTX_free(ctx);
+}
