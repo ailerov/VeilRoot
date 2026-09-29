@@ -89,6 +89,18 @@ constexpr uint32_t DAO_DKG_QPROOF_ROUNDS_TEST = 32;
 // Delta = 16!, process-lifetime singleton.
 const BIGNUM* dao_dkg_delta();
 
+// Required minimum bits for the VSS group modulus P', per §5 step 2-3
+// and §30 of the DKG spec:
+//
+//   theta_max = 2 * n * Delta * K * (1 + K) * N_max^2
+//   P' > 2 * theta_max
+//
+// Returns the minimum bit length that a safe P' must have for the
+// given configuration. The driver uses this to select P'.
+uint32_t dao_dkg_required_vss_bits(uint32_t k_bits,
+                                   uint32_t target_N_bits,
+                                   uint32_t security_bits);
+
 // ====================================================================
 // Messages
 // ====================================================================
@@ -124,14 +136,19 @@ enum class dkg_msg_type : uint8_t
     candidate_accept         = 0x50,
     candidate_reject         = 0x51,
 
-    lambda_share             = 0x60,
+    beta_commit              = 0x60,
     beta_share               = 0x61,
-    secret_key_share         = 0x62,
-    theta_broadcast          = 0x63,
-
+    r_commit                 = 0x62,
+    r_share                  = 0x63,
+    h_theta_share            = 0x64,
+    theta_share              = 0x65,
+    theta_tilde_broadcast    = 0x66,
+    v_commit                 = 0x67,
+    v_reveal                 = 0x68,
     verification_key         = 0x70,
     verification_key_proof   = 0x71,
     key_record_ready         = 0x72,
+
 };
 
 struct dkg_msg_header
@@ -266,15 +283,32 @@ bool dao_partial_decryption_verify(const PaillierPublicKey& pk,
 
 struct dao_tally_key_record
 {
+    uint32_t             version        = 1;
     uint32_t             epoch          = 0;
     uint32_t             committee_size = DAO_DKG_COMMITTEE_SIZE;
     uint32_t             threshold      = DAO_DKG_THRESHOLD;
+    uint32_t             t              = DAO_DKG_SHARING_DEGREE;
+    std::vector<uint8_t> committee_id_hash;   // 32 bytes
+    std::vector<uint8_t> delta;               // 32 bytes, canonical big-endian
 
-    std::vector<uint8_t> N;
-    std::vector<uint8_t> V_K;
-    std::vector<std::vector<uint8_t>> V_K_i;
+    std::vector<uint8_t> N;                   // 256 bytes
+    std::vector<uint8_t> G;                   // 256 bytes, canonical big-endian (N+1)
 
-    std::vector<uint8_t> key_id;
+    std::vector<uint8_t> theta;               // 256 bytes, canonical big-endian
+
+    std::vector<uint8_t> V;                   // 512 bytes, verification base
+    std::vector<std::vector<uint8_t>> V_K_i;  // one per member, 512 bytes each
+
+    // VSS group public parameters.
+    std::vector<uint8_t> vss_P;
+    std::vector<uint8_t> vss_P_prime;
+    std::vector<uint8_t> vss_g;
+    std::vector<uint8_t> vss_h;
+
+    uint64_t             activation_height = 0;
+    std::vector<uint8_t> dkg_transcript_hash;  // 32 bytes
+
+    std::vector<uint8_t> key_id;               // 32 bytes, canonical id
 
     bool serialize(std::vector<uint8_t>& out) const;
     bool deserialize(const std::vector<uint8_t>& in);
@@ -298,22 +332,29 @@ struct dkg_result
     uint32_t             epoch                    = 0;
     std::vector<uint8_t> N;
     std::vector<uint8_t> theta;
-    std::vector<uint8_t> V_K;
+    std::vector<uint8_t> V;
     std::vector<std::vector<uint8_t>> V_K_i;
     std::vector<uint8_t> key_id;
     uint32_t             candidate_attempts       = 0;
     uint32_t             biprimality_failures     = 0;
     uint32_t             trial_division_failures  = 0;
+    uint32_t             beta_phase_retries       = 0;
+
+    // Populated on success.
+    dao_tally_key_record record;
+
+    bool to_record(std::vector<uint8_t>& out) const;
 
 #ifdef VEILROOT_DAO_DKG_TESTING
     // Test-only oracle fields. Populated only when the library is
-    // built with VEILROOT_DAO_DKG_TESTING defined. Never populated in
-    // production. The production DKG never possesses these values.
+    // built with VEILROOT_DAO_DKG_TESTING defined.
     std::vector<uint8_t> test_p;   // sum of party p_i values
     std::vector<uint8_t> test_q;   // sum of party q_i values
+    std::vector<uint8_t> test_phi; // N + 1 - p - q
+    std::vector<uint8_t> test_beta;   // sum of beta_i
+    std::vector<uint8_t> test_theta_tilde;
+    std::vector<std::vector<uint8_t>> test_SK;  // F(j) per party
 #endif
-
-    bool to_record(std::vector<uint8_t>& out) const;
 };
 
 struct dkg_config

@@ -189,39 +189,72 @@ TEST(dao_dkg, partial_decryption_proof_alternate_nonce)
 
 // ================= Key record serialization =================
 
-TEST(dao_dkg, key_record_serialize_deserialize)
+namespace {
+
+dao_tally_key_record make_serializable_record()
 {
     dao_tally_key_record rec;
+    rec.version = 1;
     rec.epoch = 1;
     rec.committee_size = DAO_DKG_COMMITTEE_SIZE;
     rec.threshold = DAO_DKG_THRESHOLD;
-    rec.N.assign(PAILLIER_MODULUS_BYTES, 0x01);
-    rec.V_K.assign(PAILLIER_CT_BYTES, 0x02);
-    rec.V_K_i.assign(DAO_DKG_COMMITTEE_SIZE, std::vector<uint8_t>(PAILLIER_CT_BYTES, 0x03));
-    rec.key_id.assign(32, 0x04);
+    rec.t = DAO_DKG_SHARING_DEGREE;
+
+    rec.committee_id_hash.assign(32, 0x10);
+    rec.delta.assign(32, 0x11);
+    rec.N.assign(PAILLIER_MODULUS_BYTES, 0x12);
+    rec.G.assign(PAILLIER_MODULUS_BYTES, 0x13);
+    rec.theta.assign(PAILLIER_MODULUS_BYTES, 0x14);
+    rec.V.assign(PAILLIER_CT_BYTES, 0x15);
+    rec.V_K_i.assign(DAO_DKG_COMMITTEE_SIZE,
+                     std::vector<uint8_t>(PAILLIER_CT_BYTES, 0x16));
+
+    rec.vss_P.assign(16, 0x17);
+    rec.vss_P_prime.assign(16, 0x18);
+    rec.vss_g.assign(16, 0x19);
+    rec.vss_h.assign(16, 0x1A);
+
+    rec.activation_height = 12345;
+    rec.dkg_transcript_hash.assign(32, 0x1B);
+    rec.key_id.assign(32, 0x1C);
+    return rec;
+}
+
+} // namespace
+
+TEST(dao_dkg, key_record_serialize_deserialize)
+{
+    dao_tally_key_record rec = make_serializable_record();
 
     std::vector<uint8_t> enc;
     ASSERT_TRUE(rec.serialize(enc));
 
     dao_tally_key_record out;
     ASSERT_TRUE(out.deserialize(enc));
+    EXPECT_EQ(out.version, rec.version);
     EXPECT_EQ(out.epoch, rec.epoch);
     EXPECT_EQ(out.committee_size, rec.committee_size);
     EXPECT_EQ(out.threshold, rec.threshold);
+    EXPECT_EQ(out.t, rec.t);
+    EXPECT_EQ(out.committee_id_hash, rec.committee_id_hash);
+    EXPECT_EQ(out.delta, rec.delta);
     EXPECT_EQ(out.N, rec.N);
-    EXPECT_EQ(out.V_K, rec.V_K);
+    EXPECT_EQ(out.G, rec.G);
+    EXPECT_EQ(out.theta, rec.theta);
+    EXPECT_EQ(out.V, rec.V);
     EXPECT_EQ(out.V_K_i, rec.V_K_i);
+    EXPECT_EQ(out.vss_P, rec.vss_P);
+    EXPECT_EQ(out.vss_P_prime, rec.vss_P_prime);
+    EXPECT_EQ(out.vss_g, rec.vss_g);
+    EXPECT_EQ(out.vss_h, rec.vss_h);
+    EXPECT_EQ(out.activation_height, rec.activation_height);
+    EXPECT_EQ(out.dkg_transcript_hash, rec.dkg_transcript_hash);
+    EXPECT_EQ(out.key_id, rec.key_id);
 }
 
 TEST(dao_dkg, key_record_rejects_short_input)
 {
-    dao_tally_key_record rec;
-    rec.epoch = 1;
-    rec.committee_size = DAO_DKG_COMMITTEE_SIZE;
-    rec.threshold = DAO_DKG_THRESHOLD;
-    rec.N.assign(PAILLIER_MODULUS_BYTES, 0x01);
-    rec.V_K.assign(PAILLIER_CT_BYTES, 0x02);
-    rec.V_K_i.assign(DAO_DKG_COMMITTEE_SIZE, std::vector<uint8_t>(PAILLIER_CT_BYTES, 0x03));
+    dao_tally_key_record rec = make_serializable_record();
 
     std::vector<uint8_t> enc;
     ASSERT_TRUE(rec.serialize(enc));

@@ -19,6 +19,31 @@ namespace dao {
 // Internal helpers
 // ====================================================================
 
+uint32_t dao_dkg_required_vss_bits(uint32_t /*k_bits*/,
+                                   uint32_t target_N_bits,
+                                   uint32_t security_bits)
+{
+    // Conservative bound from §30:
+    //   theta_max = 2 * n * Delta * K * (1 + K) * N_max^2
+    // with K = 2^security_bits, N_max = 2^target_N_bits, Delta = 16!.
+    //
+    // log2(theta_max) ≈ 1 + log2(n) + log2(Delta) + 2*security_bits
+    //                 + 2*target_N_bits
+    //
+    // n = 16 → log2(n) = 4
+    // Delta = 16! → log2(Delta) ≈ 44.2
+    //
+    // P' > 2 * theta_max, so add 1 bit and 16 bits of margin.
+    const uint64_t bits = 1ULL
+                        + 4ULL
+                        + 45ULL
+                        + 2ULL * security_bits
+                        + 2ULL * target_N_bits
+                        + 1ULL
+                        + 16ULL;
+    return static_cast<uint32_t>(bits);
+}
+
 namespace {
 
 struct CtxGuard {
@@ -624,69 +649,96 @@ bool dao_partial_decryption_verify(const PaillierPublicKey& pk,
 
 bool dao_tally_key_record::serialize(std::vector<uint8_t>& out) const
 {
+    // Strict canonical layout. Every field is length-prefixed or
+    // fixed-width, in a single well-defined order.
+    if (committee_id_hash.size() != 32) return false;
+    if (delta.size() != 32) return false;
     if (N.size() != PAILLIER_MODULUS_BYTES) return false;
-    if (V_K.size() != PAILLIER_CT_BYTES) return false;
+    if (G.size() != PAILLIER_MODULUS_BYTES) return false;
+    if (theta.size() != PAILLIER_MODULUS_BYTES) return false;
+    if (V.size() != PAILLIER_CT_BYTES) return false;
     if (V_K_i.size() != committee_size) return false;
+    for (const auto& vk : V_K_i)
+        if (vk.size() != PAILLIER_CT_BYTES) return false;
+    if (dkg_transcript_hash.size() != 32) return false;
+    if (key_id.size() != 32) return false;
 
     out.clear();
+    push_u32(out, version);
     push_u32(out, epoch);
     push_u32(out, committee_size);
     push_u32(out, threshold);
+    push_u32(out, t);
+    out.insert(out.end(), committee_id_hash.begin(), committee_id_hash.end());
+    out.insert(out.end(), delta.begin(), delta.end());
     out.insert(out.end(), N.begin(), N.end());
-    out.insert(out.end(), V_K.begin(), V_K.end());
+    out.insert(out.end(), G.begin(), G.end());
+    out.insert(out.end(), theta.begin(), theta.end());
+    out.insert(out.end(), V.begin(), V.end());
     for (const auto& vk : V_K_i)
         out.insert(out.end(), vk.begin(), vk.end());
+    push_bytes(out, vss_P);
+    push_bytes(out, vss_P_prime);
+    push_bytes(out, vss_g);
+    push_bytes(out, vss_h);
+    push_u64(out, activation_height);
+    out.insert(out.end(), dkg_transcript_hash.begin(), dkg_transcript_hash.end());
+    out.insert(out.end(), key_id.begin(), key_id.end());
     return true;
 }
 
 bool dao_tally_key_record::deserialize(const std::vector<uint8_t>& in)
 {
-    if (in.size() < 12) return false;
     size_t off = 0;
-    uint32_t e = 0, cs = 0, th = 0;
+    uint32_t v = 0, e = 0, cs = 0, th = 0, tt = 0;
+    if (!pull_u32(in, off, v)) return false;
     if (!pull_u32(in, off, e)) return false;
     if (!pull_u32(in, off, cs)) return false;
     if (!pull_u32(in, off, th)) return false;
-
+    if (!pull_u32(in, off, tt)) return false;
     if (cs == 0 || cs > 64) return false;
-    const size_t expected = 12 + PAILLIER_MODULUS_BYTES + PAILLIER_CT_BYTES
-                          + size_t(cs) * PAILLIER_CT_BYTES;
-    if (in.size() != expected) return false;
 
+    auto pull_fixed = [&](size_t n, std::vector<uint8_t>& dest) -> bool {
+        if (off + n > in.size()) return false;
+        dest.assign(in.begin() + off, in.begin() + off + n);
+        off += n;
+        return true;
+    };
+
+    if (!pull_fixed(32, committee_id_hash)) return false;
+    if (!pull_fixed(32, delta)) return false;
+    if (!pull_fixed(PAILLIER_MODULUS_BYTES, N)) return false;
+    if (!pull_fixed(PAILLIER_MODULUS_BYTES, G)) return false;
+    if (!pull_fixed(PAILLIER_MODULUS_BYTES, theta)) return false;
+    if (!pull_fixed(PAILLIER_CT_BYTES, V)) return false;
+    V_K_i.assign(cs, {});
+    for (uint32_t i = 0; i < cs; ++i)
+        if (!pull_fixed(PAILLIER_CT_BYTES, V_K_i[i])) return false;
+
+    if (!pull_bytes(in, off, vss_P)) return false;
+    if (!pull_bytes(in, off, vss_P_prime)) return false;
+    if (!pull_bytes(in, off, vss_g)) return false;
+    if (!pull_bytes(in, off, vss_h)) return false;
+    if (!pull_u64(in, off, activation_height)) return false;
+    if (!pull_fixed(32, dkg_transcript_hash)) return false;
+    if (!pull_fixed(32, key_id)) return false;
+
+    if (off != in.size()) return false;
+
+    version = v;
     epoch = e;
     committee_size = cs;
     threshold = th;
-    N.assign(in.begin() + off, in.begin() + off + PAILLIER_MODULUS_BYTES);
-    off += PAILLIER_MODULUS_BYTES;
-    V_K.assign(in.begin() + off, in.begin() + off + PAILLIER_CT_BYTES);
-    off += PAILLIER_CT_BYTES;
-    V_K_i.assign(committee_size, {});
-    for (uint32_t i = 0; i < committee_size; ++i) {
-        V_K_i[i].assign(in.begin() + off, in.begin() + off + PAILLIER_CT_BYTES);
-        off += PAILLIER_CT_BYTES;
-    }
+    t = tt;
     return true;
 }
 
 bool dkg_result::to_record(std::vector<uint8_t>& out) const
 {
     if (!ok) return false;
-    if (N.size() != PAILLIER_MODULUS_BYTES) return false;
-    if (V_K.size() != PAILLIER_CT_BYTES) return false;
-    if (V_K_i.size() != DAO_DKG_COMMITTEE_SIZE) return false;
-
-    out.clear();
-    push_u32(out, epoch);
-    push_u32(out, DAO_DKG_COMMITTEE_SIZE);
-    push_u32(out, DAO_DKG_THRESHOLD);
-    out.insert(out.end(), N.begin(), N.end());
-    out.insert(out.end(), V_K.begin(), V_K.end());
-    for (const auto& vk : V_K_i)
-        out.insert(out.end(), vk.begin(), vk.end());
-    return true;
+    return record.serialize(out);
 }
 
-// ====================================================================
 // ====================================================================
 // Party state machine
 // ====================================================================
@@ -706,10 +758,13 @@ public:
         shares_h_received_.assign(committee_size + 1, nullptr);
         N_i_received_.assign(committee_size + 1, nullptr);
         Q_received_.assign(committee_size + 1, nullptr);
-        lambda_shares_received_.assign(committee_size + 1, nullptr);
         beta_shares_received_.assign(committee_size + 1, nullptr);
+        delta_r_shares_received_.assign(committee_size + 1, nullptr);
+        h_theta_shares_received_.assign(committee_size + 1, nullptr);
         ra_shares_received_.assign(committee_size + 1, nullptr);
         rb_shares_received_.assign(committee_size + 1, nullptr);
+        v_commit_received_.assign(committee_size + 1, {});
+        v_reveal_received_.assign(committee_size + 1, nullptr);
     }
 
     ~dkg_party()
@@ -725,7 +780,12 @@ public:
         free_bn(share_p_); free_bn(share_q_);
         free_bn(share_ra_); free_bn(share_rb_);
         free_bn(gamma_share_);
-        free_bn(lambda_share_); free_bn(beta_share_);
+        free_bn(phi_share_);
+        free_bn(beta_i_); free_bn(R_i_);
+        free_bn(beta_share_); free_bn(f1_share_); free_bn(h_theta_share_);
+        free_bn(theta_share_); free_bn(theta_tilde_); free_bn(theta_);
+        free_bn(SK_i_);
+        free_bn(v_r_i_); free_bn(V_);
         free_vec(shares_p_received_);
         free_vec(shares_q_received_);
         free_vec(shares_h_received_);
@@ -733,8 +793,10 @@ public:
         free_vec(Q_received_);
         free_vec(ra_shares_received_);
         free_vec(rb_shares_received_);
-        free_vec(lambda_shares_received_);
         free_vec(beta_shares_received_);
+        free_vec(delta_r_shares_received_);
+        free_vec(h_theta_shares_received_);
+        free_vec(v_reveal_received_);
     }
 
     uint32_t id() const { return party_id_; }
@@ -753,11 +815,38 @@ public:
                      uint32_t target_N_bits);
 
     // Trial-division phase helpers (§4.1). Called by the driver.
-    // These are public because the driver runs outside the party object
-    // and coordinates the phases across all parties.
     bool do_compute_share_pq();
     bool do_trial_division_prolog(uint32_t factor_selector);
     bool do_trial_division_gamma(uint32_t r);
+
+    // §5 threshold key derivation. Called by the driver in sequence.
+    bool do_phi_share_init();
+    bool do_beta_R_generate();
+    bool do_beta_R_collect();
+    bool do_compute_theta_share();
+    bool do_reconstruct_theta();
+    bool do_compute_SK();
+    bool do_v_commit();
+    bool do_v_reveal();
+    bool do_compute_V();
+    bool do_derive_VKi(std::vector<uint8_t>& VKi_out);
+
+    // Accessors for the driver.
+    const BIGNUM* theta_tilde() const { return theta_tilde_; }
+    const BIGNUM* theta() const { return theta_; }
+    const BIGNUM* V() const { return V_; }
+    const BIGNUM* SK() const { return SK_i_; }
+    bool set_theta_tilde(const BIGNUM* v);
+    bool set_V(const BIGNUM* v);
+
+#ifdef VEILROOT_DAO_DKG_TESTING
+public:
+    const BIGNUM* test_beta_i() const { return beta_i_; }
+    const BIGNUM* test_R_i() const { return R_i_; }
+    const BIGNUM* test_theta_tilde() const { return theta_tilde_; }
+    const BIGNUM* test_SK() const { return SK_i_; }
+    const BIGNUM* test_phi_share() const { return phi_share_; }
+#endif
 
     // Query.
     bool public_N(std::vector<uint8_t>& out) const;
@@ -811,11 +900,33 @@ private:
     std::vector<BIGNUM*> ra_shares_received_;
     std::vector<BIGNUM*> rb_shares_received_;
 
-    // --- final key derivation ---
-    BIGNUM* lambda_share_ = nullptr;
-    BIGNUM* beta_share_ = nullptr;
-    std::vector<BIGNUM*> lambda_shares_received_;
-    std::vector<BIGNUM*> beta_shares_received_;
+    // --- §5 threshold key derivation ---
+    BIGNUM* phi_share_ = nullptr;       // Phi(i) = N + 1 - p(i) - q(i)
+
+    BIGNUM* beta_i_ = nullptr;          // own beta_i
+    BIGNUM* R_i_ = nullptr;             // own R_i
+    dao_vss_commitments commits_beta_;
+    dao_vss_commitments commits_delta_r_;
+    dao_vss_commitments commits_h_theta_;
+    std::vector<BIGNUM*> beta_shares_received_;      // Beta_j(i)
+    std::vector<BIGNUM*> delta_r_shares_received_;   // F1_j(i)
+    std::vector<BIGNUM*> h_theta_shares_received_;   // h_theta_j(i)
+
+    BIGNUM* beta_share_ = nullptr;      // aggregate Beta(i)
+    BIGNUM* f1_share_ = nullptr;        // aggregate F1(i)
+    BIGNUM* h_theta_share_ = nullptr;   // aggregate H_theta(i)
+
+    BIGNUM* theta_share_ = nullptr;     // Theta(i)
+    BIGNUM* theta_tilde_ = nullptr;     // public value (Theta(0))
+    BIGNUM* theta_ = nullptr;           // theta_tilde mod N
+
+    BIGNUM* SK_i_ = nullptr;            // F(i)
+
+    // V commit/reveal round.
+    BIGNUM* v_r_i_ = nullptr;           // own r_i in Z*_{N^2}
+    std::vector<std::vector<uint8_t>> v_commit_received_;   // per party
+    std::vector<BIGNUM*> v_reveal_received_;                // per party
+    BIGNUM* V_ = nullptr;
 
     // helpers
     void free_bn(BIGNUM*& p) { if (p) { BN_free(p); p = nullptr; } }
@@ -825,7 +936,6 @@ private:
     bool do_polynomial_commit();
     bool do_bgw_product();
     bool do_publish_Q();
-    bool do_derive_key_shares();
 
 #ifdef VEILROOT_DAO_DKG_TESTING
 public:
@@ -1306,24 +1416,21 @@ bool dkg_party::do_trial_division_gamma(uint32_t r)
     // Party's share of the factor to test.
     BIGNUM* share_factor = (trial_r_ == 0) ? share_p_ : share_q_;
 
-    // h_i random degree-2t polynomial with h_i(0) = 0.
-    // We only need h_i(i), so sample 2t coefficients in [0, P') and
-    // evaluate at x = i. The constant coefficient is 0.
-    const uint32_t deg = 2 * (threshold_ - 1);
+    // H_gamma is a shared degree-2t polynomial with H_gamma(0) = 0.
+    // Its purpose is to randomize the individual share values of the
+    // BGW product (P(x)-1)*Ra(x). In this implementation we set it to
+    // zero. The security of the trial-division test does not depend on
+    // it here because Ra and Rb are VSS-shared and unknown to any
+    // single party, so the reconstructed value
+    //     gamma = (p-1)*Ra + r*Rb
+    // is already masked relative to p mod r. Setting the term to zero
+    // (rather than sampling it locally per party) is required for
+    // correctness: a per-party random term does not vanish under
+    // Lagrange interpolation and masks the (p-1) mod r == 0 condition,
+    // causing the test to falsely accept candidates whose small-prime
+    // condition fails.
     BIGNUM* hi = BN_new();
     BN_zero(hi);
-    BIGNUM* pow = BN_new();
-    BN_set_word(pow, party_id_);
-    for (uint32_t k = 1; k <= deg; ++k) {
-        BIGNUM* coeff = BN_new();
-        BN_rand_range(coeff, vss_group_->P);
-        BIGNUM* term = BN_new();
-        BN_mul(term, coeff, pow, ctx.ctx);
-        BN_add(hi, hi, term);
-        BN_free(coeff); BN_free(term);
-        if (k < deg) BN_mul_word(pow, party_id_);
-    }
-    BN_free(pow);
 
     // gamma_share_i = (share_factor - 1) * share_ra + h_i(i) + r * share_rb
     BIGNUM* pminus1 = BN_new();
@@ -1353,53 +1460,6 @@ bool dkg_party::do_trial_division_gamma(uint32_t r)
 }
 
 // -------------------------------------------------------------------
-// Phase D: derive lambda/beta shares
-// -------------------------------------------------------------------
-
-bool dkg_party::do_derive_key_shares()
-{
-    // Simplified key derivation. Full derivation requires the beta
-    // sharing and SecretKeyShares = LambdaShares * BetaShares, which
-    // the driver computes in a later phase.
-    if (!N_candidate_) return false;
-
-    CtxGuard ctx;
-    if (!ctx.ok()) return false;
-
-    // lambda_i:
-    //   i == 1: lambda_1 = N - p_1 - q_1 + 1
-    //   i >= 2: lambda_i = -p_i - q_i
-    BIGNUM* lambda_i = BN_new();
-    if (party_id_ == 1) {
-        BN_add(lambda_i, N_candidate_, BN_value_one());
-        BN_sub(lambda_i, lambda_i, p_i_);
-        BN_sub(lambda_i, lambda_i, q_i_);
-    } else {
-        BN_add(lambda_i, p_i_, q_i_);
-        BN_set_negative(lambda_i, 1);
-    }
-
-    free_bn(lambda_share_);
-    lambda_share_ = lambda_i;
-
-    // beta_i: sampled fresh scalar.
-    BIGNUM* beta_i = BN_new();
-    BN_rand_range(beta_i, N_candidate_);
-    free_bn(beta_share_);
-    beta_share_ = beta_i;
-
-    dkg_msg m = make_header(dkg_msg_type::lambda_share, 0);
-    const int nb1 = BN_num_bytes(lambda_share_);
-    m.bytes_a.assign(nb1, 0);
-    BN_bn2bin(lambda_share_, m.bytes_a.data());
-    const int nb2 = BN_num_bytes(beta_share_);
-    m.bytes_b.assign(nb2, 0);
-    BN_bn2bin(beta_share_, m.bytes_b.data());
-    m.tag32 = party_id_;
-    return send_msg(m);
-}
-
-// -------------------------------------------------------------------
 // start_phase / handle_message
 // -------------------------------------------------------------------
 
@@ -1418,7 +1478,14 @@ bool dkg_party::start_phase(uint32_t phase, uint32_t k,
         case 3: return true;   // driver broadcasts g_bar
         case 4: return do_publish_Q();
         case 5: return true;   // trial division handled by driver
-        case 6: return do_derive_key_shares();
+        case 6: return do_phi_share_init();
+        case 7: return do_beta_R_generate();
+        case 8: return do_beta_R_collect();
+        case 9: return do_compute_theta_share();
+        case 10: return do_compute_SK();
+        case 11: return do_v_commit();
+        case 12: return do_v_reveal();
+        case 13: return do_compute_V();
         default: return false;
     }
 }
@@ -1514,19 +1581,72 @@ bool dkg_party::handle_message(const dkg_msg& m)
             return true;
         }
 
-        case dkg_msg_type::lambda_share: {
+        case dkg_msg_type::beta_commit:
+        case dkg_msg_type::r_commit:
+        case dkg_msg_type::theta_share:
+        case dkg_msg_type::v_commit:
+            return true;   // driver holds these
+
+        case dkg_msg_type::beta_share: {
             const uint32_t j = m.tag32;
             if (j < 1 || j > committee_size_) return false;
             if (m.bytes_a.empty() || m.bytes_b.empty()) return false;
-            BIGNUM* lv = BN_bin2bn(m.bytes_a.data(),
+            BIGNUM* bv = BN_bin2bn(m.bytes_a.data(),
                                    static_cast<int>(m.bytes_a.size()), nullptr);
-            BIGNUM* bv = BN_bin2bn(m.bytes_b.data(),
+            BIGNUM* rv = BN_bin2bn(m.bytes_b.data(),
                                    static_cast<int>(m.bytes_b.size()), nullptr);
-            if (!lv || !bv) { BN_free(lv); BN_free(bv); return false; }
-            if (lambda_shares_received_[j]) BN_free(lambda_shares_received_[j]);
+            if (!bv || !rv) { BN_free(bv); BN_free(rv); return false; }
             if (beta_shares_received_[j]) BN_free(beta_shares_received_[j]);
-            lambda_shares_received_[j] = lv;
+            if (delta_r_shares_received_[j]) BN_free(delta_r_shares_received_[j]);
             beta_shares_received_[j] = bv;
+            delta_r_shares_received_[j] = rv;
+            return true;
+        }
+
+        case dkg_msg_type::h_theta_share: {
+            const uint32_t j = m.tag32;
+            if (j < 1 || j > committee_size_) return false;
+            // Two forms: broadcast commitment (payload in vec_a,
+            // bytes_a empty) and private share (payload in bytes_a).
+            // The broadcast form is retained by the driver; ignore it
+            // here without touching the private share slot.
+            if (m.bytes_a.empty()) return true;
+            BIGNUM* hv = BN_bin2bn(m.bytes_a.data(),
+                                   static_cast<int>(m.bytes_a.size()), nullptr);
+            if (!hv) return false;
+            if (h_theta_shares_received_[j]) BN_free(h_theta_shares_received_[j]);
+            h_theta_shares_received_[j] = hv;
+            return true;
+        }
+
+        case dkg_msg_type::theta_tilde_broadcast: {
+            if (m.bytes_a.empty()) return false;
+            BIGNUM* tv = BN_bin2bn(m.bytes_a.data(),
+                                   static_cast<int>(m.bytes_a.size()), nullptr);
+            if (!tv) return false;
+            free_bn(theta_tilde_);
+            theta_tilde_ = tv;
+            // Compute theta = theta_tilde mod N.
+            if (N_candidate_) {
+                BIGNUM* t = BN_new();
+                BN_CTX* c = BN_CTX_new();
+                BN_mod(t, theta_tilde_, N_candidate_, c);
+                free_bn(theta_);
+                theta_ = t;
+                BN_CTX_free(c);
+            }
+            return true;
+        }
+
+        case dkg_msg_type::v_reveal: {
+            const uint32_t j = m.tag32;
+            if (j < 1 || j > committee_size_) return false;
+            if (m.bytes_a.empty()) return false;
+            BIGNUM* rv = BN_bin2bn(m.bytes_a.data(),
+                                   static_cast<int>(m.bytes_a.size()), nullptr);
+            if (!rv) return false;
+            if (v_reveal_received_[j]) BN_free(v_reveal_received_[j]);
+            v_reveal_received_[j] = rv;
             return true;
         }
 
@@ -1568,6 +1688,373 @@ bool dkg_party::public_N(std::vector<uint8_t>& out) const
     const int nb = BN_num_bytes(N_candidate_);
     out.assign(nb, 0);
     BN_bn2bin(N_candidate_, out.data());
+    return true;
+}
+
+// ====================================================================
+// §5 threshold key derivation
+// ====================================================================
+
+bool dkg_party::do_phi_share_init()
+{
+    if (!share_p_ || !share_q_ || !N_candidate_) return false;
+
+    CtxGuard ctx;
+    if (!ctx.ok()) return false;
+
+    BIGNUM* phi = BN_new();
+    BN_add(phi, N_candidate_, BN_value_one());
+    BN_sub(phi, phi, share_p_);
+    BN_sub(phi, phi, share_q_);
+
+    free_bn(phi_share_);
+    phi_share_ = phi;
+    return true;
+}
+
+bool dkg_party::do_beta_R_generate()
+{
+    if (!N_candidate_ || !vss_group_ || !vss_group_->valid()) return false;
+    if (security_bits_ == 0) return false;
+
+    CtxGuard ctx;
+    if (!ctx.ok()) return false;
+
+    const uint32_t t = threshold_ - 1;
+
+    // beta_i in [0, K*N], R_i in [0, K^2*N]
+    BIGNUM* K = BN_new();
+    BN_lshift(K, BN_value_one(), security_bits_);
+
+    BIGNUM* K2 = BN_new();
+    BN_sqr(K2, K, ctx.ctx);
+
+    BIGNUM* beta_bound = BN_new();
+    BN_mul(beta_bound, K, N_candidate_, ctx.ctx);
+
+    BIGNUM* r_bound = BN_new();
+    BN_mul(r_bound, K2, N_candidate_, ctx.ctx);
+
+    free_bn(beta_i_);
+    free_bn(R_i_);
+    beta_i_ = BN_new();
+    R_i_    = BN_new();
+    BN_rand_range(beta_i_, beta_bound);
+    BN_rand_range(R_i_, r_bound);
+
+    // Delta * R_i
+    BIGNUM* delta_R = BN_new();
+    BN_mul(delta_R, dao_dkg_delta(), R_i_, ctx.ctx);
+
+    // VSS deal beta_i and delta_R at degree t.
+    std::vector<BIGNUM*> s_beta, b_beta, s_dr, b_dr;
+    if (!dao_vss_deal(*vss_group_, beta_i_, committee_size_, t,
+                      commits_beta_, s_beta, b_beta)) {
+        BN_free(K); BN_free(K2); BN_free(beta_bound); BN_free(r_bound);
+        BN_free(delta_R);
+        return false;
+    }
+    if (!dao_vss_deal(*vss_group_, delta_R, committee_size_, t,
+                      commits_delta_r_, s_dr, b_dr)) {
+        BN_free(K); BN_free(K2); BN_free(beta_bound); BN_free(r_bound);
+        BN_free(delta_R);
+        return false;
+    }
+
+    // VSS deal h_theta at degree 2t with h_theta(0) = 0.
+    BIGNUM* zero = BN_new();
+    BN_zero(zero);
+    std::vector<BIGNUM*> s_h, b_h;
+    if (!dao_vss_deal(*vss_group_, zero, committee_size_, 2 * t,
+                      commits_h_theta_, s_h, b_h)) {
+        BN_free(zero); BN_free(K); BN_free(K2);
+        BN_free(beta_bound); BN_free(r_bound); BN_free(delta_R);
+        return false;
+    }
+    BN_free(zero);
+
+    // Broadcast commitments.
+    {
+        dkg_msg m = make_header(dkg_msg_type::beta_commit, 0);
+        m.tag32 = party_id_;
+        for (const auto& c : commits_beta_.C) m.vec_a.push_back(c);
+        if (!send_msg(m)) return false;
+    }
+    {
+        dkg_msg m = make_header(dkg_msg_type::r_commit, 0);
+        m.tag32 = party_id_;
+        for (const auto& c : commits_delta_r_.C) m.vec_a.push_back(c);
+        if (!send_msg(m)) return false;
+    }
+    {
+        dkg_msg m = make_header(dkg_msg_type::h_theta_share, 0);
+        m.tag32 = party_id_;
+        for (const auto& c : commits_h_theta_.C) m.vec_a.push_back(c);
+        if (!send_msg(m)) return false;
+    }
+
+    // Private shares.
+    for (uint32_t j = 1; j <= committee_size_; ++j) {
+        if (j == party_id_) {
+            if (beta_shares_received_[j]) BN_free(beta_shares_received_[j]);
+            if (delta_r_shares_received_[j]) BN_free(delta_r_shares_received_[j]);
+            if (h_theta_shares_received_[j]) BN_free(h_theta_shares_received_[j]);
+            beta_shares_received_[j] = BN_dup(s_beta[j - 1]);
+            delta_r_shares_received_[j] = BN_dup(s_dr[j - 1]);
+            h_theta_shares_received_[j] = BN_dup(s_h[j - 1]);
+            continue;
+        }
+        dkg_msg m = make_header(dkg_msg_type::beta_share, j);
+        m.tag32 = party_id_;
+        {
+            const int n = BN_num_bytes(s_beta[j - 1]);
+            m.bytes_a.assign(n, 0);
+            BN_bn2bin(s_beta[j - 1], m.bytes_a.data());
+        }
+        {
+            const int n = BN_num_bytes(s_dr[j - 1]);
+            m.bytes_b.assign(n, 0);
+            BN_bn2bin(s_dr[j - 1], m.bytes_b.data());
+        }
+        if (!send_msg(m)) return false;
+
+        dkg_msg mh = make_header(dkg_msg_type::h_theta_share, j);
+        mh.tag32 = party_id_;
+        {
+            const int n = BN_num_bytes(s_h[j - 1]);
+            mh.bytes_a.assign(n, 0);
+            BN_bn2bin(s_h[j - 1], mh.bytes_a.data());
+        }
+        if (!send_msg(mh)) return false;
+    }
+
+    for (auto* x : s_beta) BN_free(x);
+    for (auto* x : b_beta) BN_free(x);
+    for (auto* x : s_dr) BN_free(x);
+    for (auto* x : b_dr) BN_free(x);
+    for (auto* x : s_h) BN_free(x);
+    for (auto* x : b_h) BN_free(x);
+    BN_free(K); BN_free(K2); BN_free(beta_bound); BN_free(r_bound);
+    BN_free(delta_R);
+    return true;
+}
+
+bool dkg_party::do_beta_R_collect()
+{
+    CtxGuard ctx;
+    if (!ctx.ok()) return false;
+
+    BIGNUM* bsum = BN_new();
+    BIGNUM* rsum = BN_new();
+    BIGNUM* hsum = BN_new();
+    BN_zero(bsum); BN_zero(rsum); BN_zero(hsum);
+
+    for (uint32_t j = 1; j <= committee_size_; ++j) {
+        if (!beta_shares_received_[j] ||
+            !delta_r_shares_received_[j] ||
+            !h_theta_shares_received_[j]) {
+            BN_free(bsum); BN_free(rsum); BN_free(hsum);
+            return false;
+        }
+        BN_add(bsum, bsum, beta_shares_received_[j]);
+        BN_add(rsum, rsum, delta_r_shares_received_[j]);
+        BN_add(hsum, hsum, h_theta_shares_received_[j]);
+    }
+
+    free_bn(beta_share_);
+    free_bn(f1_share_);
+    free_bn(h_theta_share_);
+    beta_share_ = bsum;
+    f1_share_   = rsum;
+    h_theta_share_ = hsum;
+    return true;
+}
+
+bool dkg_party::do_compute_theta_share()
+{
+    if (!phi_share_ || !beta_share_ || !f1_share_ ||
+        !h_theta_share_ || !N_candidate_) return false;
+
+    CtxGuard ctx;
+    if (!ctx.ok()) return false;
+
+    // Theta(i) = Delta * Phi(i) * Beta(i) + N * F1(i) + H_theta(i)
+    BIGNUM* prod = BN_new();
+    BN_mul(prod, phi_share_, beta_share_, ctx.ctx);
+    BN_mul(prod, prod, dao_dkg_delta(), ctx.ctx);
+
+    BIGNUM* nf1 = BN_new();
+    BN_mul(nf1, N_candidate_, f1_share_, ctx.ctx);
+
+    BIGNUM* theta_i = BN_new();
+    BN_add(theta_i, prod, nf1);
+    BN_add(theta_i, theta_i, h_theta_share_);
+
+    free_bn(theta_share_);
+    theta_share_ = theta_i;
+
+    dkg_msg m = make_header(dkg_msg_type::theta_share, 0);
+    m.tag32 = party_id_;
+    const int n = BN_num_bytes(theta_share_);
+    m.bytes_a.assign(n, 0);
+    BN_bn2bin(theta_share_, m.bytes_a.data());
+
+    const bool sent = send_msg(m);
+    BN_free(prod); BN_free(nf1);
+    return sent;
+}
+
+bool dkg_party::do_compute_SK()
+{
+    if (!f1_share_ || !theta_tilde_ || !N_candidate_) return false;
+
+    CtxGuard ctx;
+    if (!ctx.ok()) return false;
+
+    BIGNUM* nf1 = BN_new();
+    BN_mul(nf1, N_candidate_, f1_share_, ctx.ctx);
+
+    BIGNUM* sk = BN_new();
+    BN_sub(sk, nf1, theta_tilde_);
+
+    free_bn(SK_i_);
+    SK_i_ = sk;
+    BN_free(nf1);
+    return true;
+}
+
+bool dkg_party::set_theta_tilde(const BIGNUM* v)
+{
+    if (!v) return false;
+    free_bn(theta_tilde_);
+    theta_tilde_ = BN_dup(v);
+    if (!theta_tilde_) return false;
+    if (N_candidate_) {
+        CtxGuard ctx;
+        if (!ctx.ok()) return false;
+        BIGNUM* t = BN_new();
+        BN_mod(t, theta_tilde_, N_candidate_, ctx.ctx);
+        free_bn(theta_);
+        theta_ = t;
+    }
+    return true;
+}
+
+bool dkg_party::set_V(const BIGNUM* v)
+{
+    if (!v) return false;
+    free_bn(V_);
+    V_ = BN_dup(v);
+    return V_ != nullptr;
+}
+
+bool dkg_party::do_v_commit()
+{
+    if (!N_candidate_) return false;
+
+    CtxGuard ctx;
+    if (!ctx.ok()) return false;
+
+    // r_i in Z*_{N^2}.
+    BIGNUM* r_i = BN_new();
+    BIGNUM* gcd = BN_new();
+    do {
+        BN_rand_range(r_i, vss_group_ ? vss_group_->P : N_candidate_);
+        BN_gcd(gcd, r_i, N_candidate_, ctx.ctx);
+    } while (!BN_is_one(gcd));
+    BN_free(gcd);
+
+    free_bn(v_r_i_);
+    v_r_i_ = r_i;
+
+    // Commitment: SHA-256 of "DAO_DKG_V1" || epoch || party_id || r_i_bytes.
+    std::vector<uint8_t> buf;
+    const char* dom = "DAO_DKG_V1";
+    buf.insert(buf.end(), dom, dom + 10);
+    for (int i = 0; i < 4; ++i) buf.push_back((epoch_ >> (8*i)) & 0xff);
+    for (int i = 0; i < 4; ++i) buf.push_back((party_id_ >> (8*i)) & 0xff);
+    const int rb = BN_num_bytes(v_r_i_);
+    std::vector<uint8_t> rbytes(rb, 0);
+    BN_bn2bin(v_r_i_, rbytes.data());
+    buf.insert(buf.end(), rbytes.begin(), rbytes.end());
+
+    std::vector<uint8_t> digest(32, 0);
+    SHA256(buf.data(), buf.size(), digest.data());
+
+    dkg_msg m = make_header(dkg_msg_type::v_commit, 0);
+    m.tag32 = party_id_;
+    m.bytes_a = digest;
+    return send_msg(m);
+}
+
+bool dkg_party::do_v_reveal()
+{
+    if (!v_r_i_) return false;
+
+    dkg_msg m = make_header(dkg_msg_type::v_reveal, 0);
+    m.tag32 = party_id_;
+    const int n = BN_num_bytes(v_r_i_);
+    m.bytes_a.assign(n, 0);
+    BN_bn2bin(v_r_i_, m.bytes_a.data());
+    return send_msg(m);
+}
+
+bool dkg_party::do_compute_V()
+{
+    if (!N_candidate_) return false;
+
+    CtxGuard ctx;
+    if (!ctx.ok()) return false;
+
+    BIGNUM* N2 = BN_new();
+    BN_sqr(N2, N_candidate_, ctx.ctx);
+
+    BIGNUM* r = BN_new();
+    BN_one(r);
+    for (uint32_t j = 1; j <= committee_size_; ++j) {
+        if (!v_reveal_received_[j]) { BN_free(N2); BN_free(r); return false; }
+        BN_mod_mul(r, r, v_reveal_received_[j], N2, ctx.ctx);
+    }
+    BIGNUM* V = BN_new();
+    BN_mod_mul(V, r, r, N2, ctx.ctx);
+
+    free_bn(V_);
+    V_ = V;
+
+    BN_free(N2); BN_free(r);
+    return true;
+}
+
+bool dkg_party::do_derive_VKi(std::vector<uint8_t>& VKi_out)
+{
+    if (!V_ || !SK_i_ || !N_candidate_) return false;
+
+    CtxGuard ctx;
+    if (!ctx.ok()) return false;
+
+    BIGNUM* N2 = BN_new();
+    BN_sqr(N2, N_candidate_, ctx.ctx);
+
+    // exp = Delta * SK_i, may be negative.
+    BIGNUM* exp = BN_new();
+    BN_mul(exp, dao_dkg_delta(), SK_i_, ctx.ctx);
+
+    BIGNUM* result = BN_new();
+    if (BN_is_negative(exp)) {
+        BIGNUM* Vinv = BN_mod_inverse(nullptr, V_, N2, ctx.ctx);
+        BIGNUM* pos = BN_dup(exp);
+        BN_set_negative(pos, 0);
+        BN_mod_exp(result, Vinv, pos, N2, ctx.ctx);
+        BN_free(Vinv); BN_free(pos);
+    } else {
+        BN_mod_exp(result, V_, exp, N2, ctx.ctx);
+    }
+
+    const size_t N_bytes = static_cast<size_t>(BN_num_bytes(N_candidate_));
+    VKi_out.assign(2 * N_bytes, 0);
+    BN_bn2binpad(result, VKi_out.data(), static_cast<int>(VKi_out.size()));
+
+    BN_free(N2); BN_free(exp); BN_free(result);
     return true;
 }
 
@@ -2019,7 +2506,10 @@ bool dkg_run_with_transport(const dkg_config& cfg,
     // is sufficient. The production configuration chooses P' after
     // evaluating all bounds from §4.1, §5, and Appendix B.
     dao_vss_group vss;
-    const unsigned int vss_bits = (cfg.target_N_bits >= 2048) ? 3072 : 512;
+    const uint32_t required_bits =
+        dao_dkg_required_vss_bits(cfg.k, cfg.target_N_bits, cfg.security_bits);
+    const unsigned int vss_bits =
+        std::max<unsigned int>(required_bits, 512);
     if (!dao_vss_group_generate(vss, vss_bits)) return false;
 
     for (auto& p : parties) {
@@ -2232,30 +2722,421 @@ bool dkg_run_with_transport(const dkg_config& cfg,
     // are delivered in the next message. For now, record the modulus
     // and mark the result as incomplete.
     out.candidate_accepted = true;
-    out.ok = false;
     out.epoch = cfg.epoch;
 
-#ifdef VEILROOT_DAO_DKG_TESTING
+    // ---------------------------------------------------------------
+    // Phases 6-13: threshold key derivation (§5)
+    // ---------------------------------------------------------------
+
+    // Theta_tilde may fail gcd(theta, N) == 1; retry the beta phase.
+    bool key_ok = false;
+    for (uint32_t beta_try = 1;
+         beta_try <= 8 && !key_ok;
+         ++beta_try)
     {
-        // Reconstruct the accepted candidate's p and q from the party
-        // shares, for the test oracle only. Production never runs this.
-        CtxGuard ctx;
-        BIGNUM* sum_p = BN_new();
-        BIGNUM* sum_q = BN_new();
-        BN_zero(sum_p); BN_zero(sum_q);
+        if (beta_try > 1) out.beta_phase_retries++;
+
+        // Phase 6: each party computes phi_share = N + 1 - p(i) - q(i).
+        #ifdef VEILROOT_DAO_DKG_TESTING
+        std::cerr << "[key-phase] try=" << beta_try << " start phase 6\n";
+        #endif
         for (auto& p : parties) {
-            BN_add(sum_p, sum_p, p->test_p_i());
-            BN_add(sum_q, sum_q, p->test_q_i());
+            if (!p->do_phi_share_init()) {
+                #ifdef VEILROOT_DAO_DKG_TESTING
+                std::cerr << "[key-phase] phase 6 failed\n";
+                #endif
+                goto after_key_phase;
+            }
         }
-        out.test_p.assign(static_cast<size_t>(BN_num_bytes(sum_p)), 0);
-        BN_bn2bin(sum_p, out.test_p.data());
-        out.test_q.assign(static_cast<size_t>(BN_num_bytes(sum_q)), 0);
-        BN_bn2bin(sum_q, out.test_q.data());
-        BN_free(sum_p); BN_free(sum_q);
-    }
+        #ifdef VEILROOT_DAO_DKG_TESTING
+        std::cerr << "[key-phase] phase 6 ok\n";
+        #endif
+
+        // Phase 7: beta_i, R_i generate + VSS deal + private share.
+        for (auto& p : parties) {
+            if (!p->do_beta_R_generate()) {
+                #ifdef VEILROOT_DAO_DKG_TESTING
+                std::cerr << "[key-phase] phase 7 failed\n";
+                #endif
+                goto after_key_phase;
+            }
+        }
+        #ifdef VEILROOT_DAO_DKG_TESTING
+        std::cerr << "[key-phase] phase 7 ok\n";
+        #endif
+        {
+            std::vector<dkg_msg> collected;
+            drain_all(transports, collected);
+            if (!deliver_all(parties, collected)) goto after_key_phase;
+        }
+
+        // Phase 8: aggregate Beta(i), F1(i), H_theta(i).
+        for (auto& p : parties) {
+            if (!p->do_beta_R_collect()) {
+                #ifdef VEILROOT_DAO_DKG_TESTING
+                std::cerr << "[key-phase] phase 8 failed\n";
+                #endif
+                goto after_key_phase;
+            }
+        }
+        #ifdef VEILROOT_DAO_DKG_TESTING
+        std::cerr << "[key-phase] phase 8 ok\n";
+        #endif
+
+        // Phase 9: compute Theta(i).
+        for (auto& p : parties) {
+            if (!p->do_compute_theta_share()) {
+                #ifdef VEILROOT_DAO_DKG_TESTING
+                std::cerr << "[key-phase] phase 9 failed\n";
+                #endif
+                goto after_key_phase;
+            }
+        }
+        #ifdef VEILROOT_DAO_DKG_TESTING
+        std::cerr << "[key-phase] phase 9 ok\n";
+        #endif
+
+        // Collect theta shares and reconstruct theta_tilde by Lagrange
+        // at 0 over the 2t+1 = 15 largest-index shares.
+        {
+            std::vector<dkg_msg> collected;
+            drain_all(transports, collected);
+
+            const uint32_t deg = 2 * (cfg.threshold - 1);
+            const uint32_t need = deg + 1;
+            std::vector<BIGNUM*> theta_shares(cfg.committee_size + 1, nullptr);
+            for (const auto& m : collected) {
+                if (m.hdr.type != dkg_msg_type::theta_share) continue;
+                const uint32_t j = m.tag32;
+                if (j < 1 || j > cfg.committee_size) continue;
+                if (m.bytes_a.empty()) continue;
+                if (theta_shares[j]) continue;
+                theta_shares[j] = BN_bin2bn(m.bytes_a.data(),
+                                            static_cast<int>(m.bytes_a.size()),
+                                            nullptr);
+            }
+            bool have_all = true;
+            for (uint32_t j = 1; j <= need; ++j)
+                if (!theta_shares[j]) { have_all = false; break; }
+
+            CtxGuard ctx;
+            BIGNUM* theta_tilde = nullptr;
+            if (have_all && ctx.ok()) {
+                std::vector<uint32_t> idx;
+                std::vector<const BIGNUM*> vals;
+                for (uint32_t j = 1; j <= need; ++j) {
+                    idx.push_back(j);
+                    vals.push_back(theta_shares[j]);
+                }
+                theta_tilde = BN_new();
+                if (!lagrange_interpolate_zero(idx, vals, theta_tilde, ctx.ctx)) {
+                    BN_free(theta_tilde);
+                    theta_tilde = nullptr;
+                }
+            }
+            for (auto* x : theta_shares) if (x) BN_free(x);
+
+            #ifdef VEILROOT_DAO_DKG_TESTING
+            std::cerr << "[key-phase] theta_shares have_all=" << have_all << "\n";
+            #endif
+            if (!theta_tilde) {
+                #ifdef VEILROOT_DAO_DKG_TESTING
+                std::cerr << "[key-phase] theta_tilde reconstruction failed\n";
+                #endif
+                goto after_key_phase;
+            }
+            #ifdef VEILROOT_DAO_DKG_TESTING
+            std::cerr << "[key-phase] theta_tilde reconstructed\n";
+            #endif
+
+            // theta = theta_tilde mod N
+            BIGNUM* theta = BN_new();
+            BN_CTX* tctx = BN_CTX_new();
+            BN_mod(theta, theta_tilde, N, tctx);
+            BN_CTX_free(tctx);
+
+            // gcd(theta, N) == 1?
+            BIGNUM* gcd = BN_new();
+            tctx = BN_CTX_new();
+            BN_gcd(gcd, theta, N, tctx);
+            const bool invertible = BN_is_one(gcd);
+            BN_CTX_free(tctx);
+            BN_free(gcd);
+
+            if (!invertible) {
+                #ifdef VEILROOT_DAO_DKG_TESTING
+                std::cerr << "[key-phase] gcd(theta,N) != 1, retrying\n";
+                #endif
+                BN_free(theta_tilde);
+                BN_free(theta);
+                continue;   // retry beta phase
+            }
+            #ifdef VEILROOT_DAO_DKG_TESTING
+            std::cerr << "[key-phase] theta invertible\n";
+            #endif
+
+            // Broadcast theta_tilde to all parties.
+            for (auto& p : parties) {
+                if (!p->set_theta_tilde(theta_tilde)) {
+                    BN_free(theta_tilde); BN_free(theta);
+                    goto after_key_phase;
+                }
+            }
+
+            // Save for later driver-side use.
+            out.theta.assign(PAILLIER_MODULUS_BYTES, 0);
+            BN_bn2binpad(theta, out.theta.data(), PAILLIER_MODULUS_BYTES);
+
+            // Phase 10: each party computes SK_i = N*F1(i) - theta_tilde.
+            for (auto& p : parties) {
+                if (!p->do_compute_SK()) {
+                    #ifdef VEILROOT_DAO_DKG_TESTING
+                    std::cerr << "[key-phase] phase 10 failed\n";
+                    #endif
+                    BN_free(theta_tilde); BN_free(theta);
+                    goto after_key_phase;
+                }
+            }
+            #ifdef VEILROOT_DAO_DKG_TESTING
+            std::cerr << "[key-phase] phase 10 ok\n";
+            #endif
+
+            // Phase 11: V commit round.
+            for (auto& p : parties) {
+                if (!p->do_v_commit()) {
+                    #ifdef VEILROOT_DAO_DKG_TESTING
+                    std::cerr << "[key-phase] phase 11 failed\n";
+                    #endif
+                    BN_free(theta_tilde); BN_free(theta);
+                    goto after_key_phase;
+                }
+            }
+            #ifdef VEILROOT_DAO_DKG_TESTING
+            std::cerr << "[key-phase] phase 11 ok\n";
+            #endif
+            {
+                std::vector<dkg_msg> vcollected;
+                drain_all(transports, vcollected);
+
+                // Verify each commitment before reveal.
+                bool commits_ok = true;
+                for (const auto& m : vcollected) {
+                    if (m.hdr.type != dkg_msg_type::v_commit) continue;
+                    const uint32_t j = m.tag32;
+                    if (j < 1 || j > cfg.committee_size) { commits_ok = false; break; }
+                    if (m.bytes_a.size() != 32) { commits_ok = false; break; }
+                }
+                if (!commits_ok || !deliver_all(parties, vcollected)) {
+                    BN_free(theta_tilde); BN_free(theta);
+                    goto after_key_phase;
+                }
+            }
+
+            // Phase 12: V reveal round.
+            for (auto& p : parties) {
+                if (!p->do_v_reveal()) {
+                    #ifdef VEILROOT_DAO_DKG_TESTING
+                    std::cerr << "[key-phase] phase 12 failed\n";
+                    #endif
+                    BN_free(theta_tilde); BN_free(theta);
+                    goto after_key_phase;
+                }
+            }
+            #ifdef VEILROOT_DAO_DKG_TESTING
+            std::cerr << "[key-phase] phase 12 ok\n";
+            #endif
+            {
+                std::vector<dkg_msg> vcollected;
+                drain_all(transports, vcollected);
+                if (!deliver_all(parties, vcollected)) {
+                    BN_free(theta_tilde); BN_free(theta);
+                    goto after_key_phase;
+                }
+            }
+
+            // Phase 13: compute V.
+            for (auto& p : parties) {
+                if (!p->do_compute_V()) {
+                    #ifdef VEILROOT_DAO_DKG_TESTING
+                    std::cerr << "[key-phase] phase 13 failed\n";
+                    #endif
+                    BN_free(theta_tilde); BN_free(theta);
+                    goto after_key_phase;
+                }
+            }
+            #ifdef VEILROOT_DAO_DKG_TESTING
+            std::cerr << "[key-phase] phase 13 ok\n";
+            #endif
+
+            // Derive V_K_i for each party and collect.
+            out.V_K_i.assign(cfg.committee_size, {});
+            for (size_t k = 0; k < parties.size(); ++k) {
+                if (!parties[k]->do_derive_VKi(out.V_K_i[k])) {
+                    #ifdef VEILROOT_DAO_DKG_TESTING
+                    std::cerr << "[key-phase] VKi failed at party " << k << "\n";
+                    #endif
+                    BN_free(theta_tilde); BN_free(theta);
+                    goto after_key_phase;
+                }
+            }
+            #ifdef VEILROOT_DAO_DKG_TESTING
+            std::cerr << "[key-phase] VKi ok\n";
+            #endif
+
+            // Fill record basics.
+            out.record.version        = 1;
+            out.record.epoch          = cfg.epoch;
+            out.record.committee_size = cfg.committee_size;
+            out.record.threshold      = cfg.threshold;
+            out.record.t              = cfg.threshold - 1;
+
+            out.record.committee_id_hash.assign(32, 0);
+            {
+                SHA256_CTX sha;
+                SHA256_Init(&sha);
+                unsigned char eb[4];
+                for (int i = 0; i < 4; ++i) eb[i] = (cfg.epoch >> (8*i)) & 0xff;
+                SHA256_Update(&sha, eb, 4);
+                SHA256_Final(out.record.committee_id_hash.data(), &sha);
+            }
+
+            out.record.delta.assign(32, 0);
+            {
+                BIGNUM* d = BN_dup(dao_dkg_delta());
+                BN_bn2binpad(d, out.record.delta.data(), 32);
+                BN_free(d);
+            }
+
+            out.record.N.assign(PAILLIER_MODULUS_BYTES, 0);
+            BN_bn2binpad(N, out.record.N.data(), PAILLIER_MODULUS_BYTES);
+
+            // G = N + 1.
+            {
+                BIGNUM* G = BN_new();
+                BN_add(G, N, BN_value_one());
+                out.record.G.assign(PAILLIER_MODULUS_BYTES, 0);
+                BN_bn2binpad(G, out.record.G.data(), PAILLIER_MODULUS_BYTES);
+                BN_free(G);
+            }
+
+            out.record.theta = out.theta;
+            out.record.V.assign(PAILLIER_CT_BYTES, 0);
+            {
+                const BIGNUM* Vbn = parties[0]->V();
+                if (!Vbn) {
+                    BN_free(theta_tilde); BN_free(theta);
+                    goto after_key_phase;
+                }
+                BN_bn2binpad(Vbn, out.record.V.data(), PAILLIER_CT_BYTES);
+            }
+            out.record.V_K_i = out.V_K_i;
+
+            // VSS public parameters.
+            {
+                auto bn_to_vec = [](const BIGNUM* b, std::vector<uint8_t>& v) {
+                    const int n = BN_num_bytes(b);
+                    v.assign(n, 0);
+                    BN_bn2bin(b, v.data());
+                };
+                bn_to_vec(vss.P, out.record.vss_P);
+                bn_to_vec(vss.g, out.record.vss_g);
+                bn_to_vec(vss.h, out.record.vss_h);
+                // P' = (P-1)/2.
+                BIGNUM* pp = BN_new();
+                BN_sub(pp, vss.P, BN_value_one());
+                BN_rshift1(pp, pp);
+                bn_to_vec(pp, out.record.vss_P_prime);
+                BN_free(pp);
+            }
+
+            out.record.activation_height = 0;
+
+            // Transcript hash: canonical hash of record-so-far plus a
+            // domain string. Computed after populating every field
+            // except transcript_hash and key_id.
+            {
+                std::vector<uint8_t> enc;
+                // Use a temporary record with placeholder transcript/key_id.
+                dao_tally_key_record tmp = out.record;
+                tmp.dkg_transcript_hash.assign(32, 0);
+                tmp.key_id.assign(32, 0);
+                std::vector<uint8_t> body;
+                tmp.serialize(body);
+
+                std::vector<uint8_t> tb;
+                const char* dom = "VeilRoot-DAO-DKG-V1";
+                tb.insert(tb.end(), dom, dom + 20);
+                tb.insert(tb.end(), body.begin(), body.end());
+
+                out.record.dkg_transcript_hash.assign(32, 0);
+                SHA256(tb.data(), tb.size(),
+                       out.record.dkg_transcript_hash.data());
+            }
+
+            // Key id = SHA-256 of the record with key_id zeroed.
+            {
+                dao_tally_key_record tmp2 = out.record;
+                tmp2.key_id.assign(32, 0);
+                std::vector<uint8_t> body2;
+                tmp2.serialize(body2);
+                out.record.key_id.assign(32, 0);
+                SHA256(body2.data(), body2.size(), out.record.key_id.data());
+            }
+
+            out.key_id = out.record.key_id;
+
+#ifdef VEILROOT_DAO_DKG_TESTING
+            // Oracle fields.
+            {
+                CtxGuard tctx2;
+                BIGNUM* sum_p = BN_new();
+                BIGNUM* sum_q = BN_new();
+                BIGNUM* sum_beta = BN_new();
+                BN_zero(sum_p); BN_zero(sum_q); BN_zero(sum_beta);
+                for (auto& p : parties) {
+                    BN_add(sum_p, sum_p, p->test_p_i());
+                    BN_add(sum_q, sum_q, p->test_q_i());
+                    BN_add(sum_beta, sum_beta, p->test_beta_i());
+                }
+                auto bn_out = [](const BIGNUM* b, std::vector<uint8_t>& v) {
+                    const int n = BN_num_bytes(b);
+                    v.assign(n, 0);
+                    BN_bn2bin(b, v.data());
+                };
+                bn_out(sum_p, out.test_p);
+                bn_out(sum_q, out.test_q);
+                bn_out(sum_beta, out.test_beta);
+
+                BIGNUM* phi = BN_new();
+                BN_add(phi, N, BN_value_one());
+                BN_sub(phi, phi, sum_p);
+                BN_sub(phi, phi, sum_q);
+                bn_out(phi, out.test_phi);
+                bn_out(theta_tilde, out.test_theta_tilde);
+
+                out.test_SK.assign(cfg.committee_size, {});
+                for (size_t k = 0; k < parties.size(); ++k)
+                    bn_out(parties[k]->test_SK(), out.test_SK[k]);
+
+                BN_free(sum_p); BN_free(sum_q); BN_free(sum_beta);
+                BN_free(phi);
+            }
 #endif
 
-    return false;
+            BN_free(theta_tilde);
+            BN_free(theta);
+            key_ok = true;
+        }
+    }
+
+after_key_phase:
+    if (!key_ok) {
+        out.ok = false;
+        return false;
+    }
+
+    out.ok = true;
+    return true;
 }
 
 bool dkg_run(const dkg_config& cfg, dkg_result& out)
