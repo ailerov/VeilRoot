@@ -2055,9 +2055,12 @@ bool dkg_party::do_derive_VKi(std::vector<uint8_t>& VKi_out)
         BN_mod_exp(result, V_, exp, N2, ctx.ctx);
     }
 
-    const size_t N_bytes = static_cast<size_t>(BN_num_bytes(N_candidate_));
-    VKi_out.assign(2 * N_bytes, 0);
-    BN_bn2binpad(result, VKi_out.data(), static_cast<int>(VKi_out.size()));
+    // V_K_i is a value mod N^2. The record format is fixed width
+    // regardless of N's bit length in the test configuration, so pad
+    // to PAILLIER_CT_BYTES.
+    VKi_out.assign(PAILLIER_CT_BYTES, 0);
+    BN_bn2binpad(result, VKi_out.data(),
+                 static_cast<int>(PAILLIER_CT_BYTES));
 
     BN_free(N2); BN_free(exp); BN_free(result);
     return true;
