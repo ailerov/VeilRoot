@@ -38,6 +38,7 @@
 #include "string_tools.h"
 #include "blockchain_db/blockchain_db.h"
 #include "blockchain_db/lmdb/db_lmdb.h"
+#include "governance/dao_dkg.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
 #include "cryptonote_core/blockchain.h"
 
@@ -248,6 +249,94 @@ TYPED_TEST(BlockchainDBTest, OpenAndClose)
 
   // make sure open when already open DOES throw
   ASSERT_THROW(this->m_db->open(dirPath), DB_OPEN_FAILURE);
+
+  ASSERT_NO_THROW(this->m_db->close());
+}
+
+TYPED_TEST(BlockchainDBTest, DaoTallyKeyRoundTrip)
+{
+  boost::filesystem::path tempPath = boost::filesystem::temp_directory_path() / boost::filesystem::unique_path();
+  std::string dirPath = tempPath.string();
+  this->set_prefix(dirPath);
+
+  ASSERT_NO_THROW(this->m_db->open(dirPath));
+  this->get_filenames();
+
+  // Never-set current epoch -> false.
+  {
+    uint32_t ep = 0;
+    EXPECT_FALSE(this->m_db->get_current_dao_tally_key_epoch(ep));
+  }
+
+  // Build a well-formed dummy record.
+  dao::dao_tally_key_record rec;
+  rec.version = 1;
+  rec.epoch = 1;
+  rec.committee_size = 16;
+  rec.threshold = 8;
+  rec.t = 7;
+  rec.committee_id_hash.assign(32, 0x11);
+  rec.delta.assign(32, 0x22);
+  rec.N.assign(256, 0x33);
+  rec.G.assign(256, 0x34);
+  rec.theta.assign(256, 0x35);
+  rec.V.assign(512, 0x36);
+  rec.V_K_i.assign(16, std::vector<uint8_t>(512, 0x37));
+  rec.vss_P.assign(64, 0x38);
+  rec.vss_P_prime.assign(64, 0x39);
+  rec.vss_g.assign(1, 0x04);
+  rec.vss_h.assign(64, 0x3A);
+  rec.activation_height = 0;
+  rec.dkg_transcript_hash.assign(32, 0x3B);
+  rec.key_id.assign(32, 0x3C);
+
+  {
+    db_wtxn_guard guard(this->m_db);
+    ASSERT_NO_THROW(this->m_db->add_dao_tally_key(1, rec));
+    ASSERT_NO_THROW(this->m_db->set_current_dao_tally_key_epoch(1));
+  }
+
+  // Read back.
+  {
+    uint32_t ep = 0;
+    EXPECT_TRUE(this->m_db->get_current_dao_tally_key_epoch(ep));
+    EXPECT_EQ(ep, 1u);
+  }
+  {
+    dao::dao_tally_key_record got;
+    ASSERT_TRUE(this->m_db->get_dao_tally_key(1, got));
+    EXPECT_EQ(got.epoch, rec.epoch);
+    EXPECT_EQ(got.committee_id_hash, rec.committee_id_hash);
+    EXPECT_EQ(got.N, rec.N);
+    EXPECT_EQ(got.V, rec.V);
+    EXPECT_EQ(got.key_id, rec.key_id);
+  }
+
+  // Historical retention: add epoch 2, epoch 1 must still exist.
+  rec.epoch = 2;
+  rec.key_id.assign(32, 0xDD);
+  {
+    db_wtxn_guard guard(this->m_db);
+    ASSERT_NO_THROW(this->m_db->add_dao_tally_key(2, rec));
+    ASSERT_NO_THROW(this->m_db->set_current_dao_tally_key_epoch(2));
+  }
+  {
+    dao::dao_tally_key_record got1, got2;
+    ASSERT_TRUE(this->m_db->get_dao_tally_key(1, got1));
+    ASSERT_TRUE(this->m_db->get_dao_tally_key(2, got2));
+    EXPECT_EQ(got1.epoch, 1u);
+    EXPECT_EQ(got2.epoch, 2u);
+    EXPECT_NE(got1.key_id, got2.key_id);
+  }
+  {
+    uint32_t ep = 0;
+    EXPECT_TRUE(this->m_db->get_current_dao_tally_key_epoch(ep));
+    EXPECT_EQ(ep, 2u);
+  }
+  {
+    dao::dao_tally_key_record miss;
+    EXPECT_FALSE(this->m_db->get_dao_tally_key(99, miss));
+  }
 
   ASSERT_NO_THROW(this->m_db->close());
 }

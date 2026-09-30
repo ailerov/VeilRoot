@@ -171,6 +171,11 @@ public:
   virtual bool for_all_alt_blocks(std::function<bool(const crypto::hash &blkid, const alt_block_data_t &data, const cryptonote::blobdata_ref *blob)> f, bool include_blob = false) const override { return true; }
 
   // VNS
+  virtual void add_dao_tally_key(uint32_t, const dao::dao_tally_key_record&) override {}
+  virtual bool get_dao_tally_key(uint32_t, dao::dao_tally_key_record&) const override { return false; }
+  virtual bool get_current_dao_tally_key_epoch(uint32_t&) const override { return false; }
+  virtual void set_current_dao_tally_key_epoch(uint32_t) override {}
+
   virtual void add_vns_domain_record(const std::string&, const vns_domain_record&) override {}
   virtual bool get_vns_domain_record(const std::string&, vns_domain_record&) const override { return false; }
   virtual void remove_vns_domain_record(const std::string&) override {}

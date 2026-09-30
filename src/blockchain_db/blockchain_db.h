@@ -30,6 +30,8 @@
 
 #pragma once
 
+namespace cryptonote { namespace dao { struct dao_tally_key_record; } }
+
 #include <string>
 #include <exception>
 #include <boost/program_options.hpp>
@@ -2038,6 +2040,15 @@ public:
      */
     virtual bool for_all_proposal_records(std::function<bool(const crypto::hash&, const proposal_record&)> f) const = 0;
     // ---------- VNS PROPOSALS END ----------
+
+    // ---------- VNS DAO TALLY KEYS START ----------
+    // Historical epoch records are retained. The active epoch pointer
+    // is a separate singleton in tally_state.
+    virtual void add_dao_tally_key(uint32_t epoch, const dao::dao_tally_key_record& record) = 0;
+    virtual bool get_dao_tally_key(uint32_t epoch, dao::dao_tally_key_record& record) const = 0;
+    virtual bool get_current_dao_tally_key_epoch(uint32_t& epoch) const = 0;
+    virtual void set_current_dao_tally_key_epoch(uint32_t epoch) = 0;
+    // ---------- VNS DAO TALLY KEYS END ----------
 
     // BEGIN_VNS_ELIGIBLE
     virtual void add_committee_eligible(const crypto::key_image& ki, const committee_eligible_record& rec) = 0;

@@ -46,6 +46,7 @@
 #include "profile_tools.h"
 #include "ringct/rctOps.h"
 #include "cryptonote_core/blockchain.h"
+#include "governance/dao_dkg.h"
 
 #undef MONERO_DEFAULT_LOG_CATEGORY
 #define MONERO_DEFAULT_LOG_CATEGORY "blockchain.db.lmdb"
@@ -1691,6 +1692,15 @@ void BlockchainLMDB::open(const std::string& filename, const int db_flags)
   mdb_set_compare(txn, m_vote_nullifiers, compare_hash64); // 64-byte key: proposal_id + nullifier
   // END_VNS_DAO_VOTE
 
+  // BEGIN_VNS_TALLY_KEYS
+  // tally_keys: uint32 epoch (big-endian) -> serialized dao_tally_key_record.
+  // Default memcmp comparator gives correct numeric ordering for the
+  // fixed-width big-endian key.
+  lmdb_db_open(txn, LMDB_TALLY_KEYS, MDB_CREATE, m_tally_keys, "Failed to open db handle for tally_keys");
+  // tally_state: singleton. Key = 0x45 ('E'), value = 4-byte BE current epoch.
+  lmdb_db_open(txn, LMDB_TALLY_STATE, MDB_CREATE, m_tally_state, "Failed to open db handle for tally_state");
+  // END_VNS_TALLY_KEYS
+
   lmdb_db_open(txn, LMDB_HF_VERSIONS, MDB_INTEGERKEY | MDB_CREATE, m_hf_versions, "Failed to open db handle for m_hf_versions");
 
   lmdb_db_open(txn, LMDB_PROPERTIES, MDB_CREATE, m_properties, "Failed to open db handle for m_properties");
@@ -3211,6 +3221,121 @@ bool BlockchainLMDB::get_proposal_record(const crypto::hash& proposal_id, propos
   TXN_POSTFIX_RDONLY();
   return true;
 }
+
+// BEGIN_VNS_TALLY_KEYS
+namespace {
+void encode_epoch_be(uint32_t epoch, unsigned char out[4])
+{
+  out[0] = static_cast<unsigned char>((epoch >> 24) & 0xff);
+  out[1] = static_cast<unsigned char>((epoch >> 16) & 0xff);
+  out[2] = static_cast<unsigned char>((epoch >>  8) & 0xff);
+  out[3] = static_cast<unsigned char>((epoch      ) & 0xff);
+}
+uint32_t decode_epoch_be(const unsigned char* in)
+{
+  return (static_cast<uint32_t>(in[0]) << 24)
+       | (static_cast<uint32_t>(in[1]) << 16)
+       | (static_cast<uint32_t>(in[2]) <<  8)
+       |  static_cast<uint32_t>(in[3]);
+}
+constexpr unsigned char TALLY_STATE_EPOCH_KEY = 0x45; // 'E'
+} // namespace
+
+void BlockchainLMDB::add_dao_tally_key(uint32_t epoch, const dao::dao_tally_key_record& record)
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  std::vector<uint8_t> blob;
+  if (!record.serialize(blob))
+    throw0(DB_ERROR("Failed to serialize dao_tally_key_record"));
+
+  lmdb_cursor_guard cur(m_write_txn->m_txn, m_tally_keys);
+
+  unsigned char kbuf[4];
+  encode_epoch_be(epoch, kbuf);
+  MDB_val k = { sizeof(kbuf), kbuf };
+  MDB_val v = { blob.size(), blob.empty() ? nullptr : blob.data() };
+  int result = mdb_cursor_put(cur.get(), &k, &v, MDB_NODUPDATA);
+  if (result == MDB_KEYEXIST)
+    result = mdb_cursor_put(cur.get(), &k, &v, MDB_CURRENT);
+  if (result)
+    throw0(DB_ERROR(lmdb_error("Failed to add dao tally key: ", result).c_str()));
+}
+
+bool BlockchainLMDB::get_dao_tally_key(uint32_t epoch, dao::dao_tally_key_record& record) const
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  TXN_PREFIX_RDONLY();
+  RCURSOR(tally_keys)
+
+  unsigned char kbuf[4];
+  encode_epoch_be(epoch, kbuf);
+  MDB_val k = { sizeof(kbuf), kbuf };
+  MDB_val v;
+  int result = mdb_cursor_get(m_cur_tally_keys, &k, &v, MDB_SET);
+  if (result == MDB_NOTFOUND) {
+    TXN_POSTFIX_RDONLY();
+    return false;
+  }
+  if (result)
+    throw0(DB_ERROR(lmdb_error("Failed to get dao tally key: ", result).c_str()));
+
+  std::vector<uint8_t> blob(static_cast<const uint8_t*>(v.mv_data),
+                            static_cast<const uint8_t*>(v.mv_data) + v.mv_size);
+  const bool ok = record.deserialize(blob);
+  TXN_POSTFIX_RDONLY();
+  return ok;
+}
+
+bool BlockchainLMDB::get_current_dao_tally_key_epoch(uint32_t& epoch) const
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  TXN_PREFIX_RDONLY();
+  RCURSOR(tally_state)
+
+  unsigned char kbuf[1] = { TALLY_STATE_EPOCH_KEY };
+  MDB_val k = { sizeof(kbuf), kbuf };
+  MDB_val v;
+  int result = mdb_cursor_get(m_cur_tally_state, &k, &v, MDB_SET);
+  if (result == MDB_NOTFOUND) {
+    TXN_POSTFIX_RDONLY();
+    return false;
+  }
+  if (result)
+    throw0(DB_ERROR(lmdb_error("Failed to get current tally key epoch: ", result).c_str()));
+  if (v.mv_size != 4) {
+    TXN_POSTFIX_RDONLY();
+    return false;
+  }
+  epoch = decode_epoch_be(static_cast<const unsigned char*>(v.mv_data));
+  TXN_POSTFIX_RDONLY();
+  return true;
+}
+
+void BlockchainLMDB::set_current_dao_tally_key_epoch(uint32_t epoch)
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  lmdb_cursor_guard cur(m_write_txn->m_txn, m_tally_state);
+
+  unsigned char kbuf[1] = { TALLY_STATE_EPOCH_KEY };
+  unsigned char vbuf[4];
+  encode_epoch_be(epoch, vbuf);
+  MDB_val k = { sizeof(kbuf), kbuf };
+  MDB_val v = { sizeof(vbuf), vbuf };
+  int result = mdb_cursor_put(cur.get(), &k, &v, MDB_NODUPDATA);
+  if (result == MDB_KEYEXIST)
+    result = mdb_cursor_put(cur.get(), &k, &v, MDB_CURRENT);
+  if (result)
+    throw0(DB_ERROR(lmdb_error("Failed to set current tally key epoch: ", result).c_str()));
+}
+// END_VNS_TALLY_KEYS
 
 // BEGIN_VNS_TREASURY_AMOUNT_TXN
 bool BlockchainLMDB::get_proposal_amount_in_txn(const crypto::hash& proposal_id, uint64_t& amount)
