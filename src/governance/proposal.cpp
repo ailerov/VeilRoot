@@ -74,6 +74,13 @@ bool ProposalManager::index_proposal(const transaction& tx, const crypto::hash& 
     rec.voting_end_height = end_height;
     rec.submission_height = height;
     rec.submission_tx_hash = tx_hash;
+    {
+        uint32_t ep = 0;
+        if (m_db.get_underlying_db().get_current_dao_tally_key_epoch(ep))
+            rec.tally_key_epoch = ep;
+        else
+            rec.tally_key_epoch = 0;   // pre-activation: no tally key yet
+    }
     rec.executed = false;
     rec.status = PROPOSAL_STATUS_ACTIVE;
     rec.status_height = height;

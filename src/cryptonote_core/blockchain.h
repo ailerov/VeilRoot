@@ -142,6 +142,7 @@ namespace cryptonote
     uint8_t voting_period_days;         // 1..30, user-selected at proposal submission
     uint64_t submission_height;
     uint64_t voting_end_height;
+    uint64_t tally_key_epoch;             // DAO V2 key epoch assigned at creation
     crypto::hash submission_tx_hash;
     bool executed;                      // whether this proposal has been executed
     uint8_t status;            // 0=active, 1=passed, 2=rejected, 3=executed, 4=failed_execution, 5=expired

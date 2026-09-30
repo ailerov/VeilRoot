@@ -20,7 +20,7 @@ struct dao_clsag_context
     crypto::hash proposal_id;
     uint64_t     proposal_submission_height = 0;
     uint64_t     vote_height                = 0;
-    uint32_t     tally_key_epoch            = 0;
+    uint64_t     tally_key_epoch            = 0;
 
     std::vector<rct::key> P;              // ring one-time output keys
     std::vector<rct::key> C;              // ring RingCT amount commitments

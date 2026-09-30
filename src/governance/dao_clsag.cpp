@@ -115,7 +115,7 @@ key dao_clsag_message(const dao_clsag_context& ctx,
     m.insert(m.end(), pi, pi + 32);
     push_le64(m, ctx.proposal_submission_height);
     push_le64(m, ctx.vote_height);
-    push_le32(m, ctx.tally_key_epoch);
+    push_le64(m, ctx.tally_key_epoch);
     m.insert(m.end(), ring_digest.bytes, ring_digest.bytes + 32);
     m.insert(m.end(), N.bytes,           N.bytes + 32);
     m.insert(m.end(), V.bytes,           V.bytes + 32);

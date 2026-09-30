@@ -25,6 +25,8 @@
 #include <openssl/bn.h>
 
 #include "crypto/crypto.h"
+#include "serialization/serialization.h"
+#include "serialization/crypto.h"
 #include "crypto/hash.h"
 #include "ringct/rctTypes.h"
 
@@ -41,7 +43,7 @@ struct dao_consistency_context
     uint8_t              version = 2;
     crypto::hash         proposal_id;
     uint64_t             vote_height = 0;
-    uint32_t             tally_key_epoch = 0;
+    uint64_t             tally_key_epoch = 0;
     std::vector<uint8_t> vote_input_transcript;  // hashed inputs
 };
 
@@ -56,6 +58,15 @@ struct dao_consistency_proof
 
     bool serialize(std::vector<uint8_t>& out) const;
     bool deserialize(const std::vector<uint8_t>& in);
+
+    BEGIN_SERIALIZE_OBJECT()
+        FIELD(A_C)
+        FIELD(A_P)
+        FIELD(e)
+        FIELD(z_m)
+        FIELD(z_r)
+        FIELD(z_rho)
+    END_SERIALIZE()
 };
 
 // Prove that E = (1+N)^m * r^N mod N^2 and C = m*H + rho*G commit to
