@@ -30,8 +30,6 @@ verification_result VoteProofVerifier::verify(
     uint64_t block_height,
     const std::unordered_set<crypto::hash>& block_nullifiers)
 {
-    (void)block_nullifiers;
-
     // Step 1: strict deserialize is the caller's responsibility; here we
     // enforce the cross-field invariant.
     if (proof.nullifiers.size() != proof.inputs.size())
@@ -326,9 +324,21 @@ verification_result VoteProofVerifier::verify(
 
     BN_free(N);
 
-    // Step 23+ not implemented (nullifier persistence and same-block
-    // set live in the caller). Read-only verify() succeeds here.
-    return fail("step23+: not yet implemented");
+    // Step 23: prior-chain DAO nullifier lookup.
+    for (const auto& nf : proof.nullifiers) {
+        if (db.has_vote_nullifier(proof.proposal_id, nf))
+            return fail("step23: nullifier already recorded on chain");
+    }
+
+    // Step 24: same-block DAO nullifier set.
+    for (const auto& nf : proof.nullifiers) {
+        if (block_nullifiers.count(nf))
+            return fail("step24: nullifier already used in this block");
+    }
+
+    // Steps 1-24 complete. Step 25 (atomic state mutation) is performed
+    // by the block-processing caller after this returns success.
+    return {true, ""};
 }
 
 } // namespace cryptonote
