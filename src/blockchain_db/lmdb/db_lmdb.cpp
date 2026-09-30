@@ -1701,6 +1701,13 @@ void BlockchainLMDB::open(const std::string& filename, const int db_flags)
   lmdb_db_open(txn, LMDB_TALLY_STATE, MDB_CREATE, m_tally_state, "Failed to open db handle for tally_state");
   // END_VNS_TALLY_KEYS
 
+  // BEGIN_VNS_DAO_V2_VOTES
+  lmdb_db_open(txn, LMDB_DAO_VOTE_RECORDS, MDB_CREATE, m_dao_vote_records, "Failed to open db handle for dao_vote_records");
+  mdb_set_compare(txn, m_dao_vote_records, compare_hash32);
+  lmdb_db_open(txn, LMDB_DAO_PROPOSAL_AGGREGATES, MDB_CREATE, m_dao_proposal_aggregates, "Failed to open db handle for dao_proposal_aggregates");
+  mdb_set_compare(txn, m_dao_proposal_aggregates, compare_hash32);
+  // END_VNS_DAO_V2_VOTES
+
   lmdb_db_open(txn, LMDB_HF_VERSIONS, MDB_INTEGERKEY | MDB_CREATE, m_hf_versions, "Failed to open db handle for m_hf_versions");
 
   lmdb_db_open(txn, LMDB_PROPERTIES, MDB_CREATE, m_properties, "Failed to open db handle for m_properties");
@@ -3336,6 +3343,153 @@ void BlockchainLMDB::set_current_dao_tally_key_epoch(uint32_t epoch)
     throw0(DB_ERROR(lmdb_error("Failed to set current tally key epoch: ", result).c_str()));
 }
 // END_VNS_TALLY_KEYS
+
+// BEGIN_VNS_DAO_V2_VOTES
+void BlockchainLMDB::add_dao_vote_record_v2(const crypto::hash& tx_hash, const dao_vote_record_v2& record)
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  std::vector<uint8_t> blob;
+  if (!record.serialize(blob))
+    throw0(DB_ERROR("Failed to serialize dao_vote_record_v2"));
+
+  lmdb_cursor_guard cur(m_write_txn->m_txn, m_dao_vote_records);
+  MDB_val k = { sizeof(tx_hash), (void*)&tx_hash };
+  MDB_val v = { blob.size(), blob.empty() ? nullptr : blob.data() };
+  int result = mdb_cursor_put(cur.get(), &k, &v, MDB_NODUPDATA);
+  if (result == MDB_KEYEXIST)
+    result = mdb_cursor_put(cur.get(), &k, &v, MDB_CURRENT);
+  if (result)
+    throw0(DB_ERROR(lmdb_error("Failed to add dao vote record v2: ", result).c_str()));
+}
+
+bool BlockchainLMDB::get_dao_vote_record_v2(const crypto::hash& tx_hash, dao_vote_record_v2& record) const
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  TXN_PREFIX_RDONLY();
+  RCURSOR(dao_vote_records)
+
+  MDB_val k = { sizeof(tx_hash), (void*)&tx_hash };
+  MDB_val v;
+  int result = mdb_cursor_get(m_cur_dao_vote_records, &k, &v, MDB_SET);
+  if (result == MDB_NOTFOUND) {
+    TXN_POSTFIX_RDONLY();
+    return false;
+  }
+  if (result)
+    throw0(DB_ERROR(lmdb_error("Failed to get dao vote record v2: ", result).c_str()));
+
+  std::vector<uint8_t> blob(static_cast<const uint8_t*>(v.mv_data),
+                            static_cast<const uint8_t*>(v.mv_data) + v.mv_size);
+  const bool ok = record.deserialize(blob);
+  TXN_POSTFIX_RDONLY();
+  return ok;
+}
+
+void BlockchainLMDB::remove_dao_vote_record_v2(const crypto::hash& tx_hash)
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  lmdb_cursor_guard cur(m_write_txn->m_txn, m_dao_vote_records);
+  MDB_val k = { sizeof(tx_hash), (void*)&tx_hash };
+  int result = mdb_cursor_get(cur.get(), &k, NULL, MDB_SET);
+  if (result == MDB_SUCCESS)
+    mdb_cursor_del(cur.get(), 0);
+  else if (result != MDB_NOTFOUND)
+    throw0(DB_ERROR(lmdb_error("Failed to remove dao vote record v2: ", result).c_str()));
+}
+
+bool BlockchainLMDB::for_all_dao_vote_records_v2(std::function<bool(const crypto::hash&, const dao_vote_record_v2&)> f) const
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  TXN_PREFIX_RDONLY();
+  RCURSOR(dao_vote_records)
+
+  MDB_val k, v;
+  int result = mdb_cursor_get(m_cur_dao_vote_records, &k, &v, MDB_FIRST);
+  bool ret = true;
+  while (result == MDB_SUCCESS) {
+    if (k.mv_size != sizeof(crypto::hash)) {
+      ret = false; break;
+    }
+    crypto::hash tx_hash;
+    std::memcpy(tx_hash.data, k.mv_data, sizeof(tx_hash.data));
+    dao_vote_record_v2 rec;
+    std::vector<uint8_t> blob(static_cast<const uint8_t*>(v.mv_data),
+                              static_cast<const uint8_t*>(v.mv_data) + v.mv_size);
+    if (!rec.deserialize(blob)) { ret = false; break; }
+    if (!f(tx_hash, rec)) { ret = false; break; }
+    result = mdb_cursor_get(m_cur_dao_vote_records, &k, &v, MDB_NEXT);
+  }
+  if (result != MDB_NOTFOUND) ret = false;
+  TXN_POSTFIX_RDONLY();
+  return ret;
+}
+
+void BlockchainLMDB::add_dao_proposal_aggregate(const crypto::hash& proposal_id, const dao_proposal_aggregate& aggregate)
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  std::vector<uint8_t> blob;
+  if (!aggregate.serialize(blob))
+    throw0(DB_ERROR("Failed to serialize dao_proposal_aggregate"));
+
+  lmdb_cursor_guard cur(m_write_txn->m_txn, m_dao_proposal_aggregates);
+  MDB_val k = { sizeof(proposal_id), (void*)&proposal_id };
+  MDB_val v = { blob.size(), blob.empty() ? nullptr : blob.data() };
+  int result = mdb_cursor_put(cur.get(), &k, &v, MDB_NODUPDATA);
+  if (result == MDB_KEYEXIST)
+    result = mdb_cursor_put(cur.get(), &k, &v, MDB_CURRENT);
+  if (result)
+    throw0(DB_ERROR(lmdb_error("Failed to add dao proposal aggregate: ", result).c_str()));
+}
+
+bool BlockchainLMDB::get_dao_proposal_aggregate(const crypto::hash& proposal_id, dao_proposal_aggregate& aggregate) const
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  TXN_PREFIX_RDONLY();
+  RCURSOR(dao_proposal_aggregates)
+
+  MDB_val k = { sizeof(proposal_id), (void*)&proposal_id };
+  MDB_val v;
+  int result = mdb_cursor_get(m_cur_dao_proposal_aggregates, &k, &v, MDB_SET);
+  if (result == MDB_NOTFOUND) {
+    TXN_POSTFIX_RDONLY();
+    return false;
+  }
+  if (result)
+    throw0(DB_ERROR(lmdb_error("Failed to get dao proposal aggregate: ", result).c_str()));
+
+  std::vector<uint8_t> blob(static_cast<const uint8_t*>(v.mv_data),
+                            static_cast<const uint8_t*>(v.mv_data) + v.mv_size);
+  const bool ok = aggregate.deserialize(blob);
+  TXN_POSTFIX_RDONLY();
+  return ok;
+}
+
+void BlockchainLMDB::remove_dao_proposal_aggregate(const crypto::hash& proposal_id)
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  lmdb_cursor_guard cur(m_write_txn->m_txn, m_dao_proposal_aggregates);
+  MDB_val k = { sizeof(proposal_id), (void*)&proposal_id };
+  int result = mdb_cursor_get(cur.get(), &k, NULL, MDB_SET);
+  if (result == MDB_SUCCESS)
+    mdb_cursor_del(cur.get(), 0);
+  else if (result != MDB_NOTFOUND)
+    throw0(DB_ERROR(lmdb_error("Failed to remove dao proposal aggregate: ", result).c_str()));
+}
+// END_VNS_DAO_V2_VOTES
 
 // BEGIN_VNS_TREASURY_AMOUNT_TXN
 bool BlockchainLMDB::get_proposal_amount_in_txn(const crypto::hash& proposal_id, uint64_t& amount)

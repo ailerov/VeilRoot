@@ -176,6 +176,15 @@ public:
   virtual bool get_current_dao_tally_key_epoch(uint32_t&) const override { return false; }
   virtual void set_current_dao_tally_key_epoch(uint32_t) override {}
 
+  virtual void add_dao_vote_record_v2(const crypto::hash&, const dao_vote_record_v2&) override {}
+  virtual bool get_dao_vote_record_v2(const crypto::hash&, dao_vote_record_v2&) const override { return false; }
+  virtual void remove_dao_vote_record_v2(const crypto::hash&) override {}
+  virtual bool for_all_dao_vote_records_v2(std::function<bool(const crypto::hash&, const dao_vote_record_v2&)>) const override { return true; }
+
+  virtual void add_dao_proposal_aggregate(const crypto::hash&, const dao_proposal_aggregate&) override {}
+  virtual bool get_dao_proposal_aggregate(const crypto::hash&, dao_proposal_aggregate&) const override { return false; }
+  virtual void remove_dao_proposal_aggregate(const crypto::hash&) override {}
+
   virtual void add_vns_domain_record(const std::string&, const vns_domain_record&) override {}
   virtual bool get_vns_domain_record(const std::string&, vns_domain_record&) const override { return false; }
   virtual void remove_vns_domain_record(const std::string&) override {}

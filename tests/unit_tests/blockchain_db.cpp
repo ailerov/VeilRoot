@@ -341,6 +341,115 @@ TYPED_TEST(BlockchainDBTest, DaoTallyKeyRoundTrip)
   ASSERT_NO_THROW(this->m_db->close());
 }
 
+TYPED_TEST(BlockchainDBTest, DaoVoteRecordV2RoundTrip)
+{
+  boost::filesystem::path tempPath = boost::filesystem::temp_directory_path() / boost::filesystem::unique_path();
+  std::string dirPath = tempPath.string();
+  this->set_prefix(dirPath);
+
+  ASSERT_NO_THROW(this->m_db->open(dirPath));
+  this->get_filenames();
+
+  crypto::hash tx_hash;
+  for (int i = 0; i < 32; ++i) tx_hash.data[i] = static_cast<uint8_t>(i + 1);
+  crypto::hash prop_id;
+  for (int i = 0; i < 32; ++i) prop_id.data[i] = static_cast<uint8_t>(i + 0x40);
+
+  dao_vote_record_v2 rec;
+  rec.proposal_id = prop_id;
+  rec.vote_height = 12345;
+  rec.tx_hash = tx_hash;
+  for (int i = 0; i < 3; ++i) {
+    crypto::hash n;
+    for (int j = 0; j < 32; ++j)
+      n.data[j] = static_cast<uint8_t>((i * 32) + j + 1);
+    rec.nullifiers.push_back(n);
+  }
+
+  {
+    db_wtxn_guard guard(this->m_db);
+    ASSERT_NO_THROW(this->m_db->add_dao_vote_record_v2(tx_hash, rec));
+  }
+  {
+    dao_vote_record_v2 got;
+    ASSERT_TRUE(this->m_db->get_dao_vote_record_v2(tx_hash, got));
+    ASSERT_EQ(got.nullifiers.size(), 3u);
+    ASSERT_EQ(memcmp(got.proposal_id.data, prop_id.data, 32), 0);
+    ASSERT_EQ(got.vote_height, 12345u);
+    ASSERT_EQ(memcmp(got.tx_hash.data, tx_hash.data, 32), 0);
+    for (size_t k = 0; k < rec.nullifiers.size(); ++k)
+      ASSERT_EQ(memcmp(got.nullifiers[k].data, rec.nullifiers[k].data, 32), 0);
+  }
+  {
+    int seen = 0;
+    ASSERT_TRUE(this->m_db->for_all_dao_vote_records_v2(
+        [&seen](const crypto::hash&, const dao_vote_record_v2&) {
+          ++seen; return true;
+        }));
+    ASSERT_EQ(seen, 1);
+  }
+  {
+    db_wtxn_guard guard(this->m_db);
+    ASSERT_NO_THROW(this->m_db->remove_dao_vote_record_v2(tx_hash));
+  }
+  {
+    dao_vote_record_v2 miss;
+    ASSERT_FALSE(this->m_db->get_dao_vote_record_v2(tx_hash, miss));
+  }
+
+  ASSERT_NO_THROW(this->m_db->close());
+}
+
+TYPED_TEST(BlockchainDBTest, DaoProposalAggregateRoundTrip)
+{
+  boost::filesystem::path tempPath = boost::filesystem::temp_directory_path() / boost::filesystem::unique_path();
+  std::string dirPath = tempPath.string();
+  this->set_prefix(dirPath);
+
+  ASSERT_NO_THROW(this->m_db->open(dirPath));
+  this->get_filenames();
+
+  crypto::hash prop_id;
+  for (int i = 0; i < 32; ++i) prop_id.data[i] = static_cast<uint8_t>(i + 0x21);
+
+  dao_proposal_aggregate agg;
+  agg.aggregate_E_W.assign(512, 0xA1);
+  agg.aggregate_E_S.assign(512, 0xB2);
+  for (int i = 0; i < 32; ++i) {
+    agg.aggregate_C_W.bytes[i] = static_cast<uint8_t>(i + 1);
+    agg.aggregate_C_S.bytes[i] = static_cast<uint8_t>(i + 0x80);
+  }
+
+  {
+    db_wtxn_guard guard(this->m_db);
+    ASSERT_NO_THROW(this->m_db->add_dao_proposal_aggregate(prop_id, agg));
+  }
+  {
+    dao_proposal_aggregate got;
+    ASSERT_TRUE(this->m_db->get_dao_proposal_aggregate(prop_id, got));
+    ASSERT_EQ(got.aggregate_E_W, agg.aggregate_E_W);
+    ASSERT_EQ(got.aggregate_E_S, agg.aggregate_E_S);
+    ASSERT_EQ(memcmp(got.aggregate_C_W.bytes, agg.aggregate_C_W.bytes, 32), 0);
+    ASSERT_EQ(memcmp(got.aggregate_C_S.bytes, agg.aggregate_C_S.bytes, 32), 0);
+  }
+  {
+    crypto::hash miss_id;
+    for (int i = 0; i < 32; ++i) miss_id.data[i] = 0xFF;
+    dao_proposal_aggregate miss;
+    ASSERT_FALSE(this->m_db->get_dao_proposal_aggregate(miss_id, miss));
+  }
+  {
+    db_wtxn_guard guard(this->m_db);
+    ASSERT_NO_THROW(this->m_db->remove_dao_proposal_aggregate(prop_id));
+  }
+  {
+    dao_proposal_aggregate miss;
+    ASSERT_FALSE(this->m_db->get_dao_proposal_aggregate(prop_id, miss));
+  }
+
+  ASSERT_NO_THROW(this->m_db->close());
+}
+
 TYPED_TEST(BlockchainDBTest, AddBlock)
 {
 

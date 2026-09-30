@@ -236,6 +236,108 @@ struct committee_eligible_record;
 struct proposal_execution_record;   // forward declaration
 struct vote_record;
 
+// BEGIN_VNS_DAO_VOTE_V2_RECORDS
+// Per-vote record and per-proposal aggregate for the V2 DAO vote
+// path. Distinct from the legacy V1 vote_record type.
+
+struct dao_vote_record_v2
+{
+    crypto::hash               proposal_id;
+    uint64_t                   vote_height = 0;
+    crypto::hash               tx_hash;
+    std::vector<crypto::hash>  nullifiers;
+
+    bool serialize(std::vector<uint8_t>& out) const
+    {
+        out.clear();
+        out.insert(out.end(), proposal_id.data,
+                   proposal_id.data + sizeof(proposal_id.data));
+        for (int i = 0; i < 8; ++i)
+            out.push_back(static_cast<uint8_t>((vote_height >> (8 * i)) & 0xff));
+        out.insert(out.end(), tx_hash.data,
+                   tx_hash.data + sizeof(tx_hash.data));
+        const uint32_t n = static_cast<uint32_t>(nullifiers.size());
+        for (int i = 0; i < 4; ++i)
+            out.push_back(static_cast<uint8_t>((n >> (8 * i)) & 0xff));
+        for (const auto& h : nullifiers)
+            out.insert(out.end(), h.data, h.data + sizeof(h.data));
+        return true;
+    }
+
+    bool deserialize(const std::vector<uint8_t>& in)
+    {
+        const size_t hdr = 32 + 8 + 32 + 4;
+        if (in.size() < hdr) return false;
+        size_t off = 0;
+        std::memcpy(proposal_id.data, in.data() + off, 32); off += 32;
+        vote_height = 0;
+        for (int i = 0; i < 8; ++i)
+            vote_height |= static_cast<uint64_t>(in[off + i]) << (8 * i);
+        off += 8;
+        std::memcpy(tx_hash.data, in.data() + off, 32); off += 32;
+        uint32_t n = 0;
+        for (int i = 0; i < 4; ++i)
+            n |= static_cast<uint32_t>(in[off + i]) << (8 * i);
+        off += 4;
+        if (in.size() != hdr + static_cast<size_t>(n) * 32) return false;
+        nullifiers.resize(n);
+        for (uint32_t k = 0; k < n; ++k) {
+            std::memcpy(nullifiers[k].data, in.data() + off, 32);
+            off += 32;
+        }
+        return true;
+    }
+};
+
+struct dao_proposal_aggregate
+{
+    std::vector<uint8_t> aggregate_E_W;   // Paillier ct, 512 bytes
+    std::vector<uint8_t> aggregate_E_S;   // Paillier ct, 512 bytes
+    rct::key             aggregate_C_W;
+    rct::key             aggregate_C_S;
+
+    bool serialize(std::vector<uint8_t>& out) const
+    {
+        out.clear();
+        auto put_blob = [&](const std::vector<uint8_t>& b) {
+            const uint32_t n = static_cast<uint32_t>(b.size());
+            for (int i = 0; i < 4; ++i)
+                out.push_back(static_cast<uint8_t>((n >> (8 * i)) & 0xff));
+            out.insert(out.end(), b.begin(), b.end());
+        };
+        put_blob(aggregate_E_W);
+        put_blob(aggregate_E_S);
+        out.insert(out.end(), aggregate_C_W.bytes,
+                   aggregate_C_W.bytes + sizeof(aggregate_C_W.bytes));
+        out.insert(out.end(), aggregate_C_S.bytes,
+                   aggregate_C_S.bytes + sizeof(aggregate_C_S.bytes));
+        return true;
+    }
+
+    bool deserialize(const std::vector<uint8_t>& in)
+    {
+        size_t off = 0;
+        auto take_blob = [&](std::vector<uint8_t>& b) -> bool {
+            if (off + 4 > in.size()) return false;
+            uint32_t n = 0;
+            for (int i = 0; i < 4; ++i)
+                n |= static_cast<uint32_t>(in[off + i]) << (8 * i);
+            off += 4;
+            if (off + n > in.size()) return false;
+            b.assign(in.begin() + off, in.begin() + off + n);
+            off += n;
+            return true;
+        };
+        if (!take_blob(aggregate_E_W)) return false;
+        if (!take_blob(aggregate_E_S)) return false;
+        if (off + 64 != in.size()) return false;
+        std::memcpy(aggregate_C_W.bytes, in.data() + off, 32); off += 32;
+        std::memcpy(aggregate_C_S.bytes, in.data() + off, 32); off += 32;
+        return true;
+    }
+};
+// END_VNS_DAO_VOTE_V2_RECORDS
+
 /** a pair of <transaction hash, output index>, typedef for convenience */
 typedef std::pair<crypto::hash, uint64_t> tx_out_index;
 
@@ -2049,6 +2151,17 @@ public:
     virtual bool get_current_dao_tally_key_epoch(uint32_t& epoch) const = 0;
     virtual void set_current_dao_tally_key_epoch(uint32_t epoch) = 0;
     // ---------- VNS DAO TALLY KEYS END ----------
+
+    // ---------- VNS DAO V2 VOTES START ----------
+    virtual void add_dao_vote_record_v2(const crypto::hash& tx_hash, const dao_vote_record_v2& record) = 0;
+    virtual bool get_dao_vote_record_v2(const crypto::hash& tx_hash, dao_vote_record_v2& record) const = 0;
+    virtual void remove_dao_vote_record_v2(const crypto::hash& tx_hash) = 0;
+    virtual bool for_all_dao_vote_records_v2(std::function<bool(const crypto::hash&, const dao_vote_record_v2&)> f) const = 0;
+
+    virtual void add_dao_proposal_aggregate(const crypto::hash& proposal_id, const dao_proposal_aggregate& aggregate) = 0;
+    virtual bool get_dao_proposal_aggregate(const crypto::hash& proposal_id, dao_proposal_aggregate& aggregate) const = 0;
+    virtual void remove_dao_proposal_aggregate(const crypto::hash& proposal_id) = 0;
+    // ---------- VNS DAO V2 VOTES END ----------
 
     // BEGIN_VNS_ELIGIBLE
     virtual void add_committee_eligible(const crypto::key_image& ki, const committee_eligible_record& rec) = 0;
