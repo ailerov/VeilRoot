@@ -641,7 +641,7 @@ DAO cryptographic key state:
     dao_tally_key_epoch
     dao_tally_key_id          (hash of the canonical public key record)
     public modulus N
-    threshold T = 11
+    threshold T = 8
     committee size N_committee = 16
     activation height
 
@@ -691,7 +691,7 @@ Contents:
     YES
     NO
 
-Valid only when at least 11 distinct committee members provide valid
+Valid only when at least 8 distinct committee members provide valid
 shares. Independently verifiable by every node. Anyone can collect shares
 and submit the tally object. No administrator is required.
 
@@ -701,7 +701,7 @@ and submit the tally object. No administrator is required.
 
 1. obtain aggregate E_W;
 2. obtain aggregate E_S;
-3. obtain at least 11 valid partial decryptions for each;
+3. obtain at least 8 valid partial decryptions for each;
 4. verify each partial-decryption proof;
 5. combine per the threshold reconstruction;
 6. recover W_total;
@@ -902,7 +902,7 @@ The browser team receives a green light only when every item below passes:
     [PASS] Fuzzing passes
     [PASS] Linux/Windows interoperability passes
     [PASS] Multi-node 16-member committee test passes
-    [PASS] 11-of-16 threshold test passes
+    [PASS] 8-of-16 threshold test passes
     [PASS] Malicious/offline committee tests pass
     [PASS] Mainnet-sized integration test passes
     [PASS] Independent cryptographic review completed
