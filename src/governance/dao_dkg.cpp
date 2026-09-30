@@ -1701,6 +1701,10 @@ public:
         free_bn(beta_share_); free_bn(f1_share_); free_bn(h_theta_share_);
         free_bn(theta_share_); free_bn(theta_tilde_); free_bn(theta_);
         free_bn(SK_i_);
+        free_bn(r_phi_i_); free_bn(r_beta_i_); free_bn(k_prod_);
+        free_bn(r_prod_i_); free_bn(r_theta_i_);
+        free_bn(C_phi_i_); free_bn(C_beta_i_); free_bn(C_f1_i_);
+        free_bn(C_h_theta_i_); free_bn(C_prod_); free_bn(C_theta_i_);
         free_bn(v_r_i_); free_bn(V_);
         free_vec(shares_p_received_);
         free_vec(shares_q_received_);
@@ -1778,6 +1782,13 @@ public:
     bool public_N(std::vector<uint8_t>& out) const;
     bool has_candidate_N() const { return N_candidate_ != nullptr; }
 
+    // Gap 3 - driver-side verification accessors.
+    const std::vector<dao_vss_commitments>& commits_p_recv() const { return commits_p_recv_; }
+    const std::vector<dao_vss_commitments>& commits_q_recv() const { return commits_q_recv_; }
+    const std::vector<dao_vss_commitments>& commits_beta_recv() const { return commits_beta_recv_; }
+    const std::vector<dao_vss_commitments>& commits_dr_recv() const { return commits_dr_recv_; }
+    const std::vector<dao_vss_commitments>& commits_h_theta_recv() const { return commits_h_theta_recv_; }
+
 private:
     uint32_t party_id_;
     uint32_t committee_size_;
@@ -1853,6 +1864,19 @@ private:
     BIGNUM* theta_ = nullptr;           // theta_tilde mod N
 
     BIGNUM* SK_i_ = nullptr;            // F(i)
+
+    // Gap 3 - Theta(i) proof state.
+    BIGNUM* r_phi_i_ = nullptr;
+    BIGNUM* r_beta_i_ = nullptr;
+    BIGNUM* k_prod_ = nullptr;
+    BIGNUM* r_prod_i_ = nullptr;
+    BIGNUM* r_theta_i_ = nullptr;
+    BIGNUM* C_phi_i_ = nullptr;
+    BIGNUM* C_beta_i_ = nullptr;
+    BIGNUM* C_f1_i_ = nullptr;
+    BIGNUM* C_h_theta_i_ = nullptr;
+    BIGNUM* C_prod_ = nullptr;
+    BIGNUM* C_theta_i_ = nullptr;
 
     // V commit/reveal round.
     BIGNUM* v_r_i_ = nullptr;           // own r_i in Z*_{N^2}
@@ -3003,32 +3027,332 @@ bool dkg_party::do_compute_theta_share()
 {
     if (!phi_share_ || !beta_share_ || !f1_share_ ||
         !h_theta_share_ || !N_candidate_) return false;
+    if (!vss_group_ || !vss_group_->valid()) return false;
 
     CtxGuard ctx;
     if (!ctx.ok()) return false;
 
-    // Theta(i) = Delta * Phi(i) * Beta(i) + N * F1(i) + H_theta(i)
-    BIGNUM* prod = BN_new();
-    BN_mul(prod, phi_share_, beta_share_, ctx.ctx);
-    BN_mul(prod, prod, dao_dkg_delta(), ctx.ctx);
+    // Compute Theta(i) = Delta * Phi(i) * Beta(i) + N * F1(i) + H_theta(i).
+    {
+        BIGNUM* prod = BN_new();
+        BIGNUM* nf1 = BN_new();
+        BIGNUM* theta_i = BN_new();
+        if (!prod || !nf1 || !theta_i) {
+            BN_free(prod); BN_free(nf1); BN_free(theta_i);
+            return false;
+        }
+        BN_mul(prod, phi_share_, beta_share_, ctx.ctx);
+        BN_mul(prod, prod, dao_dkg_delta(), ctx.ctx);
+        BN_mul(nf1, N_candidate_, f1_share_, ctx.ctx);
+        BN_add(theta_i, prod, nf1);
+        BN_add(theta_i, theta_i, h_theta_share_);
+        free_bn(theta_share_);
+        theta_share_ = theta_i;
+        BN_free(prod); BN_free(nf1);
+    }
 
-    BIGNUM* nf1 = BN_new();
-    BN_mul(nf1, N_candidate_, f1_share_, ctx.ctx);
+    // Local helper: aggregate commitment evaluation at point party_id_.
+    auto agg_eval = [&](const std::vector<dao_vss_commitments>& per,
+                        BIGNUM* out) -> bool {
+        if (!out) return false;
+        if (per.size() < 2) return false;
+        if (per[1].C.empty()) return false;
+        const uint32_t t = static_cast<uint32_t>(per[1].C.size()) - 1;
+        BIGNUM* acc = BN_new();
+        BIGNUM* pw  = BN_new();
+        if (!acc || !pw) { BN_free(acc); BN_free(pw); return false; }
+        BN_one(acc); BN_one(pw);
+        bool lok = true;
+        for (uint32_t k = 0; k <= t && lok; ++k) {
+            BIGNUM* coeff = BN_new();
+            BN_one(coeff);
+            for (size_t j = 1; j < per.size() && lok; ++j) {
+                if (k >= per[j].C.size()) { lok = false; break; }
+                BIGNUM* Ck = BN_bin2bn(per[j].C[k].data(),
+                                       static_cast<int>(per[j].C[k].size()),
+                                       nullptr);
+                if (!Ck || !BN_mod_mul(coeff, coeff, Ck,
+                                       vss_group_->P, ctx.ctx)) {
+                    BN_free(Ck); lok = false; break;
+                }
+                BN_free(Ck);
+            }
+            if (!lok) { BN_free(coeff); break; }
+            BIGNUM* term = BN_new();
+            if (!term ||
+                !BN_mod_exp(term, coeff, pw, vss_group_->P, ctx.ctx) ||
+                !BN_mod_mul(acc, acc, term, vss_group_->P, ctx.ctx)) {
+                BN_free(term); BN_free(coeff); lok = false; break;
+            }
+            BN_free(term); BN_free(coeff);
+            if (k < t) {
+                BN_mul_word(pw, party_id_);
+                BN_mod(pw, pw, vss_group_->P_prime, ctx.ctx);
+            }
+        }
+        if (lok) BN_copy(out, acc);
+        BN_free(acc); BN_free(pw);
+        return lok;
+    };
 
-    BIGNUM* theta_i = BN_new();
-    BN_add(theta_i, prod, nf1);
-    BN_add(theta_i, theta_i, h_theta_share_);
+    BIGNUM* C_p_i      = nullptr;
+    BIGNUM* C_q_i      = nullptr;
+    BIGNUM* C_phi_i    = nullptr;
+    BIGNUM* r_phi_i    = nullptr;
+    BIGNUM* r_beta_i   = nullptr;
+    BIGNUM* k_prod     = nullptr;
+    BIGNUM* C_prod     = nullptr;
+    BIGNUM* r_prod     = nullptr;
+    BIGNUM* C_theta_i  = nullptr;
+    BIGNUM* r_theta    = nullptr;
+    bool ok = false;
 
-    free_bn(theta_share_);
-    theta_share_ = theta_i;
+    C_p_i = BN_new();
+    C_q_i = BN_new();
+    if (!C_beta_i_)    C_beta_i_    = BN_new();
+    if (!C_f1_i_)      C_f1_i_      = BN_new();
+    if (!C_h_theta_i_) C_h_theta_i_ = BN_new();
+    if (!C_p_i || !C_q_i || !C_beta_i_ || !C_f1_i_ || !C_h_theta_i_)
+        goto done;
+    if (!agg_eval(commits_p_recv_, C_p_i)) goto done;
+    if (!agg_eval(commits_q_recv_, C_q_i)) goto done;
+    if (!agg_eval(commits_beta_recv_, C_beta_i_)) goto done;
+    if (!agg_eval(commits_dr_recv_, C_f1_i_)) goto done;
+    if (!agg_eval(commits_h_theta_recv_, C_h_theta_i_)) goto done;
 
-    dkg_msg m = make_header(dkg_msg_type::theta_share, 0);
-    m.tag32 = party_id_;
-    bn_to_signed(theta_share_, m.bytes_a);
+    // C_phi_i = g^(N+1) * C_p_i^(-1) * C_q_i^(-1) mod P.
+    C_phi_i = BN_new();
+    if (!C_phi_i) goto done;
+    {
+        BIGNUM* Np1  = BN_new();
+        BIGNUM* Np1m = BN_new();
+        BIGNUM* gNp1 = BN_new();
+        BIGNUM* invp = BN_new();
+        BIGNUM* invq = BN_new();
+        if (!Np1 || !Np1m || !gNp1 || !invp || !invq) {
+            BN_free(Np1); BN_free(Np1m); BN_free(gNp1);
+            BN_free(invp); BN_free(invq);
+            goto done;
+        }
+        BN_add(Np1, N_candidate_, BN_value_one());
+        BN_nnmod(Np1m, Np1, vss_group_->P_prime, ctx.ctx);
+        if (!BN_mod_exp(gNp1, vss_group_->g, Np1m, vss_group_->P, ctx.ctx) ||
+            !BN_mod_inverse(invp, C_p_i, vss_group_->P, ctx.ctx) ||
+            !BN_mod_inverse(invq, C_q_i, vss_group_->P, ctx.ctx) ||
+            !BN_mod_mul(C_phi_i, gNp1, invp, vss_group_->P, ctx.ctx) ||
+            !BN_mod_mul(C_phi_i, C_phi_i, invq, vss_group_->P, ctx.ctx)) {
+            BN_free(Np1); BN_free(Np1m); BN_free(gNp1);
+            BN_free(invp); BN_free(invq);
+            goto done;
+        }
+        BN_free(Np1); BN_free(Np1m); BN_free(gNp1);
+        BN_free(invp); BN_free(invq);
+    }
 
-    const bool sent = send_msg(m);
-    BN_free(prod); BN_free(nf1);
-    return sent;
+    // r_phi_i = -(sum_j b_p_received_[j] + sum_j b_q_received_[j]) mod P'.
+    // r_beta_i = sum_j b_beta_received_[j] mod P'.
+    r_phi_i  = BN_new();
+    r_beta_i = BN_new();
+    if (!r_phi_i || !r_beta_i) goto done;
+    BN_zero(r_phi_i);
+    BN_zero(r_beta_i);
+    for (uint32_t j = 1; j <= committee_size_; ++j) {
+        if (b_p_received_[j])
+            BN_mod_add(r_phi_i, r_phi_i, b_p_received_[j],
+                       vss_group_->P_prime, ctx.ctx);
+        if (b_q_received_[j])
+            BN_mod_add(r_phi_i, r_phi_i, b_q_received_[j],
+                       vss_group_->P_prime, ctx.ctx);
+        if (b_beta_received_[j])
+            BN_mod_add(r_beta_i, r_beta_i, b_beta_received_[j],
+                       vss_group_->P_prime, ctx.ctx);
+    }
+    {
+        BIGNUM* zb = BN_new();
+        if (!zb) goto done;
+        BN_zero(zb);
+        BN_mod_sub(r_phi_i, zb, r_phi_i, vss_group_->P_prime, ctx.ctx);
+        BN_free(zb);
+    }
+
+    // C_prod = C_phi_i^Beta(i) * h^k_prod.
+    k_prod = BN_new();
+    C_prod = BN_new();
+    if (!k_prod || !C_prod) goto done;
+    BN_rand_range(k_prod, vss_group_->P_prime);
+    {
+        BIGNUM* bmod = BN_new();
+        BIGNUM* t1   = BN_new();
+        BIGNUM* t2   = BN_new();
+        if (!bmod || !t1 || !t2) {
+            BN_free(bmod); BN_free(t1); BN_free(t2);
+            goto done;
+        }
+        BN_nnmod(bmod, beta_share_, vss_group_->P_prime, ctx.ctx);
+        if (!BN_mod_exp(t1, C_phi_i, bmod, vss_group_->P, ctx.ctx) ||
+            !BN_mod_exp(t2, vss_group_->h, k_prod, vss_group_->P, ctx.ctx) ||
+            !BN_mod_mul(C_prod, t1, t2, vss_group_->P, ctx.ctx)) {
+            BN_free(bmod); BN_free(t1); BN_free(t2);
+            goto done;
+        }
+        BN_free(bmod); BN_free(t1); BN_free(t2);
+    }
+
+    // r_prod = Beta(i) * r_phi_i + k_prod mod P'.
+    r_prod = BN_new();
+    if (!r_prod) goto done;
+    {
+        BIGNUM* bmod = BN_new();
+        BIGNUM* term = BN_new();
+        if (!bmod || !term) {
+            BN_free(bmod); BN_free(term);
+            goto done;
+        }
+        BN_nnmod(bmod, beta_share_, vss_group_->P_prime, ctx.ctx);
+        BN_mod_mul(term, bmod, r_phi_i, vss_group_->P_prime, ctx.ctx);
+        BN_mod_add(r_prod, term, k_prod, vss_group_->P_prime, ctx.ctx);
+        BN_free(bmod); BN_free(term);
+    }
+
+    // C_theta_i = C_prod^Delta * C_f1_i^N * C_h_theta_i mod P.
+    C_theta_i = BN_new();
+    if (!C_theta_i) goto done;
+    {
+        BIGNUM* dm = BN_new();
+        BIGNUM* nm = BN_new();
+        BIGNUM* t1 = BN_new();
+        BIGNUM* t2 = BN_new();
+        BIGNUM* t3 = BN_new();
+        if (!dm || !nm || !t1 || !t2 || !t3) {
+            BN_free(dm); BN_free(nm); BN_free(t1); BN_free(t2); BN_free(t3);
+            goto done;
+        }
+        BN_nnmod(dm, dao_dkg_delta(), vss_group_->P_prime, ctx.ctx);
+        BN_nnmod(nm, N_candidate_, vss_group_->P_prime, ctx.ctx);
+        if (!BN_mod_exp(t1, C_prod, dm, vss_group_->P, ctx.ctx) ||
+            !BN_mod_exp(t2, C_f1_i_, nm, vss_group_->P, ctx.ctx) ||
+            !BN_mod_mul(t3, t1, t2, vss_group_->P, ctx.ctx) ||
+            !BN_mod_mul(C_theta_i, t3, C_h_theta_i_,
+                        vss_group_->P, ctx.ctx)) {
+            BN_free(dm); BN_free(nm); BN_free(t1); BN_free(t2); BN_free(t3);
+            goto done;
+        }
+        BN_free(dm); BN_free(nm); BN_free(t1); BN_free(t2); BN_free(t3);
+    }
+
+    // r_theta = Delta*r_prod + N*b_dr_sum + b_h_theta_sum mod P'.
+    r_theta = BN_new();
+    if (!r_theta) goto done;
+    {
+        BIGNUM* drs = BN_new();
+        BIGNUM* hhs = BN_new();
+        if (!drs || !hhs) {
+            BN_free(drs); BN_free(hhs);
+            goto done;
+        }
+        BN_zero(drs); BN_zero(hhs);
+        for (uint32_t j = 1; j <= committee_size_; ++j) {
+            if (b_dr_received_[j])
+                BN_mod_add(drs, drs, b_dr_received_[j],
+                           vss_group_->P_prime, ctx.ctx);
+            if (b_h_theta_received_[j])
+                BN_mod_add(hhs, hhs, b_h_theta_received_[j],
+                           vss_group_->P_prime, ctx.ctx);
+        }
+        BIGNUM* dm = BN_new();
+        BIGNUM* nm = BN_new();
+        BIGNUM* t1 = BN_new();
+        BIGNUM* t2 = BN_new();
+        if (!dm || !nm || !t1 || !t2) {
+            BN_free(dm); BN_free(nm); BN_free(t1); BN_free(t2);
+            BN_free(drs); BN_free(hhs);
+            goto done;
+        }
+        BN_nnmod(dm, dao_dkg_delta(), vss_group_->P_prime, ctx.ctx);
+        BN_nnmod(nm, N_candidate_, vss_group_->P_prime, ctx.ctx);
+        BN_mod_mul(t1, dm, r_prod, vss_group_->P_prime, ctx.ctx);
+        BN_mod_mul(t2, nm, drs, vss_group_->P_prime, ctx.ctx);
+        BN_mod_add(r_theta, t1, t2, vss_group_->P_prime, ctx.ctx);
+        BN_mod_add(r_theta, r_theta, hhs, vss_group_->P_prime, ctx.ctx);
+        BN_free(dm); BN_free(nm); BN_free(t1); BN_free(t2);
+        BN_free(drs); BN_free(hhs);
+    }
+
+#ifdef VEILROOT_DAO_DKG_TESTING
+    // Sanity: C_theta_i == g^theta_share_ * h^r_theta mod P.
+    {
+        BIGNUM* ts  = BN_new();
+        BIGNUM* tsr = BN_new();
+        BIGNUM* ga  = BN_new();
+        BIGNUM* hb  = BN_new();
+        BIGNUM* chk = BN_new();
+        if (!ts || !tsr || !ga || !hb || !chk) {
+            BN_free(ts); BN_free(tsr); BN_free(ga); BN_free(hb); BN_free(chk);
+            goto done;
+        }
+        BN_nnmod(tsr, theta_share_, vss_group_->P_prime, ctx.ctx);
+        BN_mod_exp(ga, vss_group_->g, tsr, vss_group_->P, ctx.ctx);
+        BN_mod_exp(hb, vss_group_->h, r_theta, vss_group_->P, ctx.ctx);
+        BN_mod_mul(chk, ga, hb, vss_group_->P, ctx.ctx);
+        if (BN_cmp(chk, C_theta_i) != 0) {
+            std::cerr << "[theta] C_theta sanity FAILED for party "
+                      << party_id_ << "\n";
+            BN_free(ts); BN_free(tsr); BN_free(ga); BN_free(hb); BN_free(chk);
+            goto done;
+        }
+        BN_free(ts); BN_free(tsr); BN_free(ga); BN_free(hb); BN_free(chk);
+    }
+#endif
+
+    // Generate proofs.
+    {
+        dao_theta_mul_proof mul_proof;
+        dao_theta_open_proof open_proof;
+        if (!dao_theta_mul_prove(*vss_group_, epoch_, candidate_id_, party_id_,
+                                 N_candidate_, C_phi_i, C_beta_i_,
+                                 beta_share_, r_beta_i, k_prod, C_prod,
+                                 mul_proof)) goto done;
+        if (!dao_theta_open_prove(*vss_group_, epoch_, candidate_id_, party_id_,
+                                  C_theta_i, theta_share_, r_theta,
+                                  open_proof)) goto done;
+
+        dkg_msg m = make_header(dkg_msg_type::theta_share, 0);
+        m.tag32 = party_id_;
+        bn_to_signed(theta_share_, m.bytes_a);
+        auto bn_to_vec = [](const BIGNUM* x, std::vector<uint8_t>& v) {
+            const int nb = BN_num_bytes(x);
+            v.assign(nb, 0);
+            BN_bn2bin(x, v.data());
+        };
+        bn_to_vec(C_prod, m.bytes_b);
+        bn_to_vec(C_theta_i, m.bytes_c);
+        if (!mul_proof.serialize(m.bytes_d)) goto done;
+        {
+            std::vector<uint8_t> enc;
+            if (!open_proof.serialize(enc)) goto done;
+            m.vec_a.push_back(std::move(enc));
+        }
+        if (!send_msg(m)) goto done;
+    }
+
+    // Cache for driver-side inspection.
+    free_bn(C_phi_i_);      C_phi_i_     = C_phi_i;      C_phi_i = nullptr;
+    free_bn(C_prod_);       C_prod_      = C_prod;       C_prod = nullptr;
+    free_bn(C_theta_i_);    C_theta_i_   = C_theta_i;    C_theta_i = nullptr;
+    free_bn(r_phi_i_);      r_phi_i_     = r_phi_i;      r_phi_i = nullptr;
+    free_bn(r_beta_i_);     r_beta_i_    = r_beta_i;     r_beta_i = nullptr;
+    free_bn(k_prod_);       k_prod_      = k_prod;       k_prod = nullptr;
+    free_bn(r_prod_i_);     r_prod_i_    = r_prod;       r_prod = nullptr;
+    free_bn(r_theta_i_);    r_theta_i_   = r_theta;      r_theta = nullptr;
+
+    ok = true;
+
+done:
+    BN_free(C_p_i); BN_free(C_q_i);
+    BN_free(C_phi_i); BN_free(r_phi_i); BN_free(r_beta_i);
+    BN_free(k_prod); BN_free(C_prod); BN_free(r_prod);
+    BN_free(C_theta_i); BN_free(r_theta);
+    return ok;
 }
 
 bool dkg_party::do_compute_SK()
@@ -4660,6 +4984,13 @@ bool dkg_run_with_transport(const dkg_config& cfg,
             const uint32_t deg = 2 * (cfg.threshold - 1);
             const uint32_t need = deg + 1;
             std::vector<BIGNUM*> theta_shares(cfg.committee_size + 1, nullptr);
+            std::vector<BIGNUM*> C_prod_msgs(cfg.committee_size + 1, nullptr);
+            std::vector<BIGNUM*> C_theta_msgs(cfg.committee_size + 1, nullptr);
+            std::vector<dao_theta_mul_proof>  mul_proofs(cfg.committee_size + 1);
+            std::vector<dao_theta_open_proof> open_proofs(cfg.committee_size + 1);
+            std::vector<bool> proof_seen(cfg.committee_size + 1, false);
+            bool proofs_ok = true;
+
             for (const auto& m : collected) {
                 if (m.hdr.type != dkg_msg_type::theta_share) continue;
                 const uint32_t j = m.tag32;
@@ -4667,7 +4998,128 @@ bool dkg_run_with_transport(const dkg_config& cfg,
                 if (m.bytes_a.empty()) continue;
                 if (theta_shares[j]) continue;
                 theta_shares[j] = bn_from_signed(m.bytes_a);
+                if (!theta_shares[j]) { proofs_ok = false; break; }
+                if (m.bytes_b.empty() || m.bytes_c.empty() ||
+                    m.bytes_d.empty() || m.vec_a.empty() ||
+                    m.vec_a[0].empty()) {
+                    proofs_ok = false; break;
+                }
+                C_prod_msgs[j] = BN_bin2bn(m.bytes_b.data(),
+                                           static_cast<int>(m.bytes_b.size()),
+                                           nullptr);
+                C_theta_msgs[j] = BN_bin2bn(m.bytes_c.data(),
+                                            static_cast<int>(m.bytes_c.size()),
+                                            nullptr);
+                if (!C_prod_msgs[j] || !C_theta_msgs[j]) {
+                    proofs_ok = false; break;
+                }
+                if (!mul_proofs[j].deserialize(m.bytes_d) ||
+                    !open_proofs[j].deserialize(m.vec_a[0])) {
+                    proofs_ok = false; break;
+                }
+                proof_seen[j] = true;
             }
+
+            // Driver-side verification of every accepted theta proof.
+            if (proofs_ok && !parties.empty()) {
+                const std::vector<dao_vss_commitments>& cpr =
+                    parties[0]->commits_p_recv();
+                const std::vector<dao_vss_commitments>& cqr =
+                    parties[0]->commits_q_recv();
+                const std::vector<dao_vss_commitments>& cbr =
+                    parties[0]->commits_beta_recv();
+                const std::vector<dao_vss_commitments>& cdr =
+                    parties[0]->commits_dr_recv();
+                const std::vector<dao_vss_commitments>& chr =
+                    parties[0]->commits_h_theta_recv();
+
+                for (uint32_t j = 1; j <= cfg.committee_size; ++j) {
+                    if (!proof_seen[j]) continue;
+                    if (!theta_shares[j] || !C_prod_msgs[j] ||
+                        !C_theta_msgs[j]) {
+                        proofs_ok = false; break;
+                    }
+
+                    BIGNUM* C_p_i    = BN_new();
+                    BIGNUM* C_q_i    = BN_new();
+                    BIGNUM* C_beta_i = BN_new();
+                    BIGNUM* C_f1_i   = BN_new();
+                    BIGNUM* C_h_i    = BN_new();
+                    BIGNUM* C_phi_i  = BN_new();
+                    if (!C_p_i || !C_q_i || !C_beta_i || !C_f1_i ||
+                        !C_h_i || !C_phi_i) {
+                        BN_free(C_p_i); BN_free(C_q_i);
+                        BN_free(C_beta_i); BN_free(C_f1_i);
+                        BN_free(C_h_i); BN_free(C_phi_i);
+                        proofs_ok = false; break;
+                    }
+
+                    if (!aggregate_eval_at(cpr, vss, j, C_p_i) ||
+                        !aggregate_eval_at(cqr, vss, j, C_q_i) ||
+                        !aggregate_eval_at(cbr, vss, j, C_beta_i) ||
+                        !aggregate_eval_at(cdr, vss, j, C_f1_i) ||
+                        !aggregate_eval_at(chr, vss, j, C_h_i)) {
+                        BN_free(C_p_i); BN_free(C_q_i);
+                        BN_free(C_beta_i); BN_free(C_f1_i);
+                        BN_free(C_h_i); BN_free(C_phi_i);
+                        proofs_ok = false; break;
+                    }
+
+                    // C_phi_i = g^(N+1) * C_p_i^(-1) * C_q_i^(-1) mod P.
+                    BN_CTX* vctx = BN_CTX_new();
+                    BIGNUM* Np1  = BN_new();
+                    BIGNUM* Np1m = BN_new();
+                    BIGNUM* gNp1 = BN_new();
+                    BIGNUM* invp = BN_new();
+                    BIGNUM* invq = BN_new();
+                    bool cok = vctx && Np1 && Np1m && gNp1 && invp && invq;
+                    if (cok) {
+                        BN_add(Np1, N, BN_value_one());
+                        BN_nnmod(Np1m, Np1, vss.P_prime, vctx);
+                        cok = BN_mod_exp(gNp1, vss.g, Np1m, vss.P, vctx) &&
+                              BN_mod_inverse(invp, C_p_i, vss.P, vctx) &&
+                              BN_mod_inverse(invq, C_q_i, vss.P, vctx) &&
+                              BN_mod_mul(C_phi_i, gNp1, invp, vss.P, vctx) &&
+                              BN_mod_mul(C_phi_i, C_phi_i, invq, vss.P, vctx);
+                    }
+                    BN_free(Np1); BN_free(Np1m); BN_free(gNp1);
+                    BN_free(invp); BN_free(invq);
+                    if (vctx) BN_CTX_free(vctx);
+                    BN_free(C_p_i); BN_free(C_q_i);
+                    BN_free(C_f1_i); BN_free(C_h_i);
+
+                    if (!cok) {
+                        BN_free(C_beta_i); BN_free(C_phi_i);
+                        proofs_ok = false; break;
+                    }
+
+                    const bool mvok = dao_theta_mul_verify(
+                        vss, cfg.epoch, out.candidate_attempts, j, N,
+                        C_phi_i, C_beta_i, C_prod_msgs[j], mul_proofs[j]);
+                    const bool ovok = dao_theta_open_verify(
+                        vss, cfg.epoch, out.candidate_attempts, j,
+                        C_theta_msgs[j], theta_shares[j], open_proofs[j]);
+                    BN_free(C_beta_i); BN_free(C_phi_i);
+
+                    if (!mvok || !ovok) {
+                        #ifdef VEILROOT_DAO_DKG_TESTING
+                        std::cerr << "[key-phase] theta proof failed party "
+                                  << j << " mul=" << mvok
+                                  << " open=" << ovok << "\n";
+                        #endif
+                        proofs_ok = false; break;
+                    }
+                }
+            }
+
+            for (auto* x : C_prod_msgs)  if (x) BN_free(x);
+            for (auto* x : C_theta_msgs) if (x) BN_free(x);
+
+            if (!proofs_ok) {
+                for (auto* x : theta_shares) if (x) BN_free(x);
+                goto after_key_phase;
+            }
+
             bool have_all = true;
             for (uint32_t j = 1; j <= need; ++j)
                 if (!theta_shares[j]) { have_all = false; break; }
