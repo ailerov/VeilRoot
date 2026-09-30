@@ -1685,6 +1685,19 @@ public:
   virtual output_data_t get_output_key(const uint64_t& amount, const uint64_t& index, bool include_commitmemt = true) const = 0;
 
   /**
+   * @brief resolve a global output index to its canonical metadata.
+   *
+   * Uses the existing global->(tx,local) mapping and the tx's
+   * amount-output-index table. RingCT-only: the underlying lookup
+   * uses amount bucket 0, which is where RingCT outputs are stored.
+   *
+   * @param global_index the output's global index
+   *
+   * @return output_data_t with pubkey, commitment, height, unlock_time
+   */
+  virtual output_data_t get_output_key_from_global(const uint64_t& global_index) const = 0;
+
+  /**
    * @brief gets an output's tx hash and index
    *
    * The subclass should return the hash of the transaction which created the

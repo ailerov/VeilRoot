@@ -7055,6 +7055,28 @@ output_data_t BlockchainLMDB::get_output_key(const uint64_t& amount, const uint6
   return ret;
 }
 
+output_data_t BlockchainLMDB::get_output_key_from_global(const uint64_t& global_index) const
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  tx_out_index toi = get_output_tx_and_index_from_global(global_index);
+
+  uint64_t tx_id = 0;
+  if (!tx_exists(toi.first, tx_id))
+    throw1(OUTPUT_DNE(std::string("Attempting to get output by global index " +
+        std::to_string(global_index) + ", but the owning transaction is not found").c_str()));
+
+  std::vector<std::vector<uint64_t>> set = get_tx_amount_output_indices(tx_id, 1);
+  if (set.empty() || toi.second >= set.front().size())
+    throw1(OUTPUT_DNE(std::string("Attempting to get output by global index " +
+        std::to_string(global_index) + ", but the local index is out of range").c_str()));
+
+  // DAO references RingCT outputs only. RingCT outputs are stored in the
+  // amount bucket 0.
+  return get_output_key(0, set.front()[toi.second], true);
+}
+
 tx_out_index BlockchainLMDB::get_output_tx_and_index_from_global(const uint64_t& output_id) const
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);

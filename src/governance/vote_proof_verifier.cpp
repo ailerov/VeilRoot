@@ -1,5 +1,6 @@
 #include "vote_proof_verifier.h"
 
+#include <algorithm>
 #include <limits>
 
 #include "governance/dao_dkg.h"
@@ -7,9 +8,6 @@
 namespace cryptonote {
 
 namespace {
-
-// Frozen V2 DAO ring size. Post-CLSAG consensus value.
-constexpr size_t DAO_V2_RING_SIZE = 16;
 
 verification_result fail(const char* why)
 {
@@ -69,38 +67,55 @@ verification_result VoteProofVerifier::verify(
     if (proof.inputs.empty())
         return fail("step7: no inputs");
 
-    // Step 8: ring shape. Ring size is exactly the frozen V2 value;
-    // CLSAG response vector matches ring size.
+    // Step 8: variable-ring structural checks. No DAO ring-size constant
+    // is frozen by the spec; the CLSAG context already enforces shape
+    // consistency, and the verifier enforces the wire-side invariants.
     for (const auto& in : proof.inputs) {
-        if (in.key_offsets.empty())
+        const size_t n = in.key_offsets.size();
+        if (n == 0)
             return fail("step8: empty ring");
-        if (in.key_offsets.size() != DAO_V2_RING_SIZE)
-            return fail("step8: ring size is not 16");
-        if (in.signature.s.size() != in.key_offsets.size())
+        if (in.signature.s.size() != n)
             return fail("step8: CLSAG response/ring size mismatch");
-    }
 
-    // Step 9: every referenced global output exists. Expand offsets
-    // (Monero cumulative-relative rule, overflow-checked), then query
-    // each global index.
-    for (const auto& in : proof.inputs) {
+        // Expand relative offsets to absolute global indices; overflow-safe.
+        std::vector<uint64_t> abs;
+        abs.reserve(n);
         uint64_t acc = 0;
         for (uint64_t off : in.key_offsets) {
             if (acc > std::numeric_limits<uint64_t>::max() - off)
-                return fail("step9: key_offset overflow");
+                return fail("step8: key_offset overflow");
             acc += off;
+            abs.push_back(acc);
+        }
+
+        // Duplicate absolute indices within the ring are rejected.
+        std::vector<uint64_t> sorted_abs = abs;
+        std::sort(sorted_abs.begin(), sorted_abs.end());
+        if (std::adjacent_find(sorted_abs.begin(), sorted_abs.end())
+                != sorted_abs.end())
+            return fail("step8: duplicate absolute index within ring");
+    }
+
+    // Step 9: every referenced global output exists and resolves to a
+    // canonical RingCT output record.
+    for (const auto& in : proof.inputs) {
+        uint64_t acc = 0;
+        for (uint64_t off : in.key_offsets) {
+            acc += off; // overflow already checked in step 8
             try {
-                (void)db.get_output_tx_and_index_from_global(acc);
+                (void)db.get_output_key_from_global(acc);
             } catch (...) {
                 return fail("step9: output lookup failed");
             }
         }
     }
 
-    // Steps 10-24 not implemented. Returning success here would accept
+    // Steps 10-24 not implemented. Step 10 is now defined (output
+    // existence + canonical data, above); the remaining verifier
+    // pipeline is not yet wired. Returning success here would accept
     // votes that have not been fully verified; the caller treats any
     // non-success as vote-invalid.
-    return fail("step10+: not yet implemented");
+    return fail("step11+: not yet implemented");
 }
 
 } // namespace cryptonote

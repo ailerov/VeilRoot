@@ -52,16 +52,23 @@ public:
             throw std::runtime_error("output not found");
         return tx_out_index{};
     }
+
+    output_data_t get_output_key_from_global(const uint64_t& idx) const override
+    {
+        if (existing_global_indices.count(idx) == 0)
+            throw std::runtime_error("output not found");
+        return output_data_t{};
+    }
 };
 
 vote_input_v2 make_ring_input(size_t ring_size)
 {
-    // All-zero relative offsets expand cumulatively to global index 0 for
-    // every ring member. Tests that want to reach step 10 insert index 0
-    // into the fake DB.
+    // Relative offsets [0, 1, 1, 1, ...] expand cumulatively to absolute
+    // indices [0, 1, 2, ..., ring_size - 1]. Tests insert those globals
+    // into the fake DB for step 9 to succeed.
     vote_input_v2 in;
     for (size_t i = 0; i < ring_size; ++i)
-        in.key_offsets.push_back(0);
+        in.key_offsets.push_back(i == 0 ? 0 : 1);
     in.signature.s.resize(ring_size);
     return in;
 }
@@ -187,7 +194,7 @@ TEST(vote_proof_verifier, step7_no_inputs)
     EXPECT_NE(r.reason.find("step7"), std::string::npos);
 }
 
-TEST(vote_proof_verifier, step8_ring_size_not_16)
+TEST(vote_proof_verifier, step8_empty_ring)
 {
     VerifierTestDB db;
     db.have_proposal = true;
@@ -200,13 +207,126 @@ TEST(vote_proof_verifier, step8_ring_size_not_16)
     p.version = vote_proof_v2::VERSION;
     p.vote_height = 100;
     p.tally_key_epoch = 1;
-    p.inputs.push_back(make_ring_input(11)); // wrong
+    vote_input_v2 in;
+    // key_offsets left empty
+    p.inputs.push_back(in);
     p.nullifiers.push_back(crypto::hash{});
 
     std::unordered_set<crypto::hash> bn;
     auto r = VoteProofVerifier::verify(p, db, 100, bn);
     EXPECT_FALSE(r.success);
     EXPECT_NE(r.reason.find("step8"), std::string::npos);
+}
+
+TEST(vote_proof_verifier, step8_clsag_size_mismatch)
+{
+    VerifierTestDB db;
+    db.have_proposal = true;
+    db.proposal_submission_height = 50;
+    db.proposal_voting_end_height = 200;
+    db.have_tally_key = true;
+    db.proposal_tally_key_epoch = 1;
+
+    vote_proof_v2 p;
+    p.version = vote_proof_v2::VERSION;
+    p.vote_height = 100;
+    p.tally_key_epoch = 1;
+    vote_input_v2 in = make_ring_input(5);
+    in.signature.s.resize(4); // mismatch
+    p.inputs.push_back(in);
+    p.nullifiers.push_back(crypto::hash{});
+
+    std::unordered_set<crypto::hash> bn;
+    auto r = VoteProofVerifier::verify(p, db, 100, bn);
+    EXPECT_FALSE(r.success);
+    EXPECT_NE(r.reason.find("step8"), std::string::npos);
+}
+
+TEST(vote_proof_verifier, step8_duplicate_absolute_index)
+{
+    VerifierTestDB db;
+    db.have_proposal = true;
+    db.proposal_submission_height = 50;
+    db.proposal_voting_end_height = 200;
+    db.have_tally_key = true;
+    db.proposal_tally_key_epoch = 1;
+
+    vote_proof_v2 p;
+    p.version = vote_proof_v2::VERSION;
+    p.vote_height = 100;
+    p.tally_key_epoch = 1;
+    vote_input_v2 in;
+    in.key_offsets = { 0, 1, 0 }; // abs = {0, 1, 1}: duplicate
+    in.signature.s.resize(3);
+    p.inputs.push_back(in);
+    p.nullifiers.push_back(crypto::hash{});
+
+    std::unordered_set<crypto::hash> bn;
+    auto r = VoteProofVerifier::verify(p, db, 100, bn);
+    EXPECT_FALSE(r.success);
+    EXPECT_NE(r.reason.find("step8"), std::string::npos);
+}
+
+TEST(vote_proof_verifier, step8_variable_ring_accepted)
+{
+    // No frozen DAO ring-size constant: any non-empty ring with matching
+    // CLSAG dimensions is structurally valid. Use ring size 3 to make the
+    // point that the verifier is not pinned to 16.
+    VerifierTestDB db;
+    db.have_proposal = true;
+    db.proposal_submission_height = 50;
+    db.proposal_voting_end_height = 200;
+    db.have_tally_key = true;
+    db.proposal_tally_key_epoch = 1;
+    for (uint64_t i = 0; i < 3; ++i)
+        db.existing_global_indices.insert(i);
+
+    vote_proof_v2 p;
+    p.version = vote_proof_v2::VERSION;
+    p.vote_height = 100;
+    p.tally_key_epoch = 1;
+    p.inputs.push_back(make_ring_input(3));
+    p.nullifiers.push_back(crypto::hash{});
+
+    std::unordered_set<crypto::hash> bn;
+    auto r = VoteProofVerifier::verify(p, db, 100, bn);
+    EXPECT_FALSE(r.success);
+    // Structural checks passed; failure is downstream in the not-yet-
+    // implemented pipeline, not at step 8.
+    EXPECT_EQ(r.reason.find("step8"), std::string::npos);
+    EXPECT_NE(r.reason.find("step11"), std::string::npos);
+}
+
+TEST(vote_proof_verifier, spent_ring_member_accepted_by_design)
+{
+    // Spec amendment: DAO voting is non-consuming. A ring member that is
+    // already spent on chain is not rejected by consensus. The stub
+    // cannot express "spent", but this test documents that no spent-status
+    // check exists between steps 8 and 9 and the vote proceeds past them.
+    VerifierTestDB db;
+    db.have_proposal = true;
+    db.proposal_submission_height = 50;
+    db.proposal_voting_end_height = 200;
+    db.have_tally_key = true;
+    db.proposal_tally_key_epoch = 1;
+    for (uint64_t i = 0; i < 5; ++i)
+        db.existing_global_indices.insert(i);
+
+    vote_proof_v2 p;
+    p.version = vote_proof_v2::VERSION;
+    p.vote_height = 100;
+    p.tally_key_epoch = 1;
+    p.inputs.push_back(make_ring_input(5));
+    p.nullifiers.push_back(crypto::hash{});
+
+    std::unordered_set<crypto::hash> bn;
+    auto r = VoteProofVerifier::verify(p, db, 100, bn);
+    // Not rejected at step 8 or 9; fails only because steps 11+ are not
+    // implemented yet.
+    EXPECT_FALSE(r.success);
+    EXPECT_EQ(r.reason.find("step8"),  std::string::npos);
+    EXPECT_EQ(r.reason.find("step9"),  std::string::npos);
+    EXPECT_NE(r.reason.find("step11"), std::string::npos);
 }
 
 TEST(vote_proof_verifier, step9_output_missing)
@@ -227,7 +347,7 @@ TEST(vote_proof_verifier, step9_output_missing)
     EXPECT_NE(r.reason.find("step9"), std::string::npos);
 }
 
-TEST(vote_proof_verifier, step10_not_implemented)
+TEST(vote_proof_verifier, step11_not_implemented)
 {
     VerifierTestDB db;
     db.have_proposal = true;
@@ -235,12 +355,13 @@ TEST(vote_proof_verifier, step10_not_implemented)
     db.proposal_voting_end_height = 200;
     db.have_tally_key = true;
     db.proposal_tally_key_epoch = 1;
-    db.existing_global_indices.insert(0);
+    for (uint64_t i = 0; i < 16; ++i)
+        db.existing_global_indices.insert(i);
 
     vote_proof_v2 p = make_valid_until_step8();
 
     std::unordered_set<crypto::hash> bn;
     auto r = VoteProofVerifier::verify(p, db, 100, bn);
     EXPECT_FALSE(r.success);
-    EXPECT_NE(r.reason.find("step10"), std::string::npos);
+    EXPECT_NE(r.reason.find("step11"), std::string::npos);
 }
