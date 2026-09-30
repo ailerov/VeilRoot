@@ -3293,6 +3293,496 @@ std::unique_ptr<dkg_party> dkg_party_create(uint32_t party_id,
 // Gap 4: canonical DKG transcript
 // -------------------------------------------------------------------
 
+bool dao_theta_mul_proof::serialize(std::vector<uint8_t>& out) const
+{
+    out.clear();
+    if (!push_bytes(out, T1)) return false;
+    if (!push_bytes(out, T2)) return false;
+    if (!push_bytes(out, z_b)) return false;
+    if (!push_bytes(out, z_rho)) return false;
+    if (!push_bytes(out, z_k)) return false;
+    return true;
+}
+
+bool dao_theta_mul_proof::deserialize(const std::vector<uint8_t>& in)
+{
+    size_t off = 0;
+    if (!pull_bytes(in, off, T1)) return false;
+    if (!pull_bytes(in, off, T2)) return false;
+    if (!pull_bytes(in, off, z_b)) return false;
+    if (!pull_bytes(in, off, z_rho)) return false;
+    if (!pull_bytes(in, off, z_k)) return false;
+    return off == in.size();
+}
+
+bool dao_theta_open_proof::serialize(std::vector<uint8_t>& out) const
+{
+    out.clear();
+    if (!push_bytes(out, T)) return false;
+    if (!push_bytes(out, z_theta)) return false;
+    if (!push_bytes(out, z_r)) return false;
+    return true;
+}
+
+bool dao_theta_open_proof::deserialize(const std::vector<uint8_t>& in)
+{
+    size_t off = 0;
+    if (!pull_bytes(in, off, T)) return false;
+    if (!pull_bytes(in, off, z_theta)) return false;
+    if (!pull_bytes(in, off, z_r)) return false;
+    return off == in.size();
+}
+
+// Aggregate the per-sender commitment vector, then evaluate at point i:
+//   out = prod_j prod_k (C_j_k)^(i^k)  mod P
+// Assumes every per_party[j].C has the same length (same VSS degree).
+static bool aggregate_eval_at(
+    const std::vector<dao_vss_commitments>& per_party,
+    const dao_vss_group& grp,
+    uint32_t i,
+    BIGNUM* out)
+{
+    if (!out) return false;
+    if (!grp.valid()) return false;
+    if (per_party.size() < 2) return false;
+    if (per_party[1].C.empty()) return false;
+
+    CtxGuard ctx;
+    if (!ctx.ok()) return false;
+
+    const uint32_t t = static_cast<uint32_t>(per_party[1].C.size()) - 1;
+
+    BIGNUM* acc = BN_new();
+    BIGNUM* pow_bn = BN_new();
+    if (!acc || !pow_bn) { BN_free(acc); BN_free(pow_bn); return false; }
+    BN_one(acc);
+    BN_one(pow_bn);
+
+    for (uint32_t k = 0; k <= t; ++k) {
+        BIGNUM* coeff = BN_new();
+        BN_one(coeff);
+        for (size_t j = 1; j < per_party.size(); ++j) {
+            if (k >= per_party[j].C.size()) {
+                BN_free(coeff); BN_free(acc); BN_free(pow_bn);
+                return false;
+            }
+            BIGNUM* Ck = BN_bin2bn(per_party[j].C[k].data(),
+                                   static_cast<int>(per_party[j].C[k].size()),
+                                   nullptr);
+            if (!Ck || !BN_mod_mul(coeff, coeff, Ck, grp.P, ctx.ctx)) {
+                BN_free(Ck); BN_free(coeff);
+                BN_free(acc); BN_free(pow_bn);
+                return false;
+            }
+            BN_free(Ck);
+        }
+        BIGNUM* term = BN_new();
+        if (!term || !BN_mod_exp(term, coeff, pow_bn, grp.P, ctx.ctx)) {
+            BN_free(term); BN_free(coeff);
+            BN_free(acc); BN_free(pow_bn);
+            return false;
+        }
+        if (!BN_mod_mul(acc, acc, term, grp.P, ctx.ctx)) {
+            BN_free(term); BN_free(coeff);
+            BN_free(acc); BN_free(pow_bn);
+            return false;
+        }
+        BN_free(term); BN_free(coeff);
+        if (k < t) {
+            BN_mul_word(pow_bn, i);
+            BN_mod(pow_bn, pow_bn, grp.P_prime, ctx.ctx);
+        }
+    }
+
+    BN_copy(out, acc);
+    BN_free(acc); BN_free(pow_bn);
+    return true;
+}
+
+
+// ---------------------------------------------------------------
+// Gap 3: Theta(i) correctness proofs
+// ---------------------------------------------------------------
+
+static void fs_append_u32be(std::vector<uint8_t>& v, uint32_t x)
+{
+    v.push_back(static_cast<uint8_t>((x >> 24) & 0xff));
+    v.push_back(static_cast<uint8_t>((x >> 16) & 0xff));
+    v.push_back(static_cast<uint8_t>((x >>  8) & 0xff));
+    v.push_back(static_cast<uint8_t>((x      ) & 0xff));
+}
+
+static void fs_append_bn_len_pref(std::vector<uint8_t>& v, const BIGNUM* x)
+{
+    const int n = x ? BN_num_bytes(x) : 0;
+    fs_append_u32be(v, static_cast<uint32_t>(n));
+    if (n > 0) {
+        const size_t off = v.size();
+        v.resize(off + n);
+        BN_bn2bin(x, v.data() + off);
+    }
+}
+
+static void fs_sha256_to_bn(const std::vector<uint8_t>& buf, BIGNUM* out)
+{
+    uint8_t h[32];
+    SHA256(buf.data(), buf.size(), h);
+    BN_bin2bn(h, 32, out);
+}
+
+bool dao_theta_mul_prove(
+    const dao_vss_group& grp,
+    uint32_t epoch,
+    uint32_t candidate_id,
+    uint32_t party_id,
+    const BIGNUM* N,
+    const BIGNUM* C_phi_i,
+    const BIGNUM* C_beta_i,
+    const BIGNUM* beta_i,
+    const BIGNUM* r_beta_i,
+    const BIGNUM* k,
+    const BIGNUM* C_prod,
+    dao_theta_mul_proof& proof)
+{
+    if (!grp.valid() || !N || !C_phi_i || !C_beta_i ||
+        !beta_i || !r_beta_i || !k || !C_prod) return false;
+
+    CtxGuard ctx;
+    if (!ctx.ok()) return false;
+
+    BIGNUM* a_b   = BN_new();
+    BIGNUM* a_rho = BN_new();
+    BIGNUM* a_k   = BN_new();
+    if (!a_b || !a_rho || !a_k) {
+        BN_free(a_b); BN_free(a_rho); BN_free(a_k); return false;
+    }
+    BN_rand_range(a_b,   grp.P_prime);
+    BN_rand_range(a_rho, grp.P_prime);
+    BN_rand_range(a_k,   grp.P_prime);
+
+    BIGNUM* T1 = BN_new();
+    BIGNUM* T2 = BN_new();
+    {
+        BIGNUM* t1a = BN_new(); BIGNUM* t1b = BN_new();
+        BIGNUM* t2a = BN_new(); BIGNUM* t2b = BN_new();
+        bool ok = t1a && t1b && t2a && t2b;
+        ok = ok && BN_mod_exp(t1a, grp.g,   a_b,   grp.P, ctx.ctx);
+        ok = ok && BN_mod_exp(t1b, grp.h,   a_rho, grp.P, ctx.ctx);
+        ok = ok && BN_mod_mul(T1,  t1a,     t1b,   grp.P, ctx.ctx);
+        ok = ok && BN_mod_exp(t2a, C_phi_i, a_b,   grp.P, ctx.ctx);
+        ok = ok && BN_mod_exp(t2b, grp.h,   a_k,   grp.P, ctx.ctx);
+        ok = ok && BN_mod_mul(T2,  t2a,     t2b,   grp.P, ctx.ctx);
+        BN_free(t1a); BN_free(t1b); BN_free(t2a); BN_free(t2b);
+        if (!ok) {
+            BN_free(a_b); BN_free(a_rho); BN_free(a_k);
+            BN_free(T1);  BN_free(T2);
+            return false;
+        }
+    }
+
+    std::vector<uint8_t> buf;
+    const char* dom = "VeilRoot-DAO-DKG-THETA-MUL-V1";
+    buf.insert(buf.end(), dom, dom + std::strlen(dom));
+    fs_append_u32be(buf, epoch);
+    fs_append_u32be(buf, candidate_id);
+    fs_append_u32be(buf, party_id);
+    fs_append_bn_len_pref(buf, N);
+    fs_append_bn_len_pref(buf, grp.P);
+    fs_append_bn_len_pref(buf, grp.P_prime);
+    fs_append_bn_len_pref(buf, grp.g);
+    fs_append_bn_len_pref(buf, grp.h);
+    fs_append_bn_len_pref(buf, C_phi_i);
+    fs_append_bn_len_pref(buf, C_beta_i);
+    fs_append_bn_len_pref(buf, C_prod);
+    fs_append_bn_len_pref(buf, T1);
+    fs_append_bn_len_pref(buf, T2);
+
+    BIGNUM* e = BN_new();
+    if (!e) {
+        BN_free(a_b); BN_free(a_rho); BN_free(a_k);
+        BN_free(T1);  BN_free(T2); return false;
+    }
+    fs_sha256_to_bn(buf, e);
+
+    BIGNUM* z_b   = BN_new();
+    BIGNUM* z_rho = BN_new();
+    BIGNUM* z_k   = BN_new();
+    if (!z_b || !z_rho || !z_k) {
+        BN_free(a_b); BN_free(a_rho); BN_free(a_k);
+        BN_free(T1);  BN_free(T2);    BN_free(e);
+        BN_free(z_b); BN_free(z_rho); BN_free(z_k);
+        return false;
+    }
+    BN_mod_mul(z_b,   e, beta_i,   grp.P_prime, ctx.ctx);
+    BN_mod_add(z_b,   z_b, a_b,    grp.P_prime, ctx.ctx);
+    BN_mod_mul(z_rho, e, r_beta_i, grp.P_prime, ctx.ctx);
+    BN_mod_add(z_rho, z_rho, a_rho, grp.P_prime, ctx.ctx);
+    BN_mod_mul(z_k,   e, k,        grp.P_prime, ctx.ctx);
+    BN_mod_add(z_k,   z_k, a_k,    grp.P_prime, ctx.ctx);
+
+    auto bn_to_vec = [](const BIGNUM* x, std::vector<uint8_t>& out) {
+        const int nb = BN_num_bytes(x);
+        out.assign(nb, 0);
+        BN_bn2bin(x, out.data());
+    };
+    bn_to_vec(T1, proof.T1);
+    bn_to_vec(T2, proof.T2);
+    bn_to_vec(z_b,   proof.z_b);
+    bn_to_vec(z_rho, proof.z_rho);
+    bn_to_vec(z_k,   proof.z_k);
+
+    BN_free(a_b); BN_free(a_rho); BN_free(a_k);
+    BN_free(T1);  BN_free(T2);    BN_free(e);
+    BN_free(z_b); BN_free(z_rho); BN_free(z_k);
+    return true;
+}
+
+bool dao_theta_mul_verify(
+    const dao_vss_group& grp,
+    uint32_t epoch,
+    uint32_t candidate_id,
+    uint32_t party_id,
+    const BIGNUM* N,
+    const BIGNUM* C_phi_i,
+    const BIGNUM* C_beta_i,
+    const BIGNUM* C_prod,
+    const dao_theta_mul_proof& proof)
+{
+    if (!grp.valid() || !N || !C_phi_i || !C_beta_i || !C_prod)
+        return false;
+    if (proof.T1.empty() || proof.T2.empty() ||
+        proof.z_b.empty() || proof.z_rho.empty() || proof.z_k.empty())
+        return false;
+
+    CtxGuard ctx;
+    if (!ctx.ok()) return false;
+
+    BIGNUM* T1    = BN_bin2bn(proof.T1.data(),
+                              static_cast<int>(proof.T1.size()), nullptr);
+    BIGNUM* T2    = BN_bin2bn(proof.T2.data(),
+                              static_cast<int>(proof.T2.size()), nullptr);
+    BIGNUM* z_b   = BN_bin2bn(proof.z_b.data(),
+                              static_cast<int>(proof.z_b.size()), nullptr);
+    BIGNUM* z_rho = BN_bin2bn(proof.z_rho.data(),
+                              static_cast<int>(proof.z_rho.size()), nullptr);
+    BIGNUM* z_k   = BN_bin2bn(proof.z_k.data(),
+                              static_cast<int>(proof.z_k.size()), nullptr);
+    if (!T1 || !T2 || !z_b || !z_rho || !z_k) {
+        BN_free(T1); BN_free(T2);
+        BN_free(z_b); BN_free(z_rho); BN_free(z_k);
+        return false;
+    }
+
+    std::vector<uint8_t> buf;
+    const char* dom = "VeilRoot-DAO-DKG-THETA-MUL-V1";
+    buf.insert(buf.end(), dom, dom + std::strlen(dom));
+    fs_append_u32be(buf, epoch);
+    fs_append_u32be(buf, candidate_id);
+    fs_append_u32be(buf, party_id);
+    fs_append_bn_len_pref(buf, N);
+    fs_append_bn_len_pref(buf, grp.P);
+    fs_append_bn_len_pref(buf, grp.P_prime);
+    fs_append_bn_len_pref(buf, grp.g);
+    fs_append_bn_len_pref(buf, grp.h);
+    fs_append_bn_len_pref(buf, C_phi_i);
+    fs_append_bn_len_pref(buf, C_beta_i);
+    fs_append_bn_len_pref(buf, C_prod);
+    fs_append_bn_len_pref(buf, T1);
+    fs_append_bn_len_pref(buf, T2);
+
+    BIGNUM* e = BN_new();
+    if (!e) {
+        BN_free(T1); BN_free(T2);
+        BN_free(z_b); BN_free(z_rho); BN_free(z_k);
+        return false;
+    }
+    fs_sha256_to_bn(buf, e);
+
+    bool ok = true;
+    // Eq 1: g^z_b * h^z_rho == T1 * C_beta_i^e
+    {
+        BIGNUM* lhs_a = BN_new(); BIGNUM* lhs_b = BN_new();
+        BIGNUM* lhs   = BN_new();
+        BIGNUM* rhs_b = BN_new(); BIGNUM* rhs   = BN_new();
+        ok = lhs_a && lhs_b && lhs && rhs_b && rhs;
+        ok = ok && BN_mod_exp(lhs_a, grp.g,   z_b,   grp.P, ctx.ctx);
+        ok = ok && BN_mod_exp(lhs_b, grp.h,   z_rho, grp.P, ctx.ctx);
+        ok = ok && BN_mod_mul(lhs,   lhs_a,   lhs_b, grp.P, ctx.ctx);
+        ok = ok && BN_mod_exp(rhs_b, C_beta_i, e,    grp.P, ctx.ctx);
+        ok = ok && BN_mod_mul(rhs,   T1,      rhs_b, grp.P, ctx.ctx);
+        if (ok) ok = (BN_cmp(lhs, rhs) == 0);
+        BN_free(lhs_a); BN_free(lhs_b); BN_free(lhs);
+        BN_free(rhs_b); BN_free(rhs);
+    }
+    // Eq 2: C_phi_i^z_b * h^z_k == T2 * C_prod^e
+    if (ok) {
+        BIGNUM* lhs_a = BN_new(); BIGNUM* lhs_b = BN_new();
+        BIGNUM* lhs   = BN_new();
+        BIGNUM* rhs_b = BN_new(); BIGNUM* rhs   = BN_new();
+        ok = lhs_a && lhs_b && lhs && rhs_b && rhs;
+        ok = ok && BN_mod_exp(lhs_a, C_phi_i, z_b, grp.P, ctx.ctx);
+        ok = ok && BN_mod_exp(lhs_b, grp.h,   z_k, grp.P, ctx.ctx);
+        ok = ok && BN_mod_mul(lhs,   lhs_a,   lhs_b, grp.P, ctx.ctx);
+        ok = ok && BN_mod_exp(rhs_b, C_prod,  e, grp.P, ctx.ctx);
+        ok = ok && BN_mod_mul(rhs,   T2,      rhs_b, grp.P, ctx.ctx);
+        if (ok) ok = (BN_cmp(lhs, rhs) == 0);
+        BN_free(lhs_a); BN_free(lhs_b); BN_free(lhs);
+        BN_free(rhs_b); BN_free(rhs);
+    }
+
+    BN_free(T1); BN_free(T2); BN_free(e);
+    BN_free(z_b); BN_free(z_rho); BN_free(z_k);
+    return ok;
+}
+
+bool dao_theta_open_prove(
+    const dao_vss_group& grp,
+    uint32_t epoch,
+    uint32_t candidate_id,
+    uint32_t party_id,
+    const BIGNUM* C_theta_i,
+    const BIGNUM* theta_i,
+    const BIGNUM* r_theta_i,
+    dao_theta_open_proof& proof)
+{
+    if (!grp.valid() || !C_theta_i || !theta_i || !r_theta_i) return false;
+
+    CtxGuard ctx;
+    if (!ctx.ok()) return false;
+
+    BIGNUM* a_theta = BN_new();
+    BIGNUM* a_r     = BN_new();
+    if (!a_theta || !a_r) {
+        BN_free(a_theta); BN_free(a_r); return false;
+    }
+    BN_rand_range(a_theta, grp.P_prime);
+    BN_rand_range(a_r,     grp.P_prime);
+
+    BIGNUM* T = BN_new();
+    {
+        BIGNUM* ta = BN_new(); BIGNUM* tb = BN_new();
+        bool ok = ta && tb;
+        ok = ok && BN_mod_exp(ta, grp.g, a_theta, grp.P, ctx.ctx);
+        ok = ok && BN_mod_exp(tb, grp.h, a_r,     grp.P, ctx.ctx);
+        ok = ok && BN_mod_mul(T,  ta,    tb,      grp.P, ctx.ctx);
+        BN_free(ta); BN_free(tb);
+        if (!ok) {
+            BN_free(a_theta); BN_free(a_r); BN_free(T);
+            return false;
+        }
+    }
+
+    std::vector<uint8_t> buf;
+    const char* dom = "VeilRoot-DAO-DKG-THETA-OPEN-V1";
+    buf.insert(buf.end(), dom, dom + std::strlen(dom));
+    fs_append_u32be(buf, epoch);
+    fs_append_u32be(buf, candidate_id);
+    fs_append_u32be(buf, party_id);
+    fs_append_bn_len_pref(buf, grp.P);
+    fs_append_bn_len_pref(buf, grp.P_prime);
+    fs_append_bn_len_pref(buf, grp.g);
+    fs_append_bn_len_pref(buf, grp.h);
+    fs_append_bn_len_pref(buf, C_theta_i);
+    fs_append_bn_len_pref(buf, theta_i);
+    fs_append_bn_len_pref(buf, T);
+
+    BIGNUM* e = BN_new();
+    if (!e) {
+        BN_free(a_theta); BN_free(a_r); BN_free(T);
+        return false;
+    }
+    fs_sha256_to_bn(buf, e);
+
+    BIGNUM* z_theta = BN_new();
+    BIGNUM* z_r     = BN_new();
+    if (!z_theta || !z_r) {
+        BN_free(a_theta); BN_free(a_r); BN_free(T); BN_free(e);
+        BN_free(z_theta); BN_free(z_r);
+        return false;
+    }
+    BN_mod_mul(z_theta, e, theta_i,   grp.P_prime, ctx.ctx);
+    BN_mod_add(z_theta, z_theta, a_theta, grp.P_prime, ctx.ctx);
+    BN_mod_mul(z_r,     e, r_theta_i, grp.P_prime, ctx.ctx);
+    BN_mod_add(z_r,     z_r, a_r,     grp.P_prime, ctx.ctx);
+
+    auto bn_to_vec = [](const BIGNUM* x, std::vector<uint8_t>& out) {
+        const int nb = BN_num_bytes(x);
+        out.assign(nb, 0);
+        BN_bn2bin(x, out.data());
+    };
+    bn_to_vec(T,       proof.T);
+    bn_to_vec(z_theta, proof.z_theta);
+    bn_to_vec(z_r,     proof.z_r);
+
+    BN_free(a_theta); BN_free(a_r); BN_free(T); BN_free(e);
+    BN_free(z_theta); BN_free(z_r);
+    return true;
+}
+
+bool dao_theta_open_verify(
+    const dao_vss_group& grp,
+    uint32_t epoch,
+    uint32_t candidate_id,
+    uint32_t party_id,
+    const BIGNUM* C_theta_i,
+    const BIGNUM* theta_i,
+    const dao_theta_open_proof& proof)
+{
+    if (!grp.valid() || !C_theta_i || !theta_i) return false;
+    if (proof.T.empty() || proof.z_theta.empty() || proof.z_r.empty())
+        return false;
+
+    CtxGuard ctx;
+    if (!ctx.ok()) return false;
+
+    BIGNUM* T = BN_bin2bn(proof.T.data(),
+                          static_cast<int>(proof.T.size()), nullptr);
+    BIGNUM* z_theta = BN_bin2bn(proof.z_theta.data(),
+                                static_cast<int>(proof.z_theta.size()), nullptr);
+    BIGNUM* z_r = BN_bin2bn(proof.z_r.data(),
+                            static_cast<int>(proof.z_r.size()), nullptr);
+    if (!T || !z_theta || !z_r) {
+        BN_free(T); BN_free(z_theta); BN_free(z_r);
+        return false;
+    }
+
+    std::vector<uint8_t> buf;
+    const char* dom = "VeilRoot-DAO-DKG-THETA-OPEN-V1";
+    buf.insert(buf.end(), dom, dom + std::strlen(dom));
+    fs_append_u32be(buf, epoch);
+    fs_append_u32be(buf, candidate_id);
+    fs_append_u32be(buf, party_id);
+    fs_append_bn_len_pref(buf, grp.P);
+    fs_append_bn_len_pref(buf, grp.P_prime);
+    fs_append_bn_len_pref(buf, grp.g);
+    fs_append_bn_len_pref(buf, grp.h);
+    fs_append_bn_len_pref(buf, C_theta_i);
+    fs_append_bn_len_pref(buf, theta_i);
+    fs_append_bn_len_pref(buf, T);
+
+    BIGNUM* e = BN_new();
+    if (!e) { BN_free(T); BN_free(z_theta); BN_free(z_r); return false; }
+    fs_sha256_to_bn(buf, e);
+
+    // g^z_theta * h^z_r == T * C_theta_i^e
+    bool ok = true;
+    BIGNUM* lhs_a = BN_new(); BIGNUM* lhs_b = BN_new();
+    BIGNUM* lhs   = BN_new();
+    BIGNUM* rhs_b = BN_new(); BIGNUM* rhs   = BN_new();
+    ok = lhs_a && lhs_b && lhs && rhs_b && rhs;
+    ok = ok && BN_mod_exp(lhs_a, grp.g,   z_theta, grp.P, ctx.ctx);
+    ok = ok && BN_mod_exp(lhs_b, grp.h,   z_r,     grp.P, ctx.ctx);
+    ok = ok && BN_mod_mul(lhs,   lhs_a,   lhs_b,   grp.P, ctx.ctx);
+    ok = ok && BN_mod_exp(rhs_b, C_theta_i, e,     grp.P, ctx.ctx);
+    ok = ok && BN_mod_mul(rhs,   T,       rhs_b,   grp.P, ctx.ctx);
+    if (ok) ok = (BN_cmp(lhs, rhs) == 0);
+    BN_free(lhs_a); BN_free(lhs_b); BN_free(lhs);
+    BN_free(rhs_b); BN_free(rhs);
+
+    BN_free(T); BN_free(z_theta); BN_free(z_r); BN_free(e);
+    return ok;
+}
+
 void dkg_transcript::append(const dkg_msg& m)
 {
     entry e;

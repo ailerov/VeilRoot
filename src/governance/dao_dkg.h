@@ -233,6 +233,33 @@ struct dkg_msg
 };
 
 // ====================================================================
+// Gap 3 — Theta(i) correctness proofs
+// ====================================================================
+
+struct dao_theta_mul_proof
+{
+    std::vector<uint8_t> T1;    // group element mod P
+    std::vector<uint8_t> T2;    // group element mod P
+    std::vector<uint8_t> z_b;   // scalar mod P'
+    std::vector<uint8_t> z_rho; // scalar mod P'
+    std::vector<uint8_t> z_k;   // scalar mod P'
+
+    bool serialize(std::vector<uint8_t>& out) const;
+    bool deserialize(const std::vector<uint8_t>& in);
+};
+
+struct dao_theta_open_proof
+{
+    std::vector<uint8_t> T;       // group element mod P
+    std::vector<uint8_t> z_theta; // scalar mod P'
+    std::vector<uint8_t> z_r;     // scalar mod P'
+
+    bool serialize(std::vector<uint8_t>& out) const;
+    bool deserialize(const std::vector<uint8_t>& in);
+};
+
+
+// ====================================================================
 // Canonical DKG transcript (Gap 4)
 // ====================================================================
 //
@@ -330,6 +357,56 @@ bool dao_vss_verify_share(const dao_vss_group& grp,
                           uint32_t i,
                           const BIGNUM* share,
                           const BIGNUM* blinding);
+
+
+// ====================================================================
+// Gap 3 - Theta(i) correctness proofs
+// ====================================================================
+
+bool dao_theta_mul_prove(
+    const dao_vss_group& grp,
+    uint32_t epoch,
+    uint32_t candidate_id,
+    uint32_t party_id,
+    const BIGNUM* N,
+    const BIGNUM* C_phi_i,
+    const BIGNUM* C_beta_i,
+    const BIGNUM* beta_i,
+    const BIGNUM* r_beta_i,
+    const BIGNUM* k,
+    const BIGNUM* C_prod,
+    dao_theta_mul_proof& proof);
+
+bool dao_theta_mul_verify(
+    const dao_vss_group& grp,
+    uint32_t epoch,
+    uint32_t candidate_id,
+    uint32_t party_id,
+    const BIGNUM* N,
+    const BIGNUM* C_phi_i,
+    const BIGNUM* C_beta_i,
+    const BIGNUM* C_prod,
+    const dao_theta_mul_proof& proof);
+
+bool dao_theta_open_prove(
+    const dao_vss_group& grp,
+    uint32_t epoch,
+    uint32_t candidate_id,
+    uint32_t party_id,
+    const BIGNUM* C_theta_i,
+    const BIGNUM* theta_i,
+    const BIGNUM* r_theta_i,
+    dao_theta_open_proof& proof);
+
+bool dao_theta_open_verify(
+    const dao_vss_group& grp,
+    uint32_t epoch,
+    uint32_t candidate_id,
+    uint32_t party_id,
+    const BIGNUM* C_theta_i,
+    const BIGNUM* theta_i,
+    const dao_theta_open_proof& proof);
+
 
 // ====================================================================
 // Gap 1 — beta/R range proof declarations
