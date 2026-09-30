@@ -14,7 +14,13 @@
 #include "governance_payload.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
 #include "voting_weight.h"
+#include "vote_proof_verifier.h"
+#include "dao_consistency.h"
+#include "dao_dkg.h"
+#include "dao_paillier.h"
+#include "ringct/rctOps.h"
 #include <limits>
+#include <unordered_set>
 
 namespace cryptonote {
 
@@ -23,6 +29,8 @@ VoteManager::VoteManager(GovernanceDB& db, const governance_params& params)
 
 bool VoteManager::process_block(const block& blk, uint64_t height)
 {
+    std::unordered_set<crypto::hash> block_nullifiers;
+
     for (const auto& tx_hash : blk.tx_hashes) {
         transaction tx;
         if (!m_db.get_transaction(tx_hash, tx)) {
@@ -30,15 +38,40 @@ bool VoteManager::process_block(const block& blk, uint64_t height)
             return false;
         }
 
-        vote_result res = process_vote(tx, height, false);
-        if (res == vote_result::already_voted) {
-            // Duplicate votes are allowed – just skip
-            MWARNING("Duplicate vote in tx " << tx_hash << " – skipped");
-            continue;
-        }
-        if (res != vote_result::success && res != vote_result::missing_vote_tag) {
-            MERROR("Vote processing failed for tx " << tx_hash << " with result " << (int)res);
-            return false;
+        const vote_kind kind = classify_vote_tx(tx);
+        switch (kind) {
+            case vote_kind::none:
+                continue;
+
+            case vote_kind::malformed:
+                MERROR("Malformed governance object in tx " << tx_hash);
+                return false;
+
+            case vote_kind::multiple:
+                MERROR("Multiple vote objects in tx " << tx_hash);
+                return false;
+
+            case vote_kind::v1: {
+                const vote_result r = process_v1_vote(tx, height, false);
+                if (r == vote_result::missing_vote_tag) continue;
+                if (r != vote_result::success) {
+                    MERROR("V1 vote processing failed for tx " << tx_hash
+                           << " result " << (int)r);
+                    return false;
+                }
+                break;
+            }
+
+            case vote_kind::v2: {
+                const vote_result r = process_v2_vote(tx, tx_hash, height,
+                                                      block_nullifiers, false);
+                if (r != vote_result::success) {
+                    MERROR("V2 vote processing failed for tx " << tx_hash
+                           << " result " << (int)r);
+                    return false;
+                }
+                break;
+            }
         }
     }
     return true;
@@ -202,8 +235,56 @@ bool VoteManager::extract_vote_v2(const transaction& tx, vote_proof_v2& vp) cons
     return false;
 }
 
+vote_kind VoteManager::classify_vote_tx(const transaction& tx) const
+{
+    std::vector<tx_extra_field> extra_fields;
+    if (!parse_tx_extra(tx.extra, extra_fields))
+        return vote_kind::malformed;
+
+    int v1 = 0, v2 = 0;
+    for (const auto& field : extra_fields) {
+        if (field.type() != typeid(tx_extra_governance_payload))
+            continue;
+        const governance_payload& gp =
+            boost::get<tx_extra_governance_payload>(field).payload;
+        switch (gp.type) {
+            case governance_object::proposal:
+            case governance_object::execution:
+                break;
+            case governance_object::vote:
+                ++v1;
+                break;
+            case governance_object::vote_v2:
+                ++v2;
+                break;
+            default:
+                return vote_kind::malformed;
+        }
+    }
+
+    if (v1 + v2 == 0) return vote_kind::none;
+    if (v1 + v2 > 1)  return vote_kind::multiple;
+    return (v2 == 1) ? vote_kind::v2 : vote_kind::v1;
+}
+
 // BEGIN_VNS_PROCESS_VOTE
 vote_result VoteManager::process_vote(const transaction& tx, uint64_t height, bool dry_run)
+{
+    switch (classify_vote_tx(tx)) {
+        case vote_kind::none:     return vote_result::missing_vote_tag;
+        case vote_kind::malformed:
+        case vote_kind::multiple: return vote_result::invalid_format;
+        case vote_kind::v1:       return process_v1_vote(tx, height, dry_run);
+        case vote_kind::v2: {
+            std::unordered_set<crypto::hash> bn;
+            const crypto::hash tx_hash = cryptonote::get_transaction_hash(tx);
+            return process_v2_vote(tx, tx_hash, height, bn, dry_run);
+        }
+    }
+    return vote_result::invalid_format;
+}
+
+vote_result VoteManager::process_v1_vote(const transaction& tx, uint64_t height, bool dry_run)
 {
     if (!is_vote_tx(tx))
         return vote_result::missing_vote_tag;
@@ -227,6 +308,19 @@ vote_result VoteManager::process_vote(const transaction& tx, uint64_t height, bo
     {
         MERROR("Proposal not found: " << vp.proposal_id);
         return vote_result::invalid_proposal_id;
+    }
+
+    // V1 is forbidden after the proposal's tally-key epoch activates.
+    {
+        dao::dao_tally_key_record key_rec;
+        if (m_db.get_underlying_db().get_dao_tally_key(
+                static_cast<uint32_t>(rec.tally_key_epoch), key_rec))
+        {
+            if (height >= key_rec.activation_height) {
+                MERROR("V1 vote rejected: DAO V2 active for this proposal");
+                return vote_result::invalid_format;
+            }
+        }
     }
 
     if (height > rec.voting_end_height || height < rec.submission_height)
@@ -333,5 +427,118 @@ vote_result VoteManager::process_vote(const transaction& tx, uint64_t height, bo
     return vote_result::success;
 }
 // END_VNS_PROCESS_VOTE
+
+vote_result VoteManager::process_v2_vote(
+    const transaction& tx,
+    const crypto::hash& tx_hash,
+    uint64_t height,
+    std::unordered_set<crypto::hash>& block_nullifiers,
+    bool dry_run)
+{
+    vote_proof_v2 proof;
+    if (!extract_vote_v2(tx, proof)) {
+        MERROR("Failed to extract V2 vote");
+        return vote_result::invalid_format;
+    }
+
+    proposal_record prop;
+    if (!m_db.get_proposal(proof.proposal_id, prop)) {
+        MERROR("V2 vote: proposal not found");
+        return vote_result::invalid_proposal_id;
+    }
+
+    // Activation: tally-key epoch for this proposal must be active.
+    dao::dao_tally_key_record key_rec;
+    if (!m_db.get_underlying_db().get_dao_tally_key(
+            static_cast<uint32_t>(proof.tally_key_epoch), key_rec))
+    {
+        MERROR("V2 vote: tally key not found for epoch "
+               << proof.tally_key_epoch);
+        return vote_result::invalid_proposal_id;
+    }
+    if (height < key_rec.activation_height) {
+        MERROR("V2 vote: tally key not yet active");
+        return vote_result::voting_period_closed;
+    }
+
+    BlockchainDB& bdb = m_db.get_underlying_db();
+    const auto vr = VoteProofVerifier::verify(proof, bdb, height, block_nullifiers);
+    if (!vr.success) {
+        MERROR("V2 vote verification failed: " << vr.reason);
+        return vote_result::invalid_signature;
+    }
+
+    if (dry_run)
+        return vote_result::success;
+
+    if (!apply_dao_vote(proof, tx_hash)) {
+        MERROR("V2 vote: apply_dao_vote failed");
+        return vote_result::invalid_format;
+    }
+
+    for (const auto& nf : proof.nullifiers)
+        block_nullifiers.insert(nf);
+
+    MINFO("Stored V2 vote for proposal " << proof.proposal_id
+          << " epoch=" << proof.tally_key_epoch
+          << " height=" << height);
+    return vote_result::success;
+}
+
+bool VoteManager::apply_dao_vote(const vote_proof_v2& proof,
+                                 const crypto::hash& tx_hash)
+{
+    BlockchainDB& bdb = m_db.get_underlying_db();
+
+    dao::dao_tally_key_record key_rec;
+    if (!bdb.get_dao_tally_key(static_cast<uint32_t>(proof.tally_key_epoch),
+                               key_rec))
+        return false;
+
+    dao::PaillierPublicKey pk;
+    if (!pk.deserialize_modulus(key_rec.N))
+        return false;
+
+    dao_proposal_aggregate agg;
+    const bool have_agg = bdb.get_dao_proposal_aggregate(proof.proposal_id, agg);
+    if (!have_agg) {
+        agg.aggregate_C_W = rct::identity();
+        agg.aggregate_C_S = rct::identity();
+    }
+
+    std::vector<uint8_t> E_W_in(proof.E_W.data.begin(), proof.E_W.data.end());
+    std::vector<uint8_t> E_S_in(proof.E_S.data.begin(), proof.E_S.data.end());
+
+    if (have_agg && !agg.aggregate_E_W.empty() && !agg.aggregate_E_S.empty()) {
+        std::vector<uint8_t> tmp;
+        if (!pk.add(agg.aggregate_E_W, E_W_in, tmp)) return false;
+        agg.aggregate_E_W = tmp;
+        if (!pk.add(agg.aggregate_E_S, E_S_in, tmp)) return false;
+        agg.aggregate_E_S = tmp;
+    } else {
+        agg.aggregate_E_W = E_W_in;
+        agg.aggregate_E_S = E_S_in;
+    }
+
+    rct::key tmp_k;
+    rct::addKeys(tmp_k, agg.aggregate_C_W, proof.C_W);
+    agg.aggregate_C_W = tmp_k;
+    rct::addKeys(tmp_k, agg.aggregate_C_S, proof.C_S);
+    agg.aggregate_C_S = tmp_k;
+
+    bdb.add_dao_proposal_aggregate(proof.proposal_id, agg);
+
+    dao_vote_record_v2 rec;
+    rec.proposal_id = proof.proposal_id;
+    rec.vote_height = proof.vote_height;
+    rec.tx_hash     = tx_hash;
+    rec.nullifiers  = proof.nullifiers;
+    bdb.add_dao_vote_record_v2(tx_hash, rec);
+
+    for (const auto& nf : proof.nullifiers)
+        bdb.add_vote_nullifier(proof.proposal_id, nf);
+
+    return true;
+}
 
 } // namespace cryptonote
