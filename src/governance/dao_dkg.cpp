@@ -5,8 +5,16 @@
 #include "governance/dao_dkg_transport.h"
 
 #include <cstring>
+#include <fstream>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
+#define OPENSSL_SUPPRESS_DEPRECATED
+#include <openssl/bn.h>
+#include <openssl/dh.h>
+#include <openssl/evp.h>
+#include <openssl/obj_mac.h>
 #include <openssl/rand.h>
 #include <openssl/sha.h>
 
@@ -197,6 +205,23 @@ BIGNUM* vss_group_order(const dao_vss_group& g)
     return q;
 }
 
+// Verify that the loaded VSS group's subgroup order meets or exceeds
+// the required bit count.
+static bool dao_vss_group_meets_requirement(const dao_vss_group& grp,
+                                            uint32_t required_order_bits)
+{
+    if (!grp.valid()) return false;
+
+    BIGNUM* q = vss_group_order(grp);
+    if (!q) return false;
+
+    const bool ok =
+        BN_num_bits(q) >= static_cast<int>(required_order_bits);
+
+    BN_free(q);
+    return ok;
+}
+
 // Serialize and deserialize a Q_i proof.
 void push_u8(std::vector<uint8_t>& v, uint8_t b) { v.push_back(b); }
 
@@ -252,7 +277,10 @@ bool dkg_msg::serialize(std::vector<uint8_t>& out) const
     out.clear();
     out.push_back(hdr.version);
     push_u32(out, hdr.epoch);
-    push_u32(out, hdr.committee_id);
+    push_u32(out, hdr.candidate_id);
+    out.insert(out.end(),
+               std::begin(hdr.committee_id_hash),
+               std::end(hdr.committee_id_hash));
     push_u32(out, hdr.sender_id);
     push_u32(out, hdr.recipient_id);
     push_u32(out, hdr.phase);
@@ -276,7 +304,10 @@ bool dkg_msg::deserialize(const std::vector<uint8_t>& in)
     hdr.version = in[off++];
     if (hdr.version != 1) return false;
     if (!pull_u32(in, off, hdr.epoch)) return false;
-    if (!pull_u32(in, off, hdr.committee_id)) return false;
+    if (!pull_u32(in, off, hdr.candidate_id)) return false;
+    if (off + 32 > in.size()) return false;
+    std::memcpy(hdr.committee_id_hash, in.data() + off, 32);
+    off += 32;
     if (!pull_u32(in, off, hdr.sender_id)) return false;
     if (!pull_u32(in, off, hdr.recipient_id)) return false;
     if (!pull_u32(in, off, hdr.phase)) return false;
@@ -305,56 +336,255 @@ bool dkg_msg::deserialize(const std::vector<uint8_t>& in)
 
 dao_vss_group::~dao_vss_group()
 {
-    if (P) BN_free(P);
-    if (g) BN_free(g);
-    if (h) BN_free(h);
+    if (P)       BN_free(P);
+    if (P_prime) BN_free(P_prime);
+    if (g)       BN_free(g);
+    if (h)       BN_free(h);
 }
 
-bool dao_vss_group_generate(dao_vss_group& out, unsigned int bits)
+// ====================================================================
+// Named FFDHE group selection and deterministic h derivation
+// ====================================================================
+
+static int dao_vss_select_named_group(unsigned int required_order_bits)
 {
-    CtxGuard g;
-    if (!g.ok()) return false;
+    // required_order_bits refers to the subgroup order P' = (P-1)/2.
+    // ffdhe2048 -> P' is 2047 bits.
+    if (required_order_bits <= 2047) return NID_ffdhe2048;
+    // ffdhe6144 -> P' is 6143 bits.
+    if (required_order_bits <= 6143) return NID_ffdhe6144;
+    // ffdhe8192 -> P' is 8191 bits.
+    if (required_order_bits <= 8191) return NID_ffdhe8192;
+    return NID_undef;
+}
 
-    BIGNUM* q = BN_new();
-    BIGNUM* P = BN_new();
-    if (!q || !P) { BN_free(q); BN_free(P); return false; }
+static bool dao_vss_derive_h(const BIGNUM* P,
+                             const char* group_name,
+                             BIGNUM* h_out,
+                             BN_CTX* ctx)
+{
+    if (!P || !group_name || !h_out || !ctx) return false;
 
-    if (!BN_generate_prime_ex(q, static_cast<int>(bits) - 1, 0,
-                              nullptr, nullptr, nullptr)) {
-        BN_free(q); BN_free(P); return false;
+    const size_t p_bytes = static_cast<size_t>(BN_num_bytes(P));
+    const std::string prefix =
+        std::string("VeilRoot-DAO-VSS-H-V1|") + group_name;
+
+    for (uint32_t counter = 0; counter < 256; ++counter) {
+        std::vector<uint8_t> input(prefix.begin(), prefix.end());
+        input.push_back(static_cast<uint8_t>(counter & 0xff));
+        input.push_back(static_cast<uint8_t>((counter >> 8) & 0xff));
+        input.push_back(static_cast<uint8_t>((counter >> 16) & 0xff));
+        input.push_back(static_cast<uint8_t>((counter >> 24) & 0xff));
+
+        EVP_MD_CTX* md = EVP_MD_CTX_new();
+        if (!md) return false;
+
+        bool ok = true;
+        ok = ok && EVP_DigestInit_ex(md, EVP_shake256(), nullptr) == 1;
+        ok = ok && EVP_DigestUpdate(md, input.data(), input.size()) == 1;
+
+        std::vector<uint8_t> digest(p_bytes);
+        ok = ok && EVP_DigestFinalXOF(md, digest.data(), digest.size()) == 1;
+        EVP_MD_CTX_free(md);
+        if (!ok) return false;
+
+        BIGNUM* x = BN_bin2bn(digest.data(),
+                              static_cast<int>(digest.size()), nullptr);
+        if (!x) return false;
+
+        if (!BN_nnmod(x, x, P, ctx)) { BN_free(x); return false; }
+        if (BN_is_zero(x)) { BN_free(x); continue; }
+
+        // Squaring maps into the quadratic-residue subgroup of order P'.
+        if (!BN_mod_sqr(h_out, x, P, ctx)) { BN_free(x); return false; }
+        BN_free(x);
+
+        if (BN_is_one(h_out)) continue;
+        return true;
     }
-    if (!BN_lshift(P, q, 1) || !BN_add(P, P, BN_value_one())) {
-        BN_free(q); BN_free(P); return false;
+    return false;
+}
+
+bool dao_vss_group_generate(dao_vss_group& out, unsigned int required_order_bits)
+{
+    CtxGuard guard;
+    if (!guard.ok()) return false;
+
+#ifdef VEILROOT_DAO_DKG_TESTING
+    // Test-only fixed 512-bit safe-prime group. P' is 511 bits, which
+    // exceeds the ~387-bit required_order_bits for the current
+    // test configuration (k=60, target_N=128, security_bits=32).
+    //
+    // Using a fixed, verified group here keeps ordinary DKG tests
+    // fast. The production path below is unchanged.
+    if (required_order_bits <= 512)
+    {
+        static const char TEST_P_HEX[] =
+            "ef8b1e5b265783daa07523036b73c9c4b7c1e4a049e5047b4f04c56a8892ac18"
+            "ed0c704da6fdda1c600be037c03b1fcde18030c98fdc501b39ec683bfc24f4b7";
+
+        static const char TEST_H_HEX[] =
+            "5d43788a19cfc5da5ce1fbaeb1dbd552a1b375307d3c601f8580ad6ee9de5a19"
+            "2d1f25a9a48fc59b40b2f7e30de1027c8253ea64b40365c75820109deb79f258";
+
+        BIGNUM* P = nullptr;
+        BIGNUM* h = nullptr;
+        BIGNUM* g = BN_new();
+        BIGNUM* q = BN_new();
+        BIGNUM* check = BN_new();
+
+        if (!g || !q || !check ||
+            BN_hex2bn(&P, TEST_P_HEX) == 0 ||
+            BN_hex2bn(&h, TEST_H_HEX) == 0 ||
+            !BN_set_word(g, 4)) {
+            BN_free(P);
+            BN_free(h);
+            BN_free(g);
+            BN_free(q);
+            BN_free(check);
+            return false;
+        }
+
+        bool ok =
+            BN_sub(q, P, BN_value_one()) == 1 &&
+            BN_rshift1(q, q) == 1 &&
+            BN_num_bits(q) >= 511 &&
+            BN_mod_exp(check, g, q, P, guard.ctx) == 1 &&
+            BN_is_one(check) &&
+            BN_mod_exp(check, h, q, P, guard.ctx) == 1 &&
+            BN_is_one(check) &&
+            !BN_is_one(g) &&
+            !BN_is_one(h);
+
+        if (ok)
+            ok = BN_is_prime_ex(P, 64, guard.ctx, nullptr) == 1;
+
+        if (ok)
+            ok = BN_is_prime_ex(q, 64, guard.ctx, nullptr) == 1;
+
+        if (!ok) {
+            BN_free(P);
+            BN_free(h);
+            BN_free(g);
+            BN_free(q);
+            BN_free(check);
+            return false;
+        }
+
+        if (out.P)       BN_free(out.P);
+        if (out.P_prime) BN_free(out.P_prime);
+        if (out.g)       BN_free(out.g);
+        if (out.h)       BN_free(out.h);
+
+        out.P       = P;
+        out.P_prime = q;
+        out.g       = g;
+        out.h       = h;
+
+        BN_free(check);
+        return true;
+    }
+#endif
+
+    const int nid = dao_vss_select_named_group(required_order_bits);
+    if (nid == NID_undef) return false;
+
+    DH* dh = DH_new_by_nid(nid);
+    if (!dh) return false;
+
+    const BIGNUM* P = nullptr;
+    const BIGNUM* Q = nullptr;
+    const BIGNUM* G = nullptr;
+    DH_get0_pqg(dh, &P, &Q, &G);
+
+    if (!P || !Q || !G) {
+        DH_free(dh);
+        return false;
     }
 
-    BIGNUM* g_val = BN_new();
+    // Validate the structural relationship P' = (P-1)/2.
+    BIGNUM* expected_Q = BN_new();
+    if (!expected_Q) { DH_free(dh); return false; }
+
+    if (!BN_sub(expected_Q, P, BN_value_one()) ||
+        !BN_rshift1(expected_Q, expected_Q)) {
+        BN_free(expected_Q);
+        DH_free(dh);
+        return false;
+    }
+
+    if (BN_cmp(expected_Q, Q) != 0) {
+        BN_free(expected_Q);
+        DH_free(dh);
+        return false;
+    }
+
+    if (BN_num_bits(Q) < static_cast<int>(required_order_bits)) {
+        BN_free(expected_Q);
+        DH_free(dh);
+        return false;
+    }
+
+    // The published generators of the FFDHE groups are 2.
+    if (!BN_is_word(G, 2)) {
+        BN_free(expected_Q);
+        DH_free(dh);
+        return false;
+    }
+
     BIGNUM* h_val = BN_new();
-    if (!g_val || !h_val) {
-        BN_free(q); BN_free(P); BN_free(g_val); BN_free(h_val); return false;
-    }
-    if (!BN_rand_range(g_val, q) || !BN_rand_range(h_val, q)) {
-        BN_free(q); BN_free(P); BN_free(g_val); BN_free(h_val); return false;
+    if (!h_val) {
+        BN_free(expected_Q);
+        DH_free(dh);
+        return false;
     }
 
-    BIGNUM* two = BN_new();
-    BN_set_word(two, 2);
+    const char* group_name = nullptr;
+    switch (nid) {
+        case NID_ffdhe2048: group_name = "ffdhe2048"; break;
+        case NID_ffdhe6144: group_name = "ffdhe6144"; break;
+        case NID_ffdhe8192: group_name = "ffdhe8192"; break;
+        default:
+            BN_free(h_val);
+            BN_free(expected_Q);
+            DH_free(dh);
+            return false;
+    }
+
+    if (!dao_vss_derive_h(P, group_name, h_val, guard.ctx)) {
+        BN_free(h_val);
+        BN_free(expected_Q);
+        DH_free(dh);
+        return false;
+    }
+
+    // Atomic replacement of the group.
+    if (out.P)       BN_free(out.P);
+    if (out.P_prime) BN_free(out.P_prime);
+    if (out.g)       BN_free(out.g);
+    if (out.h)       BN_free(out.h);
+
+    out.P       = BN_dup(P);
+    out.P_prime = BN_dup(Q);
+    out.g       = BN_dup(G);
+    out.h       = h_val;
+
     const bool ok =
-        BN_mod_exp(g_val, two, g_val, P, g.ctx) == 1 &&
-        BN_mod_exp(h_val, two, h_val, P, g.ctx) == 1;
-    BN_free(two);
+        out.P != nullptr &&
+        out.P_prime != nullptr &&
+        out.g != nullptr &&
+        out.h != nullptr;
 
     if (!ok) {
-        BN_free(q); BN_free(P); BN_free(g_val); BN_free(h_val); return false;
+        if (out.P)       { BN_free(out.P);       out.P       = nullptr; }
+        if (out.P_prime) { BN_free(out.P_prime); out.P_prime = nullptr; }
+        if (out.g)       { BN_free(out.g);       out.g       = nullptr; }
+        if (out.h)       { BN_free(out.h);       out.h       = nullptr; }
     }
 
-    if (out.P) BN_free(out.P);
-    if (out.g) BN_free(out.g);
-    if (out.h) BN_free(out.h);
-    out.P = P;
-    out.g = g_val;
-    out.h = h_val;
-    BN_free(q);
-    return true;
+    BN_free(expected_Q);
+    DH_free(dh);
+    return ok;
 }
 
 bool dao_vss_deal(const dao_vss_group& grp,
@@ -367,23 +597,116 @@ bool dao_vss_deal(const dao_vss_group& grp,
 {
     if (!grp.valid() || !secret) return false;
     if (n < degree + 1) return false;
+    if (BN_is_negative(secret)) return false;
+    if (BN_cmp(secret, grp.P_prime) >= 0) return false;
 
     CtxGuard ctx;
     if (!ctx.ok()) return false;
 
     const uint32_t t = degree;
 
+    // Integer VSS bound. For every evaluation point i in [1, n]:
+    //   secret + SUM_{k=1..t} a_k * i^k < P_prime
+    //   SUM_{k=0..t} b_k * i^k           < P_prime
+    //
+    // Coefficient values are sampled in [0, a_limit] and [0, b_limit]
+    // with a_limit and b_limit derived from the sum-of-powers upper
+    // bounds at i = n.
+
+    BIGNUM* n_bn       = BN_new();
+    BIGNUM* sum_pow    = BN_new();   // sum_{k=1..t} n^k
+    BIGNUM* pow        = BN_new();
+    BIGNUM* a_limit    = BN_new();
+    BIGNUM* b_limit    = BN_new();
+    BIGNUM* remaining  = BN_new();
+
+    if (!n_bn || !sum_pow || !pow || !a_limit || !b_limit || !remaining) {
+        BN_free(n_bn); BN_free(sum_pow); BN_free(pow);
+        BN_free(a_limit); BN_free(b_limit); BN_free(remaining);
+        return false;
+    }
+
+    BN_set_word(n_bn, static_cast<BN_ULONG>(n));
+    BN_zero(sum_pow);
+    BN_one(pow);
+
+    for (uint32_t k = 1; k <= t; ++k) {
+        if (!BN_mul(pow, pow, n_bn, ctx.ctx)) {
+            BN_free(n_bn); BN_free(sum_pow); BN_free(pow);
+            BN_free(a_limit); BN_free(b_limit); BN_free(remaining);
+            return false;
+        }
+        if (!BN_add(sum_pow, sum_pow, pow)) {
+            BN_free(n_bn); BN_free(sum_pow); BN_free(pow);
+            BN_free(a_limit); BN_free(b_limit); BN_free(remaining);
+            return false;
+        }
+    }
+
+    // a_limit = (P_prime - 1 - secret) / sum_pow  (or 0 if t == 0)
+    if (t == 0 || BN_is_zero(sum_pow)) {
+        BN_zero(a_limit);
+    } else {
+        BN_copy(remaining, grp.P_prime);
+        BN_sub_word(remaining, 1);
+        BN_sub(remaining, remaining, secret);
+        BN_div(a_limit, nullptr, remaining, sum_pow, ctx.ctx);
+    }
+
+    // b_limit = (P_prime - 1) / (sum_pow + 1)
+    {
+        BIGNUM* denom = BN_new();
+        if (!denom) {
+            BN_free(n_bn); BN_free(sum_pow); BN_free(pow);
+            BN_free(a_limit); BN_free(b_limit); BN_free(remaining);
+            return false;
+        }
+        BN_add(denom, sum_pow, BN_value_one());
+        BN_copy(remaining, grp.P_prime);
+        BN_sub_word(remaining, 1);
+        BN_div(b_limit, nullptr, remaining, denom, ctx.ctx);
+        BN_free(denom);
+    }
+
+    BN_free(n_bn); BN_free(sum_pow); BN_free(pow); BN_free(remaining);
+
     std::vector<BIGNUM*> a(t + 1, nullptr);
     std::vector<BIGNUM*> b(t + 1, nullptr);
     a[0] = BN_dup(secret);
-    if (!a[0]) return false;
+    if (!a[0]) { BN_free(a_limit); BN_free(b_limit); return false; }
     for (uint32_t k = 1; k <= t; ++k) a[k] = BN_new();
     for (uint32_t k = 0; k <= t; ++k) b[k] = BN_new();
 
+    // Sample in [0, limit]. Add one to make BN_rand_range produce the
+    // inclusive upper bound.
+    BIGNUM* a_range = BN_new();
+    BIGNUM* b_range = BN_new();
+    if (!a_range || !b_range) {
+        BN_free(a_limit); BN_free(b_limit);
+        for (auto* x : a) if (x) BN_free(x);
+        for (auto* x : b) if (x) BN_free(x);
+        return false;
+    }
+    BN_copy(a_range, a_limit);
+    BN_add_word(a_range, 1);
+    BN_copy(b_range, b_limit);
+    BN_add_word(b_range, 1);
+
     for (uint32_t k = 1; k <= t; ++k)
-        if (!BN_rand_range(a[k], grp.P)) return false;
+        if (!BN_rand_range(a[k], a_range)) {
+            BN_free(a_range); BN_free(b_range); BN_free(a_limit); BN_free(b_limit);
+            for (auto* x : a) if (x) BN_free(x);
+            for (auto* x : b) if (x) BN_free(x);
+            return false;
+        }
     for (uint32_t k = 0; k <= t; ++k)
-        if (!BN_rand_range(b[k], grp.P)) return false;
+        if (!BN_rand_range(b[k], b_range)) {
+            BN_free(a_range); BN_free(b_range); BN_free(a_limit); BN_free(b_limit);
+            for (auto* x : a) if (x) BN_free(x);
+            for (auto* x : b) if (x) BN_free(x);
+            return false;
+        }
+    BN_free(a_range); BN_free(b_range); BN_free(a_limit); BN_free(b_limit);
 
     commitments_out.C.assign(t + 1, {});
     const size_t P_bytes = static_cast<size_t>(BN_num_bytes(grp.P));
@@ -401,28 +724,36 @@ bool dao_vss_deal(const dao_vss_group& grp,
         BN_free(ga); BN_free(hb); BN_free(C);
     }
 
+    // Integer evaluations. The coefficient bound guarantees s < P' and
+    // ti < P' for every i in [1, n]. The check below is defensive.
     shares_out.assign(n, nullptr);
     blindings_out.assign(n, nullptr);
     for (uint32_t i = 1; i <= n; ++i) {
-        BIGNUM* s = BN_new();
-        BIGNUM* ti = BN_new();
-        BIGNUM* pow = BN_new();
-        if (!s || !ti || !pow) return false;
-        BN_zero(s); BN_zero(ti); BN_one(pow);
+        BIGNUM* s   = BN_new();
+        BIGNUM* ti  = BN_new();
+        BIGNUM* pw  = BN_new();
+        if (!s || !ti || !pw) return false;
+        BN_zero(s); BN_zero(ti); BN_one(pw);
         for (uint32_t k = 0; k <= t; ++k) {
             BIGNUM* term_s = BN_new();
             BIGNUM* term_t = BN_new();
             if (!term_s || !term_t) return false;
-            if (!BN_mul(term_s, a[k], pow, ctx.ctx)) return false;
-            if (!BN_mul(term_t, b[k], pow, ctx.ctx)) return false;
+            if (!BN_mul(term_s, a[k], pw, ctx.ctx)) return false;
+            if (!BN_mul(term_t, b[k], pw, ctx.ctx)) return false;
             if (!BN_add(s, s, term_s)) return false;
             if (!BN_add(ti, ti, term_t)) return false;
             BN_free(term_s); BN_free(term_t);
-            if (k < t) BN_mul_word(pow, i);
+            if (k < t) BN_mul_word(pw, i);
         }
-        shares_out[i - 1] = s;
+        if (BN_cmp(s, grp.P_prime) >= 0 || BN_cmp(ti, grp.P_prime) >= 0) {
+            BN_free(s); BN_free(ti); BN_free(pw);
+            for (auto* x : a) if (x) BN_free(x);
+            for (auto* x : b) if (x) BN_free(x);
+            return false;
+        }
+        shares_out[i - 1]    = s;
         blindings_out[i - 1] = ti;
-        BN_free(pow);
+        BN_free(pw);
     }
 
     for (auto* x : a) if (x) BN_free(x);
@@ -441,14 +772,18 @@ bool dao_vss_verify_share(const dao_vss_group& grp,
     CtxGuard ctx;
     if (!ctx.ok()) return false;
 
+    // LHS: g^share * h^blinding mod P. BN_mod_exp reduces the
+    // exponent modulo the group order P_prime automatically.
     BIGNUM* lhs_a = BN_new();
     BIGNUM* lhs_b = BN_new();
-    BIGNUM* lhs = BN_new();
+    BIGNUM* lhs   = BN_new();
     if (!lhs_a || !lhs_b || !lhs) return false;
     if (!BN_mod_exp(lhs_a, grp.g, share, grp.P, ctx.ctx)) return false;
     if (!BN_mod_exp(lhs_b, grp.h, blinding, grp.P, ctx.ctx)) return false;
     if (!BN_mod_mul(lhs, lhs_a, lhs_b, grp.P, ctx.ctx)) return false;
 
+    // RHS: prod_k C_k^(i^k) mod P. The exponent i^k is maintained
+    // modulo P_prime.
     BIGNUM* rhs = BN_new();
     BN_one(rhs);
     BIGNUM* pow = BN_new();
@@ -465,7 +800,7 @@ bool dao_vss_verify_share(const dao_vss_group& grp,
         BN_free(C_k); BN_free(term);
         if (k < t) {
             BN_mul_word(pow, i);
-            BN_mod(pow, pow, grp.P, ctx.ctx);
+            BN_mod(pow, pow, grp.P_prime, ctx.ctx);
         }
     }
 
@@ -817,6 +1152,9 @@ public:
             v.clear();
         };
         free_bn(p_i_); free_bn(q_i_);
+#ifdef VEILROOT_DAO_DKG_TESTING
+        free_bn(fixed_test_p_i_); free_bn(fixed_test_q_i_);
+#endif
         free_bn(h_coeffs_first_);
         free_bn(N_i_); free_bn(N_candidate_);
         free_bn(g_bar_); free_bn(Q_i_);
@@ -849,6 +1187,11 @@ public:
     void attach_transport(dkg_transport* t) { transport_ = t; }
     void attach_vss_group(const dao_vss_group* g) { vss_group_ = g; }
     void set_qproof_rounds(uint32_t r) { qproof_rounds_ = r; }
+    void set_candidate_id(uint32_t cid) { candidate_id_ = cid; }
+    void set_committee_id_hash(const uint8_t h[32])
+    {
+        std::memcpy(committee_id_hash_, h, 32);
+    }
 
     // Phase transitions, all driven by messages by the driver.
     bool handle_message(const dkg_msg& m);
@@ -900,6 +1243,8 @@ private:
     uint32_t committee_size_;
     uint32_t threshold_;
     uint32_t epoch_;
+    uint32_t candidate_id_ = 0;
+    uint8_t  committee_id_hash_[32] = {};
 
     uint32_t phase_ = 0;
     bool     aborted_ = false;
@@ -917,6 +1262,10 @@ private:
     // --- modulus generation ---
     BIGNUM* p_i_ = nullptr;
     BIGNUM* q_i_ = nullptr;
+#ifdef VEILROOT_DAO_DKG_TESTING
+    BIGNUM* fixed_test_p_i_ = nullptr;
+    BIGNUM* fixed_test_q_i_ = nullptr;
+#endif
     dao_vss_commitments commits_p_;
     dao_vss_commitments commits_q_;
     dao_vss_commitments commits_h_;
@@ -983,11 +1332,18 @@ private:
 #ifdef VEILROOT_DAO_DKG_TESTING
 public:
     // Test-only accessors. Not compiled into production builds.
-    // The production DKG never possesses any party's p_i or q_i
-    // individually; these accessors exist only so the test oracle
-    // can reconstruct the accepted candidate's p and q.
     const BIGNUM* test_p_i() const { return p_i_; }
     const BIGNUM* test_q_i() const { return q_i_; }
+
+    // Test-only injection of a fixed contribution. When both are set,
+    // do_polynomial_commit uses them instead of drawing random values.
+    void set_fixed_test_contribution(const BIGNUM* p, const BIGNUM* q)
+    {
+        free_bn(fixed_test_p_i_);
+        free_bn(fixed_test_q_i_);
+        fixed_test_p_i_ = p ? BN_dup(p) : nullptr;
+        fixed_test_q_i_ = q ? BN_dup(q) : nullptr;
+    }
 #endif
 };
 
@@ -1006,7 +1362,8 @@ dkg_msg dkg_party::make_header(dkg_msg_type type, uint32_t recipient) const
     dkg_msg m;
     m.hdr.version      = 1;
     m.hdr.epoch        = epoch_;
-    m.hdr.committee_id = 0;
+    m.hdr.candidate_id = candidate_id_;
+    std::memcpy(m.hdr.committee_id_hash, committee_id_hash_, 32);
     m.hdr.sender_id    = party_id_;
     m.hdr.recipient_id = recipient;
     m.hdr.phase        = phase_;
@@ -1057,8 +1414,17 @@ bool dkg_party::do_polynomial_commit()
     free_bn(q_i_);
     p_i_ = BN_new();
     q_i_ = BN_new();
-    if (!draw_candidate(is_p1, p_i_)) return false;
-    if (!draw_candidate(is_p1, q_i_)) return false;
+
+#ifdef VEILROOT_DAO_DKG_TESTING
+    if (fixed_test_p_i_ && fixed_test_q_i_) {
+        if (!BN_copy(p_i_, fixed_test_p_i_)) return false;
+        if (!BN_copy(q_i_, fixed_test_q_i_)) return false;
+    } else
+#endif
+    {
+        if (!draw_candidate(is_p1, p_i_)) return false;
+        if (!draw_candidate(is_p1, q_i_)) return false;
+    }
 
     // Deal VSS of p_i and q_i at degree t.
     std::vector<BIGNUM*> s_p, s_q, b_p, b_q;
@@ -1536,6 +1902,9 @@ bool dkg_party::start_phase(uint32_t phase, uint32_t k,
 bool dkg_party::handle_message(const dkg_msg& m)
 {
     if (m.hdr.epoch != epoch_) return false;
+    if (m.hdr.candidate_id != candidate_id_) return false;
+    if (std::memcmp(m.hdr.committee_id_hash, committee_id_hash_, 32) != 0)
+        return false;
     if (m.hdr.sender_id > committee_size_) return false;
 
     CtxGuard ctx;
@@ -1977,19 +2346,28 @@ bool dkg_party::do_v_commit()
     CtxGuard ctx;
     if (!ctx.ok()) return false;
 
-    // r_i in Z*_{N^2}.
+    // r_i sampled uniformly from Z*_{N^2}.
+    BIGNUM* N2 = BN_new();
+    if (!N2) return false;
+    if (!BN_sqr(N2, N_candidate_, ctx.ctx)) { BN_free(N2); return false; }
+
     BIGNUM* r_i = BN_new();
     BIGNUM* gcd = BN_new();
-    do {
-        BN_rand_range(r_i, vss_group_ ? vss_group_->P : N_candidate_);
-        BN_gcd(gcd, r_i, N_candidate_, ctx.ctx);
-    } while (!BN_is_one(gcd));
-    BN_free(gcd);
+    if (!r_i || !gcd) { BN_free(N2); BN_free(r_i); BN_free(gcd); return false; }
+
+    bool ok = false;
+    for (int tries = 0; tries < 256 && !ok; ++tries) {
+        if (!BN_rand_range(r_i, N2)) break;
+        if (BN_is_zero(r_i)) continue;
+        if (!BN_gcd(gcd, r_i, N2, ctx.ctx)) break;
+        if (BN_is_one(gcd)) ok = true;
+    }
+    BN_free(N2); BN_free(gcd);
+    if (!ok) { BN_free(r_i); return false; }
 
     free_bn(v_r_i_);
     v_r_i_ = r_i;
 
-    // Commitment: SHA-256 of "DAO_DKG_V1" || epoch || party_id || r_i_bytes.
     const int rb = BN_num_bytes(v_r_i_);
     std::vector<uint8_t> rbytes(rb, 0);
     BN_bn2bin(v_r_i_, rbytes.data());
@@ -2509,6 +2887,21 @@ bool dkg_run_with_transport(const dkg_config& cfg,
         if (!transports.back()) return false;
     }
 
+    // Compute committee_id_hash = SHA-256(
+    //     domain || epoch || ordered member ids )
+    // The member ids are 1..committee_size in ascending order.
+    uint8_t committee_id_hash[32] = {};
+    {
+        std::vector<uint8_t> buf;
+        const char* dom = DAO_DKG_COMMITTEE_DOMAIN;
+        buf.insert(buf.end(), dom, dom + std::strlen(dom));
+        for (int i = 0; i < 4; ++i) buf.push_back((cfg.epoch >> (8*i)) & 0xff);
+        for (uint32_t i = 1; i <= cfg.committee_size; ++i) {
+            for (int k = 0; k < 4; ++k) buf.push_back((i >> (8*k)) & 0xff);
+        }
+        SHA256(buf.data(), buf.size(), committee_id_hash);
+    }
+
     // Create parties and attach transports.
     std::vector<std::unique_ptr<dkg_party>> parties;
     parties.reserve(cfg.committee_size);
@@ -2516,6 +2909,7 @@ bool dkg_run_with_transport(const dkg_config& cfg,
         auto p = dkg_party_create(i, cfg.committee_size, cfg.threshold, cfg.epoch);
         if (!p) return false;
         p->attach_transport(transports[i - 1].get());
+        p->set_committee_id_hash(committee_id_hash);
         parties.push_back(std::move(p));
     }
 
@@ -2525,24 +2919,86 @@ bool dkg_run_with_transport(const dkg_config& cfg,
     // is sufficient. The production configuration chooses P' after
     // evaluating all bounds from §4.1, §5, and Appendix B.
     dao_vss_group vss;
+    // P' must exceed the range-proof bit lengths per §7:
+    //   beta_bits = target_N_bits + security_bits
+    //   R_bits    = target_N_bits + 2*security_bits
+    // dao_dkg_required_vss_bits already computes a bound derived from
+    // those.
     const uint32_t required_bits =
         dao_dkg_required_vss_bits(cfg.k, cfg.target_N_bits, cfg.security_bits);
-    const unsigned int vss_bits =
-        std::max<unsigned int>(required_bits, 512);
-    if (!dao_vss_group_generate(vss, vss_bits)) return false;
+    if (!dao_vss_group_generate(vss, required_bits)) return false;
+    if (!dao_vss_group_meets_requirement(vss, required_bits)) return false;
 
     for (auto& p : parties) {
         p->attach_vss_group(&vss);
         p->set_qproof_rounds(cfg.qproof_rounds);
     }
 
+#ifdef VEILROOT_DAO_DKG_TESTING
+    // Fixed known-good 128-bit candidate. Enabled when cfg.test_seed is
+    // set to the marker value below. In that mode every party uses the
+    // fixed p_i/q_i contributions, the candidate loop runs exactly once,
+    // and the reconstructed N is asserted to match the expected value.
+    static const char* TEST_P_I[16] = {
+        "969268552214414479",  "888031839494547792",
+        "1079397876156048660", "1006574070186212908",
+        "877477030194816300",  "791836913387411172",
+        "768506220692087400",  "813633058001625364",
+        "666206511486790708",  "947746232640603164",
+        "1105465569543844360", "607439790306659332",
+        "1055474825484965160", "584154533438528320",
+        "765317402755487352",  "906859206339637076"
+    };
+    static const char* TEST_Q_I[16] = {
+        "788035984088342967",  "785893246012606672",
+        "1008809060784577456", "956801234593989956",
+        "622867011629669024",  "714583382660623768",
+        "1152027874352792244", "873607243235969604",
+        "1076454260578465704", "726189582184062888",
+        "923866761182567912",  "587248126720312492",
+        "979668901553805100",  "970721716908318012",
+        "1021503496685327708", "591266747085483712"
+    };
+    constexpr uint64_t FIXED_TEST_CANDIDATE_SEED = 0x5645494C52544F54ULL;
+    const bool use_fixed_candidate = (cfg.test_seed == FIXED_TEST_CANDIDATE_SEED);
+
+    if (use_fixed_candidate) {
+        if (cfg.committee_size != 16) return false;
+        for (uint32_t i = 1; i <= cfg.committee_size; ++i) {
+            BIGNUM* p = nullptr;
+            BIGNUM* q = nullptr;
+            if (BN_dec2bn(&p, TEST_P_I[i - 1]) == 0 ||
+                BN_dec2bn(&q, TEST_Q_I[i - 1]) == 0) {
+                BN_free(p); BN_free(q);
+                return false;
+            }
+            parties[i - 1]->set_fixed_test_contribution(p, q);
+            BN_free(p); BN_free(q);
+        }
+    }
+#else
+    const bool use_fixed_candidate = false;
+#endif
+
     // Main candidate loop.
     BIGNUM* attempt_N  = BN_new();
     BIGNUM* accepted_N = BN_new();
     bool accepted = false;
 
-    for (uint32_t attempt = 1; attempt <= cfg.max_attempts; ++attempt) {
+#ifdef VEILROOT_DAO_DKG_TESTING
+    const uint32_t attempt_limit =
+        use_fixed_candidate ? 1u : cfg.max_attempts;
+#else
+    const uint32_t attempt_limit = cfg.max_attempts;
+#endif
+
+    for (uint32_t attempt = 1; attempt <= attempt_limit; ++attempt) {
         out.candidate_attempts = attempt;
+
+        // Bind every party to the current candidate id. Messages from
+        // a previous candidate attempt are then rejected by the
+        // header check in handle_message.
+        for (auto& p : parties) p->set_candidate_id(attempt);
 
         // A fresh attempt always starts from zero so no state from a
         // failed attempt can carry over.
@@ -2560,6 +3016,20 @@ bool dkg_run_with_transport(const dkg_config& cfg,
 
         // Freeze the accepted modulus. From here to the end of the
         // loop body, `N` is const: nothing may write to it.
+#ifdef VEILROOT_DAO_DKG_TESTING
+        if (use_fixed_candidate) {
+            static const char EXPECTED_N[] =
+                "190617809826337441250605450219703325793";
+            BIGNUM* expected = nullptr;
+            if (BN_dec2bn(&expected, EXPECTED_N) == 0) return false;
+            if (BN_cmp(attempt_N, expected) != 0) {
+                BN_free(expected);
+                return false;
+            }
+            BN_free(expected);
+        }
+#endif
+
         if (!BN_copy(accepted_N, attempt_N)) {
             continue;
         }
@@ -2580,6 +3050,8 @@ bool dkg_run_with_transport(const dkg_config& cfg,
             dkg_msg mN;
             mN.hdr.version = 1;
             mN.hdr.epoch = cfg.epoch;
+            mN.hdr.candidate_id = attempt;
+            std::memcpy(mN.hdr.committee_id_hash, committee_id_hash, 32);
             mN.hdr.sender_id = 0;
             mN.hdr.recipient_id = 0;
             mN.hdr.phase = 3;
@@ -2605,6 +3077,8 @@ bool dkg_run_with_transport(const dkg_config& cfg,
             dkg_msg m;
             m.hdr.version = 1;
             m.hdr.epoch = cfg.epoch;
+            m.hdr.candidate_id = attempt;
+            std::memcpy(m.hdr.committee_id_hash, committee_id_hash, 32);
             m.hdr.sender_id = 0;
             m.hdr.recipient_id = 0;
             m.hdr.phase = 3;

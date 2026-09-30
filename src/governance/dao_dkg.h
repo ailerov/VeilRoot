@@ -151,17 +151,21 @@ enum class dkg_msg_type : uint8_t
 
 };
 
+// Domain separator for the committee identifier hash.
+constexpr const char* DAO_DKG_COMMITTEE_DOMAIN = "VeilRoot-DAO-DKG-COMMITTEE-V1";
+
 struct dkg_msg_header
 {
-    uint8_t      version      = 1;
-    uint32_t     epoch        = 0;
-    uint32_t     committee_id = 0;
-    uint32_t     sender_id    = 0;
-    uint32_t     recipient_id = 0;   // 0 = broadcast
-    uint32_t     phase        = 0;
-    uint32_t     round        = 0;
-    uint64_t     sequence     = 0;
-    dkg_msg_type type         = dkg_msg_type::dkg_abort;
+    uint8_t  version      = 1;
+    uint32_t epoch        = 0;
+    uint32_t candidate_id = 0;              // monotone within epoch
+    uint8_t  committee_id_hash[32] = {};    // H(domain || epoch || member ids)
+    uint32_t sender_id    = 0;              // 1..committee_size
+    uint32_t recipient_id = 0;              // 0 = broadcast
+    uint32_t phase        = 0;
+    uint32_t round        = 0;
+    uint64_t sequence     = 0;
+    dkg_msg_type type     = dkg_msg_type::dkg_abort;
 };
 
 struct dkg_msg
@@ -200,15 +204,16 @@ public:
 
 struct dao_vss_group
 {
-    BIGNUM* P = nullptr;
-    BIGNUM* g = nullptr;
-    BIGNUM* h = nullptr;
+    BIGNUM* P       = nullptr;  // prime, P = 2*P_prime + 1
+    BIGNUM* P_prime = nullptr;  // prime, (P-1)/2, the subgroup order
+    BIGNUM* g       = nullptr;  // generator of the order-P_prime subgroup
+    BIGNUM* h       = nullptr;  // second generator, log_g(h) unknown
 
     dao_vss_group() = default;
     ~dao_vss_group();
     dao_vss_group(const dao_vss_group&) = delete;
     dao_vss_group& operator=(const dao_vss_group&) = delete;
-    bool valid() const { return P && g && h; }
+    bool valid() const { return P && P_prime && g && h; }
 };
 
 bool dao_vss_group_generate(dao_vss_group& out, unsigned int bits = 2048);

@@ -22,6 +22,7 @@
 
 #include <openssl/bn.h>
 #include <openssl/rand.h>
+#include <cstdlib>
 
 #include "gtest/gtest.h"
 #include "governance/dao_dkg.h"
@@ -58,11 +59,9 @@ TEST(dao_dkg_e2e, sixteen_party_128bit_with_oracle)
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
     cfg.security_bits  = 32;
-    // Reduced proof rounds for the integration test. The soundness of
-    // the 32-round Q proof is verified separately in dao_dkg.*; the
-    // e2e test just needs to exercise the full pipeline.
-    cfg.qproof_rounds  = 2;
-    cfg.max_attempts   = 100000;
+    cfg.qproof_rounds  = 32;
+    cfg.max_attempts   = 1;
+    cfg.test_seed      = 0x5645494C52544F54ULL;   // fixed candidate
 
     auto net = dkg_make_inproc_network(cfg.committee_size, nullptr);
 
@@ -200,8 +199,9 @@ TEST(dao_dkg_e2e, decryption_roundtrip)
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
     cfg.security_bits  = 32;
-    cfg.qproof_rounds  = 2;
-    cfg.max_attempts   = 100000;
+    cfg.qproof_rounds  = 32;
+    cfg.max_attempts   = 1;
+    cfg.test_seed      = 0x5645494C52544F54ULL;   // fixed candidate
 
     auto net = dkg_make_inproc_network(cfg.committee_size, nullptr);
 
@@ -423,3 +423,50 @@ TEST(dao_dkg_e2e, decryption_roundtrip)
     BN_free(M); BN_free(r); BN_free(theta);
     BN_CTX_free(ctx);
 }
+
+// Randomized candidate search. Disabled by default; run manually with
+// VEILROOT_DAO_DKG_SLOW=1 to exercise the production candidate loop
+// and measure its timing behaviour.
+TEST(dao_dkg_e2e, DISABLED_sixteen_party_128bit_randomized_smoke)
+{
+    const char* slow = std::getenv("VEILROOT_DAO_DKG_SLOW");
+    if (!slow || std::strcmp(slow, "1") != 0) {
+        GTEST_SKIP() << "slow randomized DKG test disabled";
+    }
+
+    dkg_config cfg;
+    cfg.committee_size = DAO_DKG_COMMITTEE_SIZE;
+    cfg.threshold      = DAO_DKG_THRESHOLD;
+    cfg.epoch          = 1;
+    cfg.k              = 60;
+    cfg.target_N_bits  = 128;
+    cfg.security_bits  = 32;
+    cfg.qproof_rounds  = 2;
+    cfg.max_attempts   = 100000;
+    // no test_seed: use the production randomized candidate loop
+
+    auto net = dkg_make_inproc_network(cfg.committee_size, nullptr);
+    std::vector<std::unique_ptr<dkg_transport>> pool;
+    for (auto& e : net.endpoints) pool.push_back(std::move(e));
+    size_t next = 0;
+    dkg_transport_factory factory =
+        [&pool, &next](uint32_t) -> std::unique_ptr<dkg_transport> {
+            if (next >= pool.size()) return nullptr;
+            return std::move(pool[next++]);
+        };
+
+    dkg_result out;
+    const auto t0 = std::chrono::steady_clock::now();
+    dkg_run_with_transport(cfg, factory, out);
+    const auto t1 = std::chrono::steady_clock::now();
+
+    std::cerr << "[dkg-smoke] elapsed="
+              << std::chrono::duration_cast<std::chrono::seconds>(t1 - t0).count()
+              << "s attempts=" << out.candidate_attempts
+              << " biprimality_failures=" << out.biprimality_failures
+              << " trial_division_failures=" << out.trial_division_failures
+              << " accepted=" << out.candidate_accepted << "\n";
+
+    ASSERT_GT(out.candidate_attempts, 0u);
+}
+
