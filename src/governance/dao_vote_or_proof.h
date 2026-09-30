@@ -9,6 +9,8 @@
 #include "crypto/crypto.h"
 #include "crypto/hash.h"
 #include "ringct/rctTypes.h"
+#include "serialization/serialization.h"
+#include "serialization/crypto.h"
 
 namespace cryptonote {
 
@@ -44,6 +46,13 @@ struct dao_vote_or_proof
     rct::key s_yes;
     rct::key c_no;
     rct::key s_no;
+
+    BEGIN_SERIALIZE_OBJECT()
+        FIELD(c_yes)
+        FIELD(s_yes)
+        FIELD(c_no)
+        FIELD(s_no)
+    END_SERIALIZE()
 };
 
 // Prove direction. `direction_yes` selects which branch the prover knows.

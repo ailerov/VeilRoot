@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -13,93 +14,79 @@
 #include "serialization/containers.h"
 #include "serialization/crypto.h"
 
+#include "governance/dao_consistency.h"
+#include "governance/dao_vote_or_proof.h"
+
 namespace cryptonote {
 
-// V2 DAO vote wire format. Outer structure frozen by spec §11 and §28.
-// Cryptographic sub-objects are introduced by their dedicated commits;
-// their slots here are length-prefixed opaque payloads during scaffolding.
-// No V1 field survives: no direction_yes, no participation_balance,
-// no voting_weight, no voting_nullifiers.
-
-struct dao_clsag {
-    std::vector<uint8_t> payload;
-    BEGIN_SERIALIZE_OBJECT()
-        FIELD(payload)
-    END_SERIALIZE()
+// Fixed 512-byte Paillier ciphertext. Serialized raw (no length prefix).
+struct fixed_512_byte
+{
+    std::array<uint8_t, 512> data{{}};
 };
 
-struct threshold_ciphertext {
-    std::vector<uint8_t> payload;
-    BEGIN_SERIALIZE_OBJECT()
-        FIELD(payload)
-    END_SERIALIZE()
-};
+} // namespace cryptonote
 
-struct dao_vote_or_proof {
-    std::vector<uint8_t> payload;
-    BEGIN_SERIALIZE_OBJECT()
-        FIELD(payload)
-    END_SERIALIZE()
-};
+BLOB_SERIALIZER(cryptonote::fixed_512_byte);
 
-struct dao_vote_consistency_proof {
-    std::vector<uint8_t> payload;
-    BEGIN_SERIALIZE_OBJECT()
-        FIELD(payload)
-    END_SERIALIZE()
-};
+namespace cryptonote {
 
+// One ring input of a DAO V2 vote. The typed weighted CLSAG lives
+// inside the input. weight_commitment is V_i = Q_i + rho_i*G.
 struct vote_input_v2
 {
     std::vector<uint64_t> key_offsets;
-    crypto::key_image      dao_nullifier;
-    rct::key               weight_commitment;
-    dao_clsag              signature;
+    rct::key              weight_commitment;
+    rct::clsag            signature;
 
     BEGIN_SERIALIZE_OBJECT()
         FIELD(key_offsets)
-        FIELD(dao_nullifier)
         FIELD(weight_commitment)
         FIELD(signature)
     END_SERIALIZE()
 };
 
+// V2 DAO vote wire format. Frozen by spec section 18.
 struct vote_proof_v2
 {
     enum : uint8_t { VERSION = 2 };
 
-    uint8_t      version     = VERSION;
+    uint8_t      version         = VERSION;
     crypto::hash proposal_id;
-    uint64_t     vote_height = 0;
+    uint64_t     vote_height     = 0;
+    uint64_t     tally_key_epoch = 0;
 
-    rct::key total_weight_commitment;
-    rct::key signed_weight_commitment;
+    std::vector<vote_input_v2>  inputs;
+    std::vector<crypto::hash>   nullifiers;
 
-    threshold_ciphertext encrypted_weight;
-    threshold_ciphertext encrypted_signed_weight;
-    threshold_ciphertext encrypted_weight_blinding;
-    threshold_ciphertext encrypted_signed_blinding;
+    rct::key C_W;
+    rct::key C_S;
 
-    rct::BulletproofPlus       weight_range_proof;
-    dao_vote_or_proof          direction_proof;
-    dao_vote_consistency_proof consistency_proof;
+    fixed_512_byte E_W;
+    fixed_512_byte E_S;
 
-    std::vector<vote_input_v2> inputs;
+    dao::dao_consistency_proof proof_W;
+    dao::dao_consistency_proof proof_S;
+
+    dao_vote_or_proof direction_proof;
+
+    crypto::hash transcript_hash;
 
     BEGIN_SERIALIZE_OBJECT()
         FIELD(version)
         FIELD(proposal_id)
         VARINT_FIELD(vote_height)
-        FIELD(total_weight_commitment)
-        FIELD(signed_weight_commitment)
-        FIELD(encrypted_weight)
-        FIELD(encrypted_signed_weight)
-        FIELD(encrypted_weight_blinding)
-        FIELD(encrypted_signed_blinding)
-        FIELD(weight_range_proof)
-        FIELD(direction_proof)
-        FIELD(consistency_proof)
+        VARINT_FIELD(tally_key_epoch)
         FIELD(inputs)
+        FIELD(nullifiers)
+        FIELD(C_W)
+        FIELD(C_S)
+        FIELD(E_W)
+        FIELD(E_S)
+        FIELD(proof_W)
+        FIELD(proof_S)
+        FIELD(direction_proof)
+        FIELD(transcript_hash)
     END_SERIALIZE()
 };
 
