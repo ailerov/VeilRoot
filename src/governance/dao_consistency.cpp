@@ -238,6 +238,55 @@ bool dao_consistency_prove(const dao_consistency_context& ctx,
     return true;
 }
 
+std::vector<uint8_t> dao_vote_input_transcript(
+    const std::vector<key>& nullifiers,
+    const std::vector<uint64_t>& key_offsets)
+{
+    std::vector<uint8_t> buf;
+    buf.insert(buf.end(), "VeilRoot-DAO-VOTE-INPUT-V1",
+               "VeilRoot-DAO-VOTE-INPUT-V1" + 27);
+    buf.push_back(0);
+    for (int i = 0; i < 4; ++i)
+        buf.push_back((uint32_t(nullifiers.size()) >> (8*i)) & 0xff);
+    for (const auto& nf : nullifiers)
+        buf.insert(buf.end(), nf.bytes, nf.bytes + 32);
+    for (int i = 0; i < 4; ++i)
+        buf.push_back((uint32_t(key_offsets.size()) >> (8*i)) & 0xff);
+    for (uint64_t ko : key_offsets)
+        for (int i = 0; i < 8; ++i)
+            buf.push_back((ko >> (8*i)) & 0xff);
+
+    unsigned char digest[32];
+    SHA256(buf.data(), buf.size(), digest);
+    return std::vector<uint8_t>(digest, digest + 32);
+}
+
+std::vector<uint8_t> dao_extra_binding(
+    const std::vector<uint8_t>& E_W,
+    const std::vector<uint8_t>& E_S,
+    const dao_consistency_proof& proof_W,
+    const dao_consistency_proof& proof_S)
+{
+    std::vector<uint8_t> buf;
+    buf.insert(buf.end(), "VeilRoot-DAO-EXTRA-V1",
+               "VeilRoot-DAO-EXTRA-V1" + 21);
+    buf.push_back(0);
+    push_vec(buf, E_W);
+    push_vec(buf, E_S);
+    push_vec(buf, proof_W.e);
+    push_vec(buf, proof_W.z_m);
+    push_vec(buf, proof_W.z_r);
+    push_vec(buf, proof_W.z_rho);
+    push_vec(buf, proof_S.e);
+    push_vec(buf, proof_S.z_m);
+    push_vec(buf, proof_S.z_r);
+    push_vec(buf, proof_S.z_rho);
+
+    unsigned char digest[32];
+    SHA256(buf.data(), buf.size(), digest);
+    return std::vector<uint8_t>(digest, digest + 32);
+}
+
 bool dao_consistency_verify(const dao_consistency_context& ctx,
                             const BIGNUM* N,
                             const std::vector<uint8_t>& E,

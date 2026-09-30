@@ -75,5 +75,21 @@ bool dao_consistency_verify(const dao_consistency_context& ctx,
                             const rct::key& C,
                             const dao_consistency_proof& proof);
 
+// Canonical vote-input transcript. Both the OR proof and the two
+// consistency proofs bind this same value, so the whole vote proof
+// hangs together.
+std::vector<uint8_t> dao_vote_input_transcript(
+    const std::vector<rct::key>& nullifiers,
+    const std::vector<uint64_t>& key_offsets);
+
+// extra_binding for the OR proof. Includes the two ciphertexts and
+// their consistency proofs so that substituting either invalidates
+// the OR proof challenge.
+std::vector<uint8_t> dao_extra_binding(
+    const std::vector<uint8_t>& E_W,
+    const std::vector<uint8_t>& E_S,
+    const dao_consistency_proof& proof_W,
+    const dao_consistency_proof& proof_S);
+
 } // namespace dao
 } // namespace cryptonote

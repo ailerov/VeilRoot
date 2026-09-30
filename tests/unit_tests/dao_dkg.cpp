@@ -700,3 +700,91 @@ TEST(dao_range, serialize_round_trip)
 
     BN_free(x); BN_free(rho); BN_free(C);
 }
+
+
+// ================= Gap 4: canonical transcript hash =================
+
+namespace {
+
+dkg_msg make_test_msg(uint32_t candidate_id, uint32_t phase, uint32_t round,
+                      uint32_t sender_id, uint32_t recipient_id,
+                      dkg_msg_type type, uint64_t sequence,
+                      uint8_t payload_byte)
+{
+    dkg_msg m;
+    m.hdr.version      = 1;
+    m.hdr.epoch        = 1;
+    m.hdr.candidate_id = candidate_id;
+    m.hdr.sender_id    = sender_id;
+    m.hdr.recipient_id = recipient_id;
+    m.hdr.phase        = phase;
+    m.hdr.round        = round;
+    m.hdr.sequence     = sequence;
+    m.hdr.type         = type;
+    m.bytes_a.assign(1, payload_byte);
+    return m;
+}
+
+} // namespace
+
+TEST(dao_dkg, transcript_hash_reorder_invariant)
+{
+    std::vector<dkg_msg> msgs;
+    for (uint32_t i = 0; i < 10; ++i) {
+        msgs.push_back(make_test_msg(1, 1, 0, i + 1, 0,
+                                     dkg_msg_type::polynomial_share, i,
+                                     static_cast<uint8_t>(0x10 + i)));
+    }
+
+    dkg_transcript t_forward;
+    for (const auto& m : msgs) t_forward.append(m);
+
+    dkg_transcript t_reverse;
+    for (auto it = msgs.rbegin(); it != msgs.rend(); ++it) t_reverse.append(*it);
+
+    std::vector<uint8_t> h_fwd, h_rev;
+    t_forward.hash(h_fwd);
+    t_reverse.hash(h_rev);
+
+    ASSERT_EQ(h_fwd.size(), 32u);
+    ASSERT_EQ(h_rev.size(), 32u);
+    EXPECT_EQ(h_fwd, h_rev);
+}
+
+TEST(dao_dkg, transcript_hash_tamper_detected)
+{
+    dkg_msg m = make_test_msg(1, 1, 0, 1, 0,
+                              dkg_msg_type::polynomial_share, 0, 0x42);
+
+    dkg_transcript t1;
+    t1.append(m);
+    std::vector<uint8_t> h1;
+    t1.hash(h1);
+
+    dkg_msg m2 = m;
+    m2.bytes_a[0] ^= 0x01;
+    dkg_transcript t2;
+    t2.append(m2);
+    std::vector<uint8_t> h2;
+    t2.hash(h2);
+
+    EXPECT_NE(h1, h2);
+}
+
+TEST(dao_dkg, transcript_hash_duplicates_collapse)
+{
+    dkg_msg m = make_test_msg(1, 1, 0, 1, 0,
+                              dkg_msg_type::polynomial_share, 0, 0x42);
+
+    dkg_transcript t_single;
+    t_single.append(m);
+    std::vector<uint8_t> h_single;
+    t_single.hash(h_single);
+
+    dkg_transcript t_many;
+    for (int i = 0; i < 15; ++i) t_many.append(m);
+    std::vector<uint8_t> h_many;
+    t_many.hash(h_many);
+
+    EXPECT_EQ(h_single, h_many);
+}

@@ -3151,11 +3151,65 @@ std::unique_ptr<dkg_party> dkg_party_create(uint32_t party_id,
         new dkg_party(party_id, committee_size, threshold, epoch));
 }
 
+// -------------------------------------------------------------------
+// Gap 4: canonical DKG transcript
+// -------------------------------------------------------------------
+
+void dkg_transcript::append(const dkg_msg& m)
+{
+    entry e;
+    e.candidate_id = m.hdr.candidate_id;
+    e.phase        = m.hdr.phase;
+    e.round        = m.hdr.round;
+    e.sender_id    = m.hdr.sender_id;
+    e.recipient_id = m.hdr.recipient_id;
+    e.type         = static_cast<uint8_t>(m.hdr.type);
+    e.sequence     = m.hdr.sequence;
+    if (!m.serialize(e.canonical)) return;
+    entries_.push_back(std::move(e));
+}
+
+void dkg_transcript::hash(std::vector<uint8_t>& out) const
+{
+    std::vector<entry> sorted = entries_;
+
+    std::sort(sorted.begin(), sorted.end(),
+        [](const entry& a, const entry& b) {
+            if (a.candidate_id != b.candidate_id) return a.candidate_id < b.candidate_id;
+            if (a.phase        != b.phase)        return a.phase        < b.phase;
+            if (a.round        != b.round)        return a.round        < b.round;
+            if (a.sender_id    != b.sender_id)    return a.sender_id    < b.sender_id;
+            if (a.recipient_id != b.recipient_id) return a.recipient_id < b.recipient_id;
+            if (a.type         != b.type)         return a.type         < b.type;
+            if (a.sequence     != b.sequence)     return a.sequence     < b.sequence;
+            return a.canonical < b.canonical;
+        });
+
+    sorted.erase(
+        std::unique(sorted.begin(), sorted.end(),
+            [](const entry& a, const entry& b) {
+                return a.canonical == b.canonical;
+            }),
+        sorted.end());
+
+    std::vector<uint8_t> buf;
+    const char* dom = "VeilRoot-DAO-DKG-TRANSCRIPT-V1";
+    buf.insert(buf.end(), dom, dom + std::strlen(dom));
+    for (const auto& e : sorted) {
+        buf.insert(buf.end(), e.canonical.begin(), e.canonical.end());
+    }
+
+    out.assign(32, 0);
+    SHA256(buf.data(), buf.size(), out.data());
+}
+
 namespace {
 
-// Drain every transport until no more messages are pending.
+// Drain every transport until no more messages are pending. Every
+// drained message is recorded in the canonical transcript.
 void drain_all(const std::vector<std::unique_ptr<dkg_transport>>& transports,
-               std::vector<dkg_msg>& collected)
+               std::vector<dkg_msg>& collected,
+               dkg_transcript& transcript)
 {
     bool any = false;
     do {
@@ -3164,6 +3218,7 @@ void drain_all(const std::vector<std::unique_ptr<dkg_transport>>& transports,
             dkg_msg m;
             while (t->try_recv(m)) {
                 collected.push_back(m);
+                transcript.append(m);
                 any = true;
             }
         }
@@ -3223,6 +3278,7 @@ bool reconstruct_N(const std::vector<std::unique_ptr<dkg_party>>& parties,
 bool run_modulus_attempt(const dkg_config& cfg,
                          std::vector<std::unique_ptr<dkg_party>>& parties,
                          std::vector<std::unique_ptr<dkg_transport>>& transports,
+                         dkg_transcript& transcript,
                          BIGNUM* N_out)
 {
     // Phase 1: each party deals VSS and sends shares.
@@ -3232,7 +3288,7 @@ bool run_modulus_attempt(const dkg_config& cfg,
     }
 
     std::vector<dkg_msg> collected;
-    drain_all(transports, collected);
+    drain_all(transports, collected, transcript);
     if (!deliver_all(parties, collected)) return false;
     collected.clear();
 
@@ -3242,7 +3298,7 @@ bool run_modulus_attempt(const dkg_config& cfg,
             return false;
     }
 
-    drain_all(transports, collected);
+    drain_all(transports, collected, transcript);
 
     // Collect the broadcast N_i values from the message stream.
     std::vector<BIGNUM*> N_i(parties.size() + 1, nullptr);
@@ -3372,6 +3428,7 @@ bool trial_division_check_factor(
     const std::vector<std::unique_ptr<dkg_party>>& parties,
     std::vector<std::unique_ptr<dkg_transport>>& transports,
     const dkg_config& cfg,
+    dkg_transcript& transcript,
     uint32_t factor_selector)
 {
     const uint32_t t = cfg.threshold - 1;
@@ -3389,7 +3446,7 @@ bool trial_division_check_factor(
             }
             {
                 std::vector<dkg_msg> collected;
-                drain_all(transports, collected);
+                drain_all(transports, collected, transcript);
                 if (!deliver_all(parties, collected)) return false;
             }
 
@@ -3399,7 +3456,7 @@ bool trial_division_check_factor(
             }
 
             std::vector<dkg_msg> collected;
-            drain_all(transports, collected);
+            drain_all(transports, collected, transcript);
 
             // Collect gamma shares.
             std::vector<BIGNUM*> gamma_shares(parties.size() + 1, nullptr);
@@ -3476,6 +3533,8 @@ bool dkg_run_with_transport(const dkg_config& cfg,
     if (cfg.committee_size < cfg.threshold) return false;
     if (cfg.committee_size != DAO_DKG_COMMITTEE_SIZE) return false;
     if (cfg.threshold != DAO_DKG_THRESHOLD) return false;
+
+    dkg_transcript transcript;
 
     // Create transports.
     std::vector<std::unique_ptr<dkg_transport>> transports;
@@ -3603,7 +3662,7 @@ bool dkg_run_with_transport(const dkg_config& cfg,
         BN_zero(attempt_N);
 
         // Phases 1-2: modulus shares and reconstruction.
-        if (!run_modulus_attempt(cfg, parties, transports, attempt_N)) {
+        if (!run_modulus_attempt(cfg, parties, transports, transcript, attempt_N)) {
             continue;
         }
 
@@ -3702,7 +3761,7 @@ bool dkg_run_with_transport(const dkg_config& cfg,
         // run the biprimality predicate.
         {
             std::vector<dkg_msg> collected;
-            drain_all(transports, collected);
+            drain_all(transports, collected, transcript);
 
             std::vector<BIGNUM*> Q_own(cfg.committee_size + 1, nullptr);
             std::vector<const BIGNUM*> Q(cfg.committee_size + 1, nullptr);
@@ -3794,12 +3853,12 @@ bool dkg_run_with_transport(const dkg_config& cfg,
                 goto next_attempt;
             }
         }
-        if (!trial_division_check_factor(parties, transports, cfg, 0)) {
+        if (!trial_division_check_factor(parties, transports, cfg, transcript, 0)) {
             out.trial_division_failures++;
             BN_free(g_bar);
             goto next_attempt;
         }
-        if (!trial_division_check_factor(parties, transports, cfg, 1)) {
+        if (!trial_division_check_factor(parties, transports, cfg, transcript, 1)) {
             out.trial_division_failures++;
             BN_free(g_bar);
             goto next_attempt;
@@ -3876,7 +3935,7 @@ bool dkg_run_with_transport(const dkg_config& cfg,
         #endif
         {
             std::vector<dkg_msg> collected;
-            drain_all(transports, collected);
+            drain_all(transports, collected, transcript);
 
             // Collect each party's published constant VSS commitment for
             // beta and delta_R. Broadcast fan-out means multiple copies
@@ -3968,7 +4027,7 @@ bool dkg_run_with_transport(const dkg_config& cfg,
         // at 0 over the 2t+1 = 15 largest-index shares.
         {
             std::vector<dkg_msg> collected;
-            drain_all(transports, collected);
+            drain_all(transports, collected, transcript);
 
             const uint32_t deg = 2 * (cfg.threshold - 1);
             const uint32_t need = deg + 1;
@@ -4085,7 +4144,7 @@ bool dkg_run_with_transport(const dkg_config& cfg,
             std::vector<std::vector<uint8_t>> v_commits(cfg.committee_size + 1);
             {
                 std::vector<dkg_msg> vcollected;
-                drain_all(transports, vcollected);
+                drain_all(transports, vcollected, transcript);
 
                 bool commits_ok = true;
                 for (const auto& m : vcollected) {
@@ -4123,7 +4182,7 @@ bool dkg_run_with_transport(const dkg_config& cfg,
             }
             {
                 std::vector<dkg_msg> vcollected;
-                drain_all(transports, vcollected);
+                drain_all(transports, vcollected, transcript);
 
                 // Cross-check every reveal against the party's earlier
                 // commitment. Recompute SHA-256 over the same canonical
@@ -4261,27 +4320,11 @@ bool dkg_run_with_transport(const dkg_config& cfg,
 
             out.record.activation_height = 0;
 
-            // Transcript hash: canonical hash of record-so-far plus a
-            // domain string. Computed after populating every field
-            // except transcript_hash and key_id.
-            {
-                std::vector<uint8_t> enc;
-                // Use a temporary record with placeholder transcript/key_id.
-                dao_tally_key_record tmp = out.record;
-                tmp.dkg_transcript_hash.assign(32, 0);
-                tmp.key_id.assign(32, 0);
-                std::vector<uint8_t> body;
-                tmp.serialize(body);
-
-                std::vector<uint8_t> tb;
-                const char* dom = "VeilRoot-DAO-DKG-V1";
-                tb.insert(tb.end(), dom, dom + 20);
-                tb.insert(tb.end(), body.begin(), body.end());
-
-                out.record.dkg_transcript_hash.assign(32, 0);
-                SHA256(tb.data(), tb.size(),
-                       out.record.dkg_transcript_hash.data());
-            }
+            // Transcript hash: canonical hash of every accepted DKG
+            // protocol message (Gap 4). Covers all candidate attempts
+            // through the successful one, plus complaint resolution
+            // messages. Domain string fixed by the DKG spec.
+            transcript.hash(out.record.dkg_transcript_hash);
 
             // Key id = SHA-256 of the record with key_id zeroed.
             {
