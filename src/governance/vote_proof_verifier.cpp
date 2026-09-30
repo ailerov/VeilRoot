@@ -1,8 +1,12 @@
 #include "vote_proof_verifier.h"
 
 #include <algorithm>
+#include <cstring>
 #include <limits>
+#include <unordered_set>
+#include <vector>
 
+#include "governance/dao_clsag.h"
 #include "governance/dao_dkg.h"
 
 namespace cryptonote {
@@ -110,12 +114,72 @@ verification_result VoteProofVerifier::verify(
         }
     }
 
-    // Steps 10-24 not implemented. Step 10 is now defined (output
-    // existence + canonical data, above); the remaining verifier
-    // pipeline is not yet wired. Returning success here would accept
+    // Step 13: nullifiers non-zero and unique within this vote.
+    {
+        std::unordered_set<crypto::hash> seen;
+        for (const auto& nf : proof.nullifiers) {
+            bool all_zero = true;
+            for (size_t k = 0; k < sizeof(nf.data); ++k) {
+                if (nf.data[k] != 0) { all_zero = false; break; }
+            }
+            if (all_zero)
+                return fail("step13: zero nullifier");
+            if (!seen.insert(nf).second)
+                return fail("step13: duplicate nullifier within vote");
+        }
+    }
+
+    // Step 14: recompute age factors from canonical chain heights and
+    // build the per-input CLSAG context. Amounts are never taken from
+    // the wire.
+    std::vector<dao_clsag_context> clsag_ctxs(proof.inputs.size());
+    for (size_t i = 0; i < proof.inputs.size(); ++i) {
+        const vote_input_v2& in = proof.inputs[i];
+        dao_clsag_context& rc = clsag_ctxs[i];
+
+        rc.proposal_id                = proof.proposal_id;
+        rc.proposal_submission_height = prop.submission_height;
+        rc.vote_height                = proof.vote_height;
+        rc.tally_key_epoch            = proof.tally_key_epoch;
+        rc.V                          = in.weight_commitment;
+
+        uint64_t acc = 0;
+        for (uint64_t off : in.key_offsets) {
+            acc += off;
+
+            output_data_t od;
+            try {
+                od = db.get_output_key_from_global(acc);
+            } catch (...) {
+                return fail("step14: output lookup failed");
+            }
+            if (proof.vote_height < od.height)
+                return fail("step14: output height exceeds vote height");
+
+            rct::key P;
+            std::memcpy(P.bytes, od.pubkey.data, sizeof(P.bytes));
+            rc.P.push_back(P);
+            rc.C.push_back(od.commitment);
+            rc.output_indices.push_back(acc);
+            rc.output_heights.push_back(od.height);
+
+            uint64_t raw_age_days = (proof.vote_height - od.height) / 720;
+            if (raw_age_days > 7300) raw_age_days = 7300;
+            uint64_t f = 0;
+            uint64_t n = raw_age_days + 1;
+            while (n > 1) { n >>= 1; ++f; }
+            if (f > 255)
+                return fail("step14: age factor overflow");
+            rc.age_factors.push_back(static_cast<uint8_t>(f));
+        }
+    }
+
+    (void)clsag_ctxs;
+
+    // Step 15+ not implemented. Returning success here would accept
     // votes that have not been fully verified; the caller treats any
     // non-success as vote-invalid.
-    return fail("step11+: not yet implemented");
+    return fail("step15+: not yet implemented");
 }
 
 } // namespace cryptonote
