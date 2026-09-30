@@ -140,6 +140,8 @@ enum class dkg_msg_type : uint8_t
     beta_share               = 0x61,
     r_commit                 = 0x62,
     r_share                  = 0x63,
+    beta_range_proof         = 0x69,
+    r_range_proof            = 0x6A,
     h_theta_share            = 0x64,
     theta_share              = 0x65,
     theta_tilde_broadcast    = 0x66,
@@ -153,6 +155,54 @@ enum class dkg_msg_type : uint8_t
 
 // Domain separator for the committee identifier hash.
 constexpr const char* DAO_DKG_COMMITTEE_DOMAIN = "VeilRoot-DAO-DKG-COMMITTEE-V1";
+
+// ====================================================================
+// Beta/R range proof (Gap 1)
+//
+// Bit decomposition over the Pedersen VSS group. For a value x in
+// [0, 2^L):
+//
+//   x = sum_j b_j 2^j,  b_j in {0,1}
+//   B_j = g^(b_j) * h^(rho_j) mod P
+//   C_x = g^x * h^(rho_x) mod P
+//   D   = C_x / prod_j B_j^(2^j) = h^(rho_x - sum_j rho_j 2^j)
+//
+// Per bit: two-branch Schnorr OR proof that b_j is 0 or 1.
+// Link:    Schnorr proof of knowledge of delta such that D = h^delta.
+// ====================================================================
+
+constexpr uint32_t DAO_RANGE_VALUE_TAG_BETA = 1;
+constexpr uint32_t DAO_RANGE_VALUE_TAG_R    = 2;
+
+struct dao_bit_or_proof
+{
+    std::vector<uint8_t> A_0;
+    std::vector<uint8_t> A_1;
+    std::vector<uint8_t> c_0;
+    std::vector<uint8_t> c_1;
+    std::vector<uint8_t> z_0;
+    std::vector<uint8_t> z_1;
+};
+
+struct dao_range_proof
+{
+    uint32_t bits = 0;
+    std::vector<std::vector<uint8_t>> bit_commitments;   // B_j
+    std::vector<dao_bit_or_proof>     bit_proofs;        // one per bit
+    std::vector<uint8_t>              link_a;            // A
+    std::vector<uint8_t>              link_z;            // z
+
+    bool serialize(std::vector<uint8_t>& out) const;
+    bool deserialize(const std::vector<uint8_t>& in);
+};
+
+// Prove that C_x = g^x * h^rho_x commits to x in [0, 2^bits).
+//
+// `value_tag` distinguishes beta from R in the Fiat-Shamir transcript.
+// C_x must be the same Pedersen commitment that the corresponding VSS
+// deal publishes, so that the range proof binds to the same object.
+// dao_range_prove / dao_range_verify are declared below the
+// dao_vss_group definition.
 
 struct dkg_msg_header
 {
@@ -223,13 +273,18 @@ struct dao_vss_commitments
     std::vector<std::vector<uint8_t>> C;
 };
 
+// If `constant_blinding_out` is non-null, the caller receives the
+// constant coefficient of the blinding polynomial (b[0]). This is the
+// blinding of commitments_out.C[0] and is needed to prove range
+// knowledge over the committed secret. Caller owns the result.
 bool dao_vss_deal(const dao_vss_group& grp,
                   const BIGNUM* secret,
                   uint32_t n,
                   uint32_t degree,
                   dao_vss_commitments& commitments_out,
                   std::vector<BIGNUM*>& shares_out,
-                  std::vector<BIGNUM*>& blindings_out);
+                  std::vector<BIGNUM*>& blindings_out,
+                  BIGNUM** constant_blinding_out = nullptr);
 
 bool dao_vss_verify_share(const dao_vss_group& grp,
                           const dao_vss_commitments& commitments,
@@ -237,6 +292,27 @@ bool dao_vss_verify_share(const dao_vss_group& grp,
                           uint32_t i,
                           const BIGNUM* share,
                           const BIGNUM* blinding);
+
+// ====================================================================
+// Gap 1 — beta/R range proof declarations
+// ====================================================================
+
+bool dao_range_prove(const dao_vss_group& grp,
+                     uint32_t epoch,
+                     uint32_t party_id,
+                     uint32_t value_tag,
+                     const BIGNUM* x,
+                     const BIGNUM* rho_x,
+                     const BIGNUM* C_x,
+                     uint32_t bits,
+                     dao_range_proof& proof_out);
+
+bool dao_range_verify(const dao_vss_group& grp,
+                      uint32_t epoch,
+                      uint32_t party_id,
+                      uint32_t value_tag,
+                      const BIGNUM* C_x,
+                      const dao_range_proof& proof);
 
 // ====================================================================
 // Verification keys (§5, Appendix B) and partial decryption (App C)

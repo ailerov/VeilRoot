@@ -660,7 +660,8 @@ bool dao_vss_deal(const dao_vss_group& grp,
                   uint32_t degree,
                   dao_vss_commitments& commitments_out,
                   std::vector<BIGNUM*>& shares_out,
-                  std::vector<BIGNUM*>& blindings_out)
+                  std::vector<BIGNUM*>& blindings_out,
+                  BIGNUM** constant_blinding_out)
 {
     if (!grp.valid() || !secret) return false;
     if (n < degree + 1) return false;
@@ -827,6 +828,15 @@ bool dao_vss_deal(const dao_vss_group& grp,
         BN_free(pw);
     }
 
+    if (constant_blinding_out) {
+        *constant_blinding_out = BN_dup(b[0]);
+        if (!*constant_blinding_out) {
+            for (auto* x : a) if (x) BN_free(x);
+            for (auto* x : b) if (x) BN_free(x);
+            return false;
+        }
+    }
+
     for (auto* x : a) if (x) BN_free(x);
     for (auto* x : b) if (x) BN_free(x);
     return true;
@@ -882,6 +892,447 @@ bool dao_vss_verify_share(const dao_vss_group& grp,
     BN_free(lhs_a); BN_free(lhs_b); BN_free(lhs);
     BN_free(rhs); BN_free(pow);
     return ok;
+}
+
+// ====================================================================
+// Gap 1 — beta/R range proof (bit decomposition + link)
+// ====================================================================
+
+namespace {
+
+std::vector<uint8_t> bn_to_bytes_fixed(const BIGNUM* x, size_t width)
+{
+    std::vector<uint8_t> out(width, 0);
+    if (x) BN_bn2binpad(x, out.data(), static_cast<int>(width));
+    return out;
+}
+
+BIGNUM* bytes_to_bn(const std::vector<uint8_t>& b)
+{
+    if (b.empty()) return nullptr;
+    return BN_bin2bn(b.data(), static_cast<int>(b.size()), nullptr);
+}
+
+void append_u32be(std::vector<uint8_t>& v, uint32_t x)
+{
+    for (int i = 3; i >= 0; --i) v.push_back((x >> (8*i)) & 0xff);
+}
+
+void append_bn_fixed(std::vector<uint8_t>& v, const BIGNUM* x, size_t width)
+{
+    std::vector<uint8_t> tmp(width, 0);
+    if (x) BN_bn2binpad(x, tmp.data(), static_cast<int>(width));
+    v.insert(v.end(), tmp.begin(), tmp.end());
+}
+
+bool fs_challenge_bn(const std::vector<uint8_t>& input,
+                     const BIGNUM* modulus,
+                     BIGNUM* out,
+                     BN_CTX* ctx)
+{
+    unsigned char digest[32];
+    SHA256(input.data(), input.size(), digest);
+    if (!BN_bin2bn(digest, 32, out)) return false;
+    return BN_mod(out, out, modulus, ctx) == 1;
+}
+
+bool mod_pow_ct(BIGNUM* r, const BIGNUM* a, const BIGNUM* e,
+                const BIGNUM* m, BN_CTX* ctx)
+{
+    return BN_mod_exp_mont_consttime(r, a, e, m, ctx, nullptr) == 1;
+}
+
+} // namespace
+
+bool dao_range_proof::serialize(std::vector<uint8_t>& out) const
+{
+    out.clear();
+    push_u32(out, bits);
+    push_u32(out, static_cast<uint32_t>(bit_commitments.size()));
+    for (const auto& b : bit_commitments) push_bytes(out, b);
+    push_u32(out, static_cast<uint32_t>(bit_proofs.size()));
+    for (const auto& p : bit_proofs) {
+        push_bytes(out, p.A_0);
+        push_bytes(out, p.A_1);
+        push_bytes(out, p.c_0);
+        push_bytes(out, p.c_1);
+        push_bytes(out, p.z_0);
+        push_bytes(out, p.z_1);
+    }
+    push_bytes(out, link_a);
+    push_bytes(out, link_z);
+    return true;
+}
+
+bool dao_range_proof::deserialize(const std::vector<uint8_t>& in)
+{
+    size_t off = 0;
+    uint32_t b = 0;
+    if (!pull_u32(in, off, b)) return false;
+    if (b == 0 || b > 4096) return false;
+    bits = b;
+
+    uint32_t nc = 0;
+    if (!pull_u32(in, off, nc)) return false;
+    if (nc != bits) return false;
+    bit_commitments.assign(nc, {});
+    for (uint32_t i = 0; i < nc; ++i)
+        if (!pull_bytes(in, off, bit_commitments[i])) return false;
+
+    uint32_t np = 0;
+    if (!pull_u32(in, off, np)) return false;
+    if (np != bits) return false;
+    bit_proofs.assign(np, {});
+    for (uint32_t i = 0; i < np; ++i) {
+        auto& p = bit_proofs[i];
+        if (!pull_bytes(in, off, p.A_0)) return false;
+        if (!pull_bytes(in, off, p.A_1)) return false;
+        if (!pull_bytes(in, off, p.c_0)) return false;
+        if (!pull_bytes(in, off, p.c_1)) return false;
+        if (!pull_bytes(in, off, p.z_0)) return false;
+        if (!pull_bytes(in, off, p.z_1)) return false;
+    }
+    if (!pull_bytes(in, off, link_a)) return false;
+    if (!pull_bytes(in, off, link_z)) return false;
+    return off == in.size();
+}
+
+bool dao_range_prove(const dao_vss_group& grp,
+                     uint32_t epoch,
+                     uint32_t party_id,
+                     uint32_t value_tag,
+                     const BIGNUM* x,
+                     const BIGNUM* rho_x,
+                     const BIGNUM* C_x,
+                     uint32_t bits,
+                     dao_range_proof& proof_out)
+{
+    if (!grp.valid() || !x || !rho_x || !C_x) return false;
+    if (bits == 0 || bits > 4096) return false;
+    if (BN_is_negative(x) || BN_is_negative(rho_x)) return false;
+    if (BN_num_bits(x) > static_cast<int>(bits)) return false;
+
+    CtxGuard ctx;
+    if (!ctx.ok()) return false;
+
+    const size_t P_bytes  = static_cast<size_t>(BN_num_bytes(grp.P));
+    const size_t Pp_bytes = static_cast<size_t>(BN_num_bytes(grp.P_prime));
+
+    std::vector<BIGNUM*> rho_j(bits, nullptr);
+    std::vector<BIGNUM*> B_j(bits, nullptr);
+    std::vector<uint32_t> bit_values(bits, 0);
+
+    for (uint32_t j = 0; j < bits; ++j)
+        bit_values[j] = BN_is_bit_set(x, j) ? 1 : 0;
+
+    for (uint32_t j = 0; j < bits; ++j) {
+        rho_j[j] = BN_new();
+        B_j[j]   = BN_new();
+        if (!rho_j[j] || !B_j[j]) return false;
+        if (!BN_rand_range(rho_j[j], grp.P_prime)) return false;
+
+        BIGNUM* gb = BN_new();
+        BIGNUM* hr = BN_new();
+        if (!gb || !hr) return false;
+
+        if (bit_values[j] == 1) BN_copy(gb, grp.g);
+        else                     BN_one(gb);
+
+        if (!mod_pow_ct(hr, grp.h, rho_j[j], grp.P, ctx.ctx)) return false;
+        if (!BN_mod_mul(B_j[j], gb, hr, grp.P, ctx.ctx)) return false;
+        BN_free(gb); BN_free(hr);
+    }
+
+    // D = C_x / prod_j B_j^{2^j}
+    BIGNUM* prod = BN_new();
+    BN_one(prod);
+    for (uint32_t j = 0; j < bits; ++j) {
+        BIGNUM* exp = BN_new();
+        BN_one(exp);
+        BN_lshift(exp, exp, j);
+        BIGNUM* term = BN_new();
+        if (!BN_mod_exp(term, B_j[j], exp, grp.P, ctx.ctx)) return false;
+        if (!BN_mod_mul(prod, prod, term, grp.P, ctx.ctx)) return false;
+        BN_free(exp); BN_free(term);
+    }
+    BIGNUM* prod_inv = BN_mod_inverse(nullptr, prod, grp.P, ctx.ctx);
+    if (!prod_inv) return false;
+    BIGNUM* D = BN_new();
+    BN_mod_mul(D, C_x, prod_inv, grp.P, ctx.ctx);
+    BN_free(prod); BN_free(prod_inv);
+
+    // delta = rho_x - sum_j rho_j 2^j mod P'
+    BIGNUM* delta = BN_dup(rho_x);
+    for (uint32_t j = 0; j < bits; ++j) {
+        BIGNUM* exp = BN_new();
+        BN_one(exp);
+        BN_lshift(exp, exp, j);
+        BIGNUM* term = BN_new();
+        BN_mod_mul(term, rho_j[j], exp, grp.P_prime, ctx.ctx);
+        BN_mod_sub(delta, delta, term, grp.P_prime, ctx.ctx);
+        BN_free(exp); BN_free(term);
+    }
+
+    proof_out.bits = bits;
+    proof_out.bit_commitments.clear();
+    proof_out.bit_proofs.clear();
+
+    for (uint32_t j = 0; j < bits; ++j) {
+        proof_out.bit_commitments.push_back(bn_to_bytes_fixed(B_j[j], P_bytes));
+
+        BIGNUM* X0 = BN_dup(B_j[j]);
+        BIGNUM* g_inv = BN_mod_inverse(nullptr, grp.g, grp.P, ctx.ctx);
+        BIGNUM* X1 = BN_new();
+        BN_mod_mul(X1, B_j[j], g_inv, grp.P, ctx.ctx);
+        BN_free(g_inv);
+
+        const int real_branch = static_cast<int>(bit_values[j]);
+
+        BIGNUM* a = BN_new();
+        BN_rand_range(a, grp.P_prime);
+        BIGNUM* A_real = BN_new();
+        if (!mod_pow_ct(A_real, grp.h, a, grp.P, ctx.ctx)) return false;
+
+        BIGNUM* c_false = BN_new();
+        BIGNUM* z_false = BN_new();
+        BN_rand_range(c_false, grp.P_prime);
+        BN_rand_range(z_false, grp.P_prime);
+
+        const BIGNUM* X_false = (real_branch == 0) ? X1 : X0;
+
+        BIGNUM* hz = BN_new();
+        mod_pow_ct(hz, grp.h, z_false, grp.P, ctx.ctx);
+
+        BIGNUM* Xf_c = BN_new();
+        BN_mod_exp(Xf_c, X_false, c_false, grp.P, ctx.ctx);
+        BIGNUM* Xf_c_inv = BN_mod_inverse(nullptr, Xf_c, grp.P, ctx.ctx);
+
+        BIGNUM* A_false = BN_new();
+        BN_mod_mul(A_false, hz, Xf_c_inv, grp.P, ctx.ctx);
+
+        BIGNUM* A0; BIGNUM* A1;
+        if (real_branch == 0) { A0 = A_real; A1 = A_false; }
+        else                  { A0 = A_false; A1 = A_real; }
+
+        std::vector<uint8_t> input;
+        static const char DOM_BIT[] = "VeilRoot-DAO-DKG-RANGE-BIT-V1";
+        input.insert(input.end(), DOM_BIT, DOM_BIT + sizeof(DOM_BIT) - 1);
+        append_u32be(input, epoch);
+        append_u32be(input, party_id);
+        append_u32be(input, value_tag);
+        append_bn_fixed(input, C_x, P_bytes);
+        append_u32be(input, j);
+        append_bn_fixed(input, B_j[j], P_bytes);
+        append_bn_fixed(input, A0, P_bytes);
+        append_bn_fixed(input, A1, P_bytes);
+
+        BIGNUM* e = BN_new();
+        fs_challenge_bn(input, grp.P_prime, e, ctx.ctx);
+
+        BIGNUM* c_real = BN_new();
+        BN_mod_sub(c_real, e, c_false, grp.P_prime, ctx.ctx);
+
+        BIGNUM* z_real = BN_new();
+        BIGNUM* cr = BN_new();
+        BN_mod_mul(cr, c_real, rho_j[j], grp.P_prime, ctx.ctx);
+        BN_mod_add(z_real, a, cr, grp.P_prime, ctx.ctx);
+
+        BIGNUM* c0; BIGNUM* c1; BIGNUM* z0; BIGNUM* z1;
+        if (real_branch == 0) {
+            c0 = c_real; c1 = c_false;
+            z0 = z_real; z1 = z_false;
+        } else {
+            c0 = c_false; c1 = c_real;
+            z0 = z_false; z1 = z_real;
+        }
+
+        dao_bit_or_proof bp;
+        bp.A_0 = bn_to_bytes_fixed(A0, P_bytes);
+        bp.A_1 = bn_to_bytes_fixed(A1, P_bytes);
+        bp.c_0 = bn_to_bytes_fixed(c0, Pp_bytes);
+        bp.c_1 = bn_to_bytes_fixed(c1, Pp_bytes);
+        bp.z_0 = bn_to_bytes_fixed(z0, Pp_bytes);
+        bp.z_1 = bn_to_bytes_fixed(z1, Pp_bytes);
+        proof_out.bit_proofs.push_back(std::move(bp));
+
+        BN_free(a); BN_free(A_real);
+        BN_free(c_false); BN_free(z_false);
+        BN_free(hz); BN_free(Xf_c); BN_free(Xf_c_inv); BN_free(A_false);
+        BN_free(e); BN_free(c_real); BN_free(z_real); BN_free(cr);
+        BN_free(X0); BN_free(X1);
+    }
+
+    // Link proof: D = h^delta
+    BIGNUM* u = BN_new();
+    BN_rand_range(u, grp.P_prime);
+    BIGNUM* A_link = BN_new();
+    mod_pow_ct(A_link, grp.h, u, grp.P, ctx.ctx);
+
+    std::vector<uint8_t> link_input;
+    static const char DOM_LINK[] = "VeilRoot-DAO-DKG-RANGE-LINK-V1";
+    link_input.insert(link_input.end(), DOM_LINK, DOM_LINK + sizeof(DOM_LINK) - 1);
+    append_u32be(link_input, epoch);
+    append_u32be(link_input, party_id);
+    append_u32be(link_input, value_tag);
+    append_bn_fixed(link_input, C_x, P_bytes);
+    for (uint32_t j = 0; j < bits; ++j)
+        append_bn_fixed(link_input, B_j[j], P_bytes);
+    append_bn_fixed(link_input, D, P_bytes);
+    append_bn_fixed(link_input, A_link, P_bytes);
+
+    BIGNUM* e_link = BN_new();
+    fs_challenge_bn(link_input, grp.P_prime, e_link, ctx.ctx);
+
+    BIGNUM* z_link = BN_new();
+    BIGNUM* ed = BN_new();
+    BN_mod_mul(ed, e_link, delta, grp.P_prime, ctx.ctx);
+    BN_mod_add(z_link, u, ed, grp.P_prime, ctx.ctx);
+
+    proof_out.link_a = bn_to_bytes_fixed(A_link, P_bytes);
+    proof_out.link_z = bn_to_bytes_fixed(z_link, Pp_bytes);
+
+    for (auto* v : rho_j) if (v) BN_free(v);
+    for (auto* v : B_j)   if (v) BN_free(v);
+    BN_free(D); BN_free(delta);
+    BN_free(u); BN_free(A_link); BN_free(e_link); BN_free(z_link); BN_free(ed);
+    return true;
+}
+
+bool dao_range_verify(const dao_vss_group& grp,
+                      uint32_t epoch,
+                      uint32_t party_id,
+                      uint32_t value_tag,
+                      const BIGNUM* C_x,
+                      const dao_range_proof& proof)
+{
+    if (!grp.valid() || !C_x) return false;
+    if (proof.bits == 0 || proof.bits > 4096) return false;
+    if (proof.bit_commitments.size() != proof.bits) return false;
+    if (proof.bit_proofs.size() != proof.bits) return false;
+
+    CtxGuard ctx;
+    if (!ctx.ok()) return false;
+
+    const size_t P_bytes  = static_cast<size_t>(BN_num_bytes(grp.P));
+
+    std::vector<BIGNUM*> B_j(proof.bits, nullptr);
+    for (uint32_t j = 0; j < proof.bits; ++j) {
+        B_j[j] = bytes_to_bn(proof.bit_commitments[j]);
+        if (!B_j[j]) return false;
+    }
+
+    for (uint32_t j = 0; j < proof.bits; ++j) {
+        const auto& bp = proof.bit_proofs[j];
+        BIGNUM* A0 = bytes_to_bn(bp.A_0);
+        BIGNUM* A1 = bytes_to_bn(bp.A_1);
+        BIGNUM* c0 = bytes_to_bn(bp.c_0);
+        BIGNUM* c1 = bytes_to_bn(bp.c_1);
+        BIGNUM* z0 = bytes_to_bn(bp.z_0);
+        BIGNUM* z1 = bytes_to_bn(bp.z_1);
+        if (!A0 || !A1 || !c0 || !c1 || !z0 || !z1) return false;
+
+        BIGNUM* X0 = BN_dup(B_j[j]);
+        BIGNUM* g_inv = BN_mod_inverse(nullptr, grp.g, grp.P, ctx.ctx);
+        BIGNUM* X1 = BN_new();
+        BN_mod_mul(X1, B_j[j], g_inv, grp.P, ctx.ctx);
+        BN_free(g_inv);
+
+        std::vector<uint8_t> input;
+        static const char DOM_BIT[] = "VeilRoot-DAO-DKG-RANGE-BIT-V1";
+        input.insert(input.end(), DOM_BIT, DOM_BIT + sizeof(DOM_BIT) - 1);
+        append_u32be(input, epoch);
+        append_u32be(input, party_id);
+        append_u32be(input, value_tag);
+        append_bn_fixed(input, C_x, P_bytes);
+        append_u32be(input, j);
+        append_bn_fixed(input, B_j[j], P_bytes);
+        append_bn_fixed(input, A0, P_bytes);
+        append_bn_fixed(input, A1, P_bytes);
+
+        BIGNUM* e = BN_new();
+        fs_challenge_bn(input, grp.P_prime, e, ctx.ctx);
+
+        BIGNUM* csum = BN_new();
+        BN_mod_add(csum, c0, c1, grp.P_prime, ctx.ctx);
+        const bool ok_c = (BN_cmp(csum, e) == 0);
+
+        bool ok_eq = true;
+        for (int k = 0; k < 2 && ok_eq; ++k) {
+            const BIGNUM* zk = (k == 0) ? z0 : z1;
+            const BIGNUM* ck = (k == 0) ? c0 : c1;
+            const BIGNUM* Ak = (k == 0) ? A0 : A1;
+            const BIGNUM* Xk = (k == 0) ? X0 : X1;
+
+            BIGNUM* hz = BN_new();
+            BN_mod_exp(hz, grp.h, zk, grp.P, ctx.ctx);
+            BIGNUM* Xk_c = BN_new();
+            BN_mod_exp(Xk_c, Xk, ck, grp.P, ctx.ctx);
+            BIGNUM* rhs = BN_new();
+            BN_mod_mul(rhs, Ak, Xk_c, grp.P, ctx.ctx);
+            if (BN_cmp(hz, rhs) != 0) ok_eq = false;
+            BN_free(hz); BN_free(Xk_c); BN_free(rhs);
+        }
+
+        BN_free(X0); BN_free(X1);
+        BN_free(A0); BN_free(A1); BN_free(c0); BN_free(c1);
+        BN_free(z0); BN_free(z1); BN_free(e); BN_free(csum);
+
+        if (!ok_c || !ok_eq) {
+            for (auto* v : B_j) if (v) BN_free(v);
+            return false;
+        }
+    }
+
+    // D = C_x / prod B_j^{2^j}
+    BIGNUM* prod = BN_new();
+    BN_one(prod);
+    for (uint32_t j = 0; j < proof.bits; ++j) {
+        BIGNUM* exp = BN_new();
+        BN_one(exp);
+        BN_lshift(exp, exp, j);
+        BIGNUM* term = BN_new();
+        BN_mod_exp(term, B_j[j], exp, grp.P, ctx.ctx);
+        BN_mod_mul(prod, prod, term, grp.P, ctx.ctx);
+        BN_free(exp); BN_free(term);
+    }
+    BIGNUM* prod_inv = BN_mod_inverse(nullptr, prod, grp.P, ctx.ctx);
+    if (!prod_inv) return false;
+    BIGNUM* D = BN_new();
+    BN_mod_mul(D, C_x, prod_inv, grp.P, ctx.ctx);
+
+    BIGNUM* A_link = bytes_to_bn(proof.link_a);
+    BIGNUM* z_link = bytes_to_bn(proof.link_z);
+    if (!A_link || !z_link) return false;
+
+    std::vector<uint8_t> link_input;
+    static const char DOM_LINK[] = "VeilRoot-DAO-DKG-RANGE-LINK-V1";
+    link_input.insert(link_input.end(), DOM_LINK, DOM_LINK + sizeof(DOM_LINK) - 1);
+    append_u32be(link_input, epoch);
+    append_u32be(link_input, party_id);
+    append_u32be(link_input, value_tag);
+    append_bn_fixed(link_input, C_x, P_bytes);
+    for (uint32_t j = 0; j < proof.bits; ++j)
+        append_bn_fixed(link_input, B_j[j], P_bytes);
+    append_bn_fixed(link_input, D, P_bytes);
+    append_bn_fixed(link_input, A_link, P_bytes);
+
+    BIGNUM* e_link = BN_new();
+    fs_challenge_bn(link_input, grp.P_prime, e_link, ctx.ctx);
+
+    BIGNUM* hz = BN_new();
+    BN_mod_exp(hz, grp.h, z_link, grp.P, ctx.ctx);
+    BIGNUM* De = BN_new();
+    BN_mod_exp(De, D, e_link, grp.P, ctx.ctx);
+    BIGNUM* rhs = BN_new();
+    BN_mod_mul(rhs, A_link, De, grp.P, ctx.ctx);
+    const bool ok_link = (BN_cmp(hz, rhs) == 0);
+
+    for (auto* v : B_j) if (v) BN_free(v);
+    BN_free(prod); BN_free(prod_inv); BN_free(D);
+    BN_free(A_link); BN_free(z_link); BN_free(e_link);
+    BN_free(hz); BN_free(De); BN_free(rhs);
+
+    return ok_link;
 }
 
 // ====================================================================
@@ -2225,16 +2676,20 @@ bool dkg_party::do_beta_R_generate()
     BIGNUM* delta_R = BN_new();
     BN_mul(delta_R, dao_dkg_delta(), R_i_, ctx.ctx);
 
-    // VSS deal beta_i and delta_R at degree t.
+    // VSS deal beta_i and delta_R at degree t, capturing the constant
+    // blinding of each so we can prove the value is in range.
     std::vector<BIGNUM*> s_beta, b_beta, s_dr, b_dr;
+    BIGNUM* beta_blinding = nullptr;
+    BIGNUM* dr_blinding   = nullptr;
     if (!dao_vss_deal(*vss_group_, beta_i_, committee_size_, t,
-                      commits_beta_, s_beta, b_beta)) {
+                      commits_beta_, s_beta, b_beta, &beta_blinding)) {
         BN_free(K); BN_free(K2); BN_free(beta_bound); BN_free(r_bound);
         BN_free(delta_R);
         return false;
     }
     if (!dao_vss_deal(*vss_group_, delta_R, committee_size_, t,
-                      commits_delta_r_, s_dr, b_dr)) {
+                      commits_delta_r_, s_dr, b_dr, &dr_blinding)) {
+        BN_free(beta_blinding);
         BN_free(K); BN_free(K2); BN_free(beta_bound); BN_free(r_bound);
         BN_free(delta_R);
         return false;
@@ -2248,9 +2703,66 @@ bool dkg_party::do_beta_R_generate()
                       commits_h_theta_, s_h, b_h)) {
         BN_free(zero); BN_free(K); BN_free(K2);
         BN_free(beta_bound); BN_free(r_bound); BN_free(delta_R);
+        BN_free(beta_blinding); BN_free(dr_blinding);
         return false;
     }
     BN_free(zero);
+
+    // Range proofs over the two published constants.
+    //   beta_bits  = target_N_bits + security_bits
+    //   dr_bits    = target_N_bits + 2*security_bits + delta_bits
+    // where delta_bits = ceil(log2(Delta)).
+    const uint32_t beta_bits = target_N_bits_ + security_bits_;
+    const uint32_t delta_bits =
+        static_cast<uint32_t>(BN_num_bits(dao_dkg_delta()));
+    const uint32_t dr_bits = target_N_bits_ + 2 * security_bits_ + delta_bits;
+
+    BIGNUM* C_beta = nullptr;
+    BIGNUM* C_dr   = nullptr;
+    {
+        C_beta = BN_bin2bn(commits_beta_.C[0].data(),
+                           static_cast<int>(commits_beta_.C[0].size()), nullptr);
+        C_dr   = BN_bin2bn(commits_delta_r_.C[0].data(),
+                           static_cast<int>(commits_delta_r_.C[0].size()), nullptr);
+        if (!C_beta || !C_dr) {
+            BN_free(C_beta); BN_free(C_dr);
+            BN_free(beta_blinding); BN_free(dr_blinding);
+            for (auto* x : s_beta) BN_free(x);
+            for (auto* x : b_beta) BN_free(x);
+            for (auto* x : s_dr)   BN_free(x);
+            for (auto* x : b_dr)   BN_free(x);
+            for (auto* x : s_h)    BN_free(x);
+            for (auto* x : b_h)    BN_free(x);
+            BN_free(K); BN_free(K2); BN_free(beta_bound); BN_free(r_bound);
+            BN_free(delta_R);
+            return false;
+        }
+    }
+
+    dao_range_proof beta_range;
+    dao_range_proof dr_range;
+    bool proofs_ok =
+        dao_range_prove(*vss_group_, epoch_, party_id_,
+                        DAO_RANGE_VALUE_TAG_BETA,
+                        beta_i_, beta_blinding, C_beta, beta_bits, beta_range) &&
+        dao_range_prove(*vss_group_, epoch_, party_id_,
+                        DAO_RANGE_VALUE_TAG_R,
+                        delta_R, dr_blinding, C_dr, dr_bits, dr_range);
+
+    BN_free(C_beta); BN_free(C_dr);
+    BN_free(beta_blinding); BN_free(dr_blinding);
+
+    if (!proofs_ok) {
+        for (auto* x : s_beta) BN_free(x);
+        for (auto* x : b_beta) BN_free(x);
+        for (auto* x : s_dr)   BN_free(x);
+        for (auto* x : b_dr)   BN_free(x);
+        for (auto* x : s_h)    BN_free(x);
+        for (auto* x : b_h)    BN_free(x);
+        BN_free(K); BN_free(K2); BN_free(beta_bound); BN_free(r_bound);
+        BN_free(delta_R);
+        return false;
+    }
 
     // Broadcast commitments.
     {
@@ -2269,6 +2781,18 @@ bool dkg_party::do_beta_R_generate()
         dkg_msg m = make_header(dkg_msg_type::h_theta_share, 0);
         m.tag32 = party_id_;
         for (const auto& c : commits_h_theta_.C) m.vec_a.push_back(c);
+        if (!send_msg(m)) return false;
+    }
+    {
+        dkg_msg m = make_header(dkg_msg_type::beta_range_proof, 0);
+        m.tag32 = party_id_;
+        if (!beta_range.serialize(m.bytes_a)) return false;
+        if (!send_msg(m)) return false;
+    }
+    {
+        dkg_msg m = make_header(dkg_msg_type::r_range_proof, 0);
+        m.tag32 = party_id_;
+        if (!dr_range.serialize(m.bytes_a)) return false;
         if (!send_msg(m)) return false;
     }
 
@@ -3353,6 +3877,64 @@ bool dkg_run_with_transport(const dkg_config& cfg,
         {
             std::vector<dkg_msg> collected;
             drain_all(transports, collected);
+
+            // Collect each party's published constant VSS commitment for
+            // beta and delta_R. Broadcast fan-out means multiple copies
+            // per sender; identical content is fine.
+            std::vector<std::vector<uint8_t>>
+                beta_C0(cfg.committee_size + 1);
+            std::vector<std::vector<uint8_t>>
+                dr_C0(cfg.committee_size + 1);
+            for (const auto& m : collected) {
+                const uint32_t j = m.tag32;
+                if (j < 1 || j > cfg.committee_size) continue;
+                if (m.hdr.type == dkg_msg_type::beta_commit) {
+                    if (!m.vec_a.empty()) beta_C0[j] = m.vec_a[0];
+                } else if (m.hdr.type == dkg_msg_type::r_commit) {
+                    if (!m.vec_a.empty()) dr_C0[j] = m.vec_a[0];
+                }
+            }
+
+            // Verify every range proof against its published commitment.
+            for (const auto& m : collected) {
+                if (m.hdr.type != dkg_msg_type::beta_range_proof &&
+                    m.hdr.type != dkg_msg_type::r_range_proof) continue;
+
+                const uint32_t j = m.tag32;
+                if (j < 1 || j > cfg.committee_size) goto after_key_phase;
+
+                const bool is_beta =
+                    (m.hdr.type == dkg_msg_type::beta_range_proof);
+                const std::vector<uint8_t>& C0 = is_beta ? beta_C0[j] : dr_C0[j];
+                if (C0.empty()) goto after_key_phase;
+
+                BIGNUM* C_bn = BN_bin2bn(C0.data(),
+                                         static_cast<int>(C0.size()),
+                                         nullptr);
+                if (!C_bn) goto after_key_phase;
+
+                dao_range_proof proof;
+                if (!proof.deserialize(m.bytes_a)) {
+                    BN_free(C_bn);
+                    goto after_key_phase;
+                }
+
+                const uint32_t value_tag = is_beta
+                    ? DAO_RANGE_VALUE_TAG_BETA
+                    : DAO_RANGE_VALUE_TAG_R;
+
+                const bool ok = dao_range_verify(vss, cfg.epoch, j,
+                                                 value_tag, C_bn, proof);
+                BN_free(C_bn);
+                if (!ok) {
+                    #ifdef VEILROOT_DAO_DKG_TESTING
+                    std::cerr << "[key-phase] range proof failed party "
+                              << j << " tag " << value_tag << "\n";
+                    #endif
+                    goto after_key_phase;
+                }
+            }
+
             if (!deliver_all(parties, collected)) goto after_key_phase;
         }
 

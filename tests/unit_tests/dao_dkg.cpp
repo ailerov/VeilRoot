@@ -457,3 +457,246 @@ TEST(dao_vss, verify_share_rejects_tampering)
     for (auto* x : shares)    BN_free(x);
     for (auto* x : blindings) BN_free(x);
 }
+
+// ================= Gap 1 — range proof =================
+
+namespace {
+
+struct TestCtx
+{
+    BN_CTX* ctx;
+    TestCtx() : ctx(BN_CTX_new()) {}
+    ~TestCtx() { if (ctx) BN_CTX_free(ctx); }
+    TestCtx(const TestCtx&) = delete;
+    TestCtx& operator=(const TestCtx&) = delete;
+    bool ok() const { return ctx != nullptr; }
+};
+
+BIGNUM* make_commitment(const dao_vss_group& grp, const BIGNUM* x,
+                        const BIGNUM* rho, BN_CTX* ctx)
+{
+    BIGNUM* gx = BN_new();
+    BIGNUM* hr = BN_new();
+    BIGNUM* C  = BN_new();
+    BN_mod_exp(gx, grp.g, x,   grp.P, ctx);
+    BN_mod_exp(hr, grp.h, rho, grp.P, ctx);
+    BN_mod_mul(C, gx, hr, grp.P, ctx);
+    BN_free(gx); BN_free(hr);
+    return C;
+}
+
+} // namespace
+
+TEST(dao_range, round_trip_small)
+{
+    dao_vss_group grp;
+    ASSERT_TRUE(dao_vss_group_generate(grp, 511));
+
+    TestCtx ctx;
+    ASSERT_TRUE(ctx.ok());
+
+    BIGNUM* x   = BN_new(); BN_set_word(x, 12345);
+    BIGNUM* rho = BN_new(); BN_rand_range(rho, grp.P_prime);
+
+    BIGNUM* C = make_commitment(grp, x, rho, ctx.ctx);
+    ASSERT_NE(C, nullptr);
+
+    dao_range_proof proof;
+    ASSERT_TRUE(dao_range_prove(grp, 1, 7, DAO_RANGE_VALUE_TAG_BETA,
+                                x, rho, C, 160, proof));
+    EXPECT_TRUE(dao_range_verify(grp, 1, 7, DAO_RANGE_VALUE_TAG_BETA,
+                                 C, proof));
+
+    BN_free(x); BN_free(rho); BN_free(C);
+}
+
+TEST(dao_range, round_trip_boundary_zero)
+{
+    dao_vss_group grp;
+    ASSERT_TRUE(dao_vss_group_generate(grp, 511));
+
+    TestCtx ctx;
+    ASSERT_TRUE(ctx.ok());
+
+    BIGNUM* x   = BN_new(); BN_zero(x);
+    BIGNUM* rho = BN_new(); BN_rand_range(rho, grp.P_prime);
+
+    BIGNUM* C = make_commitment(grp, x, rho, ctx.ctx);
+
+    dao_range_proof proof;
+    ASSERT_TRUE(dao_range_prove(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA,
+                                x, rho, C, 160, proof));
+    EXPECT_TRUE(dao_range_verify(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA,
+                                 C, proof));
+
+    BN_free(x); BN_free(rho); BN_free(C);
+}
+
+TEST(dao_range, round_trip_boundary_max)
+{
+    dao_vss_group grp;
+    ASSERT_TRUE(dao_vss_group_generate(grp, 511));
+
+    TestCtx ctx;
+    ASSERT_TRUE(ctx.ok());
+
+    BIGNUM* x = BN_new();
+    BN_lshift(x, BN_value_one(), 159);
+    BN_sub_word(x, 1);
+
+    BIGNUM* rho = BN_new(); BN_rand_range(rho, grp.P_prime);
+    BIGNUM* C = make_commitment(grp, x, rho, ctx.ctx);
+
+    dao_range_proof proof;
+    ASSERT_TRUE(dao_range_prove(grp, 1, 1, DAO_RANGE_VALUE_TAG_R,
+                                x, rho, C, 160, proof));
+    EXPECT_TRUE(dao_range_verify(grp, 1, 1, DAO_RANGE_VALUE_TAG_R,
+                                 C, proof));
+
+    BN_free(x); BN_free(rho); BN_free(C);
+}
+
+TEST(dao_range, reject_value_above_bound)
+{
+    dao_vss_group grp;
+    ASSERT_TRUE(dao_vss_group_generate(grp, 511));
+
+    TestCtx ctx;
+    ASSERT_TRUE(ctx.ok());
+
+    BIGNUM* x = BN_new();
+    BN_lshift(x, BN_value_one(), 160);
+
+    BIGNUM* rho = BN_new(); BN_rand_range(rho, grp.P_prime);
+    BIGNUM* C = make_commitment(grp, x, rho, ctx.ctx);
+
+    dao_range_proof proof;
+    EXPECT_FALSE(dao_range_prove(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA,
+                                 x, rho, C, 160, proof));
+
+    BN_free(x); BN_free(rho); BN_free(C);
+}
+
+TEST(dao_range, reject_wrong_commitment)
+{
+    dao_vss_group grp;
+    ASSERT_TRUE(dao_vss_group_generate(grp, 511));
+
+    TestCtx ctx;
+    ASSERT_TRUE(ctx.ok());
+
+    BIGNUM* x   = BN_new(); BN_set_word(x, 777);
+    BIGNUM* rho = BN_new(); BN_rand_range(rho, grp.P_prime);
+    BIGNUM* C   = make_commitment(grp, x, rho, ctx.ctx);
+
+    BIGNUM* x2   = BN_new(); BN_set_word(x2, 778);
+    BIGNUM* rho2 = BN_new(); BN_rand_range(rho2, grp.P_prime);
+    BIGNUM* C2   = make_commitment(grp, x2, rho2, ctx.ctx);
+
+    dao_range_proof proof;
+    ASSERT_TRUE(dao_range_prove(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA,
+                                x, rho, C, 160, proof));
+
+    EXPECT_TRUE (dao_range_verify(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA, C,  proof));
+    EXPECT_FALSE(dao_range_verify(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA, C2, proof));
+
+    BN_free(x); BN_free(rho); BN_free(C);
+    BN_free(x2); BN_free(rho2); BN_free(C2);
+}
+
+TEST(dao_range, reject_wrong_domain)
+{
+    dao_vss_group grp;
+    ASSERT_TRUE(dao_vss_group_generate(grp, 511));
+
+    TestCtx ctx;
+    ASSERT_TRUE(ctx.ok());
+
+    BIGNUM* x   = BN_new(); BN_set_word(x, 42);
+    BIGNUM* rho = BN_new(); BN_rand_range(rho, grp.P_prime);
+    BIGNUM* C   = make_commitment(grp, x, rho, ctx.ctx);
+
+    dao_range_proof proof;
+    ASSERT_TRUE(dao_range_prove(grp, 1, 5, DAO_RANGE_VALUE_TAG_BETA,
+                                x, rho, C, 160, proof));
+
+    EXPECT_TRUE (dao_range_verify(grp, 1, 5, DAO_RANGE_VALUE_TAG_BETA, C, proof));
+    EXPECT_FALSE(dao_range_verify(grp, 2, 5, DAO_RANGE_VALUE_TAG_BETA, C, proof));
+    EXPECT_FALSE(dao_range_verify(grp, 1, 6, DAO_RANGE_VALUE_TAG_BETA, C, proof));
+    EXPECT_FALSE(dao_range_verify(grp, 1, 5, DAO_RANGE_VALUE_TAG_R,    C, proof));
+
+    BN_free(x); BN_free(rho); BN_free(C);
+}
+
+TEST(dao_range, reject_tampered_proof)
+{
+    dao_vss_group grp;
+    ASSERT_TRUE(dao_vss_group_generate(grp, 511));
+
+    TestCtx ctx;
+    ASSERT_TRUE(ctx.ok());
+
+    BIGNUM* x   = BN_new(); BN_set_word(x, 999);
+    BIGNUM* rho = BN_new(); BN_rand_range(rho, grp.P_prime);
+    BIGNUM* C   = make_commitment(grp, x, rho, ctx.ctx);
+
+    dao_range_proof proof;
+    ASSERT_TRUE(dao_range_prove(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA,
+                                x, rho, C, 160, proof));
+    ASSERT_TRUE(dao_range_verify(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA, C, proof));
+
+    // Flip a byte in bit commitment 0.
+    proof.bit_commitments[0][0] ^= 0x01;
+    EXPECT_FALSE(dao_range_verify(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA, C, proof));
+    proof.bit_commitments[0][0] ^= 0x01;
+
+    // Flip a byte in bit proof 3 response z_1.
+    proof.bit_proofs[3].z_1[0] ^= 0x01;
+    EXPECT_FALSE(dao_range_verify(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA, C, proof));
+    proof.bit_proofs[3].z_1[0] ^= 0x01;
+
+    // Flip a byte in the link proof response.
+    proof.link_z[0] ^= 0x01;
+    EXPECT_FALSE(dao_range_verify(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA, C, proof));
+    proof.link_z[0] ^= 0x01;
+
+    // Flip a byte in the link A.
+    proof.link_a[0] ^= 0x01;
+    EXPECT_FALSE(dao_range_verify(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA, C, proof));
+    proof.link_a[0] ^= 0x01;
+
+    // Sanity: unmodified still verifies.
+    EXPECT_TRUE(dao_range_verify(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA, C, proof));
+
+    BN_free(x); BN_free(rho); BN_free(C);
+}
+
+TEST(dao_range, serialize_round_trip)
+{
+    dao_vss_group grp;
+    ASSERT_TRUE(dao_vss_group_generate(grp, 511));
+
+    TestCtx ctx;
+    ASSERT_TRUE(ctx.ok());
+
+    BIGNUM* x   = BN_new(); BN_set_word(x, 424242);
+    BIGNUM* rho = BN_new(); BN_rand_range(rho, grp.P_prime);
+    BIGNUM* C   = make_commitment(grp, x, rho, ctx.ctx);
+
+    dao_range_proof proof;
+    ASSERT_TRUE(dao_range_prove(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA,
+                                x, rho, C, 160, proof));
+
+    std::vector<uint8_t> enc;
+    ASSERT_TRUE(proof.serialize(enc));
+
+    dao_range_proof dec;
+    ASSERT_TRUE(dec.deserialize(enc));
+    EXPECT_EQ(dec.bits, proof.bits);
+    EXPECT_EQ(dec.bit_commitments.size(), proof.bit_commitments.size());
+    EXPECT_EQ(dec.bit_proofs.size(), proof.bit_proofs.size());
+
+    EXPECT_TRUE(dao_range_verify(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA, C, dec));
+
+    BN_free(x); BN_free(rho); BN_free(C);
+}
