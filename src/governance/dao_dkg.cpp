@@ -1668,6 +1668,16 @@ public:
         rb_shares_received_.assign(committee_size + 1, nullptr);
         v_commit_received_.assign(committee_size + 1, {});
         v_reveal_received_.assign(committee_size + 1, nullptr);
+        commits_p_recv_.resize(committee_size + 1);
+        commits_q_recv_.resize(committee_size + 1);
+        commits_beta_recv_.resize(committee_size + 1);
+        commits_dr_recv_.resize(committee_size + 1);
+        commits_h_theta_recv_.resize(committee_size + 1);
+        b_p_received_.assign(committee_size + 1, nullptr);
+        b_q_received_.assign(committee_size + 1, nullptr);
+        b_beta_received_.assign(committee_size + 1, nullptr);
+        b_dr_received_.assign(committee_size + 1, nullptr);
+        b_h_theta_received_.assign(committee_size + 1, nullptr);
     }
 
     ~dkg_party()
@@ -1703,6 +1713,11 @@ public:
         free_vec(delta_r_shares_received_);
         free_vec(h_theta_shares_received_);
         free_vec(v_reveal_received_);
+        free_vec(b_p_received_);
+        free_vec(b_q_received_);
+        free_vec(b_beta_received_);
+        free_vec(b_dr_received_);
+        free_vec(b_h_theta_received_);
     }
 
     uint32_t id() const { return party_id_; }
@@ -1844,6 +1859,21 @@ private:
     std::vector<std::vector<uint8_t>> v_commit_received_;   // per party
     std::vector<BIGNUM*> v_reveal_received_;                // per party
     BIGNUM* V_ = nullptr;
+
+    // Gap 3 — per-sender VSS commitments and blinding evaluations.
+    // Indexed [1..committee_size]. commits_X_recv_[j] = sender j's
+    // public polynomial commitments; b_X_received_[j] = the blinding
+    // evaluation that sender j sent privately to this party.
+    std::vector<dao_vss_commitments> commits_p_recv_;
+    std::vector<dao_vss_commitments> commits_q_recv_;
+    std::vector<dao_vss_commitments> commits_beta_recv_;
+    std::vector<dao_vss_commitments> commits_dr_recv_;
+    std::vector<dao_vss_commitments> commits_h_theta_recv_;
+    std::vector<BIGNUM*> b_p_received_;
+    std::vector<BIGNUM*> b_q_received_;
+    std::vector<BIGNUM*> b_beta_received_;
+    std::vector<BIGNUM*> b_dr_received_;
+    std::vector<BIGNUM*> b_h_theta_received_;
 
     // helpers
     void free_bn(BIGNUM*& p) { if (p) { BN_free(p); p = nullptr; } }
@@ -1993,9 +2023,13 @@ bool dkg_party::do_polynomial_commit()
             if (shares_p_received_[j]) BN_free(shares_p_received_[j]);
             if (shares_q_received_[j]) BN_free(shares_q_received_[j]);
             if (shares_h_received_[j]) BN_free(shares_h_received_[j]);
+            if (b_p_received_[j]) BN_free(b_p_received_[j]);
+            if (b_q_received_[j]) BN_free(b_q_received_[j]);
             shares_p_received_[j] = BN_dup(s_p[j - 1]);
             shares_q_received_[j] = BN_dup(s_q[j - 1]);
             shares_h_received_[j] = BN_dup(s_h[j - 1]);
+            b_p_received_[j] = BN_dup(b_p[j - 1]);
+            b_q_received_[j] = BN_dup(b_q[j - 1]);
             continue;
         }
 
@@ -2009,9 +2043,15 @@ bool dkg_party::do_polynomial_commit()
         enc(s_p[j - 1], m.bytes_a);
         enc(s_q[j - 1], m.bytes_b);
         enc(s_h[j - 1], m.bytes_c);
-        // blindings not sent; verification uses public commitments plus
-        // the sender's own recomputation. In a stricter construction
-        // they would be sent too.
+        // Gap 3: transmit Pedersen blinding evaluations privately so
+        // the recipient can verify (share, blinding) against the
+        // contributor's public commitments.
+        bn_to_signed(b_p[j - 1], m.bytes_d);
+        {
+            std::vector<uint8_t> bq_enc;
+            bn_to_signed(b_q[j - 1], bq_enc);
+            m.vec_a.push_back(std::move(bq_enc));
+        }
         if (!send_msg(m)) return false;
     }
 
@@ -2436,19 +2476,32 @@ bool dkg_party::handle_message(const dkg_msg& m)
     if (!ctx.ok()) return false;
 
     switch (m.hdr.type) {
-        case dkg_msg_type::polynomial_commitment_p:
-            return true;   // stored by driver, not needed per-party in this design
-
-        case dkg_msg_type::polynomial_commitment_q:
+        case dkg_msg_type::polynomial_commitment_p: {
+            const uint32_t j = m.hdr.sender_id;
+            if (j < 1 || j > committee_size_) return false;
+            commits_p_recv_[j].C = m.vec_a;
             return true;
+        }
+
+        case dkg_msg_type::polynomial_commitment_q: {
+            const uint32_t j = m.hdr.sender_id;
+            if (j < 1 || j > committee_size_) return false;
+            commits_q_recv_[j].C = m.vec_a;
+            return true;
+        }
 
         case dkg_msg_type::polynomial_commitment_h:
-            return true;
+            return true;   // not needed for Gap 3 verification
 
         case dkg_msg_type::polynomial_share: {
             const uint32_t j = m.hdr.sender_id;
             if (j < 1 || j > committee_size_) return false;
             if (m.bytes_a.empty() || m.bytes_b.empty() || m.bytes_c.empty())
+                return false;
+            if (m.bytes_d.empty() || m.vec_a.empty() || m.vec_a[0].empty())
+                return false;
+            if (!vss_group_ || !vss_group_->valid()) return false;
+            if (commits_p_recv_[j].C.empty() || commits_q_recv_[j].C.empty())
                 return false;
 
             BIGNUM* sp = BN_bin2bn(m.bytes_a.data(),
@@ -2457,16 +2510,33 @@ bool dkg_party::handle_message(const dkg_msg& m)
                                    static_cast<int>(m.bytes_b.size()), nullptr);
             BIGNUM* sh = BN_bin2bn(m.bytes_c.data(),
                                    static_cast<int>(m.bytes_c.size()), nullptr);
-            if (!sp || !sq || !sh) {
-                BN_free(sp); BN_free(sq); BN_free(sh); return false;
+            BIGNUM* bp = bn_from_signed(m.bytes_d);
+            BIGNUM* bq = bn_from_signed(m.vec_a[0]);
+            if (!sp || !sq || !sh || !bp || !bq) {
+                BN_free(sp); BN_free(sq); BN_free(sh);
+                BN_free(bp); BN_free(bq);
+                aborted_ = true; return false;
+            }
+
+            if (!dao_vss_verify_share(*vss_group_, commits_p_recv_[j],
+                                      committee_size_, party_id_, sp, bp) ||
+                !dao_vss_verify_share(*vss_group_, commits_q_recv_[j],
+                                      committee_size_, party_id_, sq, bq)) {
+                BN_free(sp); BN_free(sq); BN_free(sh);
+                BN_free(bp); BN_free(bq);
+                aborted_ = true; return false;
             }
 
             if (shares_p_received_[j]) BN_free(shares_p_received_[j]);
             if (shares_q_received_[j]) BN_free(shares_q_received_[j]);
             if (shares_h_received_[j]) BN_free(shares_h_received_[j]);
+            if (b_p_received_[j]) BN_free(b_p_received_[j]);
+            if (b_q_received_[j]) BN_free(b_q_received_[j]);
             shares_p_received_[j] = sp;
             shares_q_received_[j] = sq;
             shares_h_received_[j] = sh;
+            b_p_received_[j] = bp;
+            b_q_received_[j] = bq;
             return true;
         }
 
@@ -2518,8 +2588,20 @@ bool dkg_party::handle_message(const dkg_msg& m)
             return true;
         }
 
-        case dkg_msg_type::beta_commit:
-        case dkg_msg_type::r_commit:
+        case dkg_msg_type::beta_commit: {
+            const uint32_t j = m.tag32;
+            if (j < 1 || j > committee_size_) return false;
+            commits_beta_recv_[j].C = m.vec_a;
+            return true;
+        }
+
+        case dkg_msg_type::r_commit: {
+            const uint32_t j = m.tag32;
+            if (j < 1 || j > committee_size_) return false;
+            commits_dr_recv_[j].C = m.vec_a;
+            return true;
+        }
+
         case dkg_msg_type::theta_share:
         case dkg_msg_type::v_commit:
             return true;   // driver holds these
@@ -2527,25 +2609,72 @@ bool dkg_party::handle_message(const dkg_msg& m)
         case dkg_msg_type::beta_share: {
             const uint32_t j = m.tag32;
             if (j < 1 || j > committee_size_) return false;
-            if (m.bytes_a.empty() || m.bytes_b.empty()) return false;
+            if (m.bytes_a.empty() || m.bytes_b.empty() ||
+                m.bytes_c.empty() || m.bytes_d.empty()) return false;
+            if (!vss_group_ || !vss_group_->valid()) return false;
+            if (commits_beta_recv_[j].C.empty() || commits_dr_recv_[j].C.empty())
+                return false;
+
             BIGNUM* bv = bn_from_signed(m.bytes_a);
             BIGNUM* rv = bn_from_signed(m.bytes_b);
-            if (!bv || !rv) { BN_free(bv); BN_free(rv); return false; }
+            BIGNUM* bb = bn_from_signed(m.bytes_c);
+            BIGNUM* br = bn_from_signed(m.bytes_d);
+            if (!bv || !rv || !bb || !br) {
+                BN_free(bv); BN_free(rv); BN_free(bb); BN_free(br);
+                aborted_ = true; return false;
+            }
+
+            if (!dao_vss_verify_share(*vss_group_, commits_beta_recv_[j],
+                                      committee_size_, party_id_, bv, bb) ||
+                !dao_vss_verify_share(*vss_group_, commits_dr_recv_[j],
+                                      committee_size_, party_id_, rv, br)) {
+                BN_free(bv); BN_free(rv); BN_free(bb); BN_free(br);
+                aborted_ = true; return false;
+            }
+
             if (beta_shares_received_[j]) BN_free(beta_shares_received_[j]);
             if (delta_r_shares_received_[j]) BN_free(delta_r_shares_received_[j]);
+            if (b_beta_received_[j]) BN_free(b_beta_received_[j]);
+            if (b_dr_received_[j]) BN_free(b_dr_received_[j]);
             beta_shares_received_[j] = bv;
             delta_r_shares_received_[j] = rv;
+            b_beta_received_[j] = bb;
+            b_dr_received_[j] = br;
             return true;
         }
 
         case dkg_msg_type::h_theta_share: {
             const uint32_t j = m.tag32;
             if (j < 1 || j > committee_size_) return false;
-            if (m.bytes_a.empty()) return true;
+
+            // Broadcast form: commitments in vec_a, no bytes_a.
+            if (m.hdr.recipient_id == 0) {
+                commits_h_theta_recv_[j].C = m.vec_a;
+                return true;
+            }
+
+            // Private form: share in bytes_a, blinding in bytes_b.
+            if (m.bytes_a.empty() || m.bytes_b.empty()) return false;
+            if (!vss_group_ || !vss_group_->valid()) return false;
+            if (commits_h_theta_recv_[j].C.empty()) return false;
+
             BIGNUM* hv = bn_from_signed(m.bytes_a);
-            if (!hv) return false;
+            BIGNUM* bh = bn_from_signed(m.bytes_b);
+            if (!hv || !bh) {
+                BN_free(hv); BN_free(bh);
+                aborted_ = true; return false;
+            }
+
+            if (!dao_vss_verify_share(*vss_group_, commits_h_theta_recv_[j],
+                                      committee_size_, party_id_, hv, bh)) {
+                BN_free(hv); BN_free(bh);
+                aborted_ = true; return false;
+            }
+
             if (h_theta_shares_received_[j]) BN_free(h_theta_shares_received_[j]);
+            if (b_h_theta_received_[j]) BN_free(b_h_theta_received_[j]);
             h_theta_shares_received_[j] = hv;
+            b_h_theta_received_[j] = bh;
             return true;
         }
 
@@ -2802,20 +2931,29 @@ bool dkg_party::do_beta_R_generate()
             if (beta_shares_received_[j]) BN_free(beta_shares_received_[j]);
             if (delta_r_shares_received_[j]) BN_free(delta_r_shares_received_[j]);
             if (h_theta_shares_received_[j]) BN_free(h_theta_shares_received_[j]);
+            if (b_beta_received_[j]) BN_free(b_beta_received_[j]);
+            if (b_dr_received_[j]) BN_free(b_dr_received_[j]);
+            if (b_h_theta_received_[j]) BN_free(b_h_theta_received_[j]);
             beta_shares_received_[j] = BN_dup(s_beta[j - 1]);
             delta_r_shares_received_[j] = BN_dup(s_dr[j - 1]);
             h_theta_shares_received_[j] = BN_dup(s_h[j - 1]);
+            b_beta_received_[j] = BN_dup(b_beta[j - 1]);
+            b_dr_received_[j] = BN_dup(b_dr[j - 1]);
+            b_h_theta_received_[j] = BN_dup(b_h[j - 1]);
             continue;
         }
         dkg_msg m = make_header(dkg_msg_type::beta_share, j);
         m.tag32 = party_id_;
         bn_to_signed(s_beta[j - 1], m.bytes_a);
         bn_to_signed(s_dr[j - 1], m.bytes_b);
+        bn_to_signed(b_beta[j - 1], m.bytes_c);
+        bn_to_signed(b_dr[j - 1], m.bytes_d);
         if (!send_msg(m)) return false;
 
         dkg_msg mh = make_header(dkg_msg_type::h_theta_share, j);
         mh.tag32 = party_id_;
         bn_to_signed(s_h[j - 1], mh.bytes_a);
+        bn_to_signed(b_h[j - 1], mh.bytes_b);
         if (!send_msg(mh)) return false;
     }
 
