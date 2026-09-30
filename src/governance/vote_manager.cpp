@@ -163,6 +163,45 @@ bool VoteManager::extract_vote(const transaction& tx, vote_proof& vp) const
     return false;
 }
 
+// Extract a V2 vote from a tx carrying governance_object::vote_v2.
+// gp.data must contain exactly one canonical serialized vote_proof_v2;
+// truncation or trailing bytes are rejected. Returns false if no V2
+// vote object is present, or if the object is malformed.
+bool VoteManager::extract_vote_v2(const transaction& tx, vote_proof_v2& vp) const
+{
+    std::vector<tx_extra_field> extra_fields;
+    if (!parse_tx_extra(tx.extra, extra_fields))
+        return false;
+
+    for (const auto& field : extra_fields)
+    {
+        if (field.type() != typeid(tx_extra_governance_payload))
+            continue;
+        const auto& gp_field = boost::get<tx_extra_governance_payload>(field);
+        const governance_payload& gp = gp_field.payload;
+        if (gp.type != governance_object::vote_v2)
+            continue;
+
+        if (gp.data.empty())
+            return false;
+
+        epee::span<const uint8_t> data_span(gp.data.data(), gp.data.size());
+        binary_archive<false> data_ar(data_span);
+        if (!::serialization::serialize(data_ar, vp))
+            return false;
+
+        // Strict consumption: nothing may remain.
+        if (data_ar.getpos() != data_span.size())
+            return false;
+
+        if (vp.version != vote_proof_v2::VERSION)
+            return false;
+
+        return true;
+    }
+    return false;
+}
+
 // BEGIN_VNS_PROCESS_VOTE
 vote_result VoteManager::process_vote(const transaction& tx, uint64_t height, bool dry_run)
 {

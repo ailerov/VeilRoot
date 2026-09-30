@@ -6,6 +6,7 @@
 #include "governance_db.h"
 #include "governance_params.h"
 #include "vote_proof.h"
+#include "vote_proof_v2.h"
 #include "cryptonote_basic/cryptonote_basic.h"
 #include "vote_result.h"
 
@@ -28,6 +29,7 @@ private:
     bool validate_vote(const vote_proof& vp, uint64_t height) const;
     bool is_vote_tx(const transaction& tx) const;
     bool extract_vote(const transaction& tx, vote_proof& vp) const;
+    bool extract_vote_v2(const transaction& tx, vote_proof_v2& vp) const;
 
     GovernanceDB& m_db;
     const governance_params& m_params;

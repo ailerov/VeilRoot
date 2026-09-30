@@ -461,6 +461,23 @@ derives them from chain state:
 
 They are bound by the transcript hash.
 
+### 18.1 Transaction carrier
+
+A DAO V2 vote is carried in the existing TX_EXTRA_GOVERNANCE (0x40)
+/ tx_extra_governance_payload structure.
+
+The governance object type is `governance_object::vote_v2`.
+
+The `governance_payload::data` field contains exactly one canonical
+serialized `vote_proof_v2` object. Truncation, trailing bytes, empty
+payload, or a mismatched `version` field is invalid.
+
+No separate tx-extra tag is defined for DAO V2 voting.
+
+After DAO V2 activation, `governance_object::vote` is rejected for
+DAO voting; before activation it remains valid only under the
+historical V1 rules.
+
 ---
 
 ## 19. Serialization

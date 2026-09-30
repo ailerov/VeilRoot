@@ -17,6 +17,8 @@
 #include "governance/dao_paillier.h"
 #include "governance/dao_vote_or_proof.h"
 #include "governance/vote_proof_verifier.h"
+#include "governance/governance_payload.h"
+#include "serialization/binary_archive.h"
 #include "governance/vote_proof_v2.h"
 
 using namespace cryptonote;
@@ -727,4 +729,70 @@ TEST(vote_proof_verifier, valid_vote_passes_all_24_steps)
     EXPECT_NE(r24.reason.find("step24"), std::string::npos);
 
     BN_free(W_bn); BN_free(S_bn); BN_free(r_W); BN_free(r_S);
+}
+
+// ---- V2 carrier roundtrip ----
+
+namespace {
+
+void append_varint(std::vector<uint8_t>& v, uint64_t n)
+{
+    while (n >= 0x80) {
+        v.push_back(static_cast<uint8_t>((n & 0x7f) | 0x80));
+        n >>= 7;
+    }
+    v.push_back(static_cast<uint8_t>(n & 0x7f));
+}
+
+bool read_varint(const std::vector<uint8_t>& v, size_t& off, uint64_t& out)
+{
+    out = 0;
+    int shift = 0;
+    while (off < v.size()) {
+        const uint8_t b = v[off++];
+        out |= static_cast<uint64_t>(b & 0x7f) << shift;
+        if ((b & 0x80) == 0) return true;
+        shift += 7;
+        if (shift > 63) return false;
+    }
+    return false;
+}
+
+} // namespace
+
+TEST(vote_proof_verifier, v2_payload_roundtrip_via_governance_object)
+{
+    vote_proof_v2 p;
+    p.version         = vote_proof_v2::VERSION;
+    p.vote_height     = 51000;
+    p.tally_key_epoch = 1;
+    p.C_W = rct::identity();
+    p.C_S = rct::identity();
+
+    // Object-level serialization (BEGIN_SERIALIZE_OBJECT path).
+    blobdata body;
+    ASSERT_TRUE(cryptonote::t_serializable_object_to_blob(p, body));
+
+    // Manually wrap in the canonical governance_payload wire form:
+    //   varint(governance_object::vote_v2) || varint(len) || body
+    std::vector<uint8_t> wire;
+    append_varint(wire, static_cast<uint64_t>(governance_object::vote_v2));
+    append_varint(wire, body.size());
+    wire.insert(wire.end(), body.begin(), body.end());
+
+    // Unwrap.
+    size_t off = 0;
+    uint64_t tag = 0, len = 0;
+    ASSERT_TRUE(read_varint(wire, off, tag));
+    ASSERT_EQ(tag, 3u); // vote_v2
+    ASSERT_TRUE(read_varint(wire, off, len));
+    ASSERT_EQ(len, body.size());
+    ASSERT_LE(off + len, wire.size());
+
+    vote_proof_v2 p2;
+    blobdata body2(wire.begin() + off, wire.begin() + off + len);
+    ASSERT_TRUE(cryptonote::t_serializable_object_from_blob(p2, body2));
+    EXPECT_EQ(p2.version, vote_proof_v2::VERSION);
+    EXPECT_EQ(p2.vote_height, 51000u);
+    EXPECT_EQ(p2.tally_key_epoch, 1u);
 }
