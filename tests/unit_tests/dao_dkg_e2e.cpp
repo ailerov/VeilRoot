@@ -470,3 +470,45 @@ TEST(dao_dkg_e2e, DISABLED_sixteen_party_128bit_randomized_smoke)
     ASSERT_GT(out.candidate_attempts, 0u);
 }
 
+// Inject a tamper hook that corrupts the first beta range proof it
+// sees. The driver must reject the DKG when verification runs.
+TEST(dao_dkg_e2e, tampered_range_proof_aborts)
+{
+    dkg_config cfg;
+    cfg.committee_size = DAO_DKG_COMMITTEE_SIZE;
+    cfg.threshold      = DAO_DKG_THRESHOLD;
+    cfg.epoch          = 1;
+    cfg.k              = 60;
+    cfg.target_N_bits  = 128;
+    cfg.security_bits  = 32;
+    cfg.qproof_rounds  = 32;
+    cfg.max_attempts   = 1;
+    cfg.test_seed      = 0x5645494C52544F54ULL;
+
+    int tampered = 0;
+    auto hook = [&tampered](dkg_msg& m) {
+        if (tampered) return;
+        if (m.hdr.type != dkg_msg_type::beta_range_proof) return;
+        if (m.bytes_a.empty()) return;
+        m.bytes_a[0] ^= 0x01;
+        ++tampered;
+    };
+
+    auto net = dkg_make_inproc_network(cfg.committee_size, hook);
+
+    std::vector<std::unique_ptr<dkg_transport>> pool;
+    for (auto& e : net.endpoints) pool.push_back(std::move(e));
+    size_t next = 0;
+    dkg_transport_factory factory =
+        [&pool, &next](uint32_t) -> std::unique_ptr<dkg_transport> {
+            if (next >= pool.size()) return nullptr;
+            return std::move(pool[next++]);
+        };
+
+    dkg_result out;
+    dkg_run_with_transport(cfg, factory, out);
+
+    EXPECT_EQ(tampered, 1) << "hook did not fire on a range proof";
+    EXPECT_FALSE(out.ok) << "DKG accepted a tampered range proof";
+}
+
