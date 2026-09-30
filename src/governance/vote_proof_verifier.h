@@ -29,7 +29,6 @@ public:
     static verification_result verify(
         const vote_proof_v2& proof,
         BlockchainDB& db,
-        const Blockchain& blockchain,
         uint64_t block_height,
         const std::unordered_set<crypto::hash>& block_nullifiers);
 };

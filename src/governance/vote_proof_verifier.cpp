@@ -21,11 +21,9 @@ verification_result fail(const char* why)
 verification_result VoteProofVerifier::verify(
     const vote_proof_v2& proof,
     BlockchainDB& db,
-    const Blockchain& blockchain,
     uint64_t block_height,
     const std::unordered_set<crypto::hash>& block_nullifiers)
 {
-    (void)blockchain;
     (void)block_nullifiers;
 
     // Step 1: strict deserialize is the caller's responsibility; here we
