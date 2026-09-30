@@ -252,3 +252,187 @@ TEST(dao_consistency, serialize_round_trip)
 
     BN_free(m); BN_free(r);
 }
+
+
+// ---- Signed-S coverage (spec §11, §20 step 19/20) ----
+
+namespace {
+
+constexpr const char* CURVE_ORDER_HEX_LOCAL =
+    "1000000000000000000000000000000014def9dea2f79cd65812631a5cf5d3ed";
+
+key signed_curve_scalar(const BIGNUM* S)
+{
+    BIGNUM* ell = nullptr;
+    BN_hex2bn(&ell, CURVE_ORDER_HEX_LOCAL);
+    BN_CTX* ctx = BN_CTX_new();
+    BIGNUM* r = BN_new();
+    BN_nnmod(r, S, ell, ctx);
+    std::vector<uint8_t> be(BN_num_bytes(r));
+    if (!be.empty()) BN_bn2bin(r, be.data());
+    key k{};
+    std::memset(k.bytes, 0, 32);
+    size_t n = be.size();
+    if (n > 32) n = 32;
+    for (size_t i = 0; i < n; ++i) k.bytes[i] = be[be.size() - 1 - i];
+    BN_free(r); BN_free(ell); BN_CTX_free(ctx);
+    return k;
+}
+
+BIGNUM* make_signed_dec(const char* dec_mag, bool neg)
+{
+    BIGNUM* b = nullptr;
+    BN_dec2bn(&b, dec_mag);
+    if (neg) BN_set_negative(b, 1);
+    return b;
+}
+
+BIGNUM* canonical_paillier_rep(const BIGNUM* S, const BIGNUM* N)
+{
+    BN_CTX* ctx = BN_CTX_new();
+    BIGNUM* m = BN_new();
+    BN_nnmod(m, S, N, ctx);
+    BN_CTX_free(ctx);
+    return m;
+}
+
+void run_signed_prove_verify(const BIGNUM* S)
+{
+    PaillierPrivateKey sk;
+    ASSERT_TRUE(sk.generate_for_testing(1024));
+    PaillierPublicKey pk = sk.public_key();
+
+    BIGNUM* r = BN_new(); BN_set_word(r, 3);
+    BIGNUM* m_S = canonical_paillier_rep(S, pk.N());
+
+    std::vector<uint8_t> E;
+    ASSERT_TRUE(pk.encrypt(m_S, r, E));
+
+    key rho = skGen();
+    key S_scalar = signed_curve_scalar(S);
+    key mH, rhoG, C;
+    scalarmultKey(mH, H, S_scalar);
+    scalarmultBase(rhoG, rho);
+    addKeys(C, mH, rhoG);
+
+    auto ctx = make_ctx("signed-S-domain");
+    dao_consistency_proof proof;
+    ASSERT_TRUE(dao_consistency_prove(ctx, pk.N(), E, C, S, r, rho, proof));
+    EXPECT_TRUE(dao_consistency_verify(ctx, pk.N(), E, C, proof));
+
+    BN_free(r); BN_free(m_S);
+}
+
+} // namespace
+
+TEST(dao_consistency, signed_S_zero)
+{
+    BIGNUM* S = BN_new(); BN_zero(S);
+    run_signed_prove_verify(S);
+    BN_free(S);
+}
+
+TEST(dao_consistency, signed_S_pos_small)
+{
+    BIGNUM* S = make_signed_dec("12345", false);
+    run_signed_prove_verify(S);
+    BN_free(S);
+}
+
+TEST(dao_consistency, signed_S_neg_one)
+{
+    BIGNUM* S = make_signed_dec("1", true);
+    run_signed_prove_verify(S);
+    BN_free(S);
+}
+
+TEST(dao_consistency, signed_S_neg_large)
+{
+    BIGNUM* S = make_signed_dec("12345", true);
+    run_signed_prove_verify(S);
+    BN_free(S);
+}
+
+TEST(dao_consistency, signed_S_at_W_boundary)
+{
+    BIGNUM* W_pos = make_signed_dec("240000000000000000000", false);
+    run_signed_prove_verify(W_pos);
+    BIGNUM* W_neg = make_signed_dec("240000000000000000000", true);
+    run_signed_prove_verify(W_neg);
+    BN_free(W_pos); BN_free(W_neg);
+}
+
+TEST(dao_consistency, signed_S_just_outside_W)
+{
+    BIGNUM* Wp = make_signed_dec("240000000000000000001", false);
+    run_signed_prove_verify(Wp);
+    BIGNUM* Wm = make_signed_dec("240000000000000000001", true);
+    run_signed_prove_verify(Wm);
+    BN_free(Wp); BN_free(Wm);
+}
+
+TEST(dao_consistency, reject_sign_mismatch_in_E)
+{
+    PaillierPrivateKey sk;
+    ASSERT_TRUE(sk.generate_for_testing(1024));
+    PaillierPublicKey pk = sk.public_key();
+
+    BIGNUM* S = make_signed_dec("100", true);
+    BIGNUM* r = BN_new(); BN_set_word(r, 3);
+
+    BIGNUM* wrong_m = BN_new(); BN_set_word(wrong_m, 100);
+    std::vector<uint8_t> E_bad;
+    ASSERT_TRUE(pk.encrypt(wrong_m, r, E_bad));
+
+    key rho = skGen();
+    key S_scalar = signed_curve_scalar(S);
+    key mH, rhoG, C;
+    scalarmultKey(mH, H, S_scalar);
+    scalarmultBase(rhoG, rho);
+    addKeys(C, mH, rhoG);
+
+    auto ctx = make_ctx("sign-mismatch");
+    dao_consistency_proof proof;
+    BIGNUM* m_S = canonical_paillier_rep(S, pk.N());
+    std::vector<uint8_t> E_ok;
+    ASSERT_TRUE(pk.encrypt(m_S, r, E_ok));
+    ASSERT_TRUE(dao_consistency_prove(ctx, pk.N(), E_ok, C, S, r, rho, proof));
+
+    EXPECT_FALSE(dao_consistency_verify(ctx, pk.N(), E_bad, C, proof));
+
+    BN_free(S); BN_free(r); BN_free(wrong_m); BN_free(m_S);
+}
+
+TEST(dao_consistency, reject_sign_mismatch_in_C)
+{
+    PaillierPrivateKey sk;
+    ASSERT_TRUE(sk.generate_for_testing(1024));
+    PaillierPublicKey pk = sk.public_key();
+
+    BIGNUM* S = make_signed_dec("100", true);
+    BIGNUM* r = BN_new(); BN_set_word(r, 3);
+    BIGNUM* m_S = canonical_paillier_rep(S, pk.N());
+
+    std::vector<uint8_t> E;
+    ASSERT_TRUE(pk.encrypt(m_S, r, E));
+
+    key rho = skGen();
+    key S_scalar = signed_curve_scalar(S);
+    key mH, rhoG, C_ok;
+    scalarmultKey(mH, H, S_scalar);
+    scalarmultBase(rhoG, rho);
+    addKeys(C_ok, mH, rhoG);
+
+    key pos_scalar{}; pos_scalar.bytes[0] = 100;
+    key mH_bad, C_bad;
+    scalarmultKey(mH_bad, H, pos_scalar);
+    addKeys(C_bad, mH_bad, rhoG);
+
+    auto ctx = make_ctx("sign-mismatch-C");
+    dao_consistency_proof proof;
+    ASSERT_TRUE(dao_consistency_prove(ctx, pk.N(), E, C_ok, S, r, rho, proof));
+
+    EXPECT_FALSE(dao_consistency_verify(ctx, pk.N(), E, C_bad, proof));
+
+    BN_free(S); BN_free(r); BN_free(m_S);
+}

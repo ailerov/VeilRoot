@@ -38,7 +38,7 @@ key bn_to_scalar_reduced(const BIGNUM* b, BN_CTX* ctx)
     BIGNUM* ell = nullptr;
     BN_hex2bn(&ell, CURVE_ORDER_HEX);
     BIGNUM* r = BN_new();
-    BN_mod(r, b, ell, ctx);
+    BN_nnmod(r, b, ell, ctx);
 
     std::vector<uint8_t> be(BN_num_bytes(r));
     BN_bn2bin(r, be.data());
@@ -51,6 +51,38 @@ key bn_to_scalar_reduced(const BIGNUM* b, BN_CTX* ctx)
     }
     BN_free(r); BN_free(ell);
     return k;
+}
+
+// Signed BIGNUM wire encoding: 1 sign byte (0 = non-negative,
+// 1 = negative) followed by big-endian magnitude. Used for z_m so the
+// prover can carry a negative S response.
+void bn_to_signed(const BIGNUM* b, std::vector<uint8_t>& out)
+{
+    out.clear();
+    const bool neg = BN_is_negative(b);
+    BIGNUM* abs_b = BN_new();
+    BN_copy(abs_b, b);
+    BN_set_negative(abs_b, 0);
+    const int n = BN_num_bytes(abs_b);
+    out.reserve(1 + n);
+    out.push_back(neg ? 1 : 0);
+    if (n > 0) {
+        const size_t off = out.size();
+        out.resize(off + n);
+        BN_bn2bin(abs_b, out.data() + off);
+    }
+    BN_free(abs_b);
+}
+
+BIGNUM* bn_from_signed(const std::vector<uint8_t>& in)
+{
+    if (in.empty()) return nullptr;
+    const bool neg = (in[0] != 0);
+    BIGNUM* b = BN_bin2bn(in.data() + 1,
+                          static_cast<int>(in.size() - 1), nullptr);
+    if (!b) return nullptr;
+    if (neg && !BN_is_zero(b)) BN_set_negative(b, 1);
+    return b;
 }
 
 void append_le32(std::vector<uint8_t>& v, uint32_t x)
@@ -154,7 +186,7 @@ bool dao_consistency_prove(const dao_consistency_context& ctx,
 {
     if (!N || !m || !r) return false;
     if (E.size() != PAILLIER_CT_BYTES) return false;
-    if (BN_is_negative(m) || BN_is_negative(r)) return false;
+    if (BN_is_negative(r)) return false;
 
     CtxGuard g;
     if (!g.ok()) return false;
@@ -225,8 +257,7 @@ bool dao_consistency_prove(const dao_consistency_context& ctx,
     proof_out.A_P = A_P;
     proof_out.e.assign(32, 0);
     BN_bn2binpad(e, proof_out.e.data(), 32);
-    proof_out.z_m.assign(BN_num_bytes(z_m), 0);
-    BN_bn2bin(z_m, proof_out.z_m.data());
+    bn_to_signed(z_m, proof_out.z_m);
     proof_out.z_r.assign(PAILLIER_CT_BYTES, 0);
     BN_bn2binpad(z_r, proof_out.z_r.data(), PAILLIER_CT_BYTES);
     proof_out.z_rho.assign(32, 0);
@@ -392,8 +423,11 @@ bool dao_consistency_verify(const dao_consistency_context& ctx,
     }
 
     // Curve check: z_m*H + z_rho*G == A_C + e*C
-    BIGNUM* z_m_bn = BN_bin2bn(proof.z_m.data(),
-                               static_cast<int>(proof.z_m.size()), nullptr);
+    BIGNUM* z_m_bn = bn_from_signed(proof.z_m);
+    if (!z_m_bn) {
+        BN_free(N2); BN_free(e_check); BN_free(e_given);
+        return false;
+    }
     key z_m_scalar = bn_to_scalar_reduced(z_m_bn, g.ctx);
     key e_scalar   = bn_to_scalar_reduced(e_check, g.ctx);
 
@@ -418,8 +452,10 @@ bool dao_consistency_verify(const dao_consistency_context& ctx,
     BIGNUM* one_N = BN_new();
     BN_add(one_N, N, BN_value_one());
 
+    BIGNUM* z_m_mod_N = BN_new();
+    BN_nnmod(z_m_mod_N, z_m_bn, N, g.ctx);
     BIGNUM* lhs_1 = BN_new();
-    BN_mod_exp(lhs_1, one_N, z_m_bn, N2, g.ctx);
+    BN_mod_exp(lhs_1, one_N, z_m_mod_N, N2, g.ctx);
 
     BIGNUM* z_r_bn = BN_bin2bn(proof.z_r.data(),
                                static_cast<int>(proof.z_r.size()), nullptr);
@@ -441,6 +477,7 @@ bool dao_consistency_verify(const dao_consistency_context& ctx,
     const bool ok = (BN_cmp(lhs_p, rhs_p) == 0);
 
     BN_free(N2); BN_free(e_check); BN_free(e_given); BN_free(z_m_bn);
+    BN_free(z_m_mod_N);
     BN_free(one_N); BN_free(lhs_1); BN_free(z_r_bn); BN_free(lhs_2);
     BN_free(lhs_p); BN_free(A_P_bn); BN_free(E_bn); BN_free(E_e); BN_free(rhs_p);
     return ok;
