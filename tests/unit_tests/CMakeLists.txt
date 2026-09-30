@@ -114,6 +114,7 @@ set(unit_tests_sources
   vote_v2_serialization.cpp
   vote_proof_verifier.cpp
   vote_dispatch_v2.cpp
+  vote_consensus_v2.cpp
   dao_clsag_vector_gen.cpp
   dao_clsag.cpp
   dao_weight.cpp

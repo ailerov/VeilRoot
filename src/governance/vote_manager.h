@@ -37,6 +37,10 @@ public:
     vote_result process_vote(const transaction& tx, uint64_t height, bool dry_run);
     // END_VNS_PROCESS_VOTE
 
+    // Step 25 (spec section 20): atomic state mutation for one accepted
+    // V2 vote. Called by process_v2_vote() after verification succeeds.
+    bool apply_dao_vote(const vote_proof_v2& proof, const crypto::hash& tx_hash);
+
     bool vote_exists(const crypto::hash& proposal_id, const crypto::hash& nullifier) const;
 
 private:
@@ -54,7 +58,6 @@ private:
                                 std::unordered_set<crypto::hash>& block_nullifiers,
                                 bool dry_run);
 
-    bool apply_dao_vote(const vote_proof_v2& proof, const crypto::hash& tx_hash);
 
     GovernanceDB& m_db;
     const governance_params& m_params;

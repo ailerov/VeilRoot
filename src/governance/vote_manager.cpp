@@ -188,7 +188,31 @@ bool VoteManager::rollback_block(const block& blk,
                 rct::subKeys(new_C_S, agg.aggregate_C_S, proof.C_S);
                 agg.aggregate_C_S = new_C_S;
 
-                bdb.add_dao_proposal_aggregate(proof.proposal_id, agg);
+                // Byte-for-byte rollback (spec section 25): if the
+                // aggregate has returned to the identity element, the
+                // pre-apply state had no aggregate row at all. Remove
+                // the row rather than persisting Enc(0)/identity.
+                const rct::key id = rct::identity();
+                const bool cw_id = (agg.aggregate_C_W == id);
+                const bool cs_id = (agg.aggregate_C_S == id);
+
+                bool ew_id = true;
+                for (size_t k = 0; k + 1 < agg.aggregate_E_W.size(); ++k)
+                    if (agg.aggregate_E_W[k] != 0) { ew_id = false; break; }
+                if (!agg.aggregate_E_W.empty() &&
+                    agg.aggregate_E_W.back() != 1) ew_id = false;
+
+                bool es_id = true;
+                for (size_t k = 0; k + 1 < agg.aggregate_E_S.size(); ++k)
+                    if (agg.aggregate_E_S[k] != 0) { es_id = false; break; }
+                if (!agg.aggregate_E_S.empty() &&
+                    agg.aggregate_E_S.back() != 1) es_id = false;
+
+                if (cw_id && cs_id && ew_id && es_id) {
+                    bdb.remove_dao_proposal_aggregate(proof.proposal_id);
+                } else {
+                    bdb.add_dao_proposal_aggregate(proof.proposal_id, agg);
+                }
             }
         }
 
