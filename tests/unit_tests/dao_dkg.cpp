@@ -58,13 +58,13 @@ TEST(dao_dkg, vss_deal_and_verify)
     ASSERT_EQ(commits.C.size(), 2u);
 
     for (uint32_t i = 1; i <= 4; ++i) {
-        EXPECT_TRUE(dao_vss_verify_share(grp, commits, i,
+        EXPECT_TRUE(dao_vss_verify_share(grp, commits, 4, i,
                                          shares[i - 1], blindings[i - 1]));
     }
 
     BIGNUM* tampered = BN_dup(shares[1]);
     BN_add_word(tampered, 1);
-    EXPECT_FALSE(dao_vss_verify_share(grp, commits, 2, tampered, blindings[1]));
+    EXPECT_FALSE(dao_vss_verify_share(grp, commits, 4, 2, tampered, blindings[1]));
     BN_free(tampered);
 
     BN_free(secret);
@@ -262,4 +262,198 @@ TEST(dao_dkg, key_record_rejects_short_input)
     enc.pop_back();
     dao_tally_key_record out;
     EXPECT_FALSE(out.deserialize(enc));
+}
+
+// ================= RFC 7919 FFDHE groups =================
+
+namespace {
+
+void check_group_invariants(const dao_vss_group& grp,
+                            int expected_P_bits,
+                            int expected_Pp_bits)
+{
+    ASSERT_NE(grp.P,       nullptr);
+    ASSERT_NE(grp.P_prime, nullptr);
+    ASSERT_NE(grp.g,       nullptr);
+    ASSERT_NE(grp.h,       nullptr);
+
+    EXPECT_EQ(BN_num_bits(grp.P), expected_P_bits);
+    EXPECT_EQ(BN_num_bits(grp.P_prime), expected_Pp_bits);
+    EXPECT_TRUE(BN_is_word(grp.g, 2));
+
+    // P' = (P-1)/2
+    BIGNUM* expected_Pp = BN_new();
+    BN_sub(expected_Pp, grp.P, BN_value_one());
+    BN_rshift1(expected_Pp, expected_Pp);
+    EXPECT_EQ(BN_cmp(expected_Pp, grp.P_prime), 0);
+
+    // g^P' == 1, g != 1
+    BN_CTX* ctx = BN_CTX_new();
+    BIGNUM* check = BN_new();
+    ASSERT_TRUE(BN_mod_exp(check, grp.g, grp.P_prime, grp.P, ctx) == 1);
+    EXPECT_TRUE(BN_is_one(check));
+    EXPECT_FALSE(BN_is_one(grp.g));
+
+    // h^P' == 1, h != 1
+    ASSERT_TRUE(BN_mod_exp(check, grp.h, grp.P_prime, grp.P, ctx) == 1);
+    EXPECT_TRUE(BN_is_one(check));
+    EXPECT_FALSE(BN_is_one(grp.h));
+    EXPECT_NE(BN_cmp(grp.h, grp.g), 0);
+
+    BN_free(expected_Pp);
+    BN_free(check);
+    BN_CTX_free(ctx);
+}
+
+} // namespace
+
+TEST(dao_vss, ffdhe2048_parameters)
+{
+    dao_vss_group grp;
+    ASSERT_TRUE(dao_vss_group_generate(grp, 2047));
+    check_group_invariants(grp, 2048, 2047);
+}
+
+TEST(dao_vss, ffdhe6144_parameters)
+{
+    dao_vss_group grp;
+    ASSERT_TRUE(dao_vss_group_generate(grp, 6143));
+    check_group_invariants(grp, 6144, 6143);
+}
+
+// ================= integer VSS bounds =================
+
+TEST(dao_vss, integer_values_do_not_wrap)
+{
+    dao_vss_group grp;
+    ASSERT_TRUE(dao_vss_group_generate(grp, 511));
+
+    // Representative secrets well below P'.
+    const char* secrets[] = {
+        "0",
+        "1",
+        "170141183460469231731687303715884105728",                     // 2^127
+        "57896044618658097711785492504343953926634992332820282019728792003956564819968", // 2^255
+    };
+
+    for (const char* s : secrets) {
+        BIGNUM* secret = nullptr;
+        ASSERT_NE(BN_dec2bn(&secret, s), 0);
+        ASSERT_LT(BN_cmp(secret, grp.P_prime), 0);
+
+        dao_vss_commitments commits;
+        std::vector<BIGNUM*> shares;
+        std::vector<BIGNUM*> blindings;
+        ASSERT_TRUE(dao_vss_deal(grp, secret, 16, 7, commits, shares, blindings));
+
+        for (size_t i = 0; i < 16; ++i) {
+            EXPECT_FALSE(BN_is_negative(shares[i]));
+            EXPECT_LT(BN_cmp(shares[i], grp.P_prime), 0);
+            EXPECT_FALSE(BN_is_negative(blindings[i]));
+            EXPECT_LT(BN_cmp(blindings[i], grp.P_prime), 0);
+
+            EXPECT_TRUE(dao_vss_verify_share(grp, commits, 16,
+                                             static_cast<uint32_t>(i + 1),
+                                             shares[i], blindings[i]));
+        }
+
+        BN_free(secret);
+        for (auto* x : shares)    BN_free(x);
+        for (auto* x : blindings) BN_free(x);
+    }
+}
+
+TEST(dao_vss, verify_share_rejects_bad_index)
+{
+    dao_vss_group grp;
+    ASSERT_TRUE(dao_vss_group_generate(grp, 511));
+
+    BIGNUM* secret = nullptr;
+    BN_dec2bn(&secret, "12345");
+
+    dao_vss_commitments commits;
+    std::vector<BIGNUM*> shares;
+    std::vector<BIGNUM*> blindings;
+    ASSERT_TRUE(dao_vss_deal(grp, secret, 16, 7, commits, shares, blindings));
+
+    EXPECT_FALSE(dao_vss_verify_share(grp, commits, 16, 0,
+                                      shares[0], blindings[0]));
+    EXPECT_FALSE(dao_vss_verify_share(grp, commits, 16, 17,
+                                      shares[0], blindings[0]));
+
+    BN_free(secret);
+    for (auto* x : shares)    BN_free(x);
+    for (auto* x : blindings) BN_free(x);
+}
+
+TEST(dao_vss, verify_share_rejects_tampering)
+{
+    dao_vss_group grp;
+    ASSERT_TRUE(dao_vss_group_generate(grp, 511));
+
+    BIGNUM* secret = nullptr;
+    BN_dec2bn(&secret, "987654321");
+
+    dao_vss_commitments commits;
+    std::vector<BIGNUM*> shares;
+    std::vector<BIGNUM*> blindings;
+    ASSERT_TRUE(dao_vss_deal(grp, secret, 16, 7, commits, shares, blindings));
+
+    // Correct case.
+    EXPECT_TRUE(dao_vss_verify_share(grp, commits, 16, 3,
+                                     shares[2], blindings[2]));
+
+    // share + 1
+    {
+        BIGNUM* tampered = BN_dup(shares[2]);
+        BN_add_word(tampered, 1);
+        EXPECT_FALSE(dao_vss_verify_share(grp, commits, 16, 3,
+                                          tampered, blindings[2]));
+        BN_free(tampered);
+    }
+
+    // share - 1
+    if (!BN_is_zero(shares[2])) {
+        BIGNUM* tampered = BN_dup(shares[2]);
+        BN_sub_word(tampered, 1);
+        EXPECT_FALSE(dao_vss_verify_share(grp, commits, 16, 3,
+                                          tampered, blindings[2]));
+        BN_free(tampered);
+    }
+
+    // blinding + 1
+    {
+        BIGNUM* tampered = BN_dup(blindings[2]);
+        BN_add_word(tampered, 1);
+        EXPECT_FALSE(dao_vss_verify_share(grp, commits, 16, 3,
+                                          shares[2], tampered));
+        BN_free(tampered);
+    }
+
+    // wrong commitment
+    {
+        dao_vss_commitments bad = commits;
+        bad.C[0][0] ^= 0x01;
+        EXPECT_FALSE(dao_vss_verify_share(grp, bad, 16, 3,
+                                          shares[2], blindings[2]));
+    }
+
+    // truncated commitment vector
+    {
+        dao_vss_commitments bad = commits;
+        bad.C.pop_back();
+        EXPECT_FALSE(dao_vss_verify_share(grp, bad, 16, 3,
+                                          shares[2], blindings[2]));
+    }
+
+    // empty commitment vector
+    {
+        dao_vss_commitments bad;
+        EXPECT_FALSE(dao_vss_verify_share(grp, bad, 16, 3,
+                                          shares[2], blindings[2]));
+    }
+
+    BN_free(secret);
+    for (auto* x : shares)    BN_free(x);
+    for (auto* x : blindings) BN_free(x);
 }

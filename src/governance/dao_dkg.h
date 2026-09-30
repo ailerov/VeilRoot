@@ -233,6 +233,7 @@ bool dao_vss_deal(const dao_vss_group& grp,
 
 bool dao_vss_verify_share(const dao_vss_group& grp,
                           const dao_vss_commitments& commitments,
+                          uint32_t n,
                           uint32_t i,
                           const BIGNUM* share,
                           const BIGNUM* blinding);

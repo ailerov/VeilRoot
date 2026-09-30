@@ -358,19 +358,48 @@ static int dao_vss_select_named_group(unsigned int required_order_bits)
     return NID_undef;
 }
 
+// Append x as a fixed-width big-endian byte string to out.
+static bool dao_bn_append_fixed(std::vector<uint8_t>& out,
+                                const BIGNUM* x,
+                                size_t width)
+{
+    if (!x) return false;
+    std::vector<uint8_t> tmp(width);
+    if (BN_bn2binpad(x, tmp.data(), static_cast<int>(width)) !=
+        static_cast<int>(width)) {
+        return false;
+    }
+    out.insert(out.end(), tmp.begin(), tmp.end());
+    return true;
+}
+
+// Deterministic derivation of h from the complete group parameter set.
+// The hash input binds domain, group name, P, P', and g, plus a counter.
+// The result is a member of the quadratic-residue subgroup of order P'.
 static bool dao_vss_derive_h(const BIGNUM* P,
+                             const BIGNUM* P_prime,
+                             const BIGNUM* g,
                              const char* group_name,
                              BIGNUM* h_out,
                              BN_CTX* ctx)
 {
-    if (!P || !group_name || !h_out || !ctx) return false;
+    if (!P || !P_prime || !g || !group_name || !h_out || !ctx) return false;
 
     const size_t p_bytes = static_cast<size_t>(BN_num_bytes(P));
-    const std::string prefix =
-        std::string("VeilRoot-DAO-VSS-H-V1|") + group_name;
 
     for (uint32_t counter = 0; counter < 256; ++counter) {
-        std::vector<uint8_t> input(prefix.begin(), prefix.end());
+        std::vector<uint8_t> input;
+        static const char DOMAIN[] = "VeilRoot-DAO-VSS-H-V2";
+        input.insert(input.end(), DOMAIN, DOMAIN + sizeof(DOMAIN) - 1);
+        input.push_back(0);
+        input.insert(input.end(), group_name,
+                     group_name + std::strlen(group_name));
+        input.push_back(0);
+
+        if (!dao_bn_append_fixed(input, P, p_bytes))       return false;
+        if (!dao_bn_append_fixed(input, P_prime, p_bytes)) return false;
+        if (!dao_bn_append_fixed(input, g, p_bytes))       return false;
+
         input.push_back(static_cast<uint8_t>(counter & 0xff));
         input.push_back(static_cast<uint8_t>((counter >> 8) & 0xff));
         input.push_back(static_cast<uint8_t>((counter >> 16) & 0xff));
@@ -400,6 +429,16 @@ static bool dao_vss_derive_h(const BIGNUM* P,
         BN_free(x);
 
         if (BN_is_one(h_out)) continue;
+
+        // Verify h is in the subgroup of order P'.
+        BIGNUM* h_check = BN_new();
+        if (!h_check) return false;
+        const bool ok_h =
+            BN_mod_exp(h_check, h_out, P_prime, P, ctx) == 1 &&
+            BN_is_one(h_check);
+        BN_free(h_check);
+        if (!ok_h) continue;
+
         return true;
     }
     return false;
@@ -414,6 +453,12 @@ bool dao_vss_group_generate(dao_vss_group& out, unsigned int required_order_bits
     // Test-only fixed 512-bit safe-prime group. P' is 511 bits, which
     // exceeds the ~387-bit required_order_bits for the current
     // test configuration (k=60, target_N=128, security_bits=32).
+    //
+    // This fixture uses g=4, which is a generator of the same
+    // prime-order quadratic-residue subgroup for this safe-prime P.
+    // It intentionally does not exercise the production FFDHE g=2
+    // path; that path is tested separately by ffdhe2048_parameters
+    // and ffdhe6144_parameters.
     //
     // Using a fixed, verified group here keeps ordinary DKG tests
     // fast. The production path below is unchanged.
@@ -532,6 +577,28 @@ bool dao_vss_group_generate(dao_vss_group& out, unsigned int required_order_bits
         return false;
     }
 
+    // Explicit subgroup check for G: G^P' == 1 mod P and G != 1.
+    // For safe-prime P, QR(P) has prime order P'; this makes the
+    // assumption enforced rather than implicit.
+    {
+        BIGNUM* g_check = BN_new();
+        if (!g_check) {
+            BN_free(expected_Q);
+            DH_free(dh);
+            return false;
+        }
+        const bool g_ok =
+            BN_mod_exp(g_check, G, Q, P, guard.ctx) == 1 &&
+            BN_is_one(g_check) &&
+            !BN_is_one(G);
+        BN_free(g_check);
+        if (!g_ok) {
+            BN_free(expected_Q);
+            DH_free(dh);
+            return false;
+        }
+    }
+
     BIGNUM* h_val = BN_new();
     if (!h_val) {
         BN_free(expected_Q);
@@ -551,7 +618,7 @@ bool dao_vss_group_generate(dao_vss_group& out, unsigned int required_order_bits
             return false;
     }
 
-    if (!dao_vss_derive_h(P, group_name, h_val, guard.ctx)) {
+    if (!dao_vss_derive_h(P, Q, G, group_name, h_val, guard.ctx)) {
         BN_free(h_val);
         BN_free(expected_Q);
         DH_free(dh);
@@ -715,8 +782,12 @@ bool dao_vss_deal(const dao_vss_group& grp,
         BIGNUM* hb = BN_new();
         BIGNUM* C  = BN_new();
         if (!ga || !hb || !C) return false;
-        if (!BN_mod_exp(ga, grp.g, a[k], grp.P, ctx.ctx)) return false;
-        if (!BN_mod_exp(hb, grp.h, b[k], grp.P, ctx.ctx)) return false;
+        // Secret polynomial coefficients: use constant-time modular
+        // exponentiation where OpenSSL supports it.
+        if (!BN_mod_exp_mont_consttime(ga, grp.g, a[k], grp.P, ctx.ctx, nullptr))
+            return false;
+        if (!BN_mod_exp_mont_consttime(hb, grp.h, b[k], grp.P, ctx.ctx, nullptr))
+            return false;
         if (!BN_mod_mul(C, ga, hb, grp.P, ctx.ctx)) return false;
         commitments_out.C[k].assign(P_bytes, 0);
         BN_bn2binpad(C, commitments_out.C[k].data(),
@@ -763,11 +834,14 @@ bool dao_vss_deal(const dao_vss_group& grp,
 
 bool dao_vss_verify_share(const dao_vss_group& grp,
                           const dao_vss_commitments& commitments,
+                          uint32_t n,
                           uint32_t i,
                           const BIGNUM* share,
                           const BIGNUM* blinding)
 {
     if (!grp.valid() || !share || !blinding) return false;
+    if (i == 0 || i > n) return false;
+    if (commitments.C.empty()) return false;
 
     CtxGuard ctx;
     if (!ctx.ok()) return false;
