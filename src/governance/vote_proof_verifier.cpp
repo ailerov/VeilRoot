@@ -8,6 +8,7 @@
 
 #include "governance/dao_clsag.h"
 #include "governance/dao_dkg.h"
+#include "ringct/rctOps.h"
 
 namespace cryptonote {
 
@@ -174,12 +175,28 @@ verification_result VoteProofVerifier::verify(
         }
     }
 
-    (void)clsag_ctxs;
+    // Step 15: weighted DAO CLSAG per input.
+    for (size_t i = 0; i < proof.inputs.size(); ++i) {
+        if (!dao_clsag_verify(clsag_ctxs[i], proof.inputs[i].signature))
+            return fail("step15: CLSAG verification failed");
+    }
 
-    // Step 15+ not implemented. Returning success here would accept
+    // Step 16: C_W == sum of per-input V_i.
+    {
+        rct::key acc = rct::identity();
+        for (const auto& in : proof.inputs) {
+            rct::key tmp;
+            rct::addKeys(tmp, acc, in.weight_commitment);
+            acc = tmp;
+        }
+        if (!(acc == proof.C_W))
+            return fail("step16: C_W does not match sum of V_i");
+    }
+
+    // Step 17+ not implemented. Returning success here would accept
     // votes that have not been fully verified; the caller treats any
     // non-success as vote-invalid.
-    return fail("step15+: not yet implemented");
+    return fail("step17+: not yet implemented");
 }
 
 } // namespace cryptonote

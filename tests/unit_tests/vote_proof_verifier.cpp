@@ -9,6 +9,7 @@
 #include "gtest/gtest.h"
 
 #include "cryptonote_basic/cryptonote_format_utils.h"
+#include "ringct/rctOps.h"
 #include "blockchain_db/testdb.h"
 #include "governance/vote_proof_verifier.h"
 #include "governance/vote_proof_v2.h"
@@ -35,6 +36,14 @@ public:
     {
         output_data_t od{};
         od.height = height;
+
+        // Fill pubkey and commitment with a valid compressed Ed25519
+        // point. The all-zero default is not a curve point and
+        // ge_frombytes_vartime rejects it inside dao_clsag_verify.
+        rct::key id = rct::identity();
+        std::memcpy(od.pubkey.data, id.bytes, 32);
+        od.commitment = id;
+
         outputs[gi] = od;
     }
 
@@ -79,6 +88,13 @@ vote_input_v2 make_ring_input(size_t ring_size)
     for (size_t i = 0; i < ring_size; ++i)
         in.key_offsets.push_back(i == 0 ? 0 : 1);
     in.signature.s.resize(ring_size);
+
+    // sig.I and sig.D must be valid compressed curve points; the
+    // all-zero default fails ge_frombytes_vartime inside
+    // dao_clsag_verify before the structural checks run.
+    rct::key id = rct::identity();
+    in.signature.I = id;
+    in.signature.D = id;
     return in;
 }
 
@@ -358,8 +374,10 @@ TEST(vote_proof_verifier, step9_output_missing)
     EXPECT_NE(r.reason.find("step9"), std::string::npos);
 }
 
-TEST(vote_proof_verifier, step15_not_implemented)
+TEST(vote_proof_verifier, step15_clsag_fails_first)
 {
+    // A structurally valid vote with an empty CLSAG (identity s vector,
+    // zero c1) reaches step 15 and is rejected there.
     VerifierTestDB db;
     db.have_proposal = true;
     db.proposal_submission_height = 50;
