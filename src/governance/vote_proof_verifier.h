@@ -3,7 +3,10 @@
 
 #pragma once
 
-#include "vote_proof.h"
+#include <string>
+#include <unordered_set>
+
+#include "governance/vote_proof_v2.h"
 #include "cryptonote_basic/cryptonote_basic.h"
 #include "blockchain_db/blockchain_db.h"
 #include "cryptonote_core/blockchain.h"  // for proposal_record
@@ -19,13 +22,16 @@ struct verification_result
 class VoteProofVerifier
 {
 public:
+    // Read-only with respect to DAO consensus state. Block-processing
+    // performs the state mutation (spec section 20 step 25) after this
+    // returns success. `block_nullifiers` carries the DAO nullifiers of
+    // the other DAO V2 votes already accepted in this block.
     static verification_result verify(
-        const vote_proof& proof,
-        const aggregate_vote_proof& agg_proof,
+        const vote_proof_v2& proof,
         BlockchainDB& db,
         const Blockchain& blockchain,
-        uint64_t current_height
-    );
+        uint64_t block_height,
+        const std::unordered_set<crypto::hash>& block_nullifiers);
 };
 
 } // namespace cryptonote
