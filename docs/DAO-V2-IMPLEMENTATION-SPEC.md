@@ -371,23 +371,25 @@ No public wallet identity is introduced. No new linkability surface.
 
 ---
 
-## 16. Spent-output protection
+## 16. Output reference validity
 
-Because DAO voting is non-consuming, the nullifier is not a normal spend
-key image.
+DAO voting is non-consuming: the vote does not spend the referenced
+outputs. The proposal-scoped DAO nullifier prevents reuse of the same
+authority across votes; it is not a Monero spend key image.
 
-At vote inclusion, every ring member of every DAO vote input must be an
-output that is unspent in the parent blockchain state.
+Consensus does NOT require any referenced ring member to be unspent.
+Spent status is not a consensus validation condition for a DAO ring
+member. This is intentional.
 
-- Real output must be unspent at parent state.
-- Decoy ring members must also be unspent at parent state.
-- All output references must be valid.
-- Output heights, commitments, public keys are loaded from canonical
+- Every referenced output must exist in canonical parent chain state.
+- Output heights, commitments, and public keys are loaded from canonical
   chain state, not from the transaction.
-- Vote uses parent-state UTXO status.
-- A same-block spend of a DAO-voted output does not invalidate the vote,
-  because the parent state still shows the output unspent.
-- An output already spent before the vote block invalidates the vote.
+- The ring exists solely to hide which output authorized the vote.
+- The wallet should select currently eligible unspent outputs when
+  constructing a vote; that is a wallet selection rule, not a consensus
+  rule.
+- A valid vote referencing an already-spent ring member is accepted by
+  consensus.
 
 ---
 
@@ -492,9 +494,14 @@ Bulletproof or RingCT proof used by DAO V2 has its own typed V2 structure.
 5. vote_height == current block height.
 6. tally-key epoch is correct for this proposal.
 7. input count within consensus bounds.
-8. every ring is structurally valid.
-9. every referenced output exists.
-10. every referenced output is unspent in parent state.
+8. every ring is structurally valid: non-empty; key_offsets count ==
+   ring size; expanded absolute-index count == ring size; CLSAG response
+   vector count == ring size; relative-offset expansion cannot overflow;
+   absolute indices contain no duplicates. No DAO-specific minimum or
+   maximum ring size is defined by this specification.
+9. every referenced output exists in canonical parent state, and its
+   canonical P/C/height are loaded from chain.
+10. (removed; spent status is not a consensus condition — see §16.)
 11. ring member indices unique within the input.
 12. nullifier count matches input count.
 13. nullifiers are non-zero and unique within the transaction.
@@ -862,7 +869,8 @@ Required before browser integration:
   decryptions, final tally.
 - Tamper tests for every wire field and every proof element.
 - Consensus adversarial tests: double vote, same nullifier twice, split
-  wallet, spent ring member, duplicate ring member, malformed ring,
+  wallet, spent ring member accepted as decoy/reference (DAO voting is
+  non-consuming), duplicate ring member, malformed ring,
   invalid age, inflated W, negative W, oversized W, S outside [-W, W],
   parity violation, wrong proposal, wrong vote height, stale tx,
   same-block spend, reorg after vote, reorg after tally, reorg after
