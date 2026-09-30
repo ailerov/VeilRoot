@@ -93,10 +93,10 @@ rct::clsag make_reference_sig()
     sig.s  = {
         hex_to_key("44117aa4c35a23dff3a5645c90498c05ffffffffffffffffffffffffffffff04"),
         hex_to_key("45117aa4c35a23dff3a5645c90498c05ffffffffffffffffffffffffffffff03"),
-        hex_to_key("1f990fe59996a27b6f0093c30bbbc9fe21088e23f71dad9012a36ea36e3f4f05"),
+        hex_to_key("b81bd915fec7c5fdbbe454ac109d058a73f9edb90fe25eec0af3019191673b09"),
         hex_to_key("47117aa4c35a23dff3a5645c90498c05ffffffffffffffffffffffffffffff05")
     };
-    sig.c1 = hex_to_key("4e888978058f670f1bbe6e4fa652aab93d28131c00f9ac3146c02b95f266c306");
+    sig.c1 = hex_to_key("c0c43164852b92430b2b00b9bd34a167ea8cf6ae9420994d11617eefad8f5d0d");
     sig.I  = hex_to_key("35e281077984811952d31d39fa7103ba11dae6cd1befb0712016fb10e9ce4eca");
     sig.D  = hex_to_key("1c96b01c70452fea17a029c5cae0f3e7d72dc81c22a9f71c214f4c5226fe5443");
     return sig;

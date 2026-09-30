@@ -102,7 +102,7 @@ rct::key build_message(
     const rct::key& proposal_id,
     uint64_t proposal_submission_height,
     uint64_t vote_height,
-    uint32_t tally_key_epoch,
+    uint64_t tally_key_epoch,
     const std::vector<uint64_t>& out_idx,
     const std::vector<uint64_t>& out_h,
     const std::vector<rct::key>& P,
@@ -130,7 +130,7 @@ rct::key build_message(
     m.insert(m.end(), proposal_id.bytes, proposal_id.bytes + 32);
     for (int j = 0; j < 8; ++j) m.push_back((proposal_submission_height >> (8*j)) & 0xff);
     for (int j = 0; j < 8; ++j) m.push_back((vote_height >> (8*j)) & 0xff);
-    for (int j = 0; j < 4; ++j) m.push_back((tally_key_epoch >> (8*j)) & 0xff);
+    for (int j = 0; j < 8; ++j) m.push_back((tally_key_epoch >> (8*j)) & 0xff);
     m.insert(m.end(), ring_digest.bytes, ring_digest.bytes + 32);
     m.insert(m.end(), N.bytes, N.bytes + 32);
     m.insert(m.end(), V.bytes, V.bytes + 32);
@@ -149,7 +149,7 @@ TEST(dao_clsag_vector_gen, DISABLED_print_reference_vector)
 
     const uint64_t proposal_submission_height = 50000;
     const uint64_t vote_height                = 51000;
-    const uint32_t tally_key_epoch            = 1;
+    const uint64_t tally_key_epoch            = 1;
 
     rct::key proposal_id;
     std::memset(proposal_id.bytes, 0x33, 32);
