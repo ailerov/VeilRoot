@@ -75,7 +75,7 @@ void GovernanceManager::rollback_block(const block& blk, const std::vector<trans
     // END_VNS_PARAMETER_EXECUTION_ROLLBACK
 
     // 2. Vote rollback – nullifier removal + tally reversal + vote-record removal
-    m_votes.rollback_block(blk, height);
+    m_votes.rollback_block(blk, txs, height);
 
     // 3. Lifecycle rollback – currently a no‑op
     m_lifecycle.rollback_block(height);

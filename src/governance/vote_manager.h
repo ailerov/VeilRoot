@@ -29,7 +29,9 @@ public:
     VoteManager(GovernanceDB& db, const governance_params& params);
 
     bool process_block(const block& blk, uint64_t height);
-    bool rollback_block(const block& blk, uint64_t height);
+    bool rollback_block(const block& blk,
+                        const std::vector<transaction>& txs,
+                        uint64_t height);
 
     // BEGIN_VNS_PROCESS_VOTE
     vote_result process_vote(const transaction& tx, uint64_t height, bool dry_run);

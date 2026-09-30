@@ -77,49 +77,127 @@ bool VoteManager::process_block(const block& blk, uint64_t height)
     return true;
 }
 
-bool VoteManager::rollback_block(const block& blk, uint64_t height)
+bool VoteManager::rollback_block(const block& blk,
+                                 const std::vector<transaction>& txs,
+                                 uint64_t height)
 {
+    // Build a tx-hash -> transaction map from the popped set; the LMDB
+    // store may already have dropped or be in the process of dropping
+    // these, so use the caller-supplied vector as the authoritative
+    // source for V2 proof recovery.
+    std::unordered_map<crypto::hash, const transaction*> by_hash;
+    for (const auto& tx : txs) {
+        by_hash[cryptonote::get_transaction_hash(tx)] = &tx;
+    }
+
     for (const auto& tx_hash : blk.tx_hashes) {
-        transaction tx;
-        if (!m_db.get_transaction(tx_hash, tx))
-            continue;
-        if (!is_vote_tx(tx))
-            continue;
-
-        vote_proof vp;
-        if (!extract_vote(tx, vp))
-            continue;
-
-        // BEGIN_VNS_VOTE_RECORD_ROLLBACK
-        // Remove the vote record (key_image) from the DB
-        if (tx.vin.size() == 1 && tx.vin[0].type() == typeid(txin_vns_vote))
-        {
-            const auto& vote_in = boost::get<txin_vns_vote>(tx.vin[0]);
-            m_db.remove_vote_record(vp.proposal_id, vote_in.k_image);
+        transaction tx_storage;
+        const transaction* txp = nullptr;
+        auto it = by_hash.find(tx_hash);
+        if (it != by_hash.end()) {
+            txp = it->second;
+        } else {
+            if (!m_db.get_transaction(tx_hash, tx_storage))
+                continue;
+            txp = &tx_storage;
         }
-        // END_VNS_VOTE_RECORD_ROLLBACK
+        const transaction& tx = *txp;
 
-        crypto::hash nullifier = vp.voting_nullifiers.empty() ? crypto::null_hash : vp.voting_nullifiers[0];
-        if (nullifier == crypto::null_hash)
-            continue;
+        const vote_kind kind = classify_vote_tx(tx);
 
-        // Remove nullifier
-        m_db.remove_nullifier(vp.proposal_id, nullifier);
+        if (kind == vote_kind::v1) {
+            vote_proof vp;
+            if (!extract_vote(tx, vp))
+                continue;
 
-        // Subtract from tally
-        uint64_t yes_w, no_w, yes_b, no_b;
-        if (m_db.get_outcome(vp.proposal_id, yes_w, no_w, yes_b, no_b)) {
-            if (vp.direction_yes) {
-                yes_w -= (yes_w >= vp.voting_weight ? vp.voting_weight : yes_w);
-                yes_b -= (yes_b >= vp.participation_balance ? vp.participation_balance : yes_b);
-            } else {
-                no_w -= (no_w >= vp.voting_weight ? vp.voting_weight : no_w);
-                no_b -= (no_b >= vp.participation_balance ? vp.participation_balance : no_b);
+            // BEGIN_VNS_VOTE_RECORD_ROLLBACK
+            if (tx.vin.size() == 1 && tx.vin[0].type() == typeid(txin_vns_vote))
+            {
+                const auto& vote_in = boost::get<txin_vns_vote>(tx.vin[0]);
+                m_db.remove_vote_record(vp.proposal_id, vote_in.k_image);
             }
-            m_db.set_outcome(vp.proposal_id, yes_w, no_w, yes_b, no_b);
+            // END_VNS_VOTE_RECORD_ROLLBACK
+
+            crypto::hash nullifier = vp.voting_nullifiers.empty()
+                ? crypto::null_hash : vp.voting_nullifiers[0];
+            if (nullifier == crypto::null_hash)
+                continue;
+
+            m_db.remove_nullifier(vp.proposal_id, nullifier);
+
+            uint64_t yes_w, no_w, yes_b, no_b;
+            if (m_db.get_outcome(vp.proposal_id, yes_w, no_w, yes_b, no_b)) {
+                if (vp.direction_yes) {
+                    yes_w -= (yes_w >= vp.voting_weight ? vp.voting_weight : yes_w);
+                    yes_b -= (yes_b >= vp.participation_balance ? vp.participation_balance : yes_b);
+                } else {
+                    no_w -= (no_w >= vp.voting_weight ? vp.voting_weight : no_w);
+                    no_b -= (no_b >= vp.participation_balance ? vp.participation_balance : no_b);
+                }
+                m_db.set_outcome(vp.proposal_id, yes_w, no_w, yes_b, no_b);
+            }
+
+            MINFO("Rolled back V1 vote for proposal " << vp.proposal_id);
+            continue;
         }
 
-        MINFO("Rolled back vote for proposal " << vp.proposal_id);
+        if (kind != vote_kind::v2)
+            continue;
+
+        vote_proof_v2 proof;
+        if (!extract_vote_v2(tx, proof))
+            continue;
+
+        BlockchainDB& bdb = m_db.get_underlying_db();
+
+        dao::dao_tally_key_record key_rec;
+        if (!bdb.get_dao_tally_key(
+                static_cast<uint32_t>(proof.tally_key_epoch), key_rec))
+            continue;
+        dao::PaillierPublicKey pk;
+        if (!pk.deserialize_modulus(key_rec.N))
+            continue;
+
+        // Reverse the aggregate contribution.
+        dao_proposal_aggregate agg;
+        if (bdb.get_dao_proposal_aggregate(proof.proposal_id, agg)) {
+            std::vector<uint8_t> E_W_in(proof.E_W.data.begin(),
+                                        proof.E_W.data.end());
+            std::vector<uint8_t> E_S_in(proof.E_S.data.begin(),
+                                        proof.E_S.data.end());
+            std::vector<uint8_t> inv, tmp;
+            bool ok = true;
+            if (!agg.aggregate_E_W.empty()) {
+                ok = ok && pk.inverse(E_W_in, inv) &&
+                     pk.add(agg.aggregate_E_W, inv, tmp);
+                if (ok) agg.aggregate_E_W = tmp;
+            }
+            if (ok && !agg.aggregate_E_S.empty()) {
+                ok = ok && pk.inverse(E_S_in, inv) &&
+                     pk.add(agg.aggregate_E_S, inv, tmp);
+                if (ok) agg.aggregate_E_S = tmp;
+            }
+            if (ok) {
+                // Spec section 25: commitment rollback uses point
+                // subtraction.
+                rct::key new_C_W;
+                rct::subKeys(new_C_W, agg.aggregate_C_W, proof.C_W);
+                agg.aggregate_C_W = new_C_W;
+
+                rct::key new_C_S;
+                rct::subKeys(new_C_S, agg.aggregate_C_S, proof.C_S);
+                agg.aggregate_C_S = new_C_S;
+
+                bdb.add_dao_proposal_aggregate(proof.proposal_id, agg);
+            }
+        }
+
+        bdb.remove_dao_vote_record_v2(tx_hash);
+
+        for (const auto& nf : proof.nullifiers)
+            bdb.remove_vote_nullifier(proof.proposal_id, nf);
+
+        MINFO("Rolled back V2 vote for proposal " << proof.proposal_id);
     }
     return true;
 }

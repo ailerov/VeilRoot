@@ -65,6 +65,7 @@ transaction make_vote_tx(
     vp.participation_balance = participation_balance;
     vp.voting_weight = voting_weight;
     vp.voting_nullifiers.push_back(nullifier);
+    vp.output_heights.push_back(1); // must match voting_nullifiers size
     vp.balance_commitment = rct::identity();
     vp.weight_commitment = rct::identity();
     vp.aggregate_proof.clear();
@@ -186,9 +187,9 @@ TEST_F(VoteFixture, ValidVotePersistsNullifierAndOutcome)
 
     const crypto::hash pid       = make_hash(0xcc);
     const crypto::hash nullifier = make_hash(0xdd);
-    const uint64_t height = 10;
+    const uint64_t height = 1000;
 
-    store_proposal(gov, pid, /*submit=*/1, /*end=*/100);
+    store_proposal(gov, pid, /*submit=*/1, /*end=*/2000);
 
     transaction tx = make_vote_tx(pid, /*yes=*/true,
                                   /*balance=*/5000,
@@ -204,9 +205,12 @@ TEST_F(VoteFixture, ValidVotePersistsNullifierAndOutcome)
 
     EXPECT_TRUE(gov.has_nullifier(pid, nullifier));
 
+    // Current V1 semantics: total_balance = participation_balance;
+    // total_weight = balance * f_i where f_i is derived from output
+    // height, not the wallet-supplied voting_weight field.
     uint64_t yw = 0, nw = 0, yb = 0, nb = 0;
     EXPECT_TRUE(gov.get_outcome(pid, yw, nw, yb, nb));
-    EXPECT_EQ(yw, 7000u);
+    EXPECT_EQ(yw, 5000u);
     EXPECT_EQ(yb, 5000u);
     EXPECT_EQ(nw, 0u);
     EXPECT_EQ(nb, 0u);
@@ -220,9 +224,9 @@ TEST_F(VoteFixture, DuplicateVoteIsRejectedWithoutSecondCount)
 
     const crypto::hash pid       = make_hash(0xee);
     const crypto::hash nullifier = make_hash(0xff);
-    const uint64_t height = 10;
+    const uint64_t height = 1000;
 
-    store_proposal(gov, pid, /*submit=*/1, /*end=*/100);
+    store_proposal(gov, pid, /*submit=*/1, /*end=*/2000);
 
     transaction tx = make_vote_tx(pid, /*yes=*/true,
                                   /*balance=*/5000,
@@ -245,7 +249,7 @@ TEST_F(VoteFixture, DuplicateVoteIsRejectedWithoutSecondCount)
     // The tally must reflect only the first vote.
     uint64_t yw = 0, nw = 0, yb = 0, nb = 0;
     EXPECT_TRUE(gov.get_outcome(pid, yw, nw, yb, nb));
-    EXPECT_EQ(yw, 7000u);
+    EXPECT_EQ(yw, 5000u);
     EXPECT_EQ(yb, 5000u);
 }
 
