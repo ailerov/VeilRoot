@@ -7,7 +7,10 @@
 #include <vector>
 
 #include "governance/dao_clsag.h"
+#include "governance/dao_consistency.h"
 #include "governance/dao_dkg.h"
+#include "governance/dao_paillier.h"
+#include "governance/dao_vote_or_proof.h"
 #include "ringct/rctOps.h"
 
 namespace cryptonote {
@@ -193,10 +196,139 @@ verification_result VoteProofVerifier::verify(
             return fail("step16: C_W does not match sum of V_i");
     }
 
-    // Step 17+ not implemented. Returning success here would accept
-    // votes that have not been fully verified; the caller treats any
-    // non-success as vote-invalid.
-    return fail("step17+: not yet implemented");
+    // Step 17: C_W and C_S are valid curve points in the main subgroup.
+    if (!rct::isInMainSubgroup(proof.C_W))
+        return fail("step17: C_W is not a valid curve point");
+    if (!rct::isInMainSubgroup(proof.C_S))
+        return fail("step17: C_S is not a valid curve point");
+
+    // Step 18: E_W and E_S are canonical Paillier ciphertexts in Z*_{N^2}.
+    BIGNUM* N = BN_bin2bn(key_rec.N.data(),
+                          static_cast<int>(key_rec.N.size()), nullptr);
+    if (!N)
+        return fail("step18: cannot load N");
+    auto bail_N = [&](const char* why) {
+        BN_free(N);
+        return fail(why);
+    };
+
+    if (proof.E_W.data.size() != dao::PAILLIER_CT_BYTES ||
+        proof.E_S.data.size() != dao::PAILLIER_CT_BYTES)
+        return bail_N("step18: ciphertext size");
+
+    auto valid_ct = [&](const std::array<uint8_t, 512>& raw) -> bool {
+        std::vector<uint8_t> v(raw.begin(), raw.end());
+        BIGNUM* c = BN_bin2bn(v.data(), static_cast<int>(v.size()), nullptr);
+        if (!c) return false;
+        BN_CTX* ctx = BN_CTX_new();
+        BIGNUM* N2 = BN_new(); BN_sqr(N2, N, ctx);
+        bool ok = (BN_cmp(c, N2) < 0) && !BN_is_zero(c);
+        // gcd(c, N2) == 1
+        BIGNUM* g = BN_new();
+        BN_gcd(g, c, N2, ctx);
+        ok = ok && BN_is_one(g);
+        BN_free(g); BN_free(N2); BN_CTX_free(ctx); BN_free(c);
+        return ok;
+    };
+    if (!valid_ct(proof.E_W.data)) return bail_N("step18: E_W invalid");
+    if (!valid_ct(proof.E_S.data)) return bail_N("step18: E_S invalid");
+
+    // Build the consistency context. The transcript is exactly the
+    // 32-byte digest produced by dao_vote_input_transcript.
+    dao::dao_vote_transcript_input ti;
+    ti.version                    = proof.version;
+    ti.proposal_id                = proof.proposal_id;
+    ti.proposal_submission_height = prop.submission_height;
+    ti.vote_height                = proof.vote_height;
+    ti.tally_key_epoch            = proof.tally_key_epoch;
+    std::memcpy(ti.tally_key_id.data, key_rec.key_id.data(), 32);
+
+    for (size_t i = 0; i < proof.inputs.size(); ++i) {
+        const vote_input_v2& in  = proof.inputs[i];
+        const dao_clsag_context& rc = clsag_ctxs[i];
+
+        ti.key_offsets.push_back(in.key_offsets);
+        ti.absolute_indices.push_back(rc.output_indices);
+        ti.P.push_back(rc.P);
+        ti.C.push_back(rc.C);
+        ti.output_heights.push_back(rc.output_heights);
+        ti.age_factors.push_back(rc.age_factors);
+        ti.nullifiers.push_back(proof.nullifiers[i]);
+    }
+    ti.C_W = proof.C_W;
+    ti.C_S = proof.C_S;
+    ti.E_W.assign(proof.E_W.data.begin(), proof.E_W.data.end());
+    ti.E_S.assign(proof.E_S.data.begin(), proof.E_S.data.end());
+
+    std::vector<uint8_t> transcript_digest = dao::dao_vote_input_transcript(ti);
+    if (transcript_digest.size() != 32)
+        return bail_N("step22: transcript could not be computed");
+
+    dao::dao_consistency_context cctx_w;
+    cctx_w.domain                = "C_W-Enc(W)";
+    cctx_w.version               = proof.version;
+    cctx_w.proposal_id           = proof.proposal_id;
+    cctx_w.vote_height           = proof.vote_height;
+    cctx_w.tally_key_epoch       = proof.tally_key_epoch;
+    cctx_w.vote_input_transcript = transcript_digest;
+
+    dao::dao_consistency_context cctx_s = cctx_w;
+    cctx_s.domain = "C_S-Enc(S)";
+
+    std::vector<uint8_t> E_W_vec(proof.E_W.data.begin(), proof.E_W.data.end());
+    std::vector<uint8_t> E_S_vec(proof.E_S.data.begin(), proof.E_S.data.end());
+
+    // Step 19: proof_W.
+    if (!dao::dao_consistency_verify(cctx_w, N, E_W_vec, proof.C_W,
+                                     proof.proof_W))
+        return bail_N("step19: consistency proof W failed");
+
+    // Step 20: proof_S.
+    if (!dao::dao_consistency_verify(cctx_s, N, E_S_vec, proof.C_S,
+                                     proof.proof_S))
+        return bail_N("step20: consistency proof S failed");
+
+    // Step 21: hidden-direction OR proof. Context binds the transcript
+    // digest and the pair of consistency proofs via extra_binding.
+    dao_or_context octx;
+    octx.version     = proof.version;
+    octx.proposal_id = proof.proposal_id;
+    octx.vote_height = proof.vote_height;
+    octx.nullifiers.reserve(proof.nullifiers.size());
+    for (const auto& nf : proof.nullifiers)
+        octx.nullifiers.push_back(rct::key{}); // see below
+    // dao_or_context uses std::vector<rct::key> nullifiers; convert.
+    octx.nullifiers.clear();
+    for (const auto& nf : proof.nullifiers) {
+        rct::key k{};
+        std::memcpy(k.bytes, nf.data, 32);
+        octx.nullifiers.push_back(k);
+    }
+    octx.key_offsets.clear();
+    for (const auto& in : proof.inputs)
+        for (uint64_t off : in.key_offsets)
+            octx.key_offsets.push_back(off);
+    octx.extra_binding = dao::dao_extra_binding(E_W_vec, E_S_vec,
+                                                proof.proof_W, proof.proof_S);
+    octx.C_W = proof.C_W;
+    octx.C_S = proof.C_S;
+
+    if (!dao_or_verify(octx, proof.direction_proof))
+        return bail_N("step21: direction OR proof failed");
+
+    // Step 22: transcript hash equals proof.transcript_hash.
+    {
+        crypto::hash want{};
+        std::memcpy(want.data, transcript_digest.data(), 32);
+        if (!(want == proof.transcript_hash))
+            return bail_N("step22: transcript hash mismatch");
+    }
+
+    BN_free(N);
+
+    // Step 23+ not implemented (nullifier persistence and same-block
+    // set live in the caller). Read-only verify() succeeds here.
+    return fail("step23+: not yet implemented");
 }
 
 } // namespace cryptonote
