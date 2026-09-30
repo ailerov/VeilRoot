@@ -21,6 +21,7 @@ set(governance_sources
     dao_threshold.cpp
     dao_dkg.cpp
     dao_dkg_transport.cpp
+    dao_consistency.cpp
     parameter_manager.cpp
 )
 
