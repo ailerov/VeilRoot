@@ -488,6 +488,13 @@ struct dao_tally_key_record
     uint32_t             threshold      = DAO_DKG_THRESHOLD;
     uint32_t             t              = DAO_DKG_SHARING_DEGREE;
     std::vector<uint8_t> committee_id_hash;   // 32 bytes
+
+    // Ordered committee member public keys. Exactly committee_size
+    // entries. Together with the epoch and the domain string this is
+    // what committee_id_hash commits to. A receiving node uses this
+    // list to map a P2P tally-share member_index to a real identity.
+    std::vector<std::vector<uint8_t>> committee_members;  // 32 bytes each
+
     std::vector<uint8_t> delta;               // 32 bytes, canonical big-endian
 
     std::vector<uint8_t> N;                   // 256 bytes

@@ -1555,6 +1555,9 @@ bool dao_tally_key_record::serialize(std::vector<uint8_t>& out) const
     // Strict canonical layout. Every field is length-prefixed or
     // fixed-width, in a single well-defined order.
     if (committee_id_hash.size() != 32) return false;
+    if (committee_members.size() != committee_size) return false;
+    for (const auto& m : committee_members)
+        if (m.size() != 32) return false;
     if (delta.size() != 32) return false;
     if (N.size() != PAILLIER_MODULUS_BYTES) return false;
     if (G.size() != PAILLIER_MODULUS_BYTES) return false;
@@ -1573,6 +1576,8 @@ bool dao_tally_key_record::serialize(std::vector<uint8_t>& out) const
     push_u32(out, threshold);
     push_u32(out, t);
     out.insert(out.end(), committee_id_hash.begin(), committee_id_hash.end());
+    for (const auto& m : committee_members)
+        out.insert(out.end(), m.begin(), m.end());
     out.insert(out.end(), delta.begin(), delta.end());
     out.insert(out.end(), N.begin(), N.end());
     out.insert(out.end(), G.begin(), G.end());
@@ -1609,6 +1614,9 @@ bool dao_tally_key_record::deserialize(const std::vector<uint8_t>& in)
     };
 
     if (!pull_fixed(32, committee_id_hash)) return false;
+    committee_members.assign(cs, {});
+    for (uint32_t i = 0; i < cs; ++i)
+        if (!pull_fixed(32, committee_members[i])) return false;
     if (!pull_fixed(32, delta)) return false;
     if (!pull_fixed(PAILLIER_MODULUS_BYTES, N)) return false;
     if (!pull_fixed(PAILLIER_MODULUS_BYTES, G)) return false;
@@ -5422,14 +5430,13 @@ bool dkg_run_with_transport(const dkg_config& cfg,
             out.record.threshold      = cfg.threshold;
             out.record.t              = cfg.threshold - 1;
 
-            out.record.committee_id_hash.assign(32, 0);
-            {
-                SHA256_CTX sha;
-                SHA256_Init(&sha);
-                unsigned char eb[4];
-                for (int i = 0; i < 4; ++i) eb[i] = (cfg.epoch >> (8*i)) & 0xff;
-                SHA256_Update(&sha, eb, 4);
-                SHA256_Final(out.record.committee_id_hash.data(), &sha);
+            out.record.committee_id_hash.assign(committee_id_hash,
+                                                 committee_id_hash + 32);
+            out.record.committee_members.clear();
+            out.record.committee_members.reserve(cfg.member_ids.size());
+            for (const auto& pk : cfg.member_ids) {
+                out.record.committee_members.push_back(
+                    std::vector<uint8_t>(pk.data, pk.data + sizeof(pk.data)));
             }
 
             out.record.delta.assign(32, 0);
