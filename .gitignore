@@ -134,3 +134,6 @@ external/libsecp256k1/install/
 /contrib/depends/work/
 /contrib/depends/*-*/
 /contrib/depends/sources/*.tar.gz
+
+# Trezor protobuf generated files (regenerated at CMake configure time)
+/src/device_trezor/trezor/messages/
