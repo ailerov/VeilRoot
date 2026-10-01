@@ -107,11 +107,14 @@ struct dao_vote_transcript_input
     std::vector<std::vector<uint64_t>> output_heights;
     std::vector<std::vector<uint8_t>>  age_factors;
     std::vector<crypto::hash>          nullifiers;
+    std::vector<rct::key>              balance_commitments;  // B_i per input
 
     rct::key             C_W;
     rct::key             C_S;
+    rct::key             C_B;
     std::vector<uint8_t> E_W;  // exactly 512 bytes
     std::vector<uint8_t> E_S;  // exactly 512 bytes
+    std::vector<uint8_t> E_B;  // exactly 512 bytes
 };
 
 // Returns SHA-256(canonical_encoding). Exactly 32 bytes. Returns empty

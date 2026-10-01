@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Shared helper that builds one fully-valid DAO V2 vote for tests.
-// Extracted so the e2e verifier test and the consensus apply/rollback
-// test use the same construction.
+// Covers the weight channel (V_i, weighted CLSAG), the signed channel
+// (C_S, E_S, proof_S), the participation-balance channel (B_i,
+// balance CLSAG with f=1, C_B, E_B, proof_B), and the hidden-direction
+// OR proof.
 
 #pragma once
 
@@ -46,6 +48,9 @@ struct ValidVote
     std::vector<uint8_t> E_S() const
     { return std::vector<uint8_t>(proof.E_S.data.begin(),
                                   proof.E_S.data.end()); }
+    std::vector<uint8_t> E_B() const
+    { return std::vector<uint8_t>(proof.E_B.data.begin(),
+                                  proof.E_B.data.end()); }
 };
 
 inline rct::key mk_scalar(uint8_t v)
@@ -69,12 +74,12 @@ inline crypto::hash hash_from_byte(uint8_t seed)
     return h;
 }
 
-// Build one fully-valid DAO V2 vote. The proposal_id and nullifier
-// are supplied so tests can distinguish votes. The caller supplies
-// the DB fixture separately (proposal_record and tally_key_record
-// must match the fields in ValidVote).
+// Build one fully-valid DAO V2 vote. The shared Paillier public key
+// must be the same across every vote that will be aggregated into one
+// proposal, otherwise the homomorphic add is meaningless.
 inline bool build_valid_vote(
     ValidVote& fx,
+    const dao::PaillierPublicKey& ppk,
     const crypto::hash& proposal_id,
     const crypto::hash& nullifier,
     uint32_t tally_epoch,
@@ -132,23 +137,37 @@ inline bool build_valid_vote(
     rct::scalarmultBase(RSG, R_S);
     rct::addKeys(C_S, SH, RSG);
 
-    dao::PaillierPrivateKey psk;
-    if (!psk.generate_for_testing(1024)) return false;
-    dao::PaillierPublicKey ppk = psk.public_key();
+    // --- Balance channel: B_l = C_l + rho_B * G ---
+    rct::key rho_B = mk_scalar(0x60);
+    rct::key rho_B_G;
+    rct::scalarmultBase(rho_B_G, rho_B);
+    rct::key B_l;
+    rct::addKeys(B_l, C[L], rho_B_G);
 
+    rct::key R_B;
+    sc_add(R_B.bytes, mask[L].bytes, rho_B.bytes);
+
+    uint64_t B_val = amt[L];
+
+    // --- Encrypt W, S, B ---
     BIGNUM* W_bn = BN_new(); BN_set_word(W_bn, W_val);
     BIGNUM* S_bn = BN_new(); BN_set_word(S_bn, W_val);
+    BIGNUM* B_bn = BN_new(); BN_set_word(B_bn, B_val);
     BIGNUM* r_W  = BN_new(); BN_set_word(r_W, 3);
     BIGNUM* r_S  = BN_new(); BN_set_word(r_S, 5);
+    BIGNUM* r_B  = BN_new(); BN_set_word(r_B, 7);
 
-    std::vector<uint8_t> E_W_raw, E_S_raw;
+    std::vector<uint8_t> E_W_raw, E_S_raw, E_B_raw;
     bool ok = ppk.encrypt(W_bn, r_W, E_W_raw) &&
-              ppk.encrypt(S_bn, r_S, E_S_raw);
+              ppk.encrypt(S_bn, r_S, E_S_raw) &&
+              ppk.encrypt(B_bn, r_B, E_B_raw);
     if (!ok) {
-        BN_free(W_bn); BN_free(S_bn); BN_free(r_W); BN_free(r_S);
+        BN_free(W_bn); BN_free(S_bn); BN_free(B_bn);
+        BN_free(r_W);  BN_free(r_S);  BN_free(r_B);
         return false;
     }
 
+    // --- Tally key record (from ppk) ---
     fx.key_rec.version        = 1;
     fx.key_rec.epoch          = tally_epoch;
     fx.key_rec.committee_size = 16;
@@ -171,6 +190,7 @@ inline bool build_valid_vote(
     fx.key_rec.key_id.assign(32, 0);
     std::memset(fx.key_rec.key_id.data(), 0x11, 32);
 
+    // --- Build transcript input ---
     dao::dao_vote_transcript_input ti;
     ti.version                    = 2;
     ti.proposal_id                = proposal_id;
@@ -191,14 +211,22 @@ inline bool build_valid_vote(
     ti.output_heights.push_back(hv);
     ti.age_factors.push_back(fv);
     ti.nullifiers.push_back(nullifier);
+    ti.balance_commitments.push_back(B_l);
     ti.C_W = V;
     ti.C_S = C_S;
+    ti.C_B = B_l;
     ti.E_W = E_W_raw;
     ti.E_S = E_S_raw;
+    ti.E_B = E_B_raw;
 
     std::vector<uint8_t> digest = dao::dao_vote_input_transcript(ti);
-    if (digest.size() != 32) return false;
+    if (digest.size() != 32) {
+        BN_free(W_bn); BN_free(S_bn); BN_free(B_bn);
+        BN_free(r_W);  BN_free(r_S);  BN_free(r_B);
+        return false;
+    }
 
+    // --- Consistency proofs W, S, B ---
     dao::dao_consistency_context cctx;
     cctx.domain                = "C_W-Enc(W)";
     cctx.version               = 2;
@@ -209,14 +237,33 @@ inline bool build_valid_vote(
 
     dao::dao_consistency_proof pW;
     if (!dao::dao_consistency_prove(cctx, ppk.N(), E_W_raw, V,
-                                    W_bn, r_W, R_W, pW)) return false;
+                                    W_bn, r_W, R_W, pW)) {
+        BN_free(W_bn); BN_free(S_bn); BN_free(B_bn);
+        BN_free(r_W);  BN_free(r_S);  BN_free(r_B);
+        return false;
+    }
 
     dao::dao_consistency_context cctx_s = cctx;
     cctx_s.domain = "C_S-Enc(S)";
     dao::dao_consistency_proof pS;
     if (!dao::dao_consistency_prove(cctx_s, ppk.N(), E_S_raw, C_S,
-                                    S_bn, r_S, R_S, pS)) return false;
+                                    S_bn, r_S, R_S, pS)) {
+        BN_free(W_bn); BN_free(S_bn); BN_free(B_bn);
+        BN_free(r_W);  BN_free(r_S);  BN_free(r_B);
+        return false;
+    }
 
+    dao::dao_consistency_context cctx_b = cctx;
+    cctx_b.domain = "C_B-Enc(B)";
+    dao::dao_consistency_proof pB;
+    if (!dao::dao_consistency_prove(cctx_b, ppk.N(), E_B_raw, B_l,
+                                    B_bn, r_B, R_B, pB)) {
+        BN_free(W_bn); BN_free(S_bn); BN_free(B_bn);
+        BN_free(r_W);  BN_free(r_S);  BN_free(r_B);
+        return false;
+    }
+
+    // --- Direction OR proof (independent of B) ---
     dao_or_context octx;
     octx.version     = 2;
     octx.proposal_id = proposal_id;
@@ -232,8 +279,13 @@ inline bool build_valid_vote(
     octx.C_S = C_S;
 
     dao_vote_or_proof orp;
-    if (!dao_or_prove(octx, true, R_S, R_W, orp)) return false;
+    if (!dao_or_prove(octx, true, R_S, R_W, orp)) {
+        BN_free(W_bn); BN_free(S_bn); BN_free(B_bn);
+        BN_free(r_W);  BN_free(r_S);  BN_free(r_B);
+        return false;
+    }
 
+    // --- Weight CLSAG ---
     dao_clsag_context cc;
     cc.proposal_id                = proposal_id;
     cc.proposal_submission_height = proposal_submission_height;
@@ -246,29 +298,51 @@ inline bool build_valid_vote(
     cc.age_factors    = fv;
     cc.V              = V;
 
-    rct::clsag sig;
+    rct::clsag w_sig;
     crypto::secret_key sk;
     std::memcpy(sk.data, x_s[L].bytes, 32);
-    if (!dao_clsag_generate(cc, L, sk, rho_l, sig)) return false;
+    if (!dao_clsag_generate(cc, L, sk, rho_l, w_sig)) {
+        BN_free(W_bn); BN_free(S_bn); BN_free(B_bn);
+        BN_free(r_W);  BN_free(r_S);  BN_free(r_B);
+        return false;
+    }
 
+    // --- Balance CLSAG (same ring, f=1) ---
+    dao_clsag_context bcc = cc;
+    bcc.age_factors.assign(N, 1);
+    bcc.V = B_l;
+
+    rct::clsag b_sig;
+    if (!dao_clsag_generate(bcc, L, sk, rho_B, b_sig)) {
+        BN_free(W_bn); BN_free(S_bn); BN_free(B_bn);
+        BN_free(r_W);  BN_free(r_S);  BN_free(r_B);
+        return false;
+    }
+
+    // --- Assemble wire ---
     fx.proof.version         = vote_proof_v2::VERSION;
     fx.proof.proposal_id     = proposal_id;
     fx.proof.vote_height     = vote_height;
     fx.proof.tally_key_epoch = tally_epoch;
 
     vote_input_v2 in;
-    in.key_offsets = rel_offsets;
-    in.weight_commitment = V;
-    in.signature = sig;
+    in.key_offsets        = rel_offsets;
+    in.weight_commitment  = V;
+    in.weight_signature   = w_sig;
+    in.balance_commitment = B_l;
+    in.balance_signature  = b_sig;
     fx.proof.inputs.push_back(in);
     fx.proof.nullifiers.push_back(nullifier);
 
     fx.proof.C_W = V;
     fx.proof.C_S = C_S;
+    fx.proof.C_B = B_l;
     std::memcpy(fx.proof.E_W.data.data(), E_W_raw.data(), 512);
     std::memcpy(fx.proof.E_S.data.data(), E_S_raw.data(), 512);
+    std::memcpy(fx.proof.E_B.data.data(), E_B_raw.data(), 512);
     fx.proof.proof_W = pW;
     fx.proof.proof_S = pS;
+    fx.proof.proof_B = pB;
     fx.proof.direction_proof = orp;
     std::memcpy(fx.proof.transcript_hash.data, digest.data(), 32);
 
@@ -280,7 +354,8 @@ inline bool build_valid_vote(
         fx.outputs[abs[i]] = od;
     }
 
-    BN_free(W_bn); BN_free(S_bn); BN_free(r_W); BN_free(r_S);
+    BN_free(W_bn); BN_free(S_bn); BN_free(B_bn);
+    BN_free(r_W);  BN_free(r_S);  BN_free(r_B);
     return true;
 }
 

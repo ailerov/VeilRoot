@@ -80,8 +80,10 @@ verification_result VoteProofVerifier::verify(
         const size_t n = in.key_offsets.size();
         if (n == 0)
             return fail("step8: empty ring");
-        if (in.signature.s.size() != n)
-            return fail("step8: CLSAG response/ring size mismatch");
+        if (in.weight_signature.s.size() != n)
+            return fail("step8: weight CLSAG response/ring size mismatch");
+        if (in.balance_signature.s.size() != n)
+            return fail("step8: balance CLSAG response/ring size mismatch");
 
         // Expand relative offsets to absolute global indices; overflow-safe.
         std::vector<uint64_t> abs;
@@ -178,11 +180,29 @@ verification_result VoteProofVerifier::verify(
 
     // Step 15: weighted DAO CLSAG per input.
     for (size_t i = 0; i < proof.inputs.size(); ++i) {
-        if (!dao_clsag_verify(clsag_ctxs[i], proof.inputs[i].signature))
-            return fail("step15: CLSAG verification failed");
+        if (!dao_clsag_verify(clsag_ctxs[i],
+                              proof.inputs[i].weight_signature))
+            return fail("step15: weight CLSAG verification failed");
     }
 
-    // Step 16: C_W == sum of per-input V_i.
+    // Step 16: balance DAO CLSAG per input with age_factors = 1 and
+    // V = balance_commitment.
+    for (size_t i = 0; i < proof.inputs.size(); ++i) {
+        dao_clsag_context bc = clsag_ctxs[i];
+        bc.age_factors.assign(proof.inputs[i].key_offsets.size(), 1);
+        bc.V = proof.inputs[i].balance_commitment;
+        if (!dao_clsag_verify(bc, proof.inputs[i].balance_signature))
+            return fail("step16: balance CLSAG verification failed");
+    }
+
+    // Step 17: weight_signature.I == balance_signature.I per input.
+    for (size_t i = 0; i < proof.inputs.size(); ++i) {
+        if (!(proof.inputs[i].weight_signature.I ==
+              proof.inputs[i].balance_signature.I))
+            return fail("step17: weight/balance nullifier mismatch");
+    }
+
+    // Step 18: C_W == sum of per-input weight_commitment.
     {
         rct::key acc = rct::identity();
         for (const auto& in : proof.inputs) {
@@ -191,28 +211,43 @@ verification_result VoteProofVerifier::verify(
             acc = tmp;
         }
         if (!(acc == proof.C_W))
-            return fail("step16: C_W does not match sum of V_i");
+            return fail("step18: C_W does not match sum of V_i");
     }
 
-    // Step 17: C_W and C_S are valid curve points in the main subgroup.
-    if (!rct::isInMainSubgroup(proof.C_W))
-        return fail("step17: C_W is not a valid curve point");
-    if (!rct::isInMainSubgroup(proof.C_S))
-        return fail("step17: C_S is not a valid curve point");
+    // Step 19: C_B == sum of per-input balance_commitment.
+    {
+        rct::key acc = rct::identity();
+        for (const auto& in : proof.inputs) {
+            rct::key tmp;
+            rct::addKeys(tmp, acc, in.balance_commitment);
+            acc = tmp;
+        }
+        if (!(acc == proof.C_B))
+            return fail("step19: C_B does not match sum of B_i");
+    }
 
-    // Step 18: E_W and E_S are canonical Paillier ciphertexts in Z*_{N^2}.
+    // Step 20: C_W, C_S and C_B are valid curve points in the main subgroup.
+    if (!rct::isInMainSubgroup(proof.C_W))
+        return fail("step20: C_W is not a valid curve point");
+    if (!rct::isInMainSubgroup(proof.C_S))
+        return fail("step20: C_S is not a valid curve point");
+    if (!rct::isInMainSubgroup(proof.C_B))
+        return fail("step20: C_B is not a valid curve point");
+
+    // Step 21: E_W, E_S, E_B are canonical Paillier ciphertexts in Z*_{N^2}.
     BIGNUM* N = BN_bin2bn(key_rec.N.data(),
                           static_cast<int>(key_rec.N.size()), nullptr);
     if (!N)
-        return fail("step18: cannot load N");
+        return fail("step21: cannot load N");
     auto bail_N = [&](const char* why) {
         BN_free(N);
         return fail(why);
     };
 
     if (proof.E_W.data.size() != dao::PAILLIER_CT_BYTES ||
-        proof.E_S.data.size() != dao::PAILLIER_CT_BYTES)
-        return bail_N("step18: ciphertext size");
+        proof.E_S.data.size() != dao::PAILLIER_CT_BYTES ||
+        proof.E_B.data.size() != dao::PAILLIER_CT_BYTES)
+        return bail_N("step21: ciphertext size");
 
     auto valid_ct = [&](const std::array<uint8_t, 512>& raw) -> bool {
         std::vector<uint8_t> v(raw.begin(), raw.end());
@@ -221,18 +256,17 @@ verification_result VoteProofVerifier::verify(
         BN_CTX* ctx = BN_CTX_new();
         BIGNUM* N2 = BN_new(); BN_sqr(N2, N, ctx);
         bool ok = (BN_cmp(c, N2) < 0) && !BN_is_zero(c);
-        // gcd(c, N2) == 1
         BIGNUM* g = BN_new();
         BN_gcd(g, c, N2, ctx);
         ok = ok && BN_is_one(g);
         BN_free(g); BN_free(N2); BN_CTX_free(ctx); BN_free(c);
         return ok;
     };
-    if (!valid_ct(proof.E_W.data)) return bail_N("step18: E_W invalid");
-    if (!valid_ct(proof.E_S.data)) return bail_N("step18: E_S invalid");
+    if (!valid_ct(proof.E_W.data)) return bail_N("step21: E_W invalid");
+    if (!valid_ct(proof.E_S.data)) return bail_N("step21: E_S invalid");
+    if (!valid_ct(proof.E_B.data)) return bail_N("step21: E_B invalid");
 
-    // Build the consistency context. The transcript is exactly the
-    // 32-byte digest produced by dao_vote_input_transcript.
+    // Build the canonical vote-input transcript.
     dao::dao_vote_transcript_input ti;
     ti.version                    = proof.version;
     ti.proposal_id                = proof.proposal_id;
@@ -252,15 +286,18 @@ verification_result VoteProofVerifier::verify(
         ti.output_heights.push_back(rc.output_heights);
         ti.age_factors.push_back(rc.age_factors);
         ti.nullifiers.push_back(proof.nullifiers[i]);
+        ti.balance_commitments.push_back(in.balance_commitment);
     }
     ti.C_W = proof.C_W;
     ti.C_S = proof.C_S;
+    ti.C_B = proof.C_B;
     ti.E_W.assign(proof.E_W.data.begin(), proof.E_W.data.end());
     ti.E_S.assign(proof.E_S.data.begin(), proof.E_S.data.end());
+    ti.E_B.assign(proof.E_B.data.begin(), proof.E_B.data.end());
 
     std::vector<uint8_t> transcript_digest = dao::dao_vote_input_transcript(ti);
     if (transcript_digest.size() != 32)
-        return bail_N("step22: transcript could not be computed");
+        return bail_N("step26: transcript could not be computed");
 
     dao::dao_consistency_context cctx_w;
     cctx_w.domain                = "C_W-Enc(W)";
@@ -272,30 +309,34 @@ verification_result VoteProofVerifier::verify(
 
     dao::dao_consistency_context cctx_s = cctx_w;
     cctx_s.domain = "C_S-Enc(S)";
+    dao::dao_consistency_context cctx_b = cctx_w;
+    cctx_b.domain = "C_B-Enc(B)";
 
     std::vector<uint8_t> E_W_vec(proof.E_W.data.begin(), proof.E_W.data.end());
     std::vector<uint8_t> E_S_vec(proof.E_S.data.begin(), proof.E_S.data.end());
+    std::vector<uint8_t> E_B_vec(proof.E_B.data.begin(), proof.E_B.data.end());
 
-    // Step 19: proof_W.
+    // Step 22: proof_W.
     if (!dao::dao_consistency_verify(cctx_w, N, E_W_vec, proof.C_W,
                                      proof.proof_W))
-        return bail_N("step19: consistency proof W failed");
+        return bail_N("step22: consistency proof W failed");
 
-    // Step 20: proof_S.
+    // Step 23: proof_S.
     if (!dao::dao_consistency_verify(cctx_s, N, E_S_vec, proof.C_S,
                                      proof.proof_S))
-        return bail_N("step20: consistency proof S failed");
+        return bail_N("step23: consistency proof S failed");
 
-    // Step 21: hidden-direction OR proof. Context binds the transcript
-    // digest and the pair of consistency proofs via extra_binding.
+    // Step 24: proof_B.
+    if (!dao::dao_consistency_verify(cctx_b, N, E_B_vec, proof.C_B,
+                                     proof.proof_B))
+        return bail_N("step24: consistency proof B failed");
+
+    // Step 25: hidden-direction OR proof. The OR context binds the
+    // vote-input transcript via extra_binding and does not depend on B.
     dao_or_context octx;
     octx.version     = proof.version;
     octx.proposal_id = proof.proposal_id;
     octx.vote_height = proof.vote_height;
-    octx.nullifiers.reserve(proof.nullifiers.size());
-    for (const auto& nf : proof.nullifiers)
-        octx.nullifiers.push_back(rct::key{}); // see below
-    // dao_or_context uses std::vector<rct::key> nullifiers; convert.
     octx.nullifiers.clear();
     for (const auto& nf : proof.nullifiers) {
         rct::key k{};
@@ -312,28 +353,28 @@ verification_result VoteProofVerifier::verify(
     octx.C_S = proof.C_S;
 
     if (!dao_or_verify(octx, proof.direction_proof))
-        return bail_N("step21: direction OR proof failed");
+        return bail_N("step25: direction OR proof failed");
 
-    // Step 22: transcript hash equals proof.transcript_hash.
+    // Step 26: transcript hash equals proof.transcript_hash.
     {
         crypto::hash want{};
         std::memcpy(want.data, transcript_digest.data(), 32);
         if (!(want == proof.transcript_hash))
-            return bail_N("step22: transcript hash mismatch");
+            return bail_N("step26: transcript hash mismatch");
     }
 
     BN_free(N);
 
-    // Step 23: prior-chain DAO nullifier lookup.
+    // Step 27: prior-chain DAO nullifier lookup.
     for (const auto& nf : proof.nullifiers) {
         if (db.has_vote_nullifier(proof.proposal_id, nf))
-            return fail("step23: nullifier already recorded on chain");
+            return fail("step27: nullifier already recorded on chain");
     }
 
-    // Step 24: same-block DAO nullifier set.
+    // Step 28: same-block DAO nullifier set.
     for (const auto& nf : proof.nullifiers) {
         if (block_nullifiers.count(nf))
-            return fail("step24: nullifier already used in this block");
+            return fail("step28: nullifier already used in this block");
     }
 
     // Steps 1-24 complete. Step 25 (atomic state mutation) is performed

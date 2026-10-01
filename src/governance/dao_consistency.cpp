@@ -292,6 +292,7 @@ bool tx_validate(const dao_vote_transcript_input& in)
 {
     if (in.E_W.size() != 512) return false;
     if (in.E_S.size() != 512) return false;
+    if (in.E_B.size() != 512) return false;
 
     const size_t n = in.key_offsets.size();
     if (in.absolute_indices.size() != n) return false;
@@ -300,6 +301,7 @@ bool tx_validate(const dao_vote_transcript_input& in)
     if (in.output_heights.size()   != n) return false;
     if (in.age_factors.size()      != n) return false;
     if (in.nullifiers.size()       != n) return false;
+    if (in.balance_commitments.size() != n) return false;
     if (n > 0xffffffffu) return false;
 
     for (size_t i = 0; i < n; ++i) {
@@ -353,12 +355,15 @@ std::vector<uint8_t> dao_vote_input_transcript(
             tx_push_u8 (out, in.age_factors[i][j]);
         }
         tx_push_bytes(out, reinterpret_cast<const uint8_t*>(in.nullifiers[i].data), 32);
+        tx_push_bytes(out, in.balance_commitments[i].bytes, 32);
     }
 
     tx_push_bytes(out, in.C_W.bytes, 32);
     tx_push_bytes(out, in.C_S.bytes, 32);
+    tx_push_bytes(out, in.C_B.bytes, 32);
     tx_push_bytes(out, in.E_W.data(), 512);
     tx_push_bytes(out, in.E_S.data(), 512);
+    tx_push_bytes(out, in.E_B.data(), 512);
 
     unsigned char digest[32];
     SHA256(out.data(), out.size(), digest);

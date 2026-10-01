@@ -21,6 +21,8 @@
 #include "serialization/binary_archive.h"
 #include "governance/vote_proof_v2.h"
 
+#include "v2_vote_builder.h"
+
 using namespace cryptonote;
 using namespace cryptonote::dao;
 
@@ -105,14 +107,17 @@ vote_input_v2 make_ring_input(size_t ring_size)
     vote_input_v2 in;
     for (size_t i = 0; i < ring_size; ++i)
         in.key_offsets.push_back(i == 0 ? 0 : 1);
-    in.signature.s.resize(ring_size);
+    in.weight_signature.s.resize(ring_size);
+    in.balance_signature.s.resize(ring_size);
 
     // sig.I and sig.D must be valid compressed curve points; the
     // all-zero default fails ge_frombytes_vartime inside
     // dao_clsag_verify before the structural checks run.
     rct::key id = rct::identity();
-    in.signature.I = id;
-    in.signature.D = id;
+    in.weight_signature.I = id;
+    in.weight_signature.D = id;
+    in.balance_signature.I = id;
+    in.balance_signature.D = id;
     return in;
 }
 
@@ -275,7 +280,7 @@ TEST(vote_proof_verifier, step8_clsag_size_mismatch)
     p.vote_height = 100;
     p.tally_key_epoch = 1;
     vote_input_v2 in = make_ring_input(5);
-    in.signature.s.resize(4); // mismatch
+    in.weight_signature.s.resize(4); // mismatch
     p.inputs.push_back(in);
     p.nullifiers.push_back(crypto::hash{});
 
@@ -300,7 +305,8 @@ TEST(vote_proof_verifier, step8_duplicate_absolute_index)
     p.tally_key_epoch = 1;
     vote_input_v2 in;
     in.key_offsets = { 0, 1, 0 }; // abs = {0, 1, 1}: duplicate
-    in.signature.s.resize(3);
+    in.weight_signature.s.resize(3);
+    in.balance_signature.s.resize(3);
     p.inputs.push_back(in);
     p.nullifiers.push_back(crypto::hash{});
 
@@ -511,224 +517,54 @@ crypto::hash h32(uint8_t seed)
 
 TEST(vote_proof_verifier, valid_vote_passes_all_24_steps)
 {
-    // 1. Build a fully valid vote and the DB state that verifies it.
-    constexpr uint64_t VOTE_HEIGHT    = 51000;
-    constexpr uint64_t PROPOSAL_SUB   = 50000;
-    constexpr uint64_t PROPOSAL_END   = 60000;
-    constexpr uint32_t TALLY_EPOCH    = 1;
-    const size_t N = 4;
-    const size_t L = 2;
+    // Build a fully-valid rev3 vote (weight, signed, participation-
+    // balance channels) using the shared helper, install the matching
+    // DB state, and drive the whole verifier.
 
-    crypto::hash proposal_id = h32(0x33);
+    constexpr uint64_t VOTE_HEIGHT  = 51000;
+    constexpr uint64_t PROPOSAL_SUB = 50000;
+    constexpr uint64_t PROPOSAL_END = 60000;
+    constexpr uint32_t TALLY_EPOCH  = 1;
 
-    uint64_t heights[N]    = {40000, 30000, 20000, 10000};
-    uint8_t  exp_f[N]      = {4, 4, 5, 5};
-    uint64_t amt[N]        = {10, 11, 12, 13};
-
-    rct::key x_s[N], mask[N], P[N], C[N], f_s[N], Q[N];
-    for (size_t i = 0; i < N; ++i) {
-        x_s[i]  = mk_s(0x10 + (uint8_t)i);
-        mask[i] = mk_s(0x20 + (uint8_t)i);
-        rct::scalarmultBase(P[i], x_s[i]);
-
-        rct::key aH, mG;
-        rct::scalarmultKey(aH, rct::H, small_scalar(amt[i]));
-        rct::scalarmultBase(mG, mask[i]);
-        rct::addKeys(C[i], aH, mG);
-
-        f_s[i] = small_scalar(exp_f[i]);
-        rct::scalarmultKey(Q[i], C[i], f_s[i]);
-    }
-
-    rct::key rho_l = mk_s(0x40);
-    rct::key rhoG;
-    rct::scalarmultBase(rhoG, rho_l);
-    rct::key V;
-    rct::addKeys(V, Q[L], rhoG);
-
-    // R_W = f[L]*mask[L] + rho_l
-    rct::key R_W;
-    sc_muladd(R_W.bytes, f_s[L].bytes, mask[L].bytes, rho_l.bytes);
-
-    // W = f[L] * amt[L]
-    uint64_t W_val = (uint64_t)exp_f[L] * amt[L];
-
-    // S must satisfy S == +W (YES) or S == -W (NO); the OR proof only
-    // has a valid discrete-log branch when one of these holds.
-    rct::key S_s = small_scalar(W_val);
-    rct::key R_S = mk_s(0x55);
-    rct::key SH, RSG, C_S;
-    rct::scalarmultKey(SH, rct::H, S_s);
-    rct::scalarmultBase(RSG, R_S);
-    rct::addKeys(C_S, SH, RSG);
-
-    // 2. Paillier keypair and ciphertexts.
     PaillierPrivateKey psk;
     ASSERT_TRUE(psk.generate_for_testing(1024));
     PaillierPublicKey ppk = psk.public_key();
 
-    BIGNUM* W_bn = BN_new(); BN_set_word(W_bn, W_val);
-    BIGNUM* S_bn = BN_new(); BN_set_word(S_bn, W_val);
-    BIGNUM* r_W  = BN_new(); BN_set_word(r_W, 3);
-    BIGNUM* r_S  = BN_new(); BN_set_word(r_S, 5);
+    crypto::hash proposal_id = v2test::hash_from_byte(0x33);
+    crypto::hash nullifier   = v2test::hash_from_byte(0xAA);
 
-    std::vector<uint8_t> E_W_raw, E_S_raw;
-    ASSERT_TRUE(ppk.encrypt(W_bn, r_W, E_W_raw));
-    ASSERT_TRUE(ppk.encrypt(S_bn, r_S, E_S_raw));
+    v2test::ValidVote fx;
+    ASSERT_TRUE(v2test::build_valid_vote(fx, ppk,
+        proposal_id, nullifier,
+        TALLY_EPOCH, VOTE_HEIGHT, PROPOSAL_SUB, PROPOSAL_END));
 
-    // 3. Tally key record (matching N).
-    dao::dao_tally_key_record key_rec;
-    key_rec.epoch = TALLY_EPOCH;
-    key_rec.N.assign(256, 0);
-    BN_bn2binpad(ppk.N(), key_rec.N.data(), 256);
-    key_rec.key_id.assign(32, 0x11);
-
-    // 4. Transcript digest.
-    crypto::hash nullifier = h32(0xAA);
-
-    dao::dao_vote_transcript_input ti;
-    ti.version = 2;
-    ti.proposal_id = proposal_id;
-    ti.proposal_submission_height = PROPOSAL_SUB;
-    ti.vote_height = VOTE_HEIGHT;
-    ti.tally_key_epoch = TALLY_EPOCH;
-    std::memcpy(ti.tally_key_id.data, key_rec.key_id.data(), 32);
-
-    std::vector<uint64_t> rel_offsets = { 1000, 1000, 1000, 1000 };
-    std::vector<uint64_t> abs_indices = { 1000, 2000, 3000, 4000 };
-    std::vector<rct::key> Pv(P, P + N), Cv(C, C + N);
-    std::vector<uint64_t> hv(heights, heights + N);
-    std::vector<uint8_t>  fv(exp_f, exp_f + N);
-
-    ti.key_offsets.push_back(rel_offsets);
-    ti.absolute_indices.push_back(abs_indices);
-    ti.P.push_back(Pv);
-    ti.C.push_back(Cv);
-    ti.output_heights.push_back(hv);
-    ti.age_factors.push_back(fv);
-    ti.nullifiers.push_back(nullifier);
-    ti.C_W = V;
-    ti.C_S = C_S;
-    ti.E_W = E_W_raw;
-    ti.E_S = E_S_raw;
-
-    std::vector<uint8_t> digest = dao::dao_vote_input_transcript(ti);
-    ASSERT_EQ(digest.size(), 32u);
-
-    // 5. Consistency proofs.
-    dao::dao_consistency_context cctx;
-    cctx.domain = "C_W-Enc(W)";
-    cctx.version = 2;
-    cctx.proposal_id = proposal_id;
-    cctx.vote_height = VOTE_HEIGHT;
-    cctx.tally_key_epoch = TALLY_EPOCH;
-    cctx.vote_input_transcript = digest;
-
-    dao::dao_consistency_proof pW;
-    ASSERT_TRUE(dao::dao_consistency_prove(cctx, ppk.N(), E_W_raw, V,
-                                           W_bn, r_W, R_W, pW));
-
-    dao::dao_consistency_context cctx_s = cctx;
-    cctx_s.domain = "C_S-Enc(S)";
-    dao::dao_consistency_proof pS;
-    ASSERT_TRUE(dao::dao_consistency_prove(cctx_s, ppk.N(), E_S_raw, C_S,
-                                           S_bn, r_S, R_S, pS));
-
-    // 6. OR proof.
-    dao_or_context octx;
-    octx.version = 2;
-    octx.proposal_id = proposal_id;
-    octx.vote_height = VOTE_HEIGHT;
-    {
-        rct::key nfk{};
-        std::memcpy(nfk.bytes, nullifier.data, 32);
-        octx.nullifiers.push_back(nfk);
-    }
-    octx.key_offsets = rel_offsets;
-    octx.extra_binding = dao::dao_extra_binding(E_W_raw, E_S_raw, pW, pS);
-    octx.C_W = V;
-    octx.C_S = C_S;
-
-    dao_vote_or_proof orp;
-    ASSERT_TRUE(dao_or_prove(octx, true, R_S, R_W, orp));
-
-    // 7. CLSAG.
-    dao_clsag_context cctx_clsag;
-    cctx_clsag.proposal_id                = proposal_id;
-    cctx_clsag.proposal_submission_height = PROPOSAL_SUB;
-    cctx_clsag.vote_height                = VOTE_HEIGHT;
-    cctx_clsag.tally_key_epoch            = TALLY_EPOCH;
-    cctx_clsag.P = Pv;
-    cctx_clsag.C = Cv;
-    cctx_clsag.output_indices = abs_indices;
-    cctx_clsag.output_heights = hv;
-    cctx_clsag.age_factors    = fv;
-    cctx_clsag.V              = V;
-
-    rct::clsag sig;
-    crypto::secret_key sk;
-    std::memcpy(sk.data, x_s[L].bytes, 32);
-    ASSERT_TRUE(dao_clsag_generate(cctx_clsag, L, sk, rho_l, sig));
-
-    // 8. Wire assembly.
-    vote_proof_v2 p;
-    p.version         = vote_proof_v2::VERSION;
-    p.proposal_id     = proposal_id;
-    p.vote_height     = VOTE_HEIGHT;
-    p.tally_key_epoch = TALLY_EPOCH;
-
-    vote_input_v2 in;
-    in.key_offsets = rel_offsets;
-    in.weight_commitment = V;
-    in.signature = sig;
-    p.inputs.push_back(in);
-    p.nullifiers.push_back(nullifier);
-
-    p.C_W = V;
-    p.C_S = C_S;
-    std::memcpy(p.E_W.data.data(), E_W_raw.data(), 512);
-    std::memcpy(p.E_S.data.data(), E_S_raw.data(), 512);
-    p.proof_W = pW;
-    p.proof_S = pS;
-    p.direction_proof = orp;
-    std::memcpy(p.transcript_hash.data, digest.data(), 32);
-
-    // 9. DB state.
     VerifierTestDB db;
     db.have_proposal = true;
     db.proposal_submission_height = PROPOSAL_SUB;
     db.proposal_voting_end_height = PROPOSAL_END;
     db.proposal_tally_key_epoch   = TALLY_EPOCH;
     db.have_tally_key = true;
-    db.tally_key_record = key_rec;
+    db.tally_key_record = fx.key_rec;
 
-    for (size_t i = 0; i < N; ++i) {
-        output_data_t od{};
-        std::memcpy(od.pubkey.data, P[i].bytes, 32);
-        od.commitment = C[i];
-        od.height = heights[i];
-        db.outputs[abs_indices[i]] = od;
-    }
+    for (const auto& kv : fx.outputs)
+        db.outputs[kv.first] = kv.second;
 
-    // 10. Verify.
     std::unordered_set<crypto::hash> block_nfs;
-    auto r = VoteProofVerifier::verify(p, db, VOTE_HEIGHT, block_nfs);
+    auto r = VoteProofVerifier::verify(fx.proof, db, VOTE_HEIGHT, block_nfs);
     EXPECT_TRUE(r.success) << "reason: " << r.reason;
 
-    // 11. Step 23 rejection.
+    // Prior-chain nullifier lookup rejects.
     db.persistent_nullifiers.insert(nullifier);
-    auto r23 = VoteProofVerifier::verify(p, db, VOTE_HEIGHT, block_nfs);
+    auto r23 = VoteProofVerifier::verify(fx.proof, db, VOTE_HEIGHT, block_nfs);
     EXPECT_FALSE(r23.success);
-    EXPECT_NE(r23.reason.find("step23"), std::string::npos);
+    EXPECT_NE(r23.reason.find("step27"), std::string::npos);
     db.persistent_nullifiers.clear();
 
-    // 12. Step 24 rejection.
+    // Same-block nullifier set rejects.
     block_nfs.insert(nullifier);
-    auto r24 = VoteProofVerifier::verify(p, db, VOTE_HEIGHT, block_nfs);
+    auto r24 = VoteProofVerifier::verify(fx.proof, db, VOTE_HEIGHT, block_nfs);
     EXPECT_FALSE(r24.success);
-    EXPECT_NE(r24.reason.find("step24"), std::string::npos);
-
-    BN_free(W_bn); BN_free(S_bn); BN_free(r_W); BN_free(r_S);
+    EXPECT_NE(r24.reason.find("step28"), std::string::npos);
 }
 
 // ---- V2 carrier roundtrip ----

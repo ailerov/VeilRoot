@@ -36,13 +36,17 @@ namespace cryptonote {
 struct vote_input_v2
 {
     std::vector<uint64_t> key_offsets;
-    rct::key              weight_commitment;
-    rct::clsag            signature;
+    rct::key              weight_commitment;   // V_i
+    rct::clsag            weight_signature;    // weighted DAO CLSAG
+    rct::key              balance_commitment;  // B_i = C_i + rho_B_i * G
+    rct::clsag            balance_signature;   // DAO CLSAG with f_i = 1
 
     BEGIN_SERIALIZE_OBJECT()
         FIELD(key_offsets)
         FIELD(weight_commitment)
-        FIELD(signature)
+        FIELD(weight_signature)
+        FIELD(balance_commitment)
+        FIELD(balance_signature)
     END_SERIALIZE()
 };
 
@@ -61,12 +65,15 @@ struct vote_proof_v2
 
     rct::key C_W;
     rct::key C_S;
+    rct::key C_B;
 
     fixed_512_byte E_W;
     fixed_512_byte E_S;
+    fixed_512_byte E_B;
 
     dao::dao_consistency_proof proof_W;
     dao::dao_consistency_proof proof_S;
+    dao::dao_consistency_proof proof_B;
 
     dao_vote_or_proof direction_proof;
 
@@ -81,10 +88,13 @@ struct vote_proof_v2
         FIELD(nullifiers)
         FIELD(C_W)
         FIELD(C_S)
+        FIELD(C_B)
         FIELD(E_W)
         FIELD(E_S)
+        FIELD(E_B)
         FIELD(proof_W)
         FIELD(proof_S)
+        FIELD(proof_B)
         FIELD(direction_proof)
         FIELD(transcript_hash)
     END_SERIALIZE()

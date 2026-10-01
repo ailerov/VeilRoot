@@ -104,6 +104,19 @@ protected:
         m_db->set_current_dao_tally_key_epoch(fx.tally_epoch);
     }
 
+    dao::PaillierPrivateKey m_psk;
+    bool m_psk_ready = false;
+
+    const dao::PaillierPublicKey& shared_pk()
+    {
+        if (!m_psk_ready) {
+            if (!m_psk.generate_for_testing(1024))
+                throw std::runtime_error("Paillier keygen failed");
+            m_psk_ready = true;
+        }
+        return m_psk.public_key();
+    }
+
     bool apply(const ValidVote& fx)
     {
         GovernanceDB gov(*m_db, MAINNET);
@@ -120,7 +133,7 @@ protected:
 TEST_F(ConsensusFixture, apply_writes_aggregate_nullifier_and_record)
 {
     ValidVote fx;
-    ASSERT_TRUE(build_valid_vote(fx,
+    ASSERT_TRUE(build_valid_vote(fx, shared_pk(),
         hash_from_byte(0x33), hash_from_byte(0xAA),
         /*tally_epoch=*/1, /*vote_height=*/51000,
         /*submission=*/50000, /*end=*/60000));
@@ -149,7 +162,7 @@ TEST_F(ConsensusFixture, apply_writes_aggregate_nullifier_and_record)
 TEST_F(ConsensusFixture, rollback_restores_aggregate_byte_for_byte)
 {
     ValidVote fx;
-    ASSERT_TRUE(build_valid_vote(fx,
+    ASSERT_TRUE(build_valid_vote(fx, shared_pk(),
         hash_from_byte(0x33), hash_from_byte(0xAA),
         /*tally_epoch=*/1, /*vote_height=*/51000,
         /*submission=*/50000, /*end=*/60000));
@@ -202,7 +215,7 @@ TEST_F(ConsensusFixture, rollback_restores_aggregate_byte_for_byte)
 TEST_F(ConsensusFixture, duplicate_nullifier_in_two_txs_of_one_block_is_invalid)
 {
     ValidVote fx;
-    ASSERT_TRUE(build_valid_vote(fx,
+    ASSERT_TRUE(build_valid_vote(fx, shared_pk(),
         hash_from_byte(0x33), hash_from_byte(0xAA),
         /*tally_epoch=*/1, /*vote_height=*/51000,
         /*submission=*/50000, /*end=*/60000));
@@ -233,10 +246,10 @@ TEST_F(ConsensusFixture, rollback_restores_prior_aggregate_byte_for_byte)
     const crypto::hash nf_b = hash_from_byte(0xBB);
 
     ValidVote fx_a, fx_b;
-    ASSERT_TRUE(build_valid_vote(fx_a, pid, nf_a,
+    ASSERT_TRUE(build_valid_vote(fx_a, shared_pk(), pid, nf_a,
         /*tally_epoch=*/1, /*vote_height=*/51000,
         /*submission=*/50000, /*end=*/60000));
-    ASSERT_TRUE(build_valid_vote(fx_b, pid, nf_b,
+    ASSERT_TRUE(build_valid_vote(fx_b, shared_pk(), pid, nf_b,
         /*tally_epoch=*/1, /*vote_height=*/51000,
         /*submission=*/50000, /*end=*/60000));
     install(fx_a);
@@ -295,9 +308,9 @@ TEST_F(ConsensusFixture, rollback_of_c_restores_post_ab_aggregate)
     const crypto::hash nf_c = hash_from_byte(0xC1);
 
     ValidVote fx_a, fx_b, fx_c;
-    ASSERT_TRUE(build_valid_vote(fx_a, pid, nf_a, 1, 51000, 50000, 60000));
-    ASSERT_TRUE(build_valid_vote(fx_b, pid, nf_b, 1, 51000, 50000, 60000));
-    ASSERT_TRUE(build_valid_vote(fx_c, pid, nf_c, 1, 51000, 50000, 60000));
+    ASSERT_TRUE(build_valid_vote(fx_a, shared_pk(), pid, nf_a, 1, 51000, 50000, 60000));
+    ASSERT_TRUE(build_valid_vote(fx_b, shared_pk(), pid, nf_b, 1, 51000, 50000, 60000));
+    ASSERT_TRUE(build_valid_vote(fx_c, shared_pk(), pid, nf_c, 1, 51000, 50000, 60000));
     install(fx_a);
 
     ASSERT_TRUE(apply(fx_a));
@@ -340,8 +353,8 @@ TEST_F(ConsensusFixture, rollback_in_reverse_order_returns_to_empty)
     const crypto::hash nf_b = hash_from_byte(0xB2);
 
     ValidVote fx_a, fx_b;
-    ASSERT_TRUE(build_valid_vote(fx_a, pid, nf_a, 1, 51000, 50000, 60000));
-    ASSERT_TRUE(build_valid_vote(fx_b, pid, nf_b, 1, 51000, 50000, 60000));
+    ASSERT_TRUE(build_valid_vote(fx_a, shared_pk(), pid, nf_a, 1, 51000, 50000, 60000));
+    ASSERT_TRUE(build_valid_vote(fx_b, shared_pk(), pid, nf_b, 1, 51000, 50000, 60000));
     install(fx_a);
 
     ASSERT_TRUE(apply(fx_a));

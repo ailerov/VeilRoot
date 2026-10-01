@@ -86,9 +86,12 @@ transaction make_v2_vote_tx(const crypto::hash& pid,
     for (size_t i = 0; i < n_inputs; ++i) {
         vote_input_v2 in;
         in.key_offsets = {0, 1, 1, 1};
-        in.signature.s.resize(4);
-        in.signature.I = rct::identity();
-        in.signature.D = rct::identity();
+        in.weight_signature.s.resize(4);
+        in.weight_signature.I = rct::identity();
+        in.weight_signature.D = rct::identity();
+        in.balance_signature.s.resize(4);
+        in.balance_signature.I = rct::identity();
+        in.balance_signature.D = rct::identity();
         vp.inputs.push_back(in);
         crypto::hash nf{};
         nf.data[0] = static_cast<uint8_t>(0x10 + i);
