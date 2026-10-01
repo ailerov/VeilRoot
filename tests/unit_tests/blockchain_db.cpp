@@ -39,6 +39,7 @@
 #include "blockchain_db/blockchain_db.h"
 #include "blockchain_db/lmdb/db_lmdb.h"
 #include "governance/dao_dkg.h"
+#include "governance/dao_supply.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
 #include "cryptonote_core/blockchain.h"
 
@@ -541,3 +542,101 @@ TYPED_TEST(BlockchainDBTest, RetrieveBlockData)
 }
 
 }  // anonymous namespace
+
+
+TYPED_TEST(BlockchainDBTest, DaoSupplyHistoryRoundTrip)
+{
+  namespace dao = cryptonote::dao;
+
+  boost::filesystem::path tempPath =
+      boost::filesystem::temp_directory_path() /
+      boost::filesystem::unique_path();
+  std::string dirPath = tempPath.string();
+  this->set_prefix(dirPath);
+
+  ASSERT_NO_THROW(this->m_db->open(dirPath));
+  this->get_filenames();
+
+  // Never-set lookup -> false.
+  {
+    dao::dao_supply_snapshot s;
+    EXPECT_FALSE(this->m_db->get_dao_supply_snapshot(1, s));
+  }
+
+  // Construct two snapshots.
+  dao::dao_supply_snapshot s1;
+  s1.height    = 100;
+  s1.minted    = 1000000;
+  s1.treasury  = 180000;
+  s1.burned    = 50000;
+  ASSERT_TRUE(dao::dao_supply_snapshot::compute_circulating(
+      s1.minted, s1.treasury, s1.burned, s1.circulating));
+  EXPECT_EQ(s1.circulating, dao::dao_u128(770000));
+
+  dao::dao_supply_snapshot s2;
+  s2.height    = 200;
+  s2.minted    = 2000000;
+  s2.treasury  = 300000;
+  s2.burned    = 100000;
+  ASSERT_TRUE(dao::dao_supply_snapshot::compute_circulating(
+      s2.minted, s2.treasury, s2.burned, s2.circulating));
+
+  {
+    db_wtxn_guard guard(this->m_db);
+    ASSERT_NO_THROW(this->m_db->add_dao_supply_snapshot(s1));
+    ASSERT_NO_THROW(this->m_db->add_dao_supply_snapshot(s2));
+  }
+
+  // Read back byte-for-byte.
+  {
+    dao::dao_supply_snapshot got;
+    ASSERT_TRUE(this->m_db->get_dao_supply_snapshot(100, got));
+    EXPECT_EQ(got.height,      s1.height);
+    EXPECT_EQ(got.minted,      s1.minted);
+    EXPECT_EQ(got.treasury,    s1.treasury);
+    EXPECT_EQ(got.burned,      s1.burned);
+    EXPECT_EQ(got.circulating, s1.circulating);
+  }
+  {
+    dao::dao_supply_snapshot got;
+    ASSERT_TRUE(this->m_db->get_dao_supply_snapshot(200, got));
+    EXPECT_EQ(got.minted,      s2.minted);
+    EXPECT_EQ(got.circulating, s2.circulating);
+  }
+
+  // Missing height.
+  {
+    dao::dao_supply_snapshot miss;
+    EXPECT_FALSE(this->m_db->get_dao_supply_snapshot(150, miss));
+  }
+
+  // Remove one; the other must remain.
+  {
+    db_wtxn_guard guard(this->m_db);
+    ASSERT_NO_THROW(this->m_db->remove_dao_supply_snapshot(100));
+  }
+  {
+    dao::dao_supply_snapshot gone, kept;
+    EXPECT_FALSE(this->m_db->get_dao_supply_snapshot(100, gone));
+    EXPECT_TRUE (this->m_db->get_dao_supply_snapshot(200, kept));
+  }
+
+  ASSERT_NO_THROW(this->m_db->close());
+}
+
+TEST(dao_supply, compute_circulating_rejects_underflow)
+{
+  namespace dao = cryptonote::dao;
+  dao::dao_u128 out = 0;
+
+  // treasury > minted
+  EXPECT_FALSE(dao::dao_supply_snapshot::compute_circulating(
+      100, 200, 0, out));
+  // treasury + burned > minted
+  EXPECT_FALSE(dao::dao_supply_snapshot::compute_circulating(
+      100, 60, 60, out));
+  // exactly equal -> 0, not underflow
+  ASSERT_TRUE(dao::dao_supply_snapshot::compute_circulating(
+      100, 60, 40, out));
+  EXPECT_EQ(out, dao::dao_u128(0));
+}

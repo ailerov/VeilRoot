@@ -31,6 +31,7 @@
 #pragma once
 
 namespace cryptonote { namespace dao { struct dao_tally_key_record; } }
+namespace cryptonote { namespace dao { struct dao_supply_snapshot; } }
 
 #include <string>
 #include <exception>
@@ -2175,6 +2176,14 @@ public:
     virtual bool get_dao_proposal_aggregate(const crypto::hash& proposal_id, dao_proposal_aggregate& aggregate) const = 0;
     virtual void remove_dao_proposal_aggregate(const crypto::hash& proposal_id) = 0;
     // ---------- VNS DAO V2 VOTES END ----------
+
+    // ---------- VNS DAO SUPPLY HISTORY START ----------
+    // One canonical supply snapshot per block height. Written by the
+    // block-apply path after governance state has been applied.
+    virtual void add_dao_supply_snapshot(const dao::dao_supply_snapshot& snapshot) = 0;
+    virtual bool get_dao_supply_snapshot(uint64_t height, dao::dao_supply_snapshot& snapshot) const = 0;
+    virtual void remove_dao_supply_snapshot(uint64_t height) = 0;
+    // ---------- VNS DAO SUPPLY HISTORY END ----------
 
     // BEGIN_VNS_ELIGIBLE
     virtual void add_committee_eligible(const crypto::key_image& ki, const committee_eligible_record& rec) = 0;

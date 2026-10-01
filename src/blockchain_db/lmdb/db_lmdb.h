@@ -41,6 +41,7 @@
 #define LMDB_TALLY_KEYS "tally_keys"
 #define LMDB_TALLY_STATE "tally_state"
 #define LMDB_DAO_VOTE_RECORDS "dao_vote_records"
+#define LMDB_DAO_SUPPLY_HISTORY "dao_supply_history"
 #define LMDB_DAO_PROPOSAL_AGGREGATES "dao_proposal_aggregates"
 
 namespace cryptonote
@@ -94,6 +95,7 @@ typedef struct mdb_txn_cursors
   MDB_cursor *m_txc_tally_state;
   MDB_cursor *m_txc_dao_vote_records;
   MDB_cursor *m_txc_dao_proposal_aggregates;
+  MDB_cursor *m_txc_dao_supply_history;
   MDB_cursor *m_txc_extension_policy;
   MDB_cursor *m_txc_premium_label_policy;
   MDB_cursor *m_txc_banned_label_policy;
@@ -141,6 +143,7 @@ typedef struct mdb_txn_cursors
 #define m_cur_tally_state          m_cursors->m_txc_tally_state
 #define m_cur_dao_vote_records     m_cursors->m_txc_dao_vote_records
 #define m_cur_dao_proposal_aggregates m_cursors->m_txc_dao_proposal_aggregates
+#define m_cur_dao_supply_history   m_cursors->m_txc_dao_supply_history
 #define m_cur_proposal_data        m_cursors->m_txc_proposal_data
 #define m_cur_pending_executions   m_cursors->m_txc_pending_executions
 #define m_cur_governance_parameters  m_cursors->m_txc_governance_parameters
@@ -199,6 +202,7 @@ typedef struct mdb_rflags
   bool m_rf_tally_state;
   bool m_rf_dao_vote_records;
   bool m_rf_dao_proposal_aggregates;
+  bool m_rf_dao_supply_history;
 } mdb_rflags;
 
 typedef struct mdb_threadinfo
@@ -605,6 +609,10 @@ public:
   virtual void add_dao_proposal_aggregate(const crypto::hash& proposal_id, const dao_proposal_aggregate& aggregate) override;
   virtual bool get_dao_proposal_aggregate(const crypto::hash& proposal_id, dao_proposal_aggregate& aggregate) const override;
   virtual void remove_dao_proposal_aggregate(const crypto::hash& proposal_id) override;
+
+  virtual void add_dao_supply_snapshot(const dao::dao_supply_snapshot& snapshot) override;
+  virtual bool get_dao_supply_snapshot(uint64_t height, dao::dao_supply_snapshot& snapshot) const override;
+  virtual void remove_dao_supply_snapshot(uint64_t height) override;
   // END_VNS_DAO_VOTE
 
   // BEGIN_VNS_TREASURY_LMDB_OVERRIDE
@@ -786,6 +794,7 @@ private:
   MDB_dbi m_tally_state;
   MDB_dbi m_dao_vote_records;
   MDB_dbi m_dao_proposal_aggregates;
+  MDB_dbi m_dao_supply_history;
 
   mutable uint64_t m_cum_size;
   mutable unsigned int m_cum_count;

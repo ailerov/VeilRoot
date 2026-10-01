@@ -220,3 +220,155 @@ TEST_F(ConsensusFixture, duplicate_nullifier_in_two_txs_of_one_block_is_invalid)
     db_wtxn_guard g(m_db);
     EXPECT_FALSE(vm.process_block(blk, fx.vote_height));
 }
+
+
+TEST_F(ConsensusFixture, rollback_restores_prior_aggregate_byte_for_byte)
+{
+    // Spec section 25 requires byte-for-byte restoration even when the
+    // aggregate already contained prior votes. Paillier aggregation is
+    // modular multiplication; inverse() is the exact group inverse of
+    // the ciphertext, so (A * B) * B^-1 == A exactly.
+    const crypto::hash pid  = hash_from_byte(0x33);
+    const crypto::hash nf_a = hash_from_byte(0xAA);
+    const crypto::hash nf_b = hash_from_byte(0xBB);
+
+    ValidVote fx_a, fx_b;
+    ASSERT_TRUE(build_valid_vote(fx_a, pid, nf_a,
+        /*tally_epoch=*/1, /*vote_height=*/51000,
+        /*submission=*/50000, /*end=*/60000));
+    ASSERT_TRUE(build_valid_vote(fx_b, pid, nf_b,
+        /*tally_epoch=*/1, /*vote_height=*/51000,
+        /*submission=*/50000, /*end=*/60000));
+    install(fx_a);
+
+    // Apply A.
+    ASSERT_TRUE(apply(fx_a));
+
+    // Snapshot after A.
+    dao_proposal_aggregate snap;
+    ASSERT_TRUE(m_db->get_dao_proposal_aggregate(pid, snap));
+    const std::vector<uint8_t> before_E_W = snap.aggregate_E_W;
+    const std::vector<uint8_t> before_E_S = snap.aggregate_E_S;
+    const rct::key before_C_W = snap.aggregate_C_W;
+    const rct::key before_C_S = snap.aggregate_C_S;
+
+    // Apply B. Aggregate must change.
+    ASSERT_TRUE(apply(fx_b));
+    {
+        dao_proposal_aggregate after_ab;
+        ASSERT_TRUE(m_db->get_dao_proposal_aggregate(pid, after_ab));
+        EXPECT_NE(after_ab.aggregate_E_W, before_E_W);
+        EXPECT_NE(after_ab.aggregate_E_S, before_E_S);
+    }
+
+    // Rollback B.
+    GovernanceDB gov(*m_db, MAINNET);
+    governance_params params = governance_params::default_params();
+    VoteManager vm(gov, params);
+
+    block blk = make_block({ make_v2_tx(fx_b.proof) });
+    std::vector<transaction> txs = { make_v2_tx(fx_b.proof) };
+    {
+        db_wtxn_guard g(m_db);
+        ASSERT_TRUE(vm.rollback_block(blk, txs, fx_b.vote_height));
+    }
+
+    // Byte-for-byte match with post-A snapshot.
+    dao_proposal_aggregate restored;
+    ASSERT_TRUE(m_db->get_dao_proposal_aggregate(pid, restored));
+    EXPECT_EQ(restored.aggregate_E_W, before_E_W);
+    EXPECT_EQ(restored.aggregate_E_S, before_E_S);
+    EXPECT_EQ(std::memcmp(restored.aggregate_C_W.bytes, before_C_W.bytes, 32), 0);
+    EXPECT_EQ(std::memcmp(restored.aggregate_C_S.bytes, before_C_S.bytes, 32), 0);
+
+    // Nullifiers: A's still present, B's gone.
+    EXPECT_TRUE(m_db->has_vote_nullifier(pid, nf_a));
+    EXPECT_FALSE(m_db->has_vote_nullifier(pid, nf_b));
+}
+
+
+TEST_F(ConsensusFixture, rollback_of_c_restores_post_ab_aggregate)
+{
+    const crypto::hash pid  = hash_from_byte(0x33);
+    const crypto::hash nf_a = hash_from_byte(0xA1);
+    const crypto::hash nf_b = hash_from_byte(0xB1);
+    const crypto::hash nf_c = hash_from_byte(0xC1);
+
+    ValidVote fx_a, fx_b, fx_c;
+    ASSERT_TRUE(build_valid_vote(fx_a, pid, nf_a, 1, 51000, 50000, 60000));
+    ASSERT_TRUE(build_valid_vote(fx_b, pid, nf_b, 1, 51000, 50000, 60000));
+    ASSERT_TRUE(build_valid_vote(fx_c, pid, nf_c, 1, 51000, 50000, 60000));
+    install(fx_a);
+
+    ASSERT_TRUE(apply(fx_a));
+    ASSERT_TRUE(apply(fx_b));
+
+    dao_proposal_aggregate snap;
+    ASSERT_TRUE(m_db->get_dao_proposal_aggregate(pid, snap));
+    const auto before_EW = snap.aggregate_E_W;
+    const auto before_ES = snap.aggregate_E_S;
+    const auto before_CW = snap.aggregate_C_W;
+    const auto before_CS = snap.aggregate_C_S;
+
+    ASSERT_TRUE(apply(fx_c));
+
+    GovernanceDB gov(*m_db, MAINNET);
+    governance_params params = governance_params::default_params();
+    VoteManager vm(gov, params);
+    block blk = make_block({ make_v2_tx(fx_c.proof) });
+    std::vector<transaction> txs = { make_v2_tx(fx_c.proof) };
+    {
+        db_wtxn_guard g(m_db);
+        ASSERT_TRUE(vm.rollback_block(blk, txs, fx_c.vote_height));
+    }
+
+    dao_proposal_aggregate after;
+    ASSERT_TRUE(m_db->get_dao_proposal_aggregate(pid, after));
+    EXPECT_EQ(after.aggregate_E_W, before_EW);
+    EXPECT_EQ(after.aggregate_E_S, before_ES);
+    EXPECT_EQ(std::memcmp(after.aggregate_C_W.bytes, before_CW.bytes, 32), 0);
+    EXPECT_EQ(std::memcmp(after.aggregate_C_S.bytes, before_CS.bytes, 32), 0);
+    EXPECT_TRUE (m_db->has_vote_nullifier(pid, nf_a));
+    EXPECT_TRUE (m_db->has_vote_nullifier(pid, nf_b));
+    EXPECT_FALSE(m_db->has_vote_nullifier(pid, nf_c));
+}
+
+TEST_F(ConsensusFixture, rollback_in_reverse_order_returns_to_empty)
+{
+    const crypto::hash pid  = hash_from_byte(0x33);
+    const crypto::hash nf_a = hash_from_byte(0xA2);
+    const crypto::hash nf_b = hash_from_byte(0xB2);
+
+    ValidVote fx_a, fx_b;
+    ASSERT_TRUE(build_valid_vote(fx_a, pid, nf_a, 1, 51000, 50000, 60000));
+    ASSERT_TRUE(build_valid_vote(fx_b, pid, nf_b, 1, 51000, 50000, 60000));
+    install(fx_a);
+
+    ASSERT_TRUE(apply(fx_a));
+    ASSERT_TRUE(apply(fx_b));
+
+    GovernanceDB gov(*m_db, MAINNET);
+    governance_params params = governance_params::default_params();
+    VoteManager vm(gov, params);
+
+    {
+        block blk = make_block({ make_v2_tx(fx_b.proof) });
+        std::vector<transaction> txs = { make_v2_tx(fx_b.proof) };
+        db_wtxn_guard g(m_db);
+        ASSERT_TRUE(vm.rollback_block(blk, txs, fx_b.vote_height));
+    }
+    EXPECT_TRUE (m_db->has_vote_nullifier(pid, nf_a));
+    EXPECT_FALSE(m_db->has_vote_nullifier(pid, nf_b));
+
+    {
+        block blk = make_block({ make_v2_tx(fx_a.proof) });
+        std::vector<transaction> txs = { make_v2_tx(fx_a.proof) };
+        db_wtxn_guard g(m_db);
+        ASSERT_TRUE(vm.rollback_block(blk, txs, fx_a.vote_height));
+    }
+    EXPECT_FALSE(m_db->has_vote_nullifier(pid, nf_a));
+    EXPECT_FALSE(m_db->has_vote_nullifier(pid, nf_b));
+
+    dao_proposal_aggregate agg;
+    EXPECT_FALSE(m_db->get_dao_proposal_aggregate(pid, agg));
+}
