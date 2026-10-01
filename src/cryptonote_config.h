@@ -258,6 +258,32 @@ namespace config
     #define VNS_CONSENSUS_ALGORITHM                 "RandomX"
     #define VNS_TARGET_BLOCK_TIME                   120
     #define VNS_RING_SIZE                           1
+    // DAO V2 activation height. Network consensus constant, routed
+    // through the same height-based activation mechanism as
+    // TREASURY_FORK_HEIGHT and VNS_DOMAIN_FEE_BURN_HEIGHT.
+    //
+    // UINT64_MAX is the pre-release sentinel: DAO V2 is inactive and V1
+    // rules apply everywhere. The coordinated mainnet release must
+    // replace this with one explicit agreed height. Never use 0, never
+    // derive it from the local DB state, never activate V2 merely
+    // because a tally-keys row exists.
+    //
+    // Under VEILROOT_DAO_DKG_TESTING the activation height is anchored at
+    // 100 so tests can exercise the post-activation path. This flag is
+    // applied uniformly to every translation unit that touches
+    // consensus code, so the constant is identical everywhere.
+#ifdef VEILROOT_DAO_DKG_TESTING
+    uint64_t const DAO_V2_ACTIVATION_HEIGHT = 10000;
+#else
+    uint64_t const DAO_V2_ACTIVATION_HEIGHT = UINT64_MAX;
+#endif
+
+    inline bool dao_v2_active(uint64_t block_height)
+    {
+        return block_height >= DAO_V2_ACTIVATION_HEIGHT
+            && DAO_V2_ACTIVATION_HEIGHT != UINT64_MAX;
+    }
+
     // BEGIN_VNS_RING_SIZE_FROM_VERSION
     inline unsigned int get_vote_ring_size(uint8_t hardfork_version) {
         if (hardfork_version < 6) return 1;

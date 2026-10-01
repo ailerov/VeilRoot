@@ -430,17 +430,10 @@ vote_result VoteManager::process_v1_vote(const transaction& tx, uint64_t height,
         return vote_result::invalid_proposal_id;
     }
 
-    // V1 is forbidden after the proposal's tally-key epoch activates.
-    {
-        dao::dao_tally_key_record key_rec;
-        if (m_db.get_underlying_db().get_dao_tally_key(
-                static_cast<uint32_t>(rec.tally_key_epoch), key_rec))
-        {
-            if (height >= key_rec.activation_height) {
-                MERROR("V1 vote rejected: DAO V2 active for this proposal");
-                return vote_result::invalid_format;
-            }
-        }
+    // V1 is forbidden after network-wide DAO V2 activation.
+    if (config::dao_v2_active(height)) {
+        MERROR("V1 vote rejected: DAO V2 active");
+        return vote_result::invalid_format;
     }
 
     if (height > rec.voting_end_height || height < rec.submission_height)
@@ -567,7 +560,14 @@ vote_result VoteManager::process_v2_vote(
         return vote_result::invalid_proposal_id;
     }
 
-    // Activation: tally-key epoch for this proposal must be active.
+    // Network-wide activation gate. V2 is rejected before the network
+    // constant is reached, regardless of any local tally-keys row.
+    if (!config::dao_v2_active(height)) {
+        MERROR("V2 vote rejected: DAO V2 not yet active");
+        return vote_result::invalid_format;
+    }
+
+    // Historical key record for this proposal's epoch must exist.
     dao::dao_tally_key_record key_rec;
     if (!m_db.get_underlying_db().get_dao_tally_key(
             static_cast<uint32_t>(proof.tally_key_epoch), key_rec))
@@ -575,10 +575,6 @@ vote_result VoteManager::process_v2_vote(
         MERROR("V2 vote: tally key not found for epoch "
                << proof.tally_key_epoch);
         return vote_result::invalid_proposal_id;
-    }
-    if (height < key_rec.activation_height) {
-        MERROR("V2 vote: tally key not yet active");
-        return vote_result::voting_period_closed;
     }
 
     BlockchainDB& bdb = m_db.get_underlying_db();
