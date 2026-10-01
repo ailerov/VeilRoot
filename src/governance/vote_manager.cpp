@@ -165,6 +165,8 @@ bool VoteManager::rollback_block(const block& blk,
                                         proof.E_W.data.end());
             std::vector<uint8_t> E_S_in(proof.E_S.data.begin(),
                                         proof.E_S.data.end());
+            std::vector<uint8_t> E_B_in(proof.E_B.data.begin(),
+                                        proof.E_B.data.end());
             std::vector<uint8_t> inv, tmp;
             bool ok = true;
             if (!agg.aggregate_E_W.empty()) {
@@ -177,6 +179,11 @@ bool VoteManager::rollback_block(const block& blk,
                      pk.add(agg.aggregate_E_S, inv, tmp);
                 if (ok) agg.aggregate_E_S = tmp;
             }
+            if (ok && !agg.aggregate_E_B.empty()) {
+                ok = ok && pk.inverse(E_B_in, inv) &&
+                     pk.add(agg.aggregate_E_B, inv, tmp);
+                if (ok) agg.aggregate_E_B = tmp;
+            }
             if (ok) {
                 // Spec section 25: commitment rollback uses point
                 // subtraction.
@@ -188,6 +195,10 @@ bool VoteManager::rollback_block(const block& blk,
                 rct::subKeys(new_C_S, agg.aggregate_C_S, proof.C_S);
                 agg.aggregate_C_S = new_C_S;
 
+                rct::key new_C_B;
+                rct::subKeys(new_C_B, agg.aggregate_C_B, proof.C_B);
+                agg.aggregate_C_B = new_C_B;
+
                 // Byte-for-byte rollback (spec section 25): if the
                 // aggregate has returned to the identity element, the
                 // pre-apply state had no aggregate row at all. Remove
@@ -195,6 +206,7 @@ bool VoteManager::rollback_block(const block& blk,
                 const rct::key id = rct::identity();
                 const bool cw_id = (agg.aggregate_C_W == id);
                 const bool cs_id = (agg.aggregate_C_S == id);
+                const bool cb_id = (agg.aggregate_C_B == id);
 
                 bool ew_id = true;
                 for (size_t k = 0; k + 1 < agg.aggregate_E_W.size(); ++k)
@@ -208,7 +220,13 @@ bool VoteManager::rollback_block(const block& blk,
                 if (!agg.aggregate_E_S.empty() &&
                     agg.aggregate_E_S.back() != 1) es_id = false;
 
-                if (cw_id && cs_id && ew_id && es_id) {
+                bool eb_id = true;
+                for (size_t k = 0; k + 1 < agg.aggregate_E_B.size(); ++k)
+                    if (agg.aggregate_E_B[k] != 0) { eb_id = false; break; }
+                if (!agg.aggregate_E_B.empty() &&
+                    agg.aggregate_E_B.back() != 1) eb_id = false;
+
+                if (cw_id && cs_id && cb_id && ew_id && es_id && eb_id) {
                     bdb.remove_dao_proposal_aggregate(proof.proposal_id);
                 } else {
                     bdb.add_dao_proposal_aggregate(proof.proposal_id, agg);
@@ -606,20 +624,26 @@ bool VoteManager::apply_dao_vote(const vote_proof_v2& proof,
     if (!have_agg) {
         agg.aggregate_C_W = rct::identity();
         agg.aggregate_C_S = rct::identity();
+        agg.aggregate_C_B = rct::identity();
     }
 
     std::vector<uint8_t> E_W_in(proof.E_W.data.begin(), proof.E_W.data.end());
     std::vector<uint8_t> E_S_in(proof.E_S.data.begin(), proof.E_S.data.end());
+    std::vector<uint8_t> E_B_in(proof.E_B.data.begin(), proof.E_B.data.end());
 
-    if (have_agg && !agg.aggregate_E_W.empty() && !agg.aggregate_E_S.empty()) {
+    if (have_agg && !agg.aggregate_E_W.empty() && !agg.aggregate_E_S.empty() &&
+        !agg.aggregate_E_B.empty()) {
         std::vector<uint8_t> tmp;
         if (!pk.add(agg.aggregate_E_W, E_W_in, tmp)) return false;
         agg.aggregate_E_W = tmp;
         if (!pk.add(agg.aggregate_E_S, E_S_in, tmp)) return false;
         agg.aggregate_E_S = tmp;
+        if (!pk.add(agg.aggregate_E_B, E_B_in, tmp)) return false;
+        agg.aggregate_E_B = tmp;
     } else {
         agg.aggregate_E_W = E_W_in;
         agg.aggregate_E_S = E_S_in;
+        agg.aggregate_E_B = E_B_in;
     }
 
     rct::key tmp_k;
@@ -627,6 +651,8 @@ bool VoteManager::apply_dao_vote(const vote_proof_v2& proof,
     agg.aggregate_C_W = tmp_k;
     rct::addKeys(tmp_k, agg.aggregate_C_S, proof.C_S);
     agg.aggregate_C_S = tmp_k;
+    rct::addKeys(tmp_k, agg.aggregate_C_B, proof.C_B);
+    agg.aggregate_C_B = tmp_k;
 
     bdb.add_dao_proposal_aggregate(proof.proposal_id, agg);
 

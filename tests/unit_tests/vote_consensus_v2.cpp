@@ -105,6 +105,7 @@ protected:
     }
 
     dao::PaillierPrivateKey m_psk;
+    std::unique_ptr<dao::PaillierPublicKey> m_ppk;
     bool m_psk_ready = false;
 
     const dao::PaillierPublicKey& shared_pk()
@@ -112,9 +113,10 @@ protected:
         if (!m_psk_ready) {
             if (!m_psk.generate_for_testing(1024))
                 throw std::runtime_error("Paillier keygen failed");
+            m_ppk.reset(new dao::PaillierPublicKey(m_psk.public_key()));
             m_psk_ready = true;
         }
-        return m_psk.public_key();
+        return *m_ppk;
     }
 
     bool apply(const ValidVote& fx)

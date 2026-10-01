@@ -294,8 +294,10 @@ struct dao_proposal_aggregate
 {
     std::vector<uint8_t> aggregate_E_W;   // Paillier ct, 512 bytes
     std::vector<uint8_t> aggregate_E_S;   // Paillier ct, 512 bytes
+    std::vector<uint8_t> aggregate_E_B;   // Paillier ct, 512 bytes
     rct::key             aggregate_C_W;
     rct::key             aggregate_C_S;
+    rct::key             aggregate_C_B;
 
     bool serialize(std::vector<uint8_t>& out) const
     {
@@ -308,10 +310,13 @@ struct dao_proposal_aggregate
         };
         put_blob(aggregate_E_W);
         put_blob(aggregate_E_S);
+        put_blob(aggregate_E_B);
         out.insert(out.end(), aggregate_C_W.bytes,
                    aggregate_C_W.bytes + sizeof(aggregate_C_W.bytes));
         out.insert(out.end(), aggregate_C_S.bytes,
                    aggregate_C_S.bytes + sizeof(aggregate_C_S.bytes));
+        out.insert(out.end(), aggregate_C_B.bytes,
+                   aggregate_C_B.bytes + sizeof(aggregate_C_B.bytes));
         return true;
     }
 
@@ -331,9 +336,11 @@ struct dao_proposal_aggregate
         };
         if (!take_blob(aggregate_E_W)) return false;
         if (!take_blob(aggregate_E_S)) return false;
-        if (off + 64 != in.size()) return false;
+        if (!take_blob(aggregate_E_B)) return false;
+        if (off + 96 != in.size()) return false;
         std::memcpy(aggregate_C_W.bytes, in.data() + off, 32); off += 32;
         std::memcpy(aggregate_C_S.bytes, in.data() + off, 32); off += 32;
+        std::memcpy(aggregate_C_B.bytes, in.data() + off, 32); off += 32;
         return true;
     }
 };
