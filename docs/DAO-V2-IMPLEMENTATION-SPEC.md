@@ -9,6 +9,28 @@ V2; the whitepaper is amended separately and only after V2 is audited.
 No consensus code may deviate from this document. Amendments require an
 explicit new revision with a documented consensus activation.
 
+REVISION 2 (DAO V2). Changes from Revision 1:
+
+  - Section 3: quorum denominator changed from minted supply to
+    circulating supply, evaluated at the voting-end height against
+    historical consensus state.
+  - Section 4: tally committee range generalised to 3..16 members;
+    threshold derived as T = ceil(n/2), t = T-1. Delta remains 16!.
+    n = 16 continues to yield 8-of-16 exactly.
+  - Section 27: tally-key records carry the actual committee size,
+    threshold, and t for their epoch, not fixed 16/8/7.
+  - Section 29: tally certificate requires T valid shares where T
+    comes from the proposal's tally-key record.
+  - Section 30: partial-decryption count is the epoch threshold T.
+  - Section 37: activation mechanism is a network consensus constant
+    routed through the existing hardfork/version machinery; the concrete
+    mainnet height is set at release time and is not 0.
+  - Sections 38, 39: added 3-member committee tests and the 3-node
+    mainnet end-to-end test. Retained 16-member cryptographic tests.
+
+Revision 2 supersedes Revision 1 in full. Any disagreement is resolved
+in favour of this revision.
+
 ---
 
 ## 1. Governance weight
@@ -66,10 +88,22 @@ Stale vote transactions are invalid rather than silently re-weighted.
 
 ## 3. Quorum
 
-    quorum_threshold = (10 * minted_supply_at_voting_end) / 100
+    quorum_threshold =
+        (quorum_percent * circulating_supply_at_voting_end) / 100
 
-where `minted_supply_at_voting_end` is the total minted VNS supply at the
-block height at which voting ends, in atomic units.
+    quorum_percent = 10
+
+where
+
+    circulating_supply_at_voting_end =
+        minted_supply_at_voting_end
+        - treasury_balance_at_voting_end
+        - burned_fees_at_voting_end
+
+All three quantities are historical consensus state at the proposal's
+voting-end height, not current DB state. They are read from the
+`supply_history` table. Underflow in the subtraction is a consensus
+error, not a wrap.
 
 The comparison is:
 
@@ -89,27 +123,56 @@ Both conditions are independent. A proposal may fail either one.
 
 ## 4. Committee
 
-Frozen parameters:
+Committee parameters for each epoch:
 
-    committee_size   = 16
-    threshold        = 8-of-16
-    sharing_degree   = 7
-    Delta            = 16! = 20,922,789,888,000
+    MIN_COMMITTEE_SIZE = 3
+    MAX_COMMITTEE_SIZE = 16
 
-The threshold is fixed by the security requirements of the selected
-distributed threshold Paillier construction (Nishide-Sakurai, WISA 2010).
-That construction defines a (t+1, n) threshold system and requires
-t < n/2. For n = 16 the maximum t is 7, hence the threshold t+1 = 8.
-Any larger threshold is outside the construction's stated security
-bound; any smaller threshold reduces the number of corrupted parties
-the protocol tolerates.
+    n = min(number_of_eligible_nodes, MAX_COMMITTEE_SIZE)
 
-Any valid 8-of-16 partial decryptions suffice to produce a tally
-certificate. The committee is selected dynamically by existing stake-age
-eligibility rules at tally time. It is not a permanent administrator set.
+    if n < MIN_COMMITTEE_SIZE:
+        no valid tally committee exists for this epoch
 
-The threshold is a protocol parameter frozen here. Code MUST NOT
-hard-code a threshold value; it reads this constant.
+    threshold T = ceil(n / 2)
+    sharing_degree t = T - 1
+    Delta = 16! = 20,922,789,888,000
+
+The threshold follows directly from the selected distributed threshold
+Paillier construction (Nishide-Sakurai, WISA 2010). That construction
+defines a (t+1, n) threshold system and requires t < n/2. For each n in
+the permitted range:
+
+    n=3  -> T=2, t=1
+    n=4  -> T=2, t=1
+    n=5  -> T=3, t=2
+    n=6  -> T=3, t=2
+    n=7  -> T=4, t=3
+    n=8  -> T=4, t=3
+    n=9  -> T=5, t=4
+    n=10 -> T=5, t=4
+    n=11 -> T=6, t=5
+    n=12 -> T=6, t=5
+    n=13 -> T=7, t=6
+    n=14 -> T=7, t=6
+    n=15 -> T=8, t=7
+    n=16 -> T=8, t=7
+
+n = 16 reproduces the prior 8-of-16 parameterisation exactly.
+
+Delta remains 16! for every committee size n <= 16. The interpolation
+denominators for member indices 1..n divide n!, and n! divides 16!.
+
+Committee selection at tally time:
+
+    eligible_nodes = existing eligible committee set
+    sort deterministically by the existing stake-age ranking
+    n = min(number_of_eligible_nodes, MAX_COMMITTEE_SIZE)
+    require n >= MIN_COMMITTEE_SIZE
+    committee = top n eligible nodes, deterministically ordered
+
+Committee membership is bound to the epoch's public key record by the
+canonical hash described in the DKG specification. Code MUST NOT use
+fixed member indexes 1..16 as committee identities.
 
 ---
 
@@ -665,8 +728,11 @@ DAO cryptographic key state:
     dao_tally_key_epoch
     dao_tally_key_id          (hash of the canonical public key record)
     public modulus N
-    threshold T = 8
-    committee size N_committee = 16
+    committee size N_committee          (3..16, actual for this epoch)
+    threshold T                         (= ceil(N_committee / 2))
+    sharing degree t                    (= T - 1)
+    Delta                               (= 16!)
+    committee member identities         (canonical public keys)
     activation height
 
 Every vote binds to the epoch and key id. A different public key cannot be
@@ -715,9 +781,13 @@ Contents:
     YES
     NO
 
-Valid only when at least 8 distinct committee members provide valid
-shares. Independently verifiable by every node. Anyone can collect shares
-and submit the tally object. No administrator is required.
+Valid only when at least T distinct committee members provide valid
+shares, where T is the threshold recorded in the proposal's tally-key
+record. The certificate must prove that each contributing member belongs
+to the exact committee bound by that key record. A share is not accepted
+merely because its numerical index lies in 1..n. Independently verifiable
+by every node. Anyone can collect shares and submit the tally object.
+No administrator is required.
 
 ---
 
@@ -725,7 +795,8 @@ and submit the tally object. No administrator is required.
 
 1. obtain aggregate E_W;
 2. obtain aggregate E_S;
-3. obtain at least 8 valid partial decryptions for each;
+3. obtain at least T valid partial decryptions for each, where T is
+   read from the proposal's tally-key record;
 4. verify each partial-decryption proof;
 5. combine per the threshold reconstruction;
 6. recover W_total;
@@ -866,10 +937,27 @@ of a private key outside the DAO rules.
 
 ## 37. Activation
 
-Explicit consensus activation height / version.
+Activation is a network consensus constant routed through the existing
+hardfork/version machinery:
 
-Before activation: V1 rules may remain for historical compatibility.
-After activation: V1 DAO votes are rejected. No ambiguous dual validation.
+    constexpr uint64_t DAO_V2_ACTIVATION_HEIGHT = <release value>;
+
+The release value is agreed at release time and compiled into every
+coordinated node. It is not 0, not the node's current height, and not a
+local DB condition.
+
+Before activation:
+
+    V1 DAO vote object -> historical V1 rules apply
+    V2 DAO vote object -> invalid
+
+At and after activation:
+
+    V1 DAO vote object -> invalid
+    V2 DAO vote object -> active
+
+No ambiguous dual validation. The activation condition is consensus
+state, not a local tally-keys row.
 
 ---
 
@@ -897,6 +985,14 @@ Required before browser integration:
   parsing, proof parsing, tally certificate parsing, DKG messages, vote
   extraction.
 - Cross-platform: Linux and Windows/Mingw; identical byte sequences.
+- Committee-size coverage: deterministic DKG and threshold-tally tests
+  for n=3 (T=2), n=4 (T=2), n=5 (T=3), n=8 (T=4), and n=16 (T=8);
+  partial decryption at T shares succeeds, T-1 shares fail; Delta is
+  16! in every case. The 16-member cryptographic test vectors are
+  retained in full.
+- Circulating-supply quorum: a proposal whose voting period ends at
+  height H uses the supply snapshot at H, independent of later
+  treasury or burn activity.
 
 ---
 
@@ -927,9 +1023,13 @@ The browser team receives a green light only when every item below passes:
     [PASS] Fuzzing passes
     [PASS] Linux/Windows interoperability passes
     [PASS] Multi-node 16-member committee test passes
-    [PASS] 8-of-16 threshold test passes
+    [PASS] 8-of-16 threshold test passes (n=16 case)
+    [PASS] 3-member committee 2-of-3 threshold test passes (n=3 case)
     [PASS] Malicious/offline committee tests pass
+    [PASS] Circulating-supply quorum uses historical snapshot at
+           voting-end height
     [PASS] Mainnet-sized integration test passes
+    [PASS] Three-node mainnet end-to-end V2 vote and tally test passes
     [PASS] Independent cryptographic review completed
 
 The final item is the security gate. It is not optional and not a future
