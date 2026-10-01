@@ -4577,16 +4577,43 @@ bool dkg_run_with_transport(const dkg_config& cfg,
         "979668901553805100",  "970721716908318012",
         "1021503496685327708", "591266747085483712"
     };
-    constexpr uint64_t FIXED_TEST_CANDIDATE_SEED = 0x5645494C52544F54ULL;
-    const bool use_fixed_candidate = (cfg.test_seed == FIXED_TEST_CANDIDATE_SEED);
+    // Residue-aligned three-way split of p and q. The Q proof requires
+    //   i == 1 : (N + 1 - p_1 - q_1) divisible by 4
+    //   i >= 2 : (p_i + q_i) divisible by 4
+    // With p = q = 3 mod 4 (so N = 1 mod 4), a valid split is
+    //   p_1 + q_1 = 2 mod 4, p_i + q_i = 0 mod 4 for i >= 2.
+    static const char* TEST_P_I_3[3] = {
+        "4682386010002652227", "4682386010002652228", "4682386010002652228"
+    };
+    static const char* TEST_Q_I_3[3] = {
+        "4090544854494431319", "4090544854494431320", "4090544854494431320"
+    };
+    constexpr uint64_t FIXED_TEST_CANDIDATE_SEED   = 0x5645494C52544F54ULL;
+    constexpr uint64_t FIXED_TEST_CANDIDATE_SEED_3 = 0x5645494C52544F33ULL;
+    const bool use_fixed_candidate_16 = (cfg.test_seed == FIXED_TEST_CANDIDATE_SEED);
+    const bool use_fixed_candidate_3  = (cfg.test_seed == FIXED_TEST_CANDIDATE_SEED_3);
+    const bool use_fixed_candidate    = use_fixed_candidate_16 || use_fixed_candidate_3;
 
-    if (use_fixed_candidate) {
+    if (use_fixed_candidate_16) {
         if (cfg.committee_size != 16) return false;
         for (uint32_t i = 1; i <= cfg.committee_size; ++i) {
             BIGNUM* p = nullptr;
             BIGNUM* q = nullptr;
             if (BN_dec2bn(&p, TEST_P_I[i - 1]) == 0 ||
                 BN_dec2bn(&q, TEST_Q_I[i - 1]) == 0) {
+                BN_free(p); BN_free(q);
+                return false;
+            }
+            parties[i - 1]->set_fixed_test_contribution(p, q);
+            BN_free(p); BN_free(q);
+        }
+    } else if (use_fixed_candidate_3) {
+        if (cfg.committee_size != 3) return false;
+        for (uint32_t i = 1; i <= cfg.committee_size; ++i) {
+            BIGNUM* p = nullptr;
+            BIGNUM* q = nullptr;
+            if (BN_dec2bn(&p, TEST_P_I_3[i - 1]) == 0 ||
+                BN_dec2bn(&q, TEST_Q_I_3[i - 1]) == 0) {
                 BN_free(p); BN_free(q);
                 return false;
             }
@@ -4636,10 +4663,14 @@ bool dkg_run_with_transport(const dkg_config& cfg,
         // loop body, `N` is const: nothing may write to it.
 #ifdef VEILROOT_DAO_DKG_TESTING
         if (use_fixed_candidate) {
-            static const char EXPECTED_N[] =
+            static const char EXPECTED_N_16[] =
                 "190617809826337441250605450219703325793";
+            static const char EXPECTED_N_3[] =
+                "172381589999757539013130820715827577997";
+            const char* expected_dec = use_fixed_candidate_16
+                ? EXPECTED_N_16 : EXPECTED_N_3;
             BIGNUM* expected = nullptr;
-            if (BN_dec2bn(&expected, EXPECTED_N) == 0) return false;
+            if (BN_dec2bn(&expected, expected_dec) == 0) return false;
             if (BN_cmp(attempt_N, expected) != 0) {
                 BN_free(expected);
                 return false;
@@ -4690,6 +4721,9 @@ bool dkg_run_with_transport(const dkg_config& cfg,
             BN_free(g_bar);
             continue;
         }
+#ifdef VEILROOT_DAO_DKG_TESTING
+        std::cerr << "[dkg] g_bar ok\n";
+#endif
 
         for (auto& p : parties) {
             dkg_msg m;
@@ -4705,19 +4739,34 @@ bool dkg_run_with_transport(const dkg_config& cfg,
             m.bytes_a.assign(nb, 0);
             BN_bn2bin(g_bar, m.bytes_a.data());
             if (!p->handle_message(m)) {
+#ifdef VEILROOT_DAO_DKG_TESTING
+                std::cerr << "[dkg] biprimality_base handle_message failed\n";
+#endif
                 BN_free(g_bar);
                 goto next_attempt;
             }
         }
+#ifdef VEILROOT_DAO_DKG_TESTING
+        std::cerr << "[dkg] biprimality_base broadcast ok\n";
+#endif
 
         // Phase 4: each party publishes Q_i.
         for (auto& p : parties) {
             if (!p->start_phase(4, cfg.k, cfg.security_bits, cfg.target_N_bits)) {
+#ifdef VEILROOT_DAO_DKG_TESTING
+                std::cerr << "[dkg] start_phase(4) failed at party " << p->id() << "\n";
+#endif
                 BN_free(g_bar);
                 goto next_attempt;
             }
         }
+#ifdef VEILROOT_DAO_DKG_TESTING
+        std::cerr << "[dkg] start_phase(4) ok for all parties\n";
+#endif
 
+#ifdef VEILROOT_DAO_DKG_TESTING
+        std::cerr << "[dkg] phase 4 publish done\n";
+#endif
         // Drain and collect Q_i (with proofs), verify each proof, then
         // run the biprimality predicate.
         {
@@ -4790,6 +4839,13 @@ bool dkg_run_with_transport(const dkg_config& cfg,
                 } else if (bi < 0) {
                     ok = false;
                 }
+#ifdef VEILROOT_DAO_DKG_TESTING
+                std::cerr << "[dkg] biprimality=" << bi << "\n";
+#endif
+            } else {
+#ifdef VEILROOT_DAO_DKG_TESTING
+                std::cerr << "[dkg] Q collection/verify failed\n";
+#endif
             }
 
             for (auto* q : Q_own) if (q) BN_free(q);
@@ -4810,20 +4866,38 @@ bool dkg_run_with_transport(const dkg_config& cfg,
         // each party's own share of p and q.
         for (auto& p : parties) {
             if (!p->do_compute_share_pq()) {
+#ifdef VEILROOT_DAO_DKG_TESTING
+                std::cerr << "[dkg] do_compute_share_pq failed\n";
+#endif
                 BN_free(g_bar);
                 goto next_attempt;
             }
         }
+#ifdef VEILROOT_DAO_DKG_TESTING
+        std::cerr << "[dkg] share_pq ok\n";
+#endif
         if (!trial_division_check_factor(parties, transports, cfg, transcript, 0)) {
+#ifdef VEILROOT_DAO_DKG_TESTING
+            std::cerr << "[dkg] trial_div factor=0 failed\n";
+#endif
             out.trial_division_failures++;
             BN_free(g_bar);
             goto next_attempt;
         }
+#ifdef VEILROOT_DAO_DKG_TESTING
+        std::cerr << "[dkg] trial_div factor=0 ok\n";
+#endif
         if (!trial_division_check_factor(parties, transports, cfg, transcript, 1)) {
+#ifdef VEILROOT_DAO_DKG_TESTING
+            std::cerr << "[dkg] trial_div factor=1 failed\n";
+#endif
             out.trial_division_failures++;
             BN_free(g_bar);
             goto next_attempt;
         }
+#ifdef VEILROOT_DAO_DKG_TESTING
+        std::cerr << "[dkg] trial_div factor=1 ok\n";
+#endif
 
         // Candidate accepted.
         {

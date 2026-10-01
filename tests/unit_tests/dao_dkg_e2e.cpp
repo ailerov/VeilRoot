@@ -580,3 +580,135 @@ TEST(dao_dkg_e2e, tampered_theta_proof_aborts)
     EXPECT_FALSE(out.ok) << "DKG accepted a tampered theta proof";
 }
 
+// ====================================================================
+// Three-party DKG at the live mainnet committee size
+//
+// Proves the same Nishide-Sakurai construction runs at n=3, T=2,
+// t=1, Delta=16! — the actual production topology. 16-party tests
+// remain required and are not replaced by this.
+// ====================================================================
+
+TEST(dao_dkg_e2e, three_party_2of3_with_oracle)
+{
+    constexpr uint64_t FIXED_SEED_3 = 0x5645494C52544F33ULL;
+    constexpr uint32_t N3           = 3;
+    constexpr uint32_t T3           = 2;
+
+    dkg_config cfg;
+    cfg.committee_size = N3;
+    cfg.threshold      = T3;
+    cfg.member_ids     = test_member_ids(N3);
+    cfg.epoch          = 1;
+    cfg.k              = 60;
+    cfg.target_N_bits  = 128;
+    cfg.security_bits  = 32;
+    cfg.qproof_rounds  = 32;
+    cfg.max_attempts   = 1;
+    cfg.test_seed      = FIXED_SEED_3;
+
+    auto net = dkg_make_inproc_network(cfg.committee_size, nullptr);
+
+    std::vector<std::unique_ptr<dkg_transport>> pool;
+    pool.reserve(net.endpoints.size());
+    for (auto& e : net.endpoints) pool.push_back(std::move(e));
+
+    size_t next = 0;
+    dkg_transport_factory factory =
+        [&pool, &next](uint32_t) -> std::unique_ptr<dkg_transport> {
+            if (next >= pool.size()) return nullptr;
+            return std::move(pool[next++]);
+        };
+
+    dkg_result out;
+    dkg_run_with_transport(cfg, factory, out);
+
+    ASSERT_GT(out.candidate_attempts, 0u);
+    ASSERT_TRUE(out.candidate_accepted) << "3-party DKG did not accept";
+
+    // ---- Record fields reflect the actual committee ----
+    EXPECT_EQ(out.record.committee_size, N3);
+    EXPECT_EQ(out.record.threshold, T3);
+    EXPECT_EQ(out.record.t, T3 - 1);
+
+    // Delta must still be 16!.
+    {
+        BIGNUM* d = BN_dup(dao_dkg_delta());
+        BIGNUM* d_rec = BN_bin2bn(out.record.delta.data(),
+                                  static_cast<int>(out.record.delta.size()),
+                                  nullptr);
+        ASSERT_NE(d_rec, nullptr);
+        EXPECT_EQ(BN_cmp(d, d_rec), 0) << "Delta != 16!";
+        BN_free(d); BN_free(d_rec);
+    }
+
+    // Public key must be the fixed expected N for the n=3 seed.
+    {
+        BIGNUM* N = BN_bin2bn(out.record.N.data(),
+                              static_cast<int>(out.record.N.size()),
+                              nullptr);
+        ASSERT_NE(N, nullptr);
+        EXPECT_EQ(BN_num_bits(N), 128);
+        static const char EXPECTED_N[] =
+            "172381589999757539013130820715827577997";
+        BIGNUM* expected = nullptr;
+        BN_dec2bn(&expected, EXPECTED_N);
+        EXPECT_EQ(BN_cmp(N, expected), 0);
+        BN_free(expected);
+        BN_free(N);
+    }
+
+    // ---- Decryption round trip at 2-of-3 ----
+    ASSERT_EQ(out.test_SK.size(), N3);
+    ASSERT_EQ(out.record.V_K_i.size(), N3);
+
+    PaillierPublicKey pk;
+    ASSERT_TRUE(pk.deserialize_modulus(out.record.N));
+
+    BIGNUM* M = BN_new(); BN_set_word(M, 987654321);
+    BIGNUM* r = BN_new(); BN_set_word(r, 5);
+    std::vector<uint8_t> c;
+    ASSERT_TRUE(pk.encrypt(M, r, c));
+
+    std::vector<BIGNUM*> sk_all(N3, nullptr);
+    for (size_t j = 0; j < N3; ++j) {
+        const std::string dec(out.test_SK[j].begin(), out.test_SK[j].end());
+        ASSERT_EQ(BN_dec2bn(&sk_all[j], dec.c_str()),
+                  static_cast<int>(dec.size()));
+    }
+
+    std::vector<std::vector<uint8_t>> all_partials(N3);
+    for (size_t j = 0; j < N3; ++j)
+        ASSERT_TRUE(dao_threshold_partial_decrypt(pk, c, sk_all[j],
+                                                  all_partials[j]));
+
+    BIGNUM* theta = BN_bin2bn(out.record.theta.data(),
+                              static_cast<int>(out.record.theta.size()),
+                              nullptr);
+    ASSERT_NE(theta, nullptr);
+
+    // 2-of-3 succeeds.
+    {
+        std::vector<uint32_t> subset = { 1, 2 };
+        std::vector<std::vector<uint8_t>> partials;
+        for (uint32_t j : subset) partials.push_back(all_partials[j - 1]);
+
+        std::vector<uint8_t> C;
+        ASSERT_TRUE(dao_threshold_combine(pk, subset, partials, T3, C));
+
+        BIGNUM* M_rec = BN_new();
+        ASSERT_TRUE(dao_threshold_finalize(pk, C, theta, M_rec));
+        EXPECT_EQ(BN_cmp(M, M_rec), 0);
+        BN_free(M_rec);
+    }
+
+    // 1-of-3 must be rejected.
+    {
+        std::vector<uint32_t> subset1 = { 1 };
+        std::vector<std::vector<uint8_t>> partials1 = { all_partials[0] };
+        std::vector<uint8_t> C1;
+        EXPECT_FALSE(dao_threshold_combine(pk, subset1, partials1, T3, C1));
+    }
+
+    for (auto* x : sk_all) if (x) BN_free(x);
+    BN_free(M); BN_free(r); BN_free(theta);
+}
