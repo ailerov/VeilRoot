@@ -123,6 +123,7 @@ set(unit_tests_sources
   dao_paillier.cpp
   dao_threshold.cpp
   dao_tally.cpp
+  dao_tally_e2e.cpp
   dao_dkg.cpp
   dao_dkg_e2e.cpp
   voting_weight.cpp
