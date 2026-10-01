@@ -187,11 +187,13 @@ bool dao_threshold_partial_decrypt(const PaillierPublicKey& pk,
 bool dao_threshold_combine(const PaillierPublicKey& pk,
                            const std::vector<uint32_t>& subset,
                            const std::vector<std::vector<uint8_t>>& partials,
+                           uint32_t threshold,
                            std::vector<uint8_t>& C_out)
 {
     if (!pk.valid()) return false;
     if (subset.size() != partials.size()) return false;
-    if (subset.size() < DAO_DKG_THRESHOLD) return false;
+    if (threshold == 0) return false;
+    if (subset.size() < threshold) return false;
 
     CtxGuard g;
     if (!g.ok()) return false;

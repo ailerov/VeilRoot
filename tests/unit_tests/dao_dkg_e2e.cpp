@@ -291,7 +291,7 @@ TEST(dao_dkg_e2e, decryption_roundtrip)
         for (uint32_t j : subset) partials.push_back(all_partials[j - 1]);
 
         std::vector<uint8_t> C;
-        ASSERT_TRUE(dao_threshold_combine(pk, subset, partials, C));
+        ASSERT_TRUE(dao_threshold_combine(pk, subset, partials, DAO_DKG_THRESHOLD, C));
 
         BIGNUM* M_rec = BN_new();
         ASSERT_TRUE(dao_threshold_finalize(pk, C, theta, M_rec));
@@ -305,7 +305,7 @@ TEST(dao_dkg_e2e, decryption_roundtrip)
         std::vector<std::vector<uint8_t>> partials7;
         for (uint32_t j : subset7) partials7.push_back(all_partials[j - 1]);
         std::vector<uint8_t> C7;
-        EXPECT_FALSE(dao_threshold_combine(pk, subset7, partials7, C7));
+        EXPECT_FALSE(dao_threshold_combine(pk, subset7, partials7, DAO_DKG_THRESHOLD, C7));
     }
 
     // --- Oracle 3: V_K_i == V^(Delta * SK_i) mod N^2 ---
@@ -400,7 +400,7 @@ TEST(dao_dkg_e2e, decryption_roundtrip)
             }
 
             std::vector<uint8_t> C;
-            ASSERT_TRUE(dao_threshold_combine(pk, subset, partials, C));
+            ASSERT_TRUE(dao_threshold_combine(pk, subset, partials, DAO_DKG_THRESHOLD, C));
 
             BIGNUM* M_rec = BN_new();
             ASSERT_TRUE(dao_threshold_finalize(pk, C, theta, M_rec));

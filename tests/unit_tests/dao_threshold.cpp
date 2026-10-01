@@ -212,7 +212,7 @@ TEST_F(ThresholdRoundTrip, eight_of_sixteen_recovers_plaintext)
 
     // Combine.
     std::vector<uint8_t> C;
-    ASSERT_TRUE(dao_threshold_combine(*pk_, subset, partials, C));
+    ASSERT_TRUE(dao_threshold_combine(*pk_, subset, partials, DAO_DKG_THRESHOLD, C));
 
     // Finalize with theta' = lambda.
     BIGNUM* m_rec = BN_new();
@@ -264,7 +264,7 @@ TEST_F(ThresholdRoundTrip, alternate_subset_also_recovers)
     }
 
     std::vector<uint8_t> C;
-    ASSERT_TRUE(dao_threshold_combine(*pk_, subset, partials, C));
+    ASSERT_TRUE(dao_threshold_combine(*pk_, subset, partials, DAO_DKG_THRESHOLD, C));
 
     BIGNUM* m_rec = BN_new();
     ASSERT_TRUE(dao_threshold_finalize(*pk_, C, sk_->lambda(), m_rec));
@@ -285,7 +285,7 @@ TEST_F(ThresholdRoundTrip, too_few_shares_rejected_by_combine)
         partials.push_back(std::vector<uint8_t>(PAILLIER_CT_BYTES, 0));
 
     std::vector<uint8_t> C;
-    EXPECT_FALSE(dao_threshold_combine(*pk_, subset, partials, C));
+    EXPECT_FALSE(dao_threshold_combine(*pk_, subset, partials, DAO_DKG_THRESHOLD, C));
 }
 
 TEST_F(ThresholdRoundTrip, size_mismatch_rejected)
@@ -296,5 +296,5 @@ TEST_F(ThresholdRoundTrip, size_mismatch_rejected)
         partials.push_back(std::vector<uint8_t>(PAILLIER_CT_BYTES, 0));
 
     std::vector<uint8_t> C;
-    EXPECT_FALSE(dao_threshold_combine(*pk_, subset, partials, C));
+    EXPECT_FALSE(dao_threshold_combine(*pk_, subset, partials, DAO_DKG_THRESHOLD, C));
 }
