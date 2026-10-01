@@ -63,6 +63,8 @@
 
 #include <openssl/bn.h>
 
+#include "crypto/crypto.h"
+
 #include "governance/dao_paillier.h"
 #include "governance/dao_threshold.h"
 
@@ -562,6 +564,12 @@ struct dkg_config
     uint32_t committee_size = DAO_DKG_MAX_COMMITTEE_SIZE;
     uint32_t threshold      = DAO_DKG_THRESHOLD;
     uint32_t epoch          = 1;
+
+    // Ordered committee member public keys. Must contain exactly
+    // committee_size distinct entries. The canonical committee_id_hash
+    // is SHA256(domain || epoch || ordered member keys). A real
+    // committee is never identified merely by indexes 1..n.
+    std::vector<crypto::public_key> member_ids;
 
     uint32_t k              = 60;
     uint32_t target_N_bits  = 128;

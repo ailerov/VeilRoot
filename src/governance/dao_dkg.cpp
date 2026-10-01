@@ -4492,6 +4492,11 @@ bool dkg_run_with_transport(const dkg_config& cfg,
     if (expected_threshold == 0) return false;
     if (cfg.threshold != expected_threshold) return false;
 
+    if (cfg.member_ids.size() != cfg.committee_size) return false;
+    for (size_t a = 0; a < cfg.member_ids.size(); ++a)
+        for (size_t b = a + 1; b < cfg.member_ids.size(); ++b)
+            if (cfg.member_ids[a] == cfg.member_ids[b]) return false;
+
     dkg_transcript transcript;
 
     // Create transports.
@@ -4503,17 +4508,15 @@ bool dkg_run_with_transport(const dkg_config& cfg,
     }
 
     // Compute committee_id_hash = SHA-256(
-    //     domain || epoch || ordered member ids )
-    // The member ids are 1..committee_size in ascending order.
+    //     domain || epoch || ordered member public keys )
     uint8_t committee_id_hash[32] = {};
     {
         std::vector<uint8_t> buf;
         const char* dom = DAO_DKG_COMMITTEE_DOMAIN;
         buf.insert(buf.end(), dom, dom + std::strlen(dom));
         for (int i = 0; i < 4; ++i) buf.push_back((cfg.epoch >> (8*i)) & 0xff);
-        for (uint32_t i = 1; i <= cfg.committee_size; ++i) {
-            for (int k = 0; k < 4; ++k) buf.push_back((i >> (8*k)) & 0xff);
-        }
+        for (const auto& pk : cfg.member_ids)
+            buf.insert(buf.end(), pk.data, pk.data + sizeof(pk.data));
         SHA256(buf.data(), buf.size(), committee_id_hash);
     }
 

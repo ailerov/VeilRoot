@@ -28,6 +28,25 @@
 #include "governance/dao_dkg.h"
 #include "governance/dao_dkg_transport.h"
 
+namespace {
+
+// Deterministic committee member public keys for tests. Real
+// deployments fill dkg_config::member_ids with selected node keys.
+inline std::vector<crypto::public_key> test_member_ids(uint32_t n)
+{
+    std::vector<crypto::public_key> ids;
+    ids.reserve(n);
+    for (uint32_t i = 0; i < n; ++i) {
+        crypto::public_key pk{};
+        for (int k = 0; k < 32; ++k)
+            pk.data[k] = static_cast<uint8_t>((i + 1) * 17 + k);
+        ids.push_back(pk);
+    }
+    return ids;
+}
+
+} // namespace
+
 using namespace cryptonote;
 using namespace cryptonote::dao;
 
@@ -55,6 +74,7 @@ TEST(dao_dkg_e2e, sixteen_party_128bit_with_oracle)
     dkg_config cfg;
     cfg.committee_size = DAO_DKG_COMMITTEE_SIZE;
     cfg.threshold      = DAO_DKG_THRESHOLD;
+    cfg.member_ids     = test_member_ids(cfg.committee_size);
     cfg.epoch          = 1;
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
@@ -195,6 +215,7 @@ TEST(dao_dkg_e2e, decryption_roundtrip)
     dkg_config cfg;
     cfg.committee_size = DAO_DKG_COMMITTEE_SIZE;
     cfg.threshold      = DAO_DKG_THRESHOLD;
+    cfg.member_ids     = test_member_ids(cfg.committee_size);
     cfg.epoch          = 1;
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
@@ -437,6 +458,7 @@ TEST(dao_dkg_e2e, DISABLED_sixteen_party_128bit_randomized_smoke)
     dkg_config cfg;
     cfg.committee_size = DAO_DKG_COMMITTEE_SIZE;
     cfg.threshold      = DAO_DKG_THRESHOLD;
+    cfg.member_ids     = test_member_ids(cfg.committee_size);
     cfg.epoch          = 1;
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
@@ -477,6 +499,7 @@ TEST(dao_dkg_e2e, tampered_range_proof_aborts)
     dkg_config cfg;
     cfg.committee_size = DAO_DKG_COMMITTEE_SIZE;
     cfg.threshold      = DAO_DKG_THRESHOLD;
+    cfg.member_ids     = test_member_ids(cfg.committee_size);
     cfg.epoch          = 1;
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
@@ -520,6 +543,7 @@ TEST(dao_dkg_e2e, tampered_theta_proof_aborts)
     dkg_config cfg;
     cfg.committee_size = DAO_DKG_COMMITTEE_SIZE;
     cfg.threshold      = DAO_DKG_THRESHOLD;
+    cfg.member_ids     = test_member_ids(cfg.committee_size);
     cfg.epoch          = 1;
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
