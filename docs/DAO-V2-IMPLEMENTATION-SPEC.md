@@ -28,7 +28,27 @@ REVISION 2 (DAO V2). Changes from Revision 1:
   - Sections 38, 39: added 3-member committee tests and the 3-node
     mainnet end-to-end test. Retained 16-member cryptographic tests.
 
-Revision 2 supersedes Revision 1 in full. Any disagreement is resolved
+Revision 2 supersedes Revision 1 in full.
+
+REVISION 3 (DAO V2). Changes from Revision 2:
+
+  - Section 3: quorum comparison corrected. Quorum is decided by
+    aggregate participation coins (actual VNS amount), not by voting
+    weight. YES_weight > NO_weight remains the separate majority rule.
+    The two quantities are never substituted for one another. This
+    restores the V1 semantic split: participation_balance governs
+    quorum, voting_weight governs majority.
+  - Section 18: V2 ballot gains a participation-balance channel:
+    per-input balance_commitment and balance_signature; top-level C_B,
+    E_B, proof_B.
+  - Section 20: verification steps extended for the balance channel.
+  - Section 29: tally certificate includes B decryption and
+    participation_coins_total.
+  - Section 30: final tally decrypts E_W, E_S and E_B; quorum uses
+    participation_coins_total.
+  - Section 38: participation-versus-weight independence tests added.
+
+Revision 3 supersedes Revision 2 in full. Any disagreement is resolved
 in favour of this revision.
 
 ---
@@ -107,15 +127,30 @@ error, not a wrap.
 
 The comparison is:
 
-    YES_weight + NO_weight >= quorum_threshold
+    participation_coins_total >= quorum_threshold
 
-Governance weight is not equated with monetary supply in general. The
-quorum rule compares an aggregate weight to a numeric threshold. This
-rule is taken verbatim from the DAO whitepaper §12 and is retained.
+where
+
+    participation_coins_total =
+        aggregate actual VNS amount represented by accepted DAO V2
+        votes, recovered from the encrypted participation-balance
+        aggregate E_B.
 
 Acceptance also requires:
 
     YES_weight > NO_weight
+
+where
+
+    YES_weight, NO_weight =
+        recovered from the encrypted weight aggregate E_W and the
+        encrypted signed-weight aggregate E_S.
+
+Quorum uses participation coins. Majority uses voting weight. The two
+quantities are never substituted for one another. This preserves the
+V1 distinction between total_yes_amount/total_no_amount (raw VNS for
+quorum) and total_yes_weight/total_no_weight (voting weight for
+majority).
 
 Both conditions are independent. A proposal may fail either one.
 
@@ -486,6 +521,15 @@ Replace the V1 structure. The following plaintext fields disappear:
 
 Conceptual V2 ballot:
 
+    vote_input_v2
+    {
+        vector<uint64_t> key_offsets;
+        rct::key weight_commitment;      // V_i
+        rct::clsag weight_signature;     // weighted DAO CLSAG
+        rct::key balance_commitment;     // B_i
+        rct::clsag balance_signature;    // DAO CLSAG with f_i = 1
+    }
+
     vote_proof_v2
     {
         uint8_t version = 2;
@@ -499,14 +543,15 @@ Conceptual V2 ballot:
 
         rct::key C_W;
         rct::key C_S;
+        rct::key C_B;
 
         fixed_512_byte E_W;
         fixed_512_byte E_S;
-
-        weighted_clsag_proof weighted_clsag;
+        fixed_512_byte E_B;
 
         paillier_pedersen_equality_proof proof_W;
         paillier_pedersen_equality_proof proof_S;
+        paillier_pedersen_equality_proof proof_B;
 
         hidden_direction_or_proof direction_proof;
 
@@ -523,6 +568,22 @@ derives them from chain state:
 - proposal submission height
 
 They are bound by the transcript hash.
+
+Balance channel semantics:
+
+- balance_commitment = B_i = C_i + rho_B_i * G, where C_i is the real
+  output's RingCT Pedersen commitment and rho_B_i is fresh. The verifier
+  never learns the amount. B_i is not equal to any ring member's C.
+- balance_signature is a DAO CLSAG on the same ring with
+  age_factors = 1 for every member, and V = balance_commitment.
+- balance_signature.I == weight_signature.I for every input. The two
+  signatures are bound to the same hidden DAO authority.
+- C_B = sum_i B_i.
+- E_B = Paillier encryption of participation_coins_total (sum of actual
+  VNS amounts of the wallet's eligible outputs) under the proposal's
+  historical tally key.
+- proof_B is a Paillier/Pedersen equality proof between C_B and E_B,
+  with domain "C_B-Enc(B)". It is independent of proof_W and proof_S.
 
 ### 18.1 Transaction carrier
 
@@ -587,16 +648,22 @@ Bulletproof or RingCT proof used by DAO V2 has its own typed V2 structure.
 13. nullifiers are non-zero and unique within the transaction.
 14. age factors recomputed from canonical output heights.
 15. weighted CLSAG verifies for each input.
-16. aggregate C_W matches sum of per-input V_i.
-17. C_S is a valid curve point.
-18. E_W, E_S are valid Paillier ciphertexts (in Z_(N^2)*).
-19. Paillier/Pedersen consistency proof for W verifies.
-20. Paillier/Pedersen consistency proof for S verifies.
-21. hidden-direction OR proof verifies.
-22. transcript hash verifies.
-23. duplicate-nullifier lookup against previous chain state.
-24. duplicate-nullifier lookup within the block.
-25. only now mutate governance state.
+16. balance CLSAG verifies for each input: same ring, age_factors = 1,
+    V = balance_commitment.
+17. weight_signature.I == balance_signature.I for every input.
+18. aggregate C_W matches sum of per-input weight_commitment.
+19. aggregate C_B matches sum of per-input balance_commitment.
+20. C_S and C_B are valid curve points.
+21. E_W, E_S, E_B are valid Paillier ciphertexts (in Z_(N^2)*).
+22. Paillier/Pedersen consistency proof for W verifies.
+23. Paillier/Pedersen consistency proof for S verifies.
+24. Paillier/Pedersen consistency proof for B verifies.
+25. hidden-direction OR proof verifies.
+26. transcript hash verifies (binds C_W, C_S, C_B, E_W, E_S, E_B, and
+    each input's weight_commitment and balance_commitment).
+27. duplicate-nullifier lookup against previous chain state.
+28. duplicate-nullifier lookup within the block.
+29. only now mutate governance state.
 
 Any failure makes the vote invalid.
 
@@ -774,12 +841,17 @@ Contents:
     vote_end_height
     tally_key_epoch
     aggregate_ciphertext_hash
-    set of valid partial decryptions
+    set of valid partial decryptions for E_W
+    set of valid partial decryptions for E_S
+    set of valid partial decryptions for E_B
     set of partial-decryption proofs
     W_total
     S_total
-    YES
-    NO
+    participation_coins_total
+    YES_weight
+    NO_weight
+    quorum_threshold
+    passed
 
 Valid only when at least T distinct committee members provide valid
 shares, where T is the threshold recorded in the proposal's tally-key
@@ -795,22 +867,31 @@ No administrator is required.
 
 1. obtain aggregate E_W;
 2. obtain aggregate E_S;
-3. obtain at least T valid partial decryptions for each, where T is
-   read from the proposal's tally-key record;
-4. verify each partial-decryption proof;
-5. combine per the threshold reconstruction;
-6. recover W_total;
-7. recover signed S_total;
-8. require 0 <= W_total <= W_MAX;
-9. require |S_total| <= W_total;
-10. require (W_total + S_total) even;
-11. YES = (W_total + S_total) / 2;
-12. NO  = (W_total - S_total) / 2;
-13. check quorum;
-14. check YES > NO;
-15. write result to consensus state.
+3. obtain aggregate E_B;
+4. obtain at least T valid partial decryptions for each aggregate, where
+   T is read from the proposal's tally-key record;
+5. verify each partial-decryption proof;
+6. combine per the threshold reconstruction;
+7. recover W_total;
+8. recover signed S_total;
+9. recover participation_coins_total from E_B;
+10. require 0 <= W_total <= W_MAX;
+11. require |S_total| <= W_total;
+12. require (W_total + S_total) even;
+13. YES_weight = (W_total + S_total) / 2;
+14. NO_weight  = (W_total - S_total) / 2;
+15. read supply_history[vote_end_height]; if absent, the tally is not
+    ready and must not be finalized;
+16. circulating = minted - treasury - burned;
+17. quorum_threshold = floor(10 * circulating / 100);
+18. quorum_met   = participation_coins_total >= quorum_threshold;
+19. majority_met = YES_weight > NO_weight;
+20. passed = quorum_met && majority_met;
+21. write result to consensus state.
 
-No individual ballot is decrypted.
+No individual ballot is decrypted. Participation coins (from E_B)
+determine quorum. Voting weight (from E_W and E_S) determines majority.
+The two quantities are never substituted for one another.
 
 ---
 
@@ -993,6 +1074,14 @@ Required before browser integration:
 - Circulating-supply quorum: a proposal whose voting period ends at
   height H uses the supply snapshot at H, independent of later
   treasury or burn activity.
+- Participation-versus-weight independence: large W with small B may
+  pass majority and fail quorum; small W with large B may pass quorum
+  and fail majority; same B_total with different W_total must produce
+  identical quorum outcomes.
+- Balance channel tamper: modification of balance_commitment,
+  balance_signature, E_B, proof_B, or C_B must fail verification.
+- Cross-channel binding: weight_signature.I != balance_signature.I
+  must fail verification.
 
 ---
 
