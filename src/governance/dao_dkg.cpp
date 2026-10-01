@@ -2300,11 +2300,12 @@ bool dkg_party::do_trial_division_prolog(uint32_t r)
     trial_r_ = r;
     const uint32_t t = threshold_ - 1;
 
-    // p_max = 16 * 3 * 2^(k-1)
+    // p_max = committee_size * 3 * 2^(k-1). The bound depends on the
+    // actual committee size, not a fixed 16.
     BIGNUM* p_max = BN_new();
     BN_lshift(p_max, BN_value_one(), k_ - 1);
     BN_mul_word(p_max, 3);
-    BN_mul_word(p_max, 16);
+    BN_mul_word(p_max, committee_size_);
 
     // K = 2^security_bits
     BIGNUM* K = BN_new();
@@ -4482,9 +4483,14 @@ bool dkg_run_with_transport(const dkg_config& cfg,
 {
     out = dkg_result{};
 
-    if (cfg.committee_size < cfg.threshold) return false;
-    if (cfg.committee_size != DAO_DKG_COMMITTEE_SIZE) return false;
-    if (cfg.threshold != DAO_DKG_THRESHOLD) return false;
+    if (cfg.committee_size < DAO_DKG_MIN_COMMITTEE_SIZE ||
+        cfg.committee_size > DAO_DKG_MAX_COMMITTEE_SIZE)
+        return false;
+
+    const uint32_t expected_threshold =
+        dao_dkg_expected_threshold(cfg.committee_size);
+    if (expected_threshold == 0) return false;
+    if (cfg.threshold != expected_threshold) return false;
 
     dkg_transcript transcript;
 

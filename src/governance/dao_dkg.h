@@ -556,7 +556,10 @@ struct dkg_result
 
 struct dkg_config
 {
-    uint32_t committee_size = DAO_DKG_COMMITTEE_SIZE;
+    // Default committee is the maximum (16). Callers that run a
+    // different size must set committee_size AND threshold to
+    // dao_dkg_expected_threshold(committee_size).
+    uint32_t committee_size = DAO_DKG_MAX_COMMITTEE_SIZE;
     uint32_t threshold      = DAO_DKG_THRESHOLD;
     uint32_t epoch          = 1;
 
