@@ -227,6 +227,7 @@ public:
   virtual uint64_t get_treasury_balance() const override { return 0; }
   virtual uint64_t get_treasury_balance_in_txn() const override { return 0; }
   virtual uint64_t get_total_burned_fees() const override { return 0; }
+  virtual uint64_t get_total_burned_fees_in_txn() const override { return 0; }
   virtual void add_burned_fees(uint64_t) override {}
   virtual void set_treasury_balance(uint64_t) override {}
   virtual void set_treasury_balance_in_txn(uint64_t) override {}

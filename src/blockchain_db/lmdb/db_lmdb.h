@@ -453,6 +453,7 @@ public:
     uint64_t get_treasury_balance_in_txn() const;
     // END_VNS_TXN_SAFE_GETTERS
   virtual uint64_t get_total_burned_fees() const override;
+  virtual uint64_t get_total_burned_fees_in_txn() const override;
   virtual void add_burned_fees(uint64_t amount) override;
   virtual void set_treasury_balance(uint64_t amount) override;
     // BEGIN_VNS_TXN_SAFE_GETTERS

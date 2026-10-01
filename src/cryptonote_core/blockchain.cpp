@@ -73,6 +73,7 @@
 #include <chrono>
 
 #include "governance/vote_utils.h"
+#include "governance/dao_supply.h"
 #include <openssl/evp.h>
 #include "common/domain_utils.h"
 #include "governance/parameter_update.h"
@@ -6991,6 +6992,27 @@ leave:
   // Republish the VNS snapshot so the Nostr fetcher sees the updated
   // heartbeat state on its next cycle.
   refresh_vns_domain_snapshot();
+
+  // BEGIN_VNS_DAO_SUPPLY_SNAPSHOT
+  // Record the circulating-supply snapshot for this block height. All
+  // treasury credits and burned-fee updates for this block have already
+  // landed, so minted/treasury/burned reflect the post-block state.
+  {
+    namespace dao = cryptonote::dao;
+    dao::dao_supply_snapshot snap;
+    snap.height   = new_height;
+    snap.minted   = static_cast<dao::dao_u128>(already_generated_coins);
+    snap.treasury = static_cast<dao::dao_u128>(m_db->get_treasury_balance_in_txn());
+    snap.burned   = static_cast<dao::dao_u128>(m_db->get_total_burned_fees_in_txn());
+
+    if (!dao::dao_supply_snapshot::compute_circulating(
+            snap.minted, snap.treasury, snap.burned, snap.circulating)) {
+      MERROR("Circulating-supply underflow at height " << new_height);
+      return false;
+    }
+    m_db->add_dao_supply_snapshot(snap);
+  }
+  // END_VNS_DAO_SUPPLY_SNAPSHOT
 
   return true;
 }

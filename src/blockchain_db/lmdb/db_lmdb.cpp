@@ -3098,6 +3098,30 @@ uint64_t BlockchainLMDB::get_total_burned_fees() const
     return burned;
 }
 
+uint64_t BlockchainLMDB::get_total_burned_fees_in_txn() const
+{
+    LOG_PRINT_L3("blockchain::" << __FUNCTION__);
+    check_open();
+
+    if (!m_write_txn)
+        throw0(DB_ERROR("No write transaction active for get_total_burned_fees_in_txn"));
+
+    MDB_val k, v;
+    k.mv_data = const_cast<char*>("burned_fees");
+    k.mv_size = strlen("burned_fees") + 1;
+
+    int result = mdb_get(m_write_txn->m_txn, m_properties, &k, &v);
+    if (result == MDB_NOTFOUND)
+        return 0;
+    if (result)
+        throw0(DB_ERROR(lmdb_error("Failed to get burned_fees (in txn): ", result).c_str()));
+
+    uint64_t burned = 0;
+    if (v.mv_size == sizeof(uint64_t))
+        memcpy(&burned, v.mv_data, sizeof(uint64_t));
+    return burned;
+}
+
 void BlockchainLMDB::add_burned_fees(uint64_t amount)
 {
     LOG_PRINT_L3("blockchain::" << __FUNCTION__);
@@ -7829,6 +7853,16 @@ void BlockchainLMDB::pop_block(block& blk, std::vector<transaction>& txs)
   try
   {
     BlockchainDB::pop_block(blk, txs);
+
+    // BEGIN_VNS_DAO_SUPPLY_ROLLBACK
+    // Remove the supply snapshot for the height being popped, in the
+    // same write transaction as the rest of the block rollback.
+    {
+      const uint64_t snap_height = height();
+      if (snap_height > 0)
+        remove_dao_supply_snapshot(snap_height);
+    }
+    // END_VNS_DAO_SUPPLY_ROLLBACK
 
     // BEGIN_VNS_TREASURY_ROLLBACK
     // Reverse every treasury effect of the popped block using the active write txn.

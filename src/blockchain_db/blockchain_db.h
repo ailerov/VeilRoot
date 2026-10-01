@@ -2119,6 +2119,7 @@ public:
     virtual uint64_t get_treasury_balance() const = 0;
     virtual uint64_t get_treasury_balance_in_txn() const = 0;
     virtual uint64_t get_total_burned_fees() const = 0;
+    virtual uint64_t get_total_burned_fees_in_txn() const = 0;
     virtual void add_burned_fees(uint64_t amount) = 0;
 
     /**
