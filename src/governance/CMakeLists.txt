@@ -20,6 +20,7 @@ set(governance_sources
     dao_paillier.cpp
     dao_threshold.cpp
     dao_tally.cpp
+    dao_tally_share.cpp
     dao_dkg.cpp
     dao_dkg_transport.cpp
     dao_consistency.cpp
