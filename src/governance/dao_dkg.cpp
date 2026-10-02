@@ -5,12 +5,15 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <deque>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <queue>
 #include <set>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 
 #include "governance/dao_dkg_transport.h"
@@ -1770,8 +1773,10 @@ public:
 
     // Trial-division phase helpers (§4.1). Called by the driver.
     bool do_compute_share_pq();
-    bool do_trial_division_prolog(uint32_t factor_selector);
-    bool do_trial_division_gamma(uint32_t r);
+    bool do_trial_division_prolog(uint32_t factor_selector,
+                                  uint32_t wire_round);
+    bool do_trial_division_gamma(uint32_t r,
+                                 uint32_t wire_round);
 
     // §5 threshold key derivation. Called by the driver in sequence.
     bool do_phi_share_init();
@@ -1935,6 +1940,8 @@ private:
     void free_bn(BIGNUM*& p) { if (p) { BN_free(p); p = nullptr; } }
     bool send_msg(const dkg_msg& m);
     dkg_msg make_header(dkg_msg_type type, uint32_t recipient) const;
+    dkg_msg make_header(dkg_msg_type type, uint32_t recipient,
+                        uint32_t phase, uint32_t round) const;
 
     bool do_polynomial_commit();
     bool do_bgw_product();
@@ -1973,6 +1980,12 @@ bool dkg_party::send_msg(const dkg_msg& m)
 
 dkg_msg dkg_party::make_header(dkg_msg_type type, uint32_t recipient) const
 {
+    return make_header(type, recipient, phase_, 0);
+}
+
+dkg_msg dkg_party::make_header(dkg_msg_type type, uint32_t recipient,
+                               uint32_t phase, uint32_t round) const
+{
     dkg_msg m;
     m.hdr.version      = 1;
     m.hdr.epoch        = epoch_;
@@ -1980,8 +1993,8 @@ dkg_msg dkg_party::make_header(dkg_msg_type type, uint32_t recipient) const
     std::memcpy(m.hdr.committee_id_hash, committee_id_hash_, 32);
     m.hdr.sender_id    = party_id_;
     m.hdr.recipient_id = recipient;
-    m.hdr.phase        = phase_;
-    m.hdr.round        = 0;
+    m.hdr.phase        = phase;
+    m.hdr.round        = round;
     m.hdr.sequence     = seq_;
     m.hdr.type         = type;
     return m;
@@ -2293,9 +2306,6 @@ bool dkg_party::do_publish_Q()
 
     const bool sent = send_msg(m);
 
-    // Store own Q so the distributed runner can inject it into the
-    // reconstruction map (the transport does not deliver a party's own
-    // broadcast back to it).
     free_bn(Q_i_);
     Q_i_ = BN_dup(Q);
 
@@ -2331,7 +2341,7 @@ bool dkg_party::do_compute_share_pq()
 // share_p_; r == 1 uses share_q_.
 // -------------------------------------------------------------------
 
-bool dkg_party::do_trial_division_prolog(uint32_t r)
+bool dkg_party::do_trial_division_prolog(uint32_t r, uint32_t wire_round)
 {
     if (!vss_group_ || !vss_group_->valid()) return false;
 
@@ -2390,13 +2400,13 @@ bool dkg_party::do_trial_division_prolog(uint32_t r)
 
     // Broadcast commitments.
     {
-        dkg_msg m = make_header(dkg_msg_type::trial_division_ra_commit, 0);
+        dkg_msg m = make_header(dkg_msg_type::trial_division_ra_commit, 0, 5, wire_round);
         m.tag32 = party_id_;
         for (const auto& c : commits_ra.C) m.vec_a.push_back(c);
         if (!send_msg(m)) return false;
     }
     {
-        dkg_msg m = make_header(dkg_msg_type::trial_division_rb_commit, 0);
+        dkg_msg m = make_header(dkg_msg_type::trial_division_rb_commit, 0, 5, wire_round);
         m.tag32 = party_id_;
         for (const auto& c : commits_rb.C) m.vec_a.push_back(c);
         if (!send_msg(m)) return false;
@@ -2411,7 +2421,7 @@ bool dkg_party::do_trial_division_prolog(uint32_t r)
             rb_shares_received_[j] = BN_dup(s_rb[j - 1]);
             continue;
         }
-        dkg_msg m = make_header(dkg_msg_type::trial_division_ra_share, j);
+        dkg_msg m = make_header(dkg_msg_type::trial_division_ra_share, j, 5, wire_round);
         m.tag32 = party_id_;
         const int n1 = BN_num_bytes(s_ra[j - 1]);
         m.bytes_a.assign(n1, 0);
@@ -2432,7 +2442,7 @@ bool dkg_party::do_trial_division_prolog(uint32_t r)
     return true;
 }
 
-bool dkg_party::do_trial_division_gamma(uint32_t r)
+bool dkg_party::do_trial_division_gamma(uint32_t r, uint32_t wire_round)
 {
     if (!share_p_ || !share_q_) return false;
 
@@ -2489,7 +2499,7 @@ bool dkg_party::do_trial_division_gamma(uint32_t r)
     free_bn(gamma_share_);
     gamma_share_ = prod;
 
-    dkg_msg m = make_header(dkg_msg_type::trial_division_gamma, 0);
+    dkg_msg m = make_header(dkg_msg_type::trial_division_gamma, 0, 5, wire_round);
     m.tag32 = party_id_;
     const int nb = BN_num_bytes(gamma_share_);
     m.bytes_a.assign(nb, 0);
@@ -2798,9 +2808,10 @@ bool dkg_party::handle_message(const dkg_msg& m)
         case dkg_msg_type::trial_division_gamma:
             return true;   // collected by driver
 
+        case dkg_msg_type::candidate_accept:
         case dkg_msg_type::candidate_reject:
-            aborted_ = true;
-            return true;
+        case dkg_msg_type::trial_division_result:
+            return false;
 
         default:
             return true;
@@ -2992,31 +3003,31 @@ bool dkg_party::do_beta_R_generate()
 
     // Broadcast commitments.
     {
-        dkg_msg m = make_header(dkg_msg_type::beta_commit, 0);
+        dkg_msg m = make_header(dkg_msg_type::beta_commit, 0, 7, 0);
         m.tag32 = party_id_;
         for (const auto& c : commits_beta_.C) m.vec_a.push_back(c);
         if (!send_msg(m)) return false;
     }
     {
-        dkg_msg m = make_header(dkg_msg_type::r_commit, 0);
+        dkg_msg m = make_header(dkg_msg_type::r_commit, 0, 7, 0);
         m.tag32 = party_id_;
         for (const auto& c : commits_delta_r_.C) m.vec_a.push_back(c);
         if (!send_msg(m)) return false;
     }
     {
-        dkg_msg m = make_header(dkg_msg_type::h_theta_share, 0);
+        dkg_msg m = make_header(dkg_msg_type::h_theta_share, 0, 7, 0);
         m.tag32 = party_id_;
         for (const auto& c : commits_h_theta_.C) m.vec_a.push_back(c);
         if (!send_msg(m)) return false;
     }
     {
-        dkg_msg m = make_header(dkg_msg_type::beta_range_proof, 0);
+        dkg_msg m = make_header(dkg_msg_type::beta_range_proof, 0, 7, 0);
         m.tag32 = party_id_;
         if (!beta_range.serialize(m.bytes_a)) return false;
         if (!send_msg(m)) return false;
     }
     {
-        dkg_msg m = make_header(dkg_msg_type::r_range_proof, 0);
+        dkg_msg m = make_header(dkg_msg_type::r_range_proof, 0, 7, 0);
         m.tag32 = party_id_;
         if (!dr_range.serialize(m.bytes_a)) return false;
         if (!send_msg(m)) return false;
@@ -3039,7 +3050,7 @@ bool dkg_party::do_beta_R_generate()
             b_h_theta_received_[j] = BN_dup(b_h[j - 1]);
             continue;
         }
-        dkg_msg m = make_header(dkg_msg_type::beta_share, j);
+        dkg_msg m = make_header(dkg_msg_type::beta_share, j, 7, 0);
         m.tag32 = party_id_;
         bn_to_signed(s_beta[j - 1], m.bytes_a);
         bn_to_signed(s_dr[j - 1], m.bytes_b);
@@ -3047,7 +3058,7 @@ bool dkg_party::do_beta_R_generate()
         bn_to_signed(b_dr[j - 1], m.bytes_d);
         if (!send_msg(m)) return false;
 
-        dkg_msg mh = make_header(dkg_msg_type::h_theta_share, j);
+        dkg_msg mh = make_header(dkg_msg_type::h_theta_share, j, 7, 0);
         mh.tag32 = party_id_;
         bn_to_signed(s_h[j - 1], mh.bytes_a);
         bn_to_signed(b_h[j - 1], mh.bytes_b);
@@ -3389,7 +3400,7 @@ bool dkg_party::do_compute_theta_share()
                                   C_theta_i, theta_share_, r_theta,
                                   open_proof)) goto done;
 
-        dkg_msg m = make_header(dkg_msg_type::theta_share, 0);
+        dkg_msg m = make_header(dkg_msg_type::theta_share, 0, 9, 0);
         m.tag32 = party_id_;
         bn_to_signed(theta_share_, m.bytes_a);
         auto bn_to_vec = [](const BIGNUM* x, std::vector<uint8_t>& v) {
@@ -3508,7 +3519,7 @@ bool dkg_party::do_v_commit()
     std::vector<uint8_t> digest;
     compute_v_commit(epoch_, party_id_, rbytes, digest);
 
-    dkg_msg m = make_header(dkg_msg_type::v_commit, 0);
+    dkg_msg m = make_header(dkg_msg_type::v_commit, 0, 11, 0);
     m.tag32 = party_id_;
     m.bytes_a = digest;
     return send_msg(m);
@@ -3518,7 +3529,7 @@ bool dkg_party::do_v_reveal()
 {
     if (!v_r_i_) return false;
 
-    dkg_msg m = make_header(dkg_msg_type::v_reveal, 0);
+    dkg_msg m = make_header(dkg_msg_type::v_reveal, 0, 12, 0);
     m.tag32 = party_id_;
     const int n = BN_num_bytes(v_r_i_);
     m.bytes_a.assign(n, 0);
@@ -4505,6 +4516,22 @@ int biprimality_check(const std::vector<const BIGNUM*>& Q,
 //   5. checks gcd(gamma, r) == 1.
 // Any failure at any repetition for any small prime rejects the
 // candidate.
+// Unique wire identity for a trial-division iteration. Phase 5
+// repeats a (small_prime, repetition) grid, and rep alone is not
+// unique across primes: every prime restarts at rep 0. Encode
+// prime_index * REPS + rep so every protocol iteration has a distinct
+// (phase, round) pair.
+static uint32_t trial_division_wire_round(size_t prime_index,
+                                          uint32_t rep)
+{
+    const uint64_t value =
+        static_cast<uint64_t>(prime_index) *
+            static_cast<uint64_t>(DAO_DKG_TRIAL_DIVISION_REPS) +
+        static_cast<uint64_t>(rep);
+    if (value > UINT32_MAX) return UINT32_MAX;
+    return static_cast<uint32_t>(value);
+}
+
 bool trial_division_check_factor(
     const std::vector<std::unique_ptr<dkg_party>>& parties,
     std::vector<std::unique_ptr<dkg_transport>>& transports,
@@ -4521,9 +4548,13 @@ bool trial_division_check_factor(
         bool passed = false;
 
         for (uint32_t rep = 0; rep < DAO_DKG_TRIAL_DIVISION_REPS && !passed; ++rep) {
+            const uint32_t wire_round =
+                trial_division_wire_round(r_idx, rep);
+
             // Phase: prolog.
             for (auto& p : parties) {
-                if (!p->do_trial_division_prolog(factor_selector)) return false;
+                if (!p->do_trial_division_prolog(factor_selector,
+                                                 wire_round)) return false;
             }
             {
                 std::vector<dkg_msg> collected;
@@ -4533,7 +4564,7 @@ bool trial_division_check_factor(
 
             // Phase: gamma share.
             for (auto& p : parties) {
-                if (!p->do_trial_division_gamma(r)) return false;
+                if (!p->do_trial_division_gamma(r, wire_round)) return false;
             }
 
             std::vector<dkg_msg> collected;
@@ -5835,28 +5866,418 @@ struct dkg_p2p_runner::impl
     dkg_transcript                  transcript;
     uint8_t                         committee_id_hash[32] = {};
 
+    // Messages that arrived for a future candidate, a future
+    // phase/round, or are runner-control messages awaiting their
+    // decision barrier. Never handed to dkg_party until they belong
+    // to the current candidate and phase.
+    std::deque<dkg_msg> pending_messages;
+
+    // Monotone sequence for runner-control messages (candidate votes
+    // and beta-retry votes). Distinct from dkg_party's own sequence.
+    std::uint64_t control_sequence = 1;
+
+    // (candidate_id, phase, round) triples that have already produced
+    // a committee decision. Prevents a duplicate barrier re-vote.
+    std::set<std::tuple<uint32_t, uint32_t, uint32_t>>
+        completed_decisions;
+
     uint32_t phase_timeout_s = 120;   // overwritten from cfg in start()
+
+    // ---- runner-control helpers ----
+
+    static bool is_runner_decision(const dkg_msg& m)
+    {
+        return m.hdr.type == dkg_msg_type::candidate_accept ||
+               m.hdr.type == dkg_msg_type::candidate_reject;
+    }
+
+    bool send_runner_decision(uint32_t phase,
+                              uint32_t round,
+                              bool accept)
+    {
+        dkg_msg m;
+        m.hdr.version = 1;
+        m.hdr.epoch = cfg.epoch;
+        m.hdr.candidate_id = party->current_candidate_id();
+        std::memcpy(m.hdr.committee_id_hash,
+                    committee_id_hash,
+                    sizeof(committee_id_hash));
+        m.hdr.sender_id = party->id();
+        m.hdr.recipient_id = 0;
+        m.hdr.phase = phase;
+        m.hdr.round = round;
+        m.hdr.sequence = control_sequence++;
+        m.hdr.type = accept
+            ? dkg_msg_type::candidate_accept
+            : dkg_msg_type::candidate_reject;
+        m.tag32 = party->id();
+        // Runner control only. Never passed to dkg_party::handle_message
+        // and never appended to the DKG transcript.
+        return transport->send(m);
+    }
+
+    // Phase-5 repetition barrier. Unanimous, not threshold: every
+    // honest node computes the same gcd(gamma, r), so a disagreement
+    // means divergent protocol state and must abort.
+    bool send_trial_rep_result(uint32_t wire_round, bool passed)
+    {
+        dkg_msg m;
+        m.hdr.version = 1;
+        m.hdr.epoch = cfg.epoch;
+        m.hdr.candidate_id = party->current_candidate_id();
+        std::memcpy(m.hdr.committee_id_hash,
+                    committee_id_hash,
+                    sizeof(committee_id_hash));
+        m.hdr.sender_id = party->id();
+        m.hdr.recipient_id = 0;
+        m.hdr.phase = 5;
+        m.hdr.round = wire_round;
+        m.hdr.sequence = 0;
+        m.hdr.type = dkg_msg_type::trial_division_result;
+        m.tag32 = passed ? 1u : 0u;
+        // Runner-only control. Never passed to dkg_party and never
+        // appended to the DKG transcript.
+        return transport->send(m);
+    }
+
+    bool wait_trial_rep_result(uint32_t wire_round,
+                               bool local_pass,
+                               bool& global_pass)
+    {
+        const uint32_t n = cfg.committee_size;
+        const uint32_t current = party->current_candidate_id();
+
+        std::map<uint32_t, bool> result_by_sender;
+        result_by_sender.emplace(party->id(), local_pass);
+
+        auto record_result = [&](const dkg_msg& m) -> bool {
+            if (m.hdr.candidate_id != current) return true;
+            if (m.hdr.type != dkg_msg_type::trial_division_result)
+                return true;
+            if (m.hdr.phase != 5 || m.hdr.round != wire_round)
+                return true;
+            const uint32_t sender = m.hdr.sender_id;
+            if (sender < 1 || sender > n) return false;
+            if (m.tag32 > 1) return false;
+            const bool remote_pass = (m.tag32 == 1);
+            const auto [it, inserted] =
+                result_by_sender.emplace(sender, remote_pass);
+            if (!inserted && it->second != remote_pass) return false;
+            return true;
+        };
+
+        // Consume results that already arrived (buffered by
+        // collect_until's type filter) or belong to a stale round.
+        for (auto it = pending_messages.begin();
+             it != pending_messages.end();)
+        {
+            if (it->hdr.type != dkg_msg_type::trial_division_result) {
+                ++it;
+                continue;
+            }
+            if (it->hdr.candidate_id < current ||
+                (it->hdr.phase == 5 && it->hdr.round < wire_round))
+            {
+                it = pending_messages.erase(it);
+                continue;
+            }
+            if (it->hdr.candidate_id > current ||
+                it->hdr.phase != 5 ||
+                it->hdr.round != wire_round)
+            {
+                ++it;
+                continue;
+            }
+            if (!record_result(*it)) return false;
+            it = pending_messages.erase(it);
+        }
+
+        auto all_agree = [&]() -> int {
+            // 1 all true, 0 all false, 2 not yet, -1 disagreement.
+            for (const auto& v : result_by_sender)
+                if (v.second != local_pass) return -1;
+            if (result_by_sender.size() == n) return local_pass ? 1 : 0;
+            return 2;
+        };
+
+        {
+            const int d = all_agree();
+            if (d == -1) return false;
+            if (d == 1 || d == 0) { global_pass = local_pass; return true; }
+        }
+
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::seconds(phase_timeout_s);
+
+        while (true) {
+            if (stop_flag.load()) return false;
+            if (std::chrono::steady_clock::now() >= deadline) return false;
+
+            dkg_msg m;
+            if (!transport->try_recv(m)) {
+                if (!transport->try_recv_own(m)) {
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(20));
+                    continue;
+                }
+            }
+
+            if (m.hdr.candidate_id < current) continue;
+            if (m.hdr.candidate_id > current) {
+                pending_messages.push_back(std::move(m));
+                continue;
+            }
+            if (m.hdr.type != dkg_msg_type::trial_division_result) {
+                pending_messages.push_back(std::move(m));
+                continue;
+            }
+            if (m.hdr.phase != 5 || m.hdr.round != wire_round) {
+                pending_messages.push_back(std::move(m));
+                continue;
+            }
+            if (!record_result(m)) return false;
+
+            const int d = all_agree();
+            if (d == -1) return false;
+            if (d == 1 || d == 0) { global_pass = local_pass; return true; }
+        }
+    }
+
+    bool wait_runner_decision(uint32_t phase,
+                              uint32_t round,
+                              bool local_accept,
+                              bool& global_accept)
+    {
+        const uint32_t n = cfg.committee_size;
+        const uint32_t threshold = cfg.threshold;
+        const uint32_t candidate = party->current_candidate_id();
+
+        std::map<uint32_t, bool> votes;
+        votes.emplace(party->id(), local_accept);
+
+        const auto decision_key =
+            std::make_tuple(candidate, phase, round);
+
+        auto record_vote =
+            [&](const dkg_msg& m) -> bool
+        {
+            if (m.hdr.candidate_id != candidate)
+                return true;
+            if (m.hdr.phase != phase || m.hdr.round != round)
+                return true;
+            if (!is_runner_decision(m))
+                return true;
+
+            const uint32_t sender = m.hdr.sender_id;
+            if (sender < 1 || sender > n)
+                return false;
+
+            const bool accept =
+                (m.hdr.type == dkg_msg_type::candidate_accept);
+
+            const auto it = votes.find(sender);
+            if (it != votes.end()) {
+                // Duplicate identical delivery is harmless. Same
+                // sender changing its decision is fatal.
+                if (it->second != accept) return false;
+                return true;
+            }
+            votes.emplace(sender, accept);
+            return true;
+        };
+
+        const auto check_decision =
+            [&]() -> int
+        {
+            uint32_t accepts = 0;
+            uint32_t rejects = 0;
+            for (const auto& v : votes) {
+                if (v.second) ++accepts;
+                else          ++rejects;
+            }
+
+            // Do not decide merely because T votes exist. n=4,T=2 with
+            // 2 accept + 2 reject is a split and must fail, not be
+            // arbitrarily accepted.
+            const bool accept_decided =
+                accepts >= threshold && (n - accepts) < threshold;
+            const bool reject_decided =
+                rejects >= threshold && (n - rejects) < threshold;
+
+            if (accept_decided && reject_decided) return -1;
+            if (accept_decided) return 1;
+            if (reject_decided) return 0;
+            if (votes.size() == n) return -1;
+            return 2;
+        };
+
+        auto consume_pending =
+            [&]() -> bool
+        {
+            for (auto it = pending_messages.begin();
+                 it != pending_messages.end();)
+            {
+                dkg_msg& m = *it;
+
+                if (m.hdr.candidate_id < candidate) {
+                    it = pending_messages.erase(it);
+                    continue;
+                }
+                if (m.hdr.candidate_id > candidate) {
+                    ++it;
+                    continue;
+                }
+                if (!is_runner_decision(m) ||
+                    m.hdr.phase != phase ||
+                    m.hdr.round != round)
+                {
+                    ++it;
+                    continue;
+                }
+                if (!record_vote(m)) return false;
+                it = pending_messages.erase(it);
+
+                const int d = check_decision();
+                if (d == -1) return false;
+                if (d == 1 || d == 0) {
+                    global_accept = (d == 1);
+                    completed_decisions.insert(decision_key);
+                    return true;
+                }
+            }
+            return true;
+        };
+
+        if (!consume_pending()) return false;
+
+        {
+            const int d = check_decision();
+            if (d == -1) return false;
+            if (d == 1 || d == 0) {
+                global_accept = (d == 1);
+                completed_decisions.insert(decision_key);
+                return true;
+            }
+        }
+
+        const auto deadline =
+            std::chrono::steady_clock::now() +
+            std::chrono::seconds(phase_timeout_s);
+
+        while (true) {
+            if (stop_flag.load()) return false;
+            if (std::chrono::steady_clock::now() >= deadline) return false;
+
+            dkg_msg m;
+            bool got = transport->try_recv(m);
+            if (!got) got = transport->try_recv_own(m);
+            if (!got) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                continue;
+            }
+
+            if (m.hdr.candidate_id < candidate) continue;
+            if (m.hdr.candidate_id > candidate) {
+                pending_messages.push_back(std::move(m));
+                continue;
+            }
+            if (!is_runner_decision(m) ||
+                m.hdr.phase != phase ||
+                m.hdr.round != round)
+            {
+                pending_messages.push_back(std::move(m));
+                continue;
+            }
+            if (!record_vote(m)) return false;
+
+            const int d = check_decision();
+            if (d == -1) return false;
+            if (d == 1 || d == 0) {
+                global_accept = (d == 1);
+                completed_decisions.insert(decision_key);
+                return true;
+            }
+        }
+    }
 
     // ---- helpers ----
 
     bool collect_until(
+        uint32_t expected_phase,
+        uint32_t expected_round,
+        const std::set<dkg_msg_type>& expected_types,
         const std::function<bool(const std::vector<dkg_msg>&)>& is_complete,
         std::vector<dkg_msg>& out)
     {
+        const uint32_t current = party->current_candidate_id();
         const auto deadline = std::chrono::steady_clock::now() +
                               std::chrono::seconds(phase_timeout_s);
+
+        auto wanted = [&](const dkg_msg& m) -> bool {
+            return m.hdr.phase == expected_phase &&
+                   m.hdr.round == expected_round &&
+                   expected_types.find(m.hdr.type) != expected_types.end();
+        };
+
+        // Messages for the current candidate whose type this phase does
+        // not expect stay in pending_messages until the phase that
+        // expects them runs. Without this, a Q broadcast that arrives
+        // during phase 1 would be consumed by phase 1 and never seen by
+        // phase 4, which would then time out.
+        auto process_received =
+            [&](dkg_msg&& m) -> bool
+        {
+            if (m.hdr.candidate_id < current) return true;
+            if (m.hdr.candidate_id > current) {
+                pending_messages.push_back(std::move(m));
+                return true;
+            }
+            if (is_runner_decision(m)) {
+                pending_messages.push_back(std::move(m));
+                return true;
+            }
+            if (!wanted(m)) {
+                pending_messages.push_back(std::move(m));
+                return true;
+            }
+            out.push_back(std::move(m));
+            return true;
+        };
+
+        for (auto it = pending_messages.begin();
+             it != pending_messages.end();)
+        {
+            if (it->hdr.candidate_id < current) {
+                it = pending_messages.erase(it);
+                continue;
+            }
+            if (it->hdr.candidate_id > current) {
+                ++it;
+                continue;
+            }
+            if (is_runner_decision(*it)) {
+                ++it;
+                continue;
+            }
+            if (!wanted(*it)) {
+                ++it;
+                continue;
+            }
+            out.push_back(std::move(*it));
+            it = pending_messages.erase(it);
+        }
+
         while (!is_complete(out)) {
             if (stop_flag.load()) return false;
             if (std::chrono::steady_clock::now() >= deadline) return false;
+
             dkg_msg m;
             if (transport->try_recv(m)) {
-                out.push_back(m);
-                transcript.append(m);
+                if (!process_received(std::move(m))) return false;
                 continue;
             }
             if (transport->try_recv_own(m)) {
-                out.push_back(m);
-                transcript.append(m);
+                if (!process_received(std::move(m))) return false;
                 continue;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -5867,6 +6288,12 @@ struct dkg_p2p_runner::impl
     bool feed_party(const std::vector<dkg_msg>& msgs)
     {
         for (const auto& m : msgs) {
+            // Defensive assertion. collect_until() already removes
+            // runner-control messages.
+            if (is_runner_decision(m)) return false;
+            if (m.hdr.type == dkg_msg_type::trial_division_result)
+                return false;
+
             if (!party->handle_message(m)) {
                 std::cerr << "[p2p-dkg] node " << party->id()
                           << ": handle_message failed for type "
@@ -5923,8 +6350,8 @@ struct dkg_p2p_runner::impl
     // ---- phase workers ----
 
     bool run_modulus_attempt(BIGNUM* N_out);
-    bool run_phase_4_biprimality(const BIGNUM* N);
-    bool run_trial_division_factor(uint32_t selector);
+    bool run_phase_4_biprimality(const BIGNUM* N, bool& candidate_reject);
+    bool run_trial_division_factor(uint32_t selector, bool& candidate_reject);
     bool run_key_phases(const BIGNUM* N);
 
     // ---- main ----
@@ -5953,7 +6380,13 @@ bool dkg_p2p_runner::impl::run_modulus_attempt(BIGNUM* N_out)
             && count_type(v, dkg_msg_type::polynomial_commitment_h) >= n
             && count_type(v, dkg_msg_type::polynomial_share)         >= n - 1;
     };
-    if (!collect_until(complete_phase1, msgs)) {
+    const std::set<dkg_msg_type> phase1_types = {
+        dkg_msg_type::polynomial_commitment_p,
+        dkg_msg_type::polynomial_commitment_q,
+        dkg_msg_type::polynomial_commitment_h,
+        dkg_msg_type::polynomial_share,
+    };
+    if (!collect_until(1, 0, phase1_types, complete_phase1, msgs)) {
         std::cerr << "[p2p-dkg] node " << me << ": phase1 collect timeout\n";
         return false;
     }
@@ -5978,7 +6411,10 @@ bool dkg_p2p_runner::impl::run_modulus_attempt(BIGNUM* N_out)
     const auto complete_phase2 = [&](const std::vector<dkg_msg>& v) {
         return count_type(v, dkg_msg_type::bgw_product_share) >= n;
     };
-    if (!collect_until(complete_phase2, msgs)) {
+    const std::set<dkg_msg_type> phase2_types = {
+        dkg_msg_type::bgw_product_share,
+    };
+    if (!collect_until(2, 0, phase2_types, complete_phase2, msgs)) {
         std::cerr << "[p2p-dkg] node " << me << ": phase2 collect timeout\n";
         return false;
     }
@@ -6062,8 +6498,10 @@ bool dkg_p2p_runner::impl::run_modulus_attempt(BIGNUM* N_out)
 // Phase 3-4: biprimality
 // --------------------------------------------------------------------
 
-bool dkg_p2p_runner::impl::run_phase_4_biprimality(const BIGNUM* N)
+bool dkg_p2p_runner::impl::run_phase_4_biprimality(const BIGNUM* N,
+                                                    bool& candidate_reject)
 {
+    candidate_reject = false;
     const uint32_t n = cfg.committee_size;
 
     // Phase 4: each party publishes Q_i.
@@ -6074,7 +6512,10 @@ bool dkg_p2p_runner::impl::run_phase_4_biprimality(const BIGNUM* N)
     const auto complete = [&](const std::vector<dkg_msg>& v) {
         return count_type(v, dkg_msg_type::biprimality_Q) >= n;
     };
-    if (!collect_until(complete, msgs)) {
+    const std::set<dkg_msg_type> phase4_types = {
+        dkg_msg_type::biprimality_Q,
+    };
+    if (!collect_until(4, 0, phase4_types, complete, msgs)) {
         std::cerr << "[p2p-dkg] node " << party->id()
                   << ": biprimality collect timeout (msgs=" << msgs.size() << ")\n";
         return false;
@@ -6177,7 +6618,11 @@ bool dkg_p2p_runner::impl::run_phase_4_biprimality(const BIGNUM* N)
                   << ": biprimality_check = " << bi << "\n";
         if (bi <= 0) {
             if (bi == 0) result.biprimality_failures++;
-            ok = false;
+            // Mathematical candidate rejection, not a protocol error.
+            candidate_reject = true;
+            for (auto* q : Q_own) if (q) BN_free(q);
+            if (!feed_party(msgs)) return false;
+            return true;
         }
     }
 
@@ -6191,8 +6636,10 @@ bool dkg_p2p_runner::impl::run_phase_4_biprimality(const BIGNUM* N)
 // Phase 5: trial division (one factor_selector)
 // --------------------------------------------------------------------
 
-bool dkg_p2p_runner::impl::run_trial_division_factor(uint32_t selector)
+bool dkg_p2p_runner::impl::run_trial_division_factor(uint32_t selector,
+                                                     bool& candidate_reject)
 {
+    candidate_reject = false;
     const uint32_t n = cfg.committee_size;
     const uint32_t t = cfg.threshold - 1;
     const uint32_t deg = 2 * t;
@@ -6207,47 +6654,73 @@ bool dkg_p2p_runner::impl::run_trial_division_factor(uint32_t selector)
         for (uint32_t rep = 0;
              rep < DAO_DKG_TRIAL_DIVISION_REPS && !passed; ++rep)
         {
-            if (!party->do_trial_division_prolog(selector)) {
+            const uint32_t wire_round =
+                trial_division_wire_round(r_idx, rep);
+
+            std::cerr << "[p2p-dkg] node " << party->id()
+                      << ": trial prime=" << r
+                      << " rep=" << rep
+                      << " wire_round=" << wire_round
+                      << " prolog\n";
+
+            if (!party->do_trial_division_prolog(selector, wire_round)) {
                 std::cerr << "[p2p-dkg] node " << party->id()
-                          << ": trial prolog failed r=" << r << " rep=" << rep << "\n";
+                          << ": trial prolog failed prime=" << r
+                          << " rep=" << rep << "\n";
                 return false;
             }
 
             std::vector<dkg_msg> msgs;
-            // Protocol sends only ra_commit, rb_commit (broadcasts) and
-            // ra_share (targeted; the message carries BOTH the ra and rb
-            // share for that recipient in bytes_a/bytes_b). There is no
-            // trial_division_rb_share message on the wire.
             const auto prolog_complete = [&](const std::vector<dkg_msg>& v) {
-                return count_type(v, dkg_msg_type::trial_division_ra_commit) >= n
-                    && count_type(v, dkg_msg_type::trial_division_rb_commit) >= n
-                    && count_type(v, dkg_msg_type::trial_division_ra_share)  >= n - 1;
+                return distinct_senders(v, dkg_msg_type::trial_division_ra_commit) == n
+                    && distinct_senders(v, dkg_msg_type::trial_division_rb_commit) == n
+                    && distinct_senders(v, dkg_msg_type::trial_division_ra_share)  == n - 1;
             };
-            if (!collect_until(prolog_complete, msgs)) {
+            const std::set<dkg_msg_type> prolog_types = {
+                dkg_msg_type::trial_division_ra_commit,
+                dkg_msg_type::trial_division_rb_commit,
+                dkg_msg_type::trial_division_ra_share,
+            };
+            if (!collect_until(5, wire_round, prolog_types, prolog_complete, msgs)) {
                 std::cerr << "[p2p-dkg] node " << party->id()
-                          << ": trial prolog collect timeout r=" << r << " rep=" << rep
+                          << ": trial prolog timeout prime=" << r
+                          << " rep=" << rep
+                          << " round=" << wire_round
                           << " msgs=" << msgs.size() << "\n";
                 return false;
             }
             if (!feed_party(msgs)) {
                 std::cerr << "[p2p-dkg] node " << party->id()
-                          << ": trial prolog feed_party failed r=" << r << " rep=" << rep << "\n";
-                return false;
-            }
-
-            if (!party->do_trial_division_gamma(r)) {
-                std::cerr << "[p2p-dkg] node " << party->id()
-                          << ": trial gamma failed r=" << r << " rep=" << rep << "\n";
+                          << ": trial prolog feed failed prime=" << r
+                          << " rep=" << rep << "\n";
                 return false;
             }
 
             msgs.clear();
-            const auto gamma_complete = [&](const std::vector<dkg_msg>& v) {
-                return count_type(v, dkg_msg_type::trial_division_gamma) >= n;
-            };
-            if (!collect_until(gamma_complete, msgs)) {
+
+            std::cerr << "[p2p-dkg] node " << party->id()
+                      << ": trial prime=" << r
+                      << " rep=" << rep
+                      << " gamma\n";
+
+            if (!party->do_trial_division_gamma(r, wire_round)) {
                 std::cerr << "[p2p-dkg] node " << party->id()
-                          << ": trial gamma collect timeout r=" << r << " rep=" << rep << "\n";
+                          << ": trial gamma generation failed prime=" << r
+                          << " rep=" << rep << "\n";
+                return false;
+            }
+
+            const auto gamma_complete = [&](const std::vector<dkg_msg>& v) {
+                return distinct_senders(v, dkg_msg_type::trial_division_gamma) == n;
+            };
+            const std::set<dkg_msg_type> gamma_types = {
+                dkg_msg_type::trial_division_gamma,
+            };
+            if (!collect_until(5, wire_round, gamma_types, gamma_complete, msgs)) {
+                std::cerr << "[p2p-dkg] node " << party->id()
+                          << ": trial gamma timeout prime=" << r
+                          << " rep=" << rep
+                          << " round=" << wire_round << "\n";
                 return false;
             }
 
@@ -6255,27 +6728,32 @@ bool dkg_p2p_runner::impl::run_trial_division_factor(uint32_t selector)
             for (const auto& m : msgs) {
                 if (m.hdr.type != dkg_msg_type::trial_division_gamma) continue;
                 const uint32_t j = m.tag32;
-                if (j < 1 || j > n) continue;
-                if (m.bytes_a.empty()) continue;
-                if (gamma_shares[j]) continue;
+                if (j < 1 || j > n) return false;
+                if (m.bytes_a.empty()) return false;
+                if (gamma_shares[j]) return false;
                 gamma_shares[j] = BN_bin2bn(m.bytes_a.data(),
                                             static_cast<int>(m.bytes_a.size()),
                                             nullptr);
+                if (!gamma_shares[j]) return false;
             }
-            // Own gamma share: reconstruct locally via direct method.
-            // do_trial_division_gamma internally computes gamma_share_,
-            // which is private. We obtain it via the same mechanism the
-            // driver uses: the party does not broadcast to itself, but
-            // the driver-level gamma reconstruction includes the local
-            // party's own share by construction of the injection set.
-            // For robustness, use the party's own id slot.
+
+            // Own gamma share: do_trial_division_gamma_ produces it and
+            // the own_queue delivers it back. Keep the direct fallback
+            // for robustness.
             {
                 const uint32_t me = party->id();
                 if (me >= 1 && me <= n && !gamma_shares[me]) {
                     std::vector<uint8_t> own;
-                    if (party->public_gamma_share(own) && !own.empty()) {
-                        gamma_shares[me] = BN_bin2bn(
-                            own.data(), static_cast<int>(own.size()), nullptr);
+                    if (!party->public_gamma_share(own) || own.empty()) {
+                        for (auto* x : gamma_shares) if (x) BN_free(x);
+                        return false;
+                    }
+                    gamma_shares[me] = BN_bin2bn(own.data(),
+                                                 static_cast<int>(own.size()),
+                                                 nullptr);
+                    if (!gamma_shares[me]) {
+                        for (auto* x : gamma_shares) if (x) BN_free(x);
+                        return false;
                     }
                 }
             }
@@ -6285,12 +6763,15 @@ bool dkg_p2p_runner::impl::run_trial_division_factor(uint32_t selector)
                 return false;
             }
 
-            bool all_present = true;
-            for (uint32_t j = 1; j <= need; ++j)
-                if (!gamma_shares[j]) { all_present = false; break; }
-            if (!all_present) {
-                for (auto* x : gamma_shares) if (x) BN_free(x);
-                return false;
+            std::vector<uint32_t> idx;
+            std::vector<const BIGNUM*> vals;
+            for (uint32_t j = 1; j <= need; ++j) {
+                if (!gamma_shares[j]) {
+                    for (auto* x : gamma_shares) if (x) BN_free(x);
+                    return false;
+                }
+                idx.push_back(j);
+                vals.push_back(gamma_shares[j]);
             }
 
             CtxGuard ctx;
@@ -6299,34 +6780,56 @@ bool dkg_p2p_runner::impl::run_trial_division_factor(uint32_t selector)
                 return false;
             }
 
-            std::vector<uint32_t> idx;
-            std::vector<const BIGNUM*> vals;
-            for (uint32_t j = 1; j <= need; ++j) {
-                idx.push_back(j);
-                vals.push_back(gamma_shares[j]);
-            }
             BIGNUM* gamma = BN_new();
-            bool ok = lagrange_interpolate_zero(idx, vals, gamma, ctx.ctx);
+            if (!gamma) {
+                for (auto* x : gamma_shares) if (x) BN_free(x);
+                return false;
+            }
+
+            const bool interpolated =
+                lagrange_interpolate_zero(idx, vals, gamma, ctx.ctx);
             for (auto* x : gamma_shares) if (x) BN_free(x);
-            if (!ok) {
-                std::cerr << "[p2p-dkg] node " << party->id()
-                          << ": trial gamma lagrange failed r=" << r << " rep=" << rep << "\n";
-                BN_free(gamma); return false;
+            if (!interpolated) {
+                BN_free(gamma);
+                return false;
             }
 
             BIGNUM* rbn = BN_new();
+            BIGNUM* gcd = BN_new();
+            if (!rbn || !gcd) {
+                BN_free(rbn); BN_free(gcd); BN_free(gamma);
+                return false;
+            }
             BN_set_word(rbn, r);
-            BIGNUM* g = BN_new();
-            BN_gcd(g, gamma, rbn, ctx.ctx);
-            if (BN_is_one(g)) passed = true;
-            BN_free(rbn); BN_free(g); BN_free(gamma);
+            if (!BN_gcd(gcd, gamma, rbn, ctx.ctx)) {
+                BN_free(rbn); BN_free(gcd); BN_free(gamma);
+                return false;
+            }
+            const bool local_pass = BN_is_one(gcd);
+            BN_free(rbn); BN_free(gcd); BN_free(gamma);
+
+            // Unanimous per-repetition barrier. Every node must have
+            // computed the same gcd result for this exact wire_round
+            // before any node starts the next repetition.
+            if (!send_trial_rep_result(wire_round, local_pass))
+                return false;
+
+            bool global_pass = false;
+            if (!wait_trial_rep_result(wire_round, local_pass, global_pass))
+                return false;
+
+            if (global_pass)
+                passed = true;
+            // If global_pass is false, all nodes continue to the same
+            // next repetition.
         }
 
         if (!passed) {
             std::cerr << "[p2p-dkg] node " << party->id()
                       << ": trial_division_factor sel=" << selector
-                      << " FAILED at r=" << r << "\n";
-            return false;
+                      << " candidate rejected at r=" << r << "\n";
+            candidate_reject = true;
+            return true;
         }
     }
     std::cerr << "[p2p-dkg] node " << party->id()
@@ -6359,57 +6862,115 @@ void dkg_p2p_runner::impl::run()
 
         std::cerr << "[p2p-dkg] node " << party->id() << " attempt " << attempt
                   << ": phase1-2 start\n";
+
+        // Communication, VSS and proof failures are fatal, not
+        // candidate rejections.
         if (!run_modulus_attempt(attempt_N)) {
             std::cerr << "[p2p-dkg] node " << party->id()
-                      << " attempt " << attempt << ": modulus attempt failed\n";
-            continue;
+                      << " attempt " << attempt
+                      << ": modulus protocol failure\n";
+            break;
         }
-        std::cerr << "[p2p-dkg] node " << party->id()
-                  << " attempt " << attempt << ": modulus ok, bits="
-                  << BN_num_bits(attempt_N) << "\n";
+
+        bool candidate_reject = false;
+
+        // Wrong N length is a candidate rejection, not a fatal error.
         if (static_cast<uint32_t>(BN_num_bits(attempt_N)) != cfg.target_N_bits)
-            continue;
+            candidate_reject = true;
 
-        if (!BN_copy(accepted_N, attempt_N)) continue;
-        const BIGNUM* N = accepted_N;
+        BIGNUM* g_bar = nullptr;
 
-        if (!inject_to_party(dkg_msg_type::candidate_N, 3, N)) continue;
+        if (!candidate_reject) {
+            if (!BN_copy(accepted_N, attempt_N)) break;
+            const BIGNUM* N = accepted_N;
 
-        BIGNUM* g_bar = BN_new();
-        if (!choose_g_bar_deterministic(N, cfg.epoch, committee_id_hash, g_bar)) {
-            BN_free(g_bar); continue;
-        }
-        if (!inject_to_party(dkg_msg_type::biprimality_base, 3, g_bar)) {
-            BN_free(g_bar); continue;
-        }
+            if (!inject_to_party(dkg_msg_type::candidate_N, 3, N)) break;
 
-        std::cerr << "[p2p-dkg] node " << party->id()
-                  << " attempt " << attempt << ": biprimality start\n";
-        if (!run_phase_4_biprimality(N)) {
+            g_bar = BN_new();
+            if (!g_bar) break;
+
+            if (!choose_g_bar_deterministic(N, cfg.epoch,
+                                            committee_id_hash, g_bar)) {
+                BN_free(g_bar);
+                break;
+            }
+            if (!inject_to_party(dkg_msg_type::biprimality_base, 3, g_bar)) {
+                BN_free(g_bar);
+                break;
+            }
+
             std::cerr << "[p2p-dkg] node " << party->id()
-                      << " attempt " << attempt << ": biprimality fail\n";
-            BN_free(g_bar); continue;
+                      << " attempt " << attempt << ": biprimality start\n";
+            if (!run_phase_4_biprimality(N, candidate_reject)) {
+                BN_free(g_bar);
+                break;
+            }
+            std::cerr << "[p2p-dkg] node " << party->id()
+                      << " attempt " << attempt
+                      << ": biprimality done reject="
+                      << candidate_reject << "\n";
+
+            if (!candidate_reject) {
+                if (!party->do_compute_share_pq()) {
+                    BN_free(g_bar);
+                    break;
+                }
+
+                bool reject_p = false;
+                if (!run_trial_division_factor(0, reject_p)) {
+                    BN_free(g_bar);
+                    break;
+                }
+                if (reject_p) candidate_reject = true;
+
+                if (!candidate_reject) {
+                    bool reject_q = false;
+                    if (!run_trial_division_factor(1, reject_q)) {
+                        BN_free(g_bar);
+                        break;
+                    }
+                    if (reject_q) candidate_reject = true;
+                }
+            }
+
+            BN_free(g_bar);
         }
+
+        const bool local_accept = !candidate_reject;
+
+        if (!send_runner_decision(5, 0, local_accept))
+            break;
+
+        bool global_accept = false;
+        if (!wait_runner_decision(5, 0, local_accept, global_accept))
+            break;
+
+        if (global_accept) {
+            if (!local_accept) {
+                std::cerr << "[p2p-dkg] node " << party->id()
+                          << ": committee accepted candidate locally rejected\n";
+                break;
+            }
+
+            accepted = true;
+
+            if (!BN_copy(accepted_N, attempt_N)) break;
+
+            result.N.assign(PAILLIER_MODULUS_BYTES, 0);
+            if (BN_bn2binpad(attempt_N,
+                             result.N.data(),
+                             PAILLIER_MODULUS_BYTES) !=
+                PAILLIER_MODULUS_BYTES)
+            {
+                break;
+            }
+
+            break;
+        }
+
         std::cerr << "[p2p-dkg] node " << party->id()
-                  << " attempt " << attempt << ": biprimality ok\n";
-
-        if (!party->do_compute_share_pq()) { BN_free(g_bar); continue; }
-
-        if (!run_trial_division_factor(0)) {
-            result.trial_division_failures++;
-            BN_free(g_bar);
-            continue;
-        }
-        if (!run_trial_division_factor(1)) {
-            result.trial_division_failures++;
-            BN_free(g_bar);
-            continue;
-        }
-
-        result.N.assign(PAILLIER_MODULUS_BYTES, 0);
-        BN_bn2binpad(N, result.N.data(), PAILLIER_MODULUS_BYTES);
-        BN_free(g_bar);
-        accepted = true;
+                  << ": candidate " << attempt
+                  << " rejected by committee; advancing\n";
     }
 
     BN_free(attempt_N);
@@ -6489,7 +7050,15 @@ bool dkg_p2p_runner::impl::run_key_phases(const BIGNUM* N)
                     && count_type(v, dkg_msg_type::r_range_proof)     >= n
                     && count_type(v, dkg_msg_type::beta_share)        >= n - 1;
             };
-            if (!collect_until(complete, msgs)) {
+            const std::set<dkg_msg_type> phase7_types = {
+                dkg_msg_type::beta_commit,
+                dkg_msg_type::r_commit,
+                dkg_msg_type::h_theta_share,
+                dkg_msg_type::beta_range_proof,
+                dkg_msg_type::r_range_proof,
+                dkg_msg_type::beta_share,
+            };
+            if (!collect_until(7, 0, phase7_types, complete, msgs)) {
                 std::cerr << "[p2p-dkg] node " << party->id() << ": phase 7 collect timeout msgs=" << msgs.size() << "\n";
                 return false;
             }
@@ -6551,7 +7120,10 @@ bool dkg_p2p_runner::impl::run_key_phases(const BIGNUM* N)
             const auto complete = [&](const std::vector<dkg_msg>& v) {
                 return count_type(v, dkg_msg_type::theta_share) >= n;
             };
-            if (!collect_until(complete, msgs)) return false;
+            const std::set<dkg_msg_type> phase9_types = {
+                dkg_msg_type::theta_share,
+            };
+            if (!collect_until(9, 0, phase9_types, complete, msgs)) return false;
 
             const uint32_t deg = 2 * (cfg.threshold - 1);
             const uint32_t need = deg + 1;
@@ -6697,10 +7269,37 @@ bool dkg_p2p_runner::impl::run_key_phases(const BIGNUM* N)
         BN_CTX_free(tctx);
         BN_free(gcd);
 
-        if (!invertible) {
+        const bool local_beta_accept = invertible;
+
+        if (!send_runner_decision(9, beta_try, local_beta_accept)) {
             BN_free(theta_tilde);
             BN_free(theta);
-            continue;   // retry beta phase
+            return false;
+        }
+
+        bool global_beta_accept = false;
+        if (!wait_runner_decision(9, beta_try,
+                                  local_beta_accept,
+                                  global_beta_accept))
+        {
+            BN_free(theta_tilde);
+            BN_free(theta);
+            return false;
+        }
+
+        if (!global_beta_accept) {
+            BN_free(theta_tilde);
+            BN_free(theta);
+            // Every honest party retries the same beta_try + 1.
+            continue;
+        }
+
+        if (!local_beta_accept) {
+            // Committee accepted while this node locally rejected.
+            // Do not continue with an inconsistent theta state.
+            BN_free(theta_tilde);
+            BN_free(theta);
+            return false;
         }
 
         if (!party->set_theta_tilde(theta_tilde)) {
@@ -6721,7 +7320,10 @@ bool dkg_p2p_runner::impl::run_key_phases(const BIGNUM* N)
             const auto complete = [&](const std::vector<dkg_msg>& v) {
                 return count_type(v, dkg_msg_type::v_commit) >= n;
             };
-            if (!collect_until(complete, msgs)) { BN_free(theta_tilde); BN_free(theta); return false; }
+            const std::set<dkg_msg_type> phase11_types = {
+                dkg_msg_type::v_commit,
+            };
+            if (!collect_until(11, 0, phase11_types, complete, msgs)) { BN_free(theta_tilde); BN_free(theta); return false; }
             bool commits_ok = true;
             for (const auto& m : msgs) {
                 if (m.hdr.type != dkg_msg_type::v_commit) continue;
@@ -6748,7 +7350,10 @@ bool dkg_p2p_runner::impl::run_key_phases(const BIGNUM* N)
             const auto complete = [&](const std::vector<dkg_msg>& v) {
                 return count_type(v, dkg_msg_type::v_reveal) >= n;
             };
-            if (!collect_until(complete, msgs)) { BN_free(theta_tilde); BN_free(theta); return false; }
+            const std::set<dkg_msg_type> phase12_types = {
+                dkg_msg_type::v_reveal,
+            };
+            if (!collect_until(12, 0, phase12_types, complete, msgs)) { BN_free(theta_tilde); BN_free(theta); return false; }
             std::vector<int> revealed(n + 1, 0);
             bool reveals_ok = true;
             for (const auto& m : msgs) {
@@ -6798,7 +7403,10 @@ bool dkg_p2p_runner::impl::run_key_phases(const BIGNUM* N)
             const auto complete = [&](const std::vector<dkg_msg>& v) {
                 return count_type(v, dkg_msg_type::verification_key) >= n;
             };
-            if (!collect_until(complete, msgs)) { BN_free(theta_tilde); BN_free(theta); return false; }
+            const std::set<dkg_msg_type> phase13_types = {
+                dkg_msg_type::verification_key,
+            };
+            if (!collect_until(13, 0, phase13_types, complete, msgs)) { BN_free(theta_tilde); BN_free(theta); return false; }
             for (const auto& m : msgs) {
                 if (m.hdr.type != dkg_msg_type::verification_key) continue;
                 const uint32_t j = m.tag32;

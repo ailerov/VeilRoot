@@ -28,6 +28,7 @@
 #include "gtest/gtest.h"
 
 #include <map>
+#include <stdexcept>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -47,65 +48,110 @@ namespace {
 struct routed_network
 {
     std::mutex mu;
-    std::map<crypto::public_key, dkg_p2p_runner*> runners;
-    std::map<uint32_t, crypto::public_key>        id_to_pk;
 
-    void register_runner(const crypto::public_key& pk, dkg_p2p_runner* r)
+    std::map<crypto::public_key, dkg_p2p_runner*> runners_by_pk;
+    std::map<uint32_t, dkg_p2p_runner*>          runners_by_id;
+
+    void register_runner(
+        uint32_t id,
+        const crypto::public_key& pk,
+        dkg_p2p_runner* r)
     {
         std::lock_guard<std::mutex> lk(mu);
-        runners[pk] = r;
-    }
 
-    void register_id(uint32_t id, const crypto::public_key& pk)
-    {
-        std::lock_guard<std::mutex> lk(mu);
-        id_to_pk[id] = pk;
+        if (id == 0 || r == nullptr)
+            throw std::runtime_error(
+                "invalid distributed DKG runner registration");
+
+        if (runners_by_id.count(id) != 0)
+            throw std::runtime_error(
+                "duplicate distributed DKG party id");
+
+        if (runners_by_pk.count(pk) != 0)
+            throw std::runtime_error(
+                "duplicate distributed DKG public identity");
+
+        runners_by_id.emplace(id, r);
+        runners_by_pk.emplace(pk, r);
     }
 
     dkg_p2p_callbacks callbacks_for_self()
     {
         dkg_p2p_callbacks cb;
-        cb.send_to = [this](const crypto::public_key& to,
-                            const std::string& payload) -> bool {
+
+        cb.send_to =
+            [this](const crypto::public_key& to,
+                   const std::string& payload) -> bool
+        {
             dkg_p2p_runner* target = nullptr;
+
             {
                 std::lock_guard<std::mutex> lk(mu);
-                auto it = runners.find(to);
-                if (it == runners.end()) return false;
+
+                const auto it =
+                    runners_by_pk.find(to);
+
+                if (it == runners_by_pk.end())
+                    return false;
+
                 target = it->second;
             }
+
             dkg_msg m;
-            std::vector<uint8_t> buf(payload.begin(), payload.end());
-            if (!m.deserialize(buf)) return false;
+
+            const std::vector<uint8_t> buf(
+                payload.begin(),
+                payload.end());
+
+            if (!m.deserialize(buf))
+                return false;
+
             target->on_message(m);
             return true;
         };
-        cb.broadcast = [this](const std::string& payload) {
+
+        cb.broadcast =
+            [this](const std::string& payload)
+        {
             dkg_msg m;
-            std::vector<uint8_t> buf(payload.begin(), payload.end());
-            if (!m.deserialize(buf)) return;
-            // Broadcast from sender to peers only; matches
-            // dkg_inproc_hub::route. The runner injects its own
-            // broadcast locally.
-            crypto::public_key sender_pk;
-            bool have_sender = false;
+
+            const std::vector<uint8_t> buf(
+                payload.begin(),
+                payload.end());
+
+            if (!m.deserialize(buf))
+                return;
+
+            const uint32_t sender =
+                m.hdr.sender_id;
+
+            std::vector<dkg_p2p_runner*> targets;
+
             {
                 std::lock_guard<std::mutex> lk(mu);
-                auto it = id_to_pk.find(m.hdr.sender_id);
-                if (it != id_to_pk.end()) {
-                    sender_pk = it->second;
-                    have_sender = true;
+
+                const auto sender_it =
+                    runners_by_id.find(sender);
+
+                if (sender_it == runners_by_id.end())
+                    return;
+
+                targets.reserve(
+                    runners_by_id.size() - 1);
+
+                for (const auto& [id, runner] : runners_by_id)
+                {
+                    if (id == sender)
+                        continue;
+
+                    targets.push_back(runner);
                 }
             }
-            std::vector<dkg_p2p_runner*> targets;
-            {
-                std::lock_guard<std::mutex> lk(mu);
-                for (auto& [pk, r] : runners)
-                    if (!have_sender || !(pk == sender_pk))
-                        targets.push_back(r);
-            }
-            for (auto* r : targets) r->on_message(m);
+
+            for (auto* target : targets)
+                target->on_message(m);
         };
+
         return cb;
     }
 };
@@ -145,6 +191,8 @@ bool find_prime_sum_contributions(uint32_t n, uint32_t k_bits,
         BN_set_word(four, 4);
         BIGNUM* sum = BN_new();
         BIGNUM* rem = BN_new();
+        BIGNUM* small = BN_new();
+        BN_set_word(small, 15015);
 
         // Draw n-1 random values with correct residues.
         for (uint32_t i = 0; i < n - 1; ++i) {
@@ -162,10 +210,17 @@ bool find_prime_sum_contributions(uint32_t n, uint32_t k_bits,
                 BN_add(vals[i], vals[i], diff);
                 BN_free(diff); BN_free(tgt);
             } else {
+                // Target residue 0 mod 4 for i >= 2. The earlier
+                // BN_value_one() form produced residue 1 mod 4, which
+                // makes p_i + q_i not divisible by 4 and breaks
+                // do_publish_Q's x = s / 4 exact-division check.
+                BIGNUM* neg_rem = BN_new();
                 BIGNUM* diff = BN_new();
-                BN_sub(diff, BN_value_one(), rem);
-                BN_nnmod(diff, diff, four, ctx);
+                BN_zero(neg_rem);
+                BN_sub(neg_rem, neg_rem, rem);
+                BN_nnmod(diff, neg_rem, four, ctx);
                 BN_add(vals[i], vals[i], diff);
+                BN_free(neg_rem);
                 BN_free(diff);
             }
         }
@@ -185,27 +240,43 @@ bool find_prime_sum_contributions(uint32_t n, uint32_t k_bits,
             BN_free(diff); BN_free(tgt);
             vals[n - 1] = last;
         }
-        for (uint32_t tries = 0; tries < 1000000; ++tries) {
+        // 3*5*7*11*13 = 15015. The DKG prime-condition test requires
+        // that (P-1)/2 has no small factor below the committee size.
+        // If any of these divides (P-1)/2, every trial-division rep
+        // for that prime fails and the candidate is rejected.
+        for (uint32_t tries = 0; tries < 100000000; ++tries) {
             BN_zero(sum);
             for (uint32_t i = 0; i < n; ++i) BN_add(sum, sum, vals[i]);
+
             int prime = BN_check_prime(sum, ctx, nullptr);
-            if (prime == 1) {
-                for (uint32_t i = 0; i < n; ++i) {
-                    char* dec = BN_bn2dec(vals[i]);
-                    if (!dec) goto fail;
-                    out.emplace_back(dec);
-                    OPENSSL_free(dec);
-                }
-                for (auto* v : vals) BN_free(v);
-                BN_free(four); BN_free(sum); BN_free(rem);
-                return true;
-            }
             if (prime < 0) goto fail;
+            if (prime == 1) {
+                // Check gcd((P-1)/2, 15015) == 1.
+                BIGNUM* half = BN_new();
+                BIGNUM* g = BN_new();
+                BN_sub(half, sum, BN_value_one());
+                BN_rshift1(half, half);
+                BN_gcd(g, half, small, ctx);
+                const bool coprime = BN_is_one(g);
+                BN_free(half); BN_free(g);
+                if (coprime) {
+                    for (uint32_t i = 0; i < n; ++i) {
+                        char* dec = BN_bn2dec(vals[i]);
+                        if (!dec) goto fail;
+                        out.emplace_back(dec);
+                        OPENSSL_free(dec);
+                    }
+                    for (auto* v : vals) BN_free(v);
+                    BN_free(four); BN_free(sum); BN_free(rem);
+                    BN_free(small);
+                    return true;
+                }
+            }
             BN_add(vals[n - 1], vals[n - 1], four);
         }
     fail:
         for (auto* v : vals) if (v) BN_free(v);
-        BN_free(four); BN_free(sum); BN_free(rem);
+        BN_free(four); BN_free(sum); BN_free(rem); BN_free(small);
         return false;
     };
 
@@ -295,8 +366,7 @@ bool run_n_party(uint32_t n, uint32_t timeout_s,
         out.runners.emplace_back(new dkg_p2p_runner(node_cfg, out.vss, cb));
     }
     for (uint32_t i = 0; i < n; ++i) {
-        out.net.register_runner(out.pks[i], out.runners[i].get());
-        out.net.register_id(i + 1, out.pks[i]);
+        out.net.register_runner(i + 1, out.pks[i], out.runners[i].get());
     }
 
     for (auto& r : out.runners) if (!r->start()) return false;
