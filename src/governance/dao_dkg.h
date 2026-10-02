@@ -549,6 +549,13 @@ struct dkg_result
     // Populated on success.
     dao_tally_key_record record;
 
+    // The running node's own secret share SK_i = N*F1(i) - theta_tilde,
+    // signed-encoded. Populated only when cfg.local_party_id is nonzero
+    // and the corresponding party completed phase 10. This value must
+    // be persisted by the caller to the local node store and is never
+    // written to consensus state or transmitted.
+    std::vector<uint8_t> local_secret_share;
+
     bool to_record(std::vector<uint8_t>& out) const;
 
 #ifdef VEILROOT_DAO_DKG_TESTING
@@ -587,6 +594,14 @@ struct dkg_config
     uint32_t max_attempts   = 2000;
 
     uint64_t test_seed      = 0;
+
+    // Identity of the party running this DKG instance on the current
+    // node, 1..committee_size. Zero means "no local identity", in
+    // which case the driver does not export any secret share.
+    // Production nodes set this to their own committee index and
+    // persist the returned share locally (see
+    // dkg_result::local_secret_share).
+    uint32_t local_party_id = 0;
 };
 
 using dkg_transport_factory =

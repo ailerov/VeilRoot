@@ -43,6 +43,7 @@
 #define LMDB_DAO_VOTE_RECORDS "dao_vote_records"
 #define LMDB_DAO_SUPPLY_HISTORY "dao_supply_history"
 #define LMDB_DAO_V2_OUTCOMES "dao_v2_outcomes"
+#define LMDB_DAO_LOCAL_SHARES "dao_local_shares"
 #define LMDB_DAO_PROPOSAL_AGGREGATES "dao_proposal_aggregates"
 
 namespace cryptonote
@@ -98,6 +99,7 @@ typedef struct mdb_txn_cursors
   MDB_cursor *m_txc_dao_proposal_aggregates;
   MDB_cursor *m_txc_dao_supply_history;
   MDB_cursor *m_txc_dao_v2_outcomes;
+  MDB_cursor *m_txc_dao_local_shares;
   MDB_cursor *m_txc_extension_policy;
   MDB_cursor *m_txc_premium_label_policy;
   MDB_cursor *m_txc_banned_label_policy;
@@ -147,6 +149,7 @@ typedef struct mdb_txn_cursors
 #define m_cur_dao_proposal_aggregates m_cursors->m_txc_dao_proposal_aggregates
 #define m_cur_dao_supply_history   m_cursors->m_txc_dao_supply_history
 #define m_cur_dao_v2_outcomes      m_cursors->m_txc_dao_v2_outcomes
+#define m_cur_dao_local_shares     m_cursors->m_txc_dao_local_shares
 #define m_cur_proposal_data        m_cursors->m_txc_proposal_data
 #define m_cur_pending_executions   m_cursors->m_txc_pending_executions
 #define m_cur_governance_parameters  m_cursors->m_txc_governance_parameters
@@ -207,6 +210,7 @@ typedef struct mdb_rflags
   bool m_rf_dao_proposal_aggregates;
   bool m_rf_dao_supply_history;
   bool m_rf_dao_v2_outcomes;
+  bool m_rf_dao_local_shares;
 } mdb_rflags;
 
 typedef struct mdb_threadinfo
@@ -622,6 +626,12 @@ public:
   virtual void add_dao_v2_outcome(const dao::dao_v2_outcome_record& rec) override;
   virtual bool get_dao_v2_outcome(const crypto::hash& proposal_id, dao::dao_v2_outcome_record& rec) const override;
   virtual void remove_dao_v2_outcome(const crypto::hash& proposal_id) override;
+
+  virtual void add_dao_local_share(uint32_t epoch, uint32_t member_index,
+                                   const std::vector<uint8_t>& share_blob) override;
+  virtual bool get_dao_local_share(uint32_t epoch, uint32_t member_index,
+                                   std::vector<uint8_t>& share_blob) const override;
+  virtual void remove_dao_local_share(uint32_t epoch, uint32_t member_index) override;
   // END_VNS_DAO_VOTE
 
   // BEGIN_VNS_TREASURY_LMDB_OVERRIDE
@@ -805,6 +815,7 @@ private:
   MDB_dbi m_dao_proposal_aggregates;
   MDB_dbi m_dao_supply_history;
   MDB_dbi m_dao_v2_outcomes;
+  MDB_dbi m_dao_local_shares;
 
   mutable uint64_t m_cum_size;
   mutable unsigned int m_cum_count;

@@ -5508,6 +5508,31 @@ bool dkg_run_with_transport(const dkg_config& cfg,
 
             out.key_id = out.record.key_id;
 
+            // Export this node's own secret share if it participated in
+            // the ceremony. Signed big-endian encoding, matching the DKG
+            // test format. This value never enters consensus state; the
+            // caller persists it via BlockchainDB::add_dao_local_share.
+            out.local_secret_share.clear();
+            if (cfg.local_party_id >= 1 &&
+                cfg.local_party_id <= cfg.committee_size) {
+                const BIGNUM* sk = parties[cfg.local_party_id - 1]->SK();
+                if (sk) {
+                    const bool neg = BN_is_negative(sk);
+                    BIGNUM* abs_b = BN_new();
+                    BN_copy(abs_b, sk);
+                    BN_set_negative(abs_b, 0);
+                    const int nb = BN_num_bytes(abs_b);
+                    out.local_secret_share.reserve(1 + nb);
+                    out.local_secret_share.push_back(neg ? 1 : 0);
+                    if (nb > 0) {
+                        const size_t off = out.local_secret_share.size();
+                        out.local_secret_share.resize(off + nb);
+                        BN_bn2bin(abs_b, out.local_secret_share.data() + off);
+                    }
+                    BN_free(abs_b);
+                }
+            }
+
 #ifdef VEILROOT_DAO_DKG_TESTING
             // Oracle fields.
             {

@@ -2203,6 +2203,17 @@ public:
     virtual void remove_dao_v2_outcome(const crypto::hash& proposal_id) = 0;
     // ---------- VNS DAO V2 OUTCOMES END ----------
 
+    // ---------- VNS DAO LOCAL SHARE START ----------
+    // Per-node persistent store for this node's own DKG secret share.
+    // Each node has its own LMDB; nothing here is consensus state.
+    // Key: epoch (4 BE) || member_index (4 BE).
+    virtual void add_dao_local_share(uint32_t epoch, uint32_t member_index,
+                                     const std::vector<uint8_t>& share_blob) = 0;
+    virtual bool get_dao_local_share(uint32_t epoch, uint32_t member_index,
+                                     std::vector<uint8_t>& share_blob) const = 0;
+    virtual void remove_dao_local_share(uint32_t epoch, uint32_t member_index) = 0;
+    // ---------- VNS DAO LOCAL SHARE END ----------
+
     // BEGIN_VNS_ELIGIBLE
     virtual void add_committee_eligible(const crypto::key_image& ki, const committee_eligible_record& rec) = 0;
     virtual bool get_committee_eligible(const crypto::key_image& ki, committee_eligible_record& rec) const = 0;

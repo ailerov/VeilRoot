@@ -1526,7 +1526,7 @@ void BlockchainLMDB::open(const std::string& filename, const int db_flags)
   // margin above the current set so new tables do not require a
   // schema bump each time. MDB_DBS_FULL at 48 with the DAO V2
   // tables added in this session.
-  if ((result = mdb_env_set_maxdbs(m_env, 64)))
+  if ((result = mdb_env_set_maxdbs(m_env, 80)))
     throw0(DB_ERROR(lmdb_error("Failed to set max number of dbs: ", result).c_str()));
 
   int threads = tools::get_max_concurrency();
@@ -1724,6 +1724,11 @@ void BlockchainLMDB::open(const std::string& filename, const int db_flags)
   lmdb_db_open(txn, LMDB_DAO_V2_OUTCOMES, MDB_CREATE, m_dao_v2_outcomes, "Failed to open db handle for dao_v2_outcomes");
   mdb_set_compare(txn, m_dao_v2_outcomes, compare_hash32);
   // END_VNS_DAO_V2_OUTCOMES
+
+  // BEGIN_VNS_DAO_LOCAL_SHARES
+  // 8-byte BE key (epoch || member_index), default memcmp comparator.
+  lmdb_db_open(txn, LMDB_DAO_LOCAL_SHARES, MDB_CREATE, m_dao_local_shares, "Failed to open db handle for dao_local_shares");
+  // END_VNS_DAO_LOCAL_SHARES
 
   lmdb_db_open(txn, LMDB_HF_VERSIONS, MDB_INTEGERKEY | MDB_CREATE, m_hf_versions, "Failed to open db handle for m_hf_versions");
 
@@ -3667,6 +3672,70 @@ void BlockchainLMDB::remove_dao_v2_outcome(const crypto::hash& proposal_id)
     throw0(DB_ERROR(lmdb_error("Failed to remove dao v2 outcome: ", result).c_str()));
 }
 // END_VNS_DAO_V2_OUTCOMES
+
+// BEGIN_VNS_DAO_LOCAL_SHARES
+namespace {
+void local_share_encode_key(uint32_t epoch, uint32_t idx, unsigned char out[8])
+{
+  for (int i = 0; i < 4; ++i) out[i]     = (epoch >> (8*(3-i))) & 0xff;
+  for (int i = 0; i < 4; ++i) out[4 + i] = (idx   >> (8*(3-i))) & 0xff;
+}
+} // namespace
+
+void BlockchainLMDB::add_dao_local_share(uint32_t epoch, uint32_t member_index,
+                                         const std::vector<uint8_t>& share_blob)
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+  lmdb_cursor_guard cur(m_write_txn->m_txn, m_dao_local_shares);
+  unsigned char kbuf[8];
+  local_share_encode_key(epoch, member_index, kbuf);
+  MDB_val k = { sizeof(kbuf), kbuf };
+  MDB_val v = { share_blob.size(),
+                share_blob.empty() ? nullptr : (void*)share_blob.data() };
+  int result = mdb_cursor_put(cur.get(), &k, &v, MDB_NODUPDATA);
+  if (result == MDB_KEYEXIST)
+    result = mdb_cursor_put(cur.get(), &k, &v, MDB_CURRENT);
+  if (result)
+    throw0(DB_ERROR(lmdb_error("Failed to add dao local share: ", result).c_str()));
+}
+
+bool BlockchainLMDB::get_dao_local_share(uint32_t epoch, uint32_t member_index,
+                                         std::vector<uint8_t>& share_blob) const
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+  TXN_PREFIX_RDONLY();
+  RCURSOR(dao_local_shares)
+  unsigned char kbuf[8];
+  local_share_encode_key(epoch, member_index, kbuf);
+  MDB_val k = { sizeof(kbuf), kbuf };
+  MDB_val v;
+  int result = mdb_cursor_get(m_cur_dao_local_shares, &k, &v, MDB_SET);
+  if (result == MDB_NOTFOUND) { TXN_POSTFIX_RDONLY(); return false; }
+  if (result)
+    throw0(DB_ERROR(lmdb_error("Failed to get dao local share: ", result).c_str()));
+  share_blob.assign(static_cast<const uint8_t*>(v.mv_data),
+                    static_cast<const uint8_t*>(v.mv_data) + v.mv_size);
+  TXN_POSTFIX_RDONLY();
+  return true;
+}
+
+void BlockchainLMDB::remove_dao_local_share(uint32_t epoch, uint32_t member_index)
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+  lmdb_cursor_guard cur(m_write_txn->m_txn, m_dao_local_shares);
+  unsigned char kbuf[8];
+  local_share_encode_key(epoch, member_index, kbuf);
+  MDB_val k = { sizeof(kbuf), kbuf };
+  int result = mdb_cursor_get(cur.get(), &k, NULL, MDB_SET);
+  if (result == MDB_SUCCESS)
+    mdb_cursor_del(cur.get(), 0);
+  else if (result != MDB_NOTFOUND)
+    throw0(DB_ERROR(lmdb_error("Failed to remove dao local share: ", result).c_str()));
+}
+// END_VNS_DAO_LOCAL_SHARES
 
 // BEGIN_VNS_TREASURY_AMOUNT_TXN
 bool BlockchainLMDB::get_proposal_amount_in_txn(const crypto::hash& proposal_id, uint64_t& amount)

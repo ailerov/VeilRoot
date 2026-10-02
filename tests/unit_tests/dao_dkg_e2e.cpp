@@ -605,6 +605,7 @@ TEST(dao_dkg_e2e, three_party_2of3_with_oracle)
     cfg.qproof_rounds  = 32;
     cfg.max_attempts   = 1;
     cfg.test_seed      = FIXED_SEED_3;
+    cfg.local_party_id = 1;   // export this node's share
 
     auto net = dkg_make_inproc_network(cfg.committee_size, nullptr);
 
@@ -624,6 +625,8 @@ TEST(dao_dkg_e2e, three_party_2of3_with_oracle)
 
     ASSERT_GT(out.candidate_attempts, 0u);
     ASSERT_TRUE(out.candidate_accepted) << "3-party DKG did not accept";
+    ASSERT_FALSE(out.local_secret_share.empty())
+        << "local secret share not exported for party 1";
 
     // ---- Record fields reflect the actual committee ----
     EXPECT_EQ(out.record.committee_size, N3);
