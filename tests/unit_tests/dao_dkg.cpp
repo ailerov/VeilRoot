@@ -9,6 +9,9 @@
 #include <string>
 #include <vector>
 
+#define OPENSSL_SUPPRESS_DEPRECATED
+#include <openssl/sha.h>
+
 #include "gtest/gtest.h"
 
 #include <openssl/bn.h>
@@ -728,6 +731,93 @@ dkg_msg make_test_msg(uint32_t candidate_id, uint32_t phase, uint32_t round,
 }
 
 } // namespace
+
+// ================= Transcript leaf: private-message representation =================
+
+namespace {
+
+constexpr const char* LEAF_DOMAIN = "VeilRoot-DAO-DKG-TRANSCRIPT-LEAF-V1";
+
+void leaf_digest_of(const dkg_msg& m, std::array<uint8_t, 32>& out)
+{
+    std::vector<uint8_t> canonical;
+    ASSERT_TRUE(m.serialize(canonical));
+
+    std::vector<uint8_t> input;
+    input.insert(input.end(), LEAF_DOMAIN,
+                 LEAF_DOMAIN + std::strlen(LEAF_DOMAIN));
+    input.push_back(0);
+    input.insert(input.end(), canonical.begin(), canonical.end());
+
+    SHA256(input.data(), input.size(), out.data());
+}
+
+dkg_msg make_leaf_for(const dkg_msg& original)
+{
+    std::array<uint8_t, 32> digest{};
+    leaf_digest_of(original, digest);
+
+    dkg_msg leaf;
+    leaf.hdr.version = original.hdr.version;
+    leaf.hdr.epoch = original.hdr.epoch;
+    leaf.hdr.candidate_id = original.hdr.candidate_id;
+    std::memcpy(leaf.hdr.committee_id_hash,
+                original.hdr.committee_id_hash,
+                sizeof(leaf.hdr.committee_id_hash));
+    leaf.hdr.sender_id = original.hdr.sender_id;
+    leaf.hdr.recipient_id = 0;
+    leaf.hdr.phase = original.hdr.phase;
+    leaf.hdr.round = original.hdr.round;
+    leaf.hdr.sequence = original.hdr.sequence;
+    leaf.hdr.type = dkg_msg_type::transcript_leaf;
+    leaf.tag32 = original.hdr.recipient_id;
+    leaf.bytes_a.assign(digest.begin(), digest.end());
+    leaf.bytes_c = { static_cast<uint8_t>(original.hdr.type) };
+    return leaf;
+}
+
+} // namespace
+
+// A: two private messages that differ only in one payload byte have
+// different leaf digests.
+TEST(dao_dkg, transcript_leaf_private_payload_changes_hash)
+{
+    dkg_msg m1 = make_test_msg(1, 1, 0, 1, 2,
+                               dkg_msg_type::polynomial_share, 0, 0x42);
+    dkg_msg m2 = m1;
+    m2.bytes_a[0] ^= 0x01;
+
+    std::array<uint8_t, 32> d1{}, d2{};
+    leaf_digest_of(m1, d1);
+    leaf_digest_of(m2, d2);
+
+    EXPECT_NE(std::vector<uint8_t>(d1.begin(), d1.end()),
+              std::vector<uint8_t>(d2.begin(), d2.end()));
+}
+
+// B: appending a private message directly and appending its public
+// leaf produce identical transcript hashes.
+TEST(dao_dkg, transcript_leaf_and_private_message_agree)
+{
+    dkg_msg private_msg = make_test_msg(1, 1, 0, 1, 3,
+                                        dkg_msg_type::polynomial_share, 0,
+                                        0x77);
+    dkg_msg leaf = make_leaf_for(private_msg);
+
+    dkg_transcript t_direct;
+    t_direct.append(private_msg);
+    std::vector<uint8_t> h_direct;
+    t_direct.hash(h_direct);
+
+    dkg_transcript t_leaf;
+    t_leaf.append(leaf);
+    std::vector<uint8_t> h_leaf;
+    t_leaf.hash(h_leaf);
+
+    ASSERT_EQ(h_direct.size(), 32u);
+    ASSERT_EQ(h_leaf.size(), 32u);
+    EXPECT_EQ(h_direct, h_leaf);
+}
 
 TEST(dao_dkg, transcript_hash_reorder_invariant)
 {

@@ -399,8 +399,13 @@ void expect_public_fields_agree(const std::vector<dkg_result>& rs,
         EXPECT_EQ(a.record.threshold,         b.record.threshold);
         EXPECT_EQ(a.record.t,                 b.record.t);
         EXPECT_EQ(a.record.epoch,             b.record.epoch);
-        // dkg_transcript_hash and key_id are intentionally not
-        // asserted equal here. See file header.
+        // Now that private DKG messages are represented in the
+        // transcript by their public leaf hash, every honest node
+        // derives the same transcript hash and the same key id.
+        EXPECT_EQ(a.record.dkg_transcript_hash,
+                  b.record.dkg_transcript_hash);
+        EXPECT_EQ(a.record.key_id, b.record.key_id);
+        EXPECT_EQ(a.key_id, b.key_id);
     }
 }
 

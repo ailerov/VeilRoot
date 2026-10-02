@@ -153,6 +153,7 @@ enum class dkg_msg_type : uint8_t
     verification_key         = 0x70,
     verification_key_proof   = 0x71,
     key_record_ready         = 0x72,
+    transcript_leaf          = 0x73,
 
 };
 
@@ -295,6 +296,10 @@ private:
         uint32_t             recipient_id = 0;
         uint8_t              type         = 0;
         uint64_t             sequence     = 0;
+        // True when `canonical` holds the 32-byte transcript leaf hash
+        // representing a private (targeted) message rather than the
+        // full serialized message bytes.
+        bool                 private_leaf = false;
         std::vector<uint8_t> canonical;
     };
     std::vector<entry> entries_;

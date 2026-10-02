@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "dao_dkg.h"
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -1969,9 +1970,78 @@ public:
 // helpers
 // -------------------------------------------------------------------
 
+namespace {
+
+constexpr const char* DAO_DKG_TRANSCRIPT_LEAF_DOMAIN =
+    "VeilRoot-DAO-DKG-TRANSCRIPT-LEAF-V1";
+
+inline void transcript_push_u32(std::vector<uint8_t>& b, uint32_t v)
+{
+    for (int i = 0; i < 4; ++i) b.push_back((v >> (8*i)) & 0xff);
+}
+
+inline void transcript_push_u64(std::vector<uint8_t>& b, uint64_t v)
+{
+    for (int i = 0; i < 8; ++i) b.push_back((v >> (8*i)) & 0xff);
+}
+
+bool transcript_leaf_digest(const dkg_msg& original,
+                            std::array<uint8_t, 32>& out)
+{
+    std::vector<uint8_t> canonical;
+    if (!original.serialize(canonical)) return false;
+
+    std::vector<uint8_t> input;
+    const char* dom = DAO_DKG_TRANSCRIPT_LEAF_DOMAIN;
+    input.insert(input.end(), dom, dom + std::strlen(dom));
+    input.push_back(0);
+    input.insert(input.end(), canonical.begin(), canonical.end());
+
+    SHA256(input.data(), input.size(), out.data());
+    return true;
+}
+
+bool make_transcript_leaf(const dkg_msg& original, dkg_msg& leaf)
+{
+    if (original.hdr.recipient_id == 0) return false;
+    if (original.hdr.type == dkg_msg_type::transcript_leaf) return false;
+
+    std::array<uint8_t, 32> digest{};
+    if (!transcript_leaf_digest(original, digest)) return false;
+
+    leaf = dkg_msg{};
+    leaf.hdr.version = original.hdr.version;
+    leaf.hdr.epoch = original.hdr.epoch;
+    leaf.hdr.candidate_id = original.hdr.candidate_id;
+    std::memcpy(leaf.hdr.committee_id_hash,
+                original.hdr.committee_id_hash,
+                sizeof(leaf.hdr.committee_id_hash));
+    leaf.hdr.sender_id = original.hdr.sender_id;
+    leaf.hdr.recipient_id = 0;
+    leaf.hdr.phase = original.hdr.phase;
+    leaf.hdr.round = original.hdr.round;
+    leaf.hdr.sequence = original.hdr.sequence;
+    leaf.hdr.type = dkg_msg_type::transcript_leaf;
+    leaf.tag32 = original.hdr.recipient_id;
+    leaf.bytes_a.assign(digest.begin(), digest.end());
+    leaf.bytes_c = { static_cast<uint8_t>(original.hdr.type) };
+    return true;
+}
+
+} // namespace
+
 bool dkg_party::send_msg(const dkg_msg& m)
 {
     if (!transport_) return false;
+
+    if (m.hdr.recipient_id != 0 &&
+        m.hdr.type != dkg_msg_type::transcript_leaf)
+    {
+        dkg_msg leaf;
+        if (!make_transcript_leaf(m, leaf)) return false;
+        if (!transport_->send(leaf)) return false;
+    }
+
     if (m.hdr.recipient_id == 0) {
         last_broadcast_[static_cast<uint32_t>(m.hdr.type)] = m;
     }
@@ -2812,6 +2882,12 @@ bool dkg_party::handle_message(const dkg_msg& m)
         case dkg_msg_type::candidate_reject:
         case dkg_msg_type::trial_division_result:
             return false;
+
+        case dkg_msg_type::transcript_leaf:
+            // Public representation of a private DKG message. It is
+            // recorded by the transcript collector, not acted upon by
+            // the party state machine. Silently accepted.
+            return true;
 
         default:
             return true;
@@ -4194,6 +4270,27 @@ bool dao_theta_open_verify(
 void dkg_transcript::append(const dkg_msg& m)
 {
     entry e;
+
+    if (m.hdr.type == dkg_msg_type::transcript_leaf) {
+        if (m.hdr.recipient_id != 0) return;
+        if (m.hdr.sender_id == 0) return;
+        if (m.tag32 == 0) return;
+        if (m.bytes_a.size() != 32) return;
+        if (m.bytes_c.size() != 1) return;
+
+        e.candidate_id = m.hdr.candidate_id;
+        e.phase        = m.hdr.phase;
+        e.round        = m.hdr.round;
+        e.sender_id    = m.hdr.sender_id;
+        e.recipient_id = m.tag32;
+        e.type         = m.bytes_c[0];
+        e.sequence     = m.hdr.sequence;
+        e.private_leaf = true;
+        e.canonical    = m.bytes_a;
+        entries_.push_back(std::move(e));
+        return;
+    }
+
     e.candidate_id = m.hdr.candidate_id;
     e.phase        = m.hdr.phase;
     e.round        = m.hdr.round;
@@ -4201,7 +4298,17 @@ void dkg_transcript::append(const dkg_msg& m)
     e.recipient_id = m.hdr.recipient_id;
     e.type         = static_cast<uint8_t>(m.hdr.type);
     e.sequence     = m.hdr.sequence;
-    if (!m.serialize(e.canonical)) return;
+
+    if (m.hdr.recipient_id != 0) {
+        std::array<uint8_t, 32> digest{};
+        if (!transcript_leaf_digest(m, digest)) return;
+        e.private_leaf = true;
+        e.canonical.assign(digest.begin(), digest.end());
+    } else {
+        e.private_leaf = false;
+        if (!m.serialize(e.canonical)) return;
+    }
+
     entries_.push_back(std::move(e));
 }
 
@@ -4218,20 +4325,40 @@ void dkg_transcript::hash(std::vector<uint8_t>& out) const
             if (a.recipient_id != b.recipient_id) return a.recipient_id < b.recipient_id;
             if (a.type         != b.type)         return a.type         < b.type;
             if (a.sequence     != b.sequence)     return a.sequence     < b.sequence;
+            if (a.private_leaf != b.private_leaf) return a.private_leaf < b.private_leaf;
             return a.canonical < b.canonical;
         });
 
     sorted.erase(
         std::unique(sorted.begin(), sorted.end(),
             [](const entry& a, const entry& b) {
-                return a.canonical == b.canonical;
+                return a.candidate_id == b.candidate_id &&
+                       a.phase        == b.phase        &&
+                       a.round        == b.round        &&
+                       a.sender_id    == b.sender_id    &&
+                       a.recipient_id == b.recipient_id &&
+                       a.type         == b.type         &&
+                       a.sequence     == b.sequence     &&
+                       a.private_leaf == b.private_leaf &&
+                       a.canonical    == b.canonical;
             }),
         sorted.end());
 
     std::vector<uint8_t> buf;
-    const char* dom = "VeilRoot-DAO-DKG-TRANSCRIPT-V1";
+    const char* dom = "VeilRoot-DAO-DKG-TRANSCRIPT-V2";
     buf.insert(buf.end(), dom, dom + std::strlen(dom));
+    buf.push_back(0);
+
     for (const auto& e : sorted) {
+        transcript_push_u32(buf, e.candidate_id);
+        transcript_push_u32(buf, e.phase);
+        transcript_push_u32(buf, e.round);
+        transcript_push_u32(buf, e.sender_id);
+        transcript_push_u32(buf, e.recipient_id);
+        buf.push_back(e.type);
+        transcript_push_u64(buf, e.sequence);
+        buf.push_back(e.private_leaf ? 1 : 0);
+        transcript_push_u32(buf, static_cast<uint32_t>(e.canonical.size()));
         buf.insert(buf.end(), e.canonical.begin(), e.canonical.end());
     }
 
@@ -6236,6 +6363,10 @@ struct dkg_p2p_runner::impl
                 pending_messages.push_back(std::move(m));
                 return true;
             }
+            if (m.hdr.type == dkg_msg_type::transcript_leaf) {
+                out.push_back(std::move(m));
+                return true;
+            }
             if (!wanted(m)) {
                 pending_messages.push_back(std::move(m));
                 return true;
@@ -6257,6 +6388,11 @@ struct dkg_p2p_runner::impl
             }
             if (is_runner_decision(*it)) {
                 ++it;
+                continue;
+            }
+            if (it->hdr.type == dkg_msg_type::transcript_leaf) {
+                out.push_back(std::move(*it));
+                it = pending_messages.erase(it);
                 continue;
             }
             if (!wanted(*it)) {
@@ -6288,15 +6424,26 @@ struct dkg_p2p_runner::impl
     bool feed_party(const std::vector<dkg_msg>& msgs)
     {
         for (const auto& m : msgs) {
-            // Defensive assertion. collect_until() already removes
-            // runner-control messages.
+            // Runner-control messages are never handed to dkg_party.
             if (is_runner_decision(m)) return false;
             if (m.hdr.type == dkg_msg_type::trial_division_result)
                 return false;
 
-            if (!party->handle_message(m)) {
-                
-                return false;
+            // transcript_leaf: the public representation of a private
+            // DKG message. Record it in the transcript and do not pass
+            // it to dkg_party.
+            if (m.hdr.type == dkg_msg_type::transcript_leaf) {
+                transcript.append(m);
+                continue;
+            }
+
+            if (!party->handle_message(m)) return false;
+
+            // Public (broadcast) DKG messages are recorded verbatim.
+            // Private (targeted) messages are recorded through their
+            // transcript_leaf already.
+            if (m.hdr.recipient_id == 0) {
+                transcript.append(m);
             }
         }
         return true;
