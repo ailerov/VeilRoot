@@ -43,6 +43,12 @@ namespace cryptonote
     virtual bool is_synchronized() const = 0;
     virtual bool relay_block(NOTIFY_NEW_FLUFFY_BLOCK::request& arg, cryptonote_connection_context& exclude_context)=0;
     virtual bool relay_transactions(NOTIFY_NEW_TRANSACTIONS::request& arg, const boost::uuids::uuid& source, epee::net_utils::zone zone, relay_method tx_relay)=0;
+
+    // BEGIN_VNS_DAO_V2_TALLY_BROADCAST
+    // Fan out one committee member's V2 tally share to all connected
+    // peers. The share is a P2P protocol message, not a transaction.
+    virtual bool relay_dao_v2_tally_share(const std::string& payload)=0;
+    // END_VNS_DAO_V2_TALLY_BROADCAST
     //virtual bool request_objects(NOTIFY_REQUEST_GET_OBJECTS::request& arg, cryptonote_connection_context& context)=0;
   };
 
@@ -63,6 +69,12 @@ namespace cryptonote
     {
       return false;
     }
+    // BEGIN_VNS_DAO_V2_TALLY_BROADCAST
+    virtual bool relay_dao_v2_tally_share(const std::string& payload)
+    {
+      return false;
+    }
+    // END_VNS_DAO_V2_TALLY_BROADCAST
 
   };
 }

@@ -243,7 +243,10 @@ namespace cryptonote
   void core::set_cryptonote_protocol(i_cryptonote_protocol* pprotocol)
   {
     if(pprotocol)
+    {
       m_pprotocol = pprotocol;
+      install_dao_v2_tally_broadcast();
+    }
     else
       m_pprotocol = &m_protocol_stub;
   }

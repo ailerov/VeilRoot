@@ -2725,6 +2725,48 @@ skip:
     return m_p2p->send_txs(std::move(arg.txs), zone, source, tx_relay) != epee::net_utils::zone::invalid;
   }
   //------------------------------------------------------------------------------------------------------------------------
+  // BEGIN_VNS_DAO_V2_TALLY_BROADCAST
+  //
+  // Broadcast a V2 tally share to every connected peer. The local
+  // node's identity is stamped into the request so receivers can
+  // validate committee membership, exactly like NOTIFY_DECRYPTION_SHARE.
+  template<class t_core>
+  bool t_cryptonote_protocol_handler<t_core>::relay_dao_v2_tally_share(const std::string& payload)
+  {
+    NOTIFY_DAO_V2_TALLY_SHARE::request req{};
+    req.payload = payload;
+
+    crypto::public_key self_pk{};
+    if (!m_core.get_node_pubkey(self_pk))
+    {
+      MERROR("relay_dao_v2_tally_share: node public key unavailable");
+      return false;
+    }
+    req.member = self_pk;
+
+    std::vector<std::pair<epee::net_utils::zone, boost::uuids::uuid>> peers;
+    m_p2p->for_each_connection([&peers](connection_context& c,
+                                         nodetool::peerid_type peer_id,
+                                         uint32_t) -> bool {
+      // peer_id filters out connections before handshake.
+      if (peer_id)
+        peers.push_back({c.m_remote_address.get_zone(), c.m_connection_id});
+      return true;
+    });
+    if (peers.empty())
+    {
+      MDEBUG("relay_dao_v2_tally_share: no peers connected");
+      return true;
+    }
+
+    epee::levin::message_writer writer{256 * 1024};
+    epee::serialization::store_t_to_binary(req, writer.buffer);
+    m_p2p->relay_notify_to_list(NOTIFY_DAO_V2_TALLY_SHARE::ID,
+                                std::move(writer), std::move(peers));
+    return true;
+  }
+  // END_VNS_DAO_V2_TALLY_BROADCAST
+  //------------------------------------------------------------------------------------------------------------------------
   template<class t_core>
   bool t_cryptonote_protocol_handler<t_core>::request_txpool_complement(cryptonote_connection_context &context)
   {

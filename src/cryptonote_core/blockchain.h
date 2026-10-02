@@ -1327,10 +1327,24 @@ namespace cryptonote
   // BEGIN_VNS_DAO_V2_TALLY_SHARE
   // Receiving side of the automatic V2 tally. Validates the incoming
   // share against the proposal's epoch key record and the current
-  // aggregate, then stores it. Combination and finalization are
-  // triggered separately (see try_finalize_dao_v2_tally).
+  // aggregate, stores it, and — if the epoch threshold has now been
+  // reached — combines and writes the outcome automatically.
   void handle_dao_v2_tally_share(const crypto::public_key& member,
                                  const std::string& payload);
+
+  // Producer side. Called from the block-apply path when a proposal's
+  // voting window has just ended. If this node is a committee member
+  // for the proposal's epoch and holds its own DKG share, it produces
+  // and hands the share to the installed broadcast callback.
+  void maybe_produce_dao_v2_share(uint64_t height);
+
+  // Installed by the protocol handler. Called when this node produces
+  // its own tally share; the handler relays it to peers.
+  void set_dao_v2_tally_broadcast(
+      std::function<void(const dao::dao_v2_tally_share&)> cb)
+  {
+    m_dao_v2_tally_broadcast = std::move(cb);
+  }
   // END_VNS_DAO_V2_TALLY_SHARE
   // BEGIN_VNS_DAO_EXEC
   void finalize_tally(const crypto::hash& proposal_id, uint64_t yes_weight, uint64_t no_weight);
@@ -1596,6 +1610,9 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     std::map<crypto::hash,
              std::map<crypto::public_key, dao::dao_v2_tally_share>>
         m_dao_v2_tally_shares;
+
+    std::function<void(const dao::dao_v2_tally_share&)>
+        m_dao_v2_tally_broadcast;
     // END_VNS_DAO_V2_TALLY_SHARE
     // END_VNS_DECRYPTION_STATE
 

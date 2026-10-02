@@ -699,6 +699,32 @@ namespace cryptonote
        m_blockchain_storage.handle_dao_v2_tally_share(member, payload);
      }
 
+     // BEGIN_VNS_DAO_V2_TALLY_BROADCAST
+     // This node's own public key, if one is set.
+     bool get_node_pubkey(crypto::public_key& out) const
+     {
+       bool all_zero = true;
+       for (size_t i = 0; i < sizeof(m_node_key.data); ++i)
+         if (m_node_key.data[i] != 0) { all_zero = false; break; }
+       if (all_zero) return false;
+       return crypto::secret_key_to_public_key(m_node_key, out);
+     }
+
+     // Install the P2P broadcast callback onto the blockchain's tally
+     // engine. Called from init() after the protocol handler is wired.
+     void install_dao_v2_tally_broadcast()
+     {
+       m_blockchain_storage.set_dao_v2_tally_broadcast(
+         [this](const dao::dao_v2_tally_share& share) {
+           std::vector<uint8_t> blob;
+           if (!share.serialize(blob)) return;
+           std::string payload(blob.begin(), blob.end());
+           if (get_protocol())
+             get_protocol()->relay_dao_v2_tally_share(payload);
+         });
+     }
+     // END_VNS_DAO_V2_TALLY_BROADCAST
+
      void handle_decryption_share(const crypto::hash& proposal_id,
                                   const crypto::public_key& member,
                                   const rct::key& partial_yes,

@@ -75,6 +75,7 @@
 #include "governance/vote_utils.h"
 #include "governance/dao_supply.h"
 #include "governance/dao_tally_share.h"
+#include "governance/tally_manager.h"
 #include "governance/dao_tally.h"
 #include "governance/dao_dkg.h"
 #include <openssl/evp.h>
@@ -6788,6 +6789,14 @@ leave:
   }
   // END_VNS_GOVERNANCE_PROCESS
 
+  // BEGIN_VNS_DAO_V2_TALLY_TRIGGER
+  // If any proposal's voting window closed at new_height - 1, produce
+  // and broadcast this node's committee share for it. This is the
+  // automatic producer half of the V2 tally, mirroring the V1 model of
+  // committee-driven decryption without any external submission.
+  maybe_produce_dao_v2_share(new_height);
+  // END_VNS_DAO_V2_TALLY_TRIGGER
+
   // ---------- VNS_STORE_TREASURY_OUTPUT ----------
   // Store treasury outputs from miner transaction and credit balance
   for (const auto& out : bl.miner_tx.vout)
@@ -8525,15 +8534,84 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     }
 
     // Store. Duplicate from the same member is dropped silently.
-    auto& per_prop = m_dao_v2_tally_shares[share.proposal_id];
+    const crypto::hash proposal_id = share.proposal_id;
+    auto& per_prop = m_dao_v2_tally_shares[proposal_id];
     if (per_prop.count(member) > 0) {
       MDEBUG("V2 tally share: duplicate from " << member);
       return;
     }
     per_prop.emplace(member, std::move(share));
-    MINFO("V2 tally share stored for proposal " << share.proposal_id
+    MINFO("V2 tally share stored for proposal " << proposal_id
           << " from member " << found_index
           << " (total " << per_prop.size() << ")");
+
+    // Automatic threshold combine + finalize. Governance params come
+    // from the same object the lifecycle uses. current chain height is
+    // this->get_current_blockchain_height().
+    cryptonote::TallyManager tm(*m_db, m_governance_params);
+    if (tm.try_finalize(proposal_id, per_prop,
+                        get_current_blockchain_height())) {
+      MINFO("V2 tally: automatic finalize succeeded for " << proposal_id);
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // V2 tally producer. Mirrors the V1 committee model: at the block
+  // immediately after voting ends, each committee member publishes its
+  // own partial decryptions of the current aggregate.
+  // ------------------------------------------------------------------
+  void Blockchain::maybe_produce_dao_v2_share(uint64_t height)
+  {
+    if (!m_dao_v2_tally_broadcast) return;
+
+    // Node's own pubkey. If no node key is set, this node is not a
+    // committee member.
+    crypto::public_key self_pk{};
+    {
+      bool all_zero = true;
+      for (size_t i = 0; i < sizeof(m_node_privkey.data); ++i)
+        if (m_node_privkey.data[i] != 0) { all_zero = false; break; }
+      if (all_zero) return;
+      if (!crypto::secret_key_to_public_key(m_node_privkey, self_pk))
+        return;
+    }
+
+    // Walk proposals looking for those whose voting window closed at
+    // height - 1. This is O(n_proposals); the proposal count is small
+    // relative to blocks and the operation runs once per block.
+    m_db->for_all_proposal_records(
+      [&](const crypto::hash& pid, const proposal_record& rec) -> bool {
+        if (rec.status != PROPOSAL_STATUS_ACTIVE) return true;
+        if (rec.voting_end_height + 1 != height) return true;
+        if (rec.tally_key_epoch == 0) return true;
+
+        dao::dao_tally_key_record key_rec;
+        if (!m_db->get_dao_tally_key(
+                static_cast<uint32_t>(rec.tally_key_epoch), key_rec))
+          return true;
+
+        // Find this node's 1-based index within the epoch committee.
+        uint32_t local_index = 0;
+        for (size_t i = 0; i < key_rec.committee_members.size(); ++i) {
+          const auto& km = key_rec.committee_members[i];
+          if (km.size() != sizeof(self_pk.data)) continue;
+          if (std::memcmp(km.data(), self_pk.data,
+                          sizeof(self_pk.data)) == 0) {
+            local_index = static_cast<uint32_t>(i) + 1;
+            break;
+          }
+        }
+        if (local_index == 0) return true;
+
+        cryptonote::TallyManager tm(*m_db, m_governance_params);
+        dao::dao_v2_tally_share share;
+        if (!tm.produce_local_share(pid, local_index, share)) return true;
+
+        MINFO("V2 tally: producing share for proposal " << pid
+              << " as member " << local_index);
+        m_dao_v2_tally_broadcast(share);
+        return true;
+      });
   }
   // END_VNS_DAO_V2_TALLY_SHARE
 
