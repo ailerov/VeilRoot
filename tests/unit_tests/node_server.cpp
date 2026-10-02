@@ -121,6 +121,7 @@ public:
   void handle_dkg_share(const crypto::hash&, const crypto::public_key&, const std::string&) {}
   void handle_dkg_confirm(const crypto::hash&, const crypto::public_key&) {}
   void handle_decryption_share(const crypto::hash&, const crypto::public_key&, const rct::key&, const rct::key&) {}
+  void handle_dao_v2_tally_share(const crypto::public_key&, const std::string&) {}
 };
 
 typedef nodetool::node_server<cryptonote::t_cryptonote_protocol_handler<test_core>> Server;
@@ -1115,6 +1116,7 @@ TEST(node_server, race_condition)
       void handle_dkg_share(const crypto::hash&, const crypto::public_key&, const std::string&) {}
       void handle_dkg_confirm(const crypto::hash&, const crypto::public_key&) {}
       void handle_decryption_share(const crypto::hash&, const crypto::public_key&, const rct::key&, const rct::key&) {}
+  void handle_dao_v2_tally_share(const crypto::public_key&, const std::string&) {}
     };
     int handle_invoke_map(bool is_notify, int command, const span_t in, byte_stream_t &out, context_t &context, bool &handled) {
       return {};

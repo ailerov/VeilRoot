@@ -236,6 +236,31 @@ namespace cryptonote
   };
   // END_VNS_DKG
 
+  // BEGIN_VNS_DAO_V2_TALLY_SHARE
+  //
+  // P2P message carrying one committee member's partial decryptions
+  // of the current V2 vote aggregate for a proposal. This is protocol
+  // communication between nodes: it is not a transaction, not block
+  // state, and not user-submitted. Mirrors NOTIFY_DECRYPTION_SHARE.
+  struct NOTIFY_DAO_V2_TALLY_SHARE
+  {
+    const static int ID = BC_COMMANDS_POOL_BASE + 14;
+
+    struct request_t
+    {
+      crypto::public_key member;      // sender's identity, V1-style
+      std::string        payload;     // serialized dao::dao_v2_tally_share
+
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE_VAL_POD_AS_BLOB(member)
+        KV_SERIALIZE(payload)
+      END_KV_SERIALIZE_MAP()
+    };
+
+    typedef epee::misc_utils::struct_init<request_t> request;
+  };
+  // END_VNS_DAO_V2_TALLY_SHARE
+
   // BEGIN_VNS_DECRYPTION_SHARE
   struct NOTIFY_DECRYPTION_SHARE
   {

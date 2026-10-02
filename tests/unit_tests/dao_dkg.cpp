@@ -201,6 +201,8 @@ dao_tally_key_record make_serializable_record()
     rec.t = DAO_DKG_SHARING_DEGREE;
 
     rec.committee_id_hash.assign(32, 0x10);
+    rec.committee_members.assign(DAO_DKG_COMMITTEE_SIZE,
+                                 std::vector<uint8_t>(32, 0x0F));
     rec.delta.assign(32, 0x11);
     rec.N.assign(PAILLIER_MODULUS_BYTES, 0x12);
     rec.G.assign(PAILLIER_MODULUS_BYTES, 0x13);

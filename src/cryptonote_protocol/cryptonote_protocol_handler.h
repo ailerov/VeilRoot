@@ -99,6 +99,7 @@ namespace cryptonote
       HANDLE_NOTIFY_T2(NOTIFY_DKG_SHARE, &cryptonote_protocol_handler::handle_notify_dkg_share)
       HANDLE_NOTIFY_T2(NOTIFY_DKG_CONFIRM, &cryptonote_protocol_handler::handle_notify_dkg_confirm)
       HANDLE_NOTIFY_T2(NOTIFY_DECRYPTION_SHARE, &cryptonote_protocol_handler::handle_notify_decryption_share)
+      HANDLE_NOTIFY_T2(NOTIFY_DAO_V2_TALLY_SHARE, &cryptonote_protocol_handler::handle_notify_dao_v2_tally_share)
       // END_VNS_DKG
     END_INVOKE_MAP2()
 
@@ -159,6 +160,7 @@ namespace cryptonote
     int handle_notify_dkg_share(int command, NOTIFY_DKG_SHARE::request& arg, cryptonote_connection_context& context);
     int handle_notify_dkg_confirm(int command, NOTIFY_DKG_CONFIRM::request& arg, cryptonote_connection_context& context);
     int handle_notify_decryption_share(int command, NOTIFY_DECRYPTION_SHARE::request& arg, cryptonote_connection_context& context);
+    int handle_notify_dao_v2_tally_share(int command, NOTIFY_DAO_V2_TALLY_SHARE::request& arg, cryptonote_connection_context& context);
     // END_VNS_DKG
     //----------------- i_bc_protocol_layout ---------------------------------------
     virtual bool relay_block(NOTIFY_NEW_FLUFFY_BLOCK::request& arg, cryptonote_connection_context& exclude_context);

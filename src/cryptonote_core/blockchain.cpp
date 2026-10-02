@@ -74,6 +74,9 @@
 
 #include "governance/vote_utils.h"
 #include "governance/dao_supply.h"
+#include "governance/dao_tally_share.h"
+#include "governance/dao_tally.h"
+#include "governance/dao_dkg.h"
 #include <openssl/evp.h>
 #include "common/domain_utils.h"
 #include "governance/parameter_update.h"
@@ -8440,6 +8443,99 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
   }
 }
 // END_VNS_DKG
+
+  // BEGIN_VNS_DAO_V2_TALLY_SHARE
+  void Blockchain::handle_dao_v2_tally_share(const crypto::public_key& member,
+                                             const std::string& payload)
+  {
+    dao::dao_v2_tally_share share;
+    {
+      std::vector<uint8_t> bytes(payload.begin(), payload.end());
+      if (!share.deserialize(bytes)) {
+        MWARNING("V2 tally share: deserialize failed");
+        return;
+      }
+    }
+
+    if (share.version != 1) {
+      MWARNING("V2 tally share: wrong version " << (int)share.version);
+      return;
+    }
+
+    // Proposal must exist and its epoch key record must be present.
+    proposal_record prop;
+    if (!m_db->get_proposal_record(share.proposal_id, prop)) {
+      MWARNING("V2 tally share: unknown proposal " << share.proposal_id);
+      return;
+    }
+    if (prop.tally_key_epoch != share.tally_key_epoch) {
+      MWARNING("V2 tally share: epoch mismatch");
+      return;
+    }
+
+    dao::dao_tally_key_record key_rec;
+    if (!m_db->get_dao_tally_key(
+            static_cast<uint32_t>(share.tally_key_epoch), key_rec)) {
+      MWARNING("V2 tally share: key record not found for epoch "
+               << share.tally_key_epoch);
+      return;
+    }
+
+    // Sender's public key must be one of the recorded committee
+    // members, and its position must match the share's member_index.
+    int found_index = -1;
+    for (size_t i = 0; i < key_rec.committee_members.size(); ++i) {
+      const auto& km = key_rec.committee_members[i];
+      if (km.size() != sizeof(member.data)) continue;
+      if (std::memcmp(km.data(), member.data, sizeof(member.data)) == 0) {
+        found_index = static_cast<int>(i) + 1;
+        break;
+      }
+    }
+    if (found_index < 0) {
+      MWARNING("V2 tally share: sender " << member
+               << " is not in the epoch committee");
+      return;
+    }
+    if (static_cast<uint32_t>(found_index) != share.member_index) {
+      MWARNING("V2 tally share: member_index mismatch (claimed "
+               << share.member_index << ", committee " << found_index << ")");
+      return;
+    }
+
+    // The share binds to a specific aggregate. If the aggregate has
+    // changed since the share was produced, the share is stale.
+    dao_proposal_aggregate agg;
+    if (!m_db->get_dao_proposal_aggregate(share.proposal_id, agg)) {
+      MWARNING("V2 tally share: aggregate not present");
+      return;
+    }
+    if (agg.aggregate_E_W.empty() || agg.aggregate_E_S.empty() ||
+        agg.aggregate_E_B.empty()) {
+      MWARNING("V2 tally share: aggregate ciphertexts empty");
+      return;
+    }
+    const crypto::hash h =
+        dao::dao_aggregate_ciphertext_hash(agg.aggregate_E_W,
+                                           agg.aggregate_E_S,
+                                           agg.aggregate_E_B);
+    if (std::memcmp(h.data, share.aggregate_ciphertext_hash.data, 32) != 0) {
+      MWARNING("V2 tally share: aggregate hash mismatch (stale share)");
+      return;
+    }
+
+    // Store. Duplicate from the same member is dropped silently.
+    auto& per_prop = m_dao_v2_tally_shares[share.proposal_id];
+    if (per_prop.count(member) > 0) {
+      MDEBUG("V2 tally share: duplicate from " << member);
+      return;
+    }
+    per_prop.emplace(member, std::move(share));
+    MINFO("V2 tally share stored for proposal " << share.proposal_id
+          << " from member " << found_index
+          << " (total " << per_prop.size() << ")");
+  }
+  // END_VNS_DAO_V2_TALLY_SHARE
 
   // BEGIN_VNS_DECRYPTION_METHODS
   void Blockchain::handle_decryption_share(const crypto::hash& proposal_id, const crypto::public_key& member, const rct::key& partial_yes, const rct::key& partial_no)

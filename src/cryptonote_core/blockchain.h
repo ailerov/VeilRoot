@@ -69,6 +69,8 @@
 #include "governance/governance_engine.h"
 #include "governance/vote_result.h"
 #include "governance/domain_policy.h"
+#include "governance/dao_tally_share.h"
+#include "governance/dao_dkg.h"
 #include <array>
 #include <deque>
 #include "nostr_client.h"
@@ -1321,6 +1323,15 @@ namespace cryptonote
   // BEGIN_VNS_DECRYPTION_METHODS
   void set_node_privkey(const crypto::secret_key& key) { m_node_privkey = key; }
   void handle_decryption_share(const crypto::hash& proposal_id, const crypto::public_key& member, const rct::key& partial_yes, const rct::key& partial_no);
+
+  // BEGIN_VNS_DAO_V2_TALLY_SHARE
+  // Receiving side of the automatic V2 tally. Validates the incoming
+  // share against the proposal's epoch key record and the current
+  // aggregate, then stores it. Combination and finalization are
+  // triggered separately (see try_finalize_dao_v2_tally).
+  void handle_dao_v2_tally_share(const crypto::public_key& member,
+                                 const std::string& payload);
+  // END_VNS_DAO_V2_TALLY_SHARE
   // BEGIN_VNS_DAO_EXEC
   void finalize_tally(const crypto::hash& proposal_id, uint64_t yes_weight, uint64_t no_weight);
   // END_VNS_DAO_EXEC
@@ -1575,6 +1586,17 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     // BEGIN_VNS_DECRYPTION_STATE
     crypto::secret_key m_node_privkey;
     std::map<crypto::hash, std::map<crypto::public_key, std::pair<rct::key, rct::key>>> m_decryption_shares;
+
+    // BEGIN_VNS_DAO_V2_TALLY_SHARE
+    // In-memory share store, keyed by proposal and by sender member
+    // public key. Same lifetime model as m_decryption_shares: a node
+    // collects valid shares while the proposal's tally window is open
+    // and combines them automatically once the epoch threshold is
+    // reached. Shares do not persist to disk.
+    std::map<crypto::hash,
+             std::map<crypto::public_key, dao::dao_v2_tally_share>>
+        m_dao_v2_tally_shares;
+    // END_VNS_DAO_V2_TALLY_SHARE
     // END_VNS_DECRYPTION_STATE
 
     // ---------- VNS ADDITION END ----------

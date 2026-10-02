@@ -693,6 +693,12 @@ namespace cryptonote
        m_blockchain_storage.handle_dkg_confirm(proposal_id, sender);
      }
 
+     void handle_dao_v2_tally_share(const crypto::public_key& member,
+                                    const std::string& payload)
+     {
+       m_blockchain_storage.handle_dao_v2_tally_share(member, payload);
+     }
+
      void handle_decryption_share(const crypto::hash& proposal_id,
                                   const crypto::public_key& member,
                                   const rct::key& partial_yes,

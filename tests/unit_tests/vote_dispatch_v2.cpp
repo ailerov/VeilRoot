@@ -216,6 +216,7 @@ protected:
         rec.threshold = 8;
         rec.t = 7;
         rec.committee_id_hash.assign(32, 0);
+        rec.committee_members.assign(16, std::vector<uint8_t>(32, 0));
         rec.delta.assign(32, 0);
         rec.N.assign(256, 0);
         rec.G.assign(256, 0);

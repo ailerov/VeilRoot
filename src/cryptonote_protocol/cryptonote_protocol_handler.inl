@@ -918,6 +918,16 @@ namespace cryptonote
     m_core.handle_decryption_share(arg.proposal_id, arg.member, arg.partial_yes, arg.partial_no);
     return 1;
   }
+  //------------------------------------------------------------------------------------------------------------------------
+  template<class t_core>
+  int t_cryptonote_protocol_handler<t_core>::handle_notify_dao_v2_tally_share(int command, NOTIFY_DAO_V2_TALLY_SHARE::request& arg, cryptonote_connection_context& context)
+  {
+    MLOG_P2P_MESSAGE("Received NOTIFY_DAO_V2_TALLY_SHARE from " << arg.member);
+    if (context.m_state != cryptonote_connection_context::state_normal)
+      return 1;
+    m_core.handle_dao_v2_tally_share(arg.member, arg.payload);
+    return 1;
+  }
   // END_VNS_DKG
 
   //------------------------------------------------------------------------------------------------------------------------

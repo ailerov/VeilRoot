@@ -174,6 +174,7 @@ inline bool build_valid_vote(
     fx.key_rec.threshold      = 8;
     fx.key_rec.t              = 7;
     fx.key_rec.committee_id_hash.assign(32, 0);
+    fx.key_rec.committee_members.assign(16, std::vector<uint8_t>(32, 0));
     fx.key_rec.delta.assign(32, 0);
     fx.key_rec.N.assign(256, 0);
     BN_bn2binpad(ppk.N(), fx.key_rec.N.data(), 256);
