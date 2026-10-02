@@ -40,6 +40,7 @@
 #include "blockchain_db/lmdb/db_lmdb.h"
 #include "governance/dao_dkg.h"
 #include "governance/dao_supply.h"
+#include "governance/dao_tally.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
 #include "cryptonote_core/blockchain.h"
 
@@ -447,6 +448,61 @@ TYPED_TEST(BlockchainDBTest, DaoProposalAggregateRoundTrip)
   {
     dao_proposal_aggregate miss;
     ASSERT_FALSE(this->m_db->get_dao_proposal_aggregate(prop_id, miss));
+  }
+
+  ASSERT_NO_THROW(this->m_db->close());
+}
+
+TYPED_TEST(BlockchainDBTest, DaoV2OutcomeRoundTrip)
+{
+  boost::filesystem::path tempPath = boost::filesystem::temp_directory_path() / boost::filesystem::unique_path();
+  std::string dirPath = tempPath.string();
+  this->set_prefix(dirPath);
+
+  ASSERT_NO_THROW(this->m_db->open(dirPath));
+  this->get_filenames();
+
+  dao::dao_v2_outcome_record rec;
+  std::memset(rec.proposal_id.data, 0x77, 32);
+  rec.vote_end_height = 60000;
+  rec.tally_key_epoch = 1;
+  std::memset(rec.aggregate_ciphertext_hash.data, 0x88, 32);
+  rec.yes_weight          = 1000;
+  rec.no_weight           = 200;
+  rec.participation_coins = 5000;
+  rec.quorum_threshold    = 10000;
+  rec.quorum_met          = false;
+  rec.majority_met        = true;
+  rec.passed              = false;
+
+  {
+    db_wtxn_guard guard(this->m_db);
+    ASSERT_NO_THROW(this->m_db->add_dao_v2_outcome(rec));
+  }
+  {
+    dao::dao_v2_outcome_record got;
+    ASSERT_TRUE(this->m_db->get_dao_v2_outcome(rec.proposal_id, got));
+    EXPECT_EQ(got.vote_end_height, rec.vote_end_height);
+    EXPECT_EQ(got.yes_weight, rec.yes_weight);
+    EXPECT_EQ(got.no_weight, rec.no_weight);
+    EXPECT_EQ(got.participation_coins, rec.participation_coins);
+    EXPECT_EQ(got.quorum_threshold, rec.quorum_threshold);
+    EXPECT_EQ(got.quorum_met, rec.quorum_met);
+    EXPECT_EQ(got.majority_met, rec.majority_met);
+    EXPECT_EQ(got.passed, rec.passed);
+  }
+  {
+    dao::dao_v2_outcome_record miss;
+    crypto::hash other{}; std::memset(other.data, 0xFF, 32);
+    EXPECT_FALSE(this->m_db->get_dao_v2_outcome(other, miss));
+  }
+  {
+    db_wtxn_guard guard(this->m_db);
+    ASSERT_NO_THROW(this->m_db->remove_dao_v2_outcome(rec.proposal_id));
+  }
+  {
+    dao::dao_v2_outcome_record gone;
+    EXPECT_FALSE(this->m_db->get_dao_v2_outcome(rec.proposal_id, gone));
   }
 
   ASSERT_NO_THROW(this->m_db->close());

@@ -82,6 +82,30 @@ struct dao_tally_certificate
     bool deserialize(const std::vector<uint8_t>& in);
 };
 
+// The final V2 governance outcome for a proposal. Written
+// automatically by the automatic tally state machine when the
+// committee threshold has been reached. This is consensus state, not
+// a user-submitted object.
+struct dao_v2_outcome_record
+{
+    crypto::hash proposal_id;
+    uint64_t     vote_end_height = 0;
+    uint32_t     tally_key_epoch = 0;
+    crypto::hash aggregate_ciphertext_hash;
+
+    dao_u128     yes_weight          = 0;
+    dao_u128     no_weight           = 0;
+    dao_u128     participation_coins = 0;
+    dao_u128     quorum_threshold    = 0;
+
+    bool         quorum_met    = false;
+    bool         majority_met  = false;
+    bool         passed        = false;
+
+    bool serialize(std::vector<uint8_t>& out) const;
+    bool deserialize(const std::vector<uint8_t>& in);
+};
+
 // Pure evaluation helper. Independent of cryptography so it can be
 // tested directly. circulating_supply_at_vote_end is read from
 // supply_history[vote_end_height].

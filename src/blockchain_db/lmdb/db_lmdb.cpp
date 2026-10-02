@@ -48,6 +48,7 @@
 #include "cryptonote_core/blockchain.h"
 #include "governance/dao_dkg.h"
 #include "governance/dao_supply.h"
+#include "governance/dao_tally.h"
 
 #undef MONERO_DEFAULT_LOG_CATEGORY
 #define MONERO_DEFAULT_LOG_CATEGORY "blockchain.db.lmdb"
@@ -1521,7 +1522,11 @@ void BlockchainLMDB::open(const std::string& filename, const int db_flags)
   // set up lmdb environment
   if ((result = mdb_env_create(&m_env)))
     throw0(DB_ERROR(lmdb_error("Failed to create lmdb environment: ", result).c_str()));
-  if ((result = mdb_env_set_maxdbs(m_env, 48)))
+  // Table count grows with VNS governance + DAO V2 state. Keep
+  // margin above the current set so new tables do not require a
+  // schema bump each time. MDB_DBS_FULL at 48 with the DAO V2
+  // tables added in this session.
+  if ((result = mdb_env_set_maxdbs(m_env, 64)))
     throw0(DB_ERROR(lmdb_error("Failed to set max number of dbs: ", result).c_str()));
 
   int threads = tools::get_max_concurrency();
@@ -1714,6 +1719,11 @@ void BlockchainLMDB::open(const std::string& filename, const int db_flags)
   // comparator gives correct numeric ordering for the fixed-width BE key.
   lmdb_db_open(txn, LMDB_DAO_SUPPLY_HISTORY, MDB_CREATE, m_dao_supply_history, "Failed to open db handle for dao_supply_history");
   // END_VNS_DAO_SUPPLY_HISTORY
+
+  // BEGIN_VNS_DAO_V2_OUTCOMES
+  lmdb_db_open(txn, LMDB_DAO_V2_OUTCOMES, MDB_CREATE, m_dao_v2_outcomes, "Failed to open db handle for dao_v2_outcomes");
+  mdb_set_compare(txn, m_dao_v2_outcomes, compare_hash32);
+  // END_VNS_DAO_V2_OUTCOMES
 
   lmdb_db_open(txn, LMDB_HF_VERSIONS, MDB_INTEGERKEY | MDB_CREATE, m_hf_versions, "Failed to open db handle for m_hf_versions");
 
@@ -3596,6 +3606,67 @@ void BlockchainLMDB::remove_dao_supply_snapshot(uint64_t height)
     throw0(DB_ERROR(lmdb_error("Failed to remove dao supply snapshot: ", result).c_str()));
 }
 // END_VNS_DAO_SUPPLY_HISTORY
+
+// BEGIN_VNS_DAO_V2_OUTCOMES
+void BlockchainLMDB::add_dao_v2_outcome(const dao::dao_v2_outcome_record& rec)
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  std::vector<uint8_t> blob;
+  if (!rec.serialize(blob))
+    throw0(DB_ERROR("Failed to serialize dao_v2_outcome_record"));
+
+  lmdb_cursor_guard cur(m_write_txn->m_txn, m_dao_v2_outcomes);
+  MDB_val k = { sizeof(rec.proposal_id), (void*)&rec.proposal_id };
+  MDB_val v = { blob.size(), blob.empty() ? nullptr : blob.data() };
+  int result = mdb_cursor_put(cur.get(), &k, &v, MDB_NODUPDATA);
+  if (result == MDB_KEYEXIST)
+    result = mdb_cursor_put(cur.get(), &k, &v, MDB_CURRENT);
+  if (result)
+    throw0(DB_ERROR(lmdb_error("Failed to add dao v2 outcome: ", result).c_str()));
+}
+
+bool BlockchainLMDB::get_dao_v2_outcome(const crypto::hash& proposal_id,
+                                        dao::dao_v2_outcome_record& rec) const
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  TXN_PREFIX_RDONLY();
+  RCURSOR(dao_v2_outcomes)
+
+  MDB_val k = { sizeof(proposal_id), (void*)&proposal_id };
+  MDB_val v;
+  int result = mdb_cursor_get(m_cur_dao_v2_outcomes, &k, &v, MDB_SET);
+  if (result == MDB_NOTFOUND) {
+    TXN_POSTFIX_RDONLY();
+    return false;
+  }
+  if (result)
+    throw0(DB_ERROR(lmdb_error("Failed to get dao v2 outcome: ", result).c_str()));
+
+  std::vector<uint8_t> blob(static_cast<const uint8_t*>(v.mv_data),
+                            static_cast<const uint8_t*>(v.mv_data) + v.mv_size);
+  const bool ok = rec.deserialize(blob);
+  TXN_POSTFIX_RDONLY();
+  return ok;
+}
+
+void BlockchainLMDB::remove_dao_v2_outcome(const crypto::hash& proposal_id)
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  lmdb_cursor_guard cur(m_write_txn->m_txn, m_dao_v2_outcomes);
+  MDB_val k = { sizeof(proposal_id), (void*)&proposal_id };
+  int result = mdb_cursor_get(cur.get(), &k, NULL, MDB_SET);
+  if (result == MDB_SUCCESS)
+    mdb_cursor_del(cur.get(), 0);
+  else if (result != MDB_NOTFOUND)
+    throw0(DB_ERROR(lmdb_error("Failed to remove dao v2 outcome: ", result).c_str()));
+}
+// END_VNS_DAO_V2_OUTCOMES
 
 // BEGIN_VNS_TREASURY_AMOUNT_TXN
 bool BlockchainLMDB::get_proposal_amount_in_txn(const crypto::hash& proposal_id, uint64_t& amount)

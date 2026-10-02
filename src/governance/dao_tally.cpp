@@ -286,6 +286,47 @@ bool dao_tally_certificate::deserialize(const std::vector<uint8_t>& in)
 }
 
 // ------------------------------------------------------------------
+// dao_v2_outcome_record
+// ------------------------------------------------------------------
+
+bool dao_v2_outcome_record::serialize(std::vector<uint8_t>& out) const
+{
+    out.clear();
+    out.insert(out.end(), proposal_id.data, proposal_id.data + 32);
+    push_u64(out, vote_end_height);
+    push_u32(out, tally_key_epoch);
+    out.insert(out.end(), aggregate_ciphertext_hash.data,
+               aggregate_ciphertext_hash.data + 32);
+    push_u128(out, yes_weight);
+    push_u128(out, no_weight);
+    push_u128(out, participation_coins);
+    push_u128(out, quorum_threshold);
+    push_u8(out, quorum_met ? 1 : 0);
+    push_u8(out, majority_met ? 1 : 0);
+    push_u8(out, passed ? 1 : 0);
+    return true;
+}
+
+bool dao_v2_outcome_record::deserialize(const std::vector<uint8_t>& in)
+{
+    size_t off = 0;
+    if (in.size() < 32 + 8 + 4 + 32) return false;
+    std::memcpy(proposal_id.data, in.data() + off, 32); off += 32;
+    if (!pull_u64(in, off, vote_end_height)) return false;
+    if (!pull_u32(in, off, tally_key_epoch)) return false;
+    std::memcpy(aggregate_ciphertext_hash.data, in.data() + off, 32); off += 32;
+    if (!pull_u128(in, off, yes_weight)) return false;
+    if (!pull_u128(in, off, no_weight)) return false;
+    if (!pull_u128(in, off, participation_coins)) return false;
+    if (!pull_u128(in, off, quorum_threshold)) return false;
+    if (off + 3 > in.size()) return false;
+    quorum_met   = (in[off++] != 0);
+    majority_met = (in[off++] != 0);
+    passed       = (in[off++] != 0);
+    return off == in.size();
+}
+
+// ------------------------------------------------------------------
 // dao_evaluate_v2_tally
 // ------------------------------------------------------------------
 

@@ -32,6 +32,7 @@
 
 namespace cryptonote { namespace dao { struct dao_tally_key_record; } }
 namespace cryptonote { namespace dao { struct dao_supply_snapshot; } }
+namespace cryptonote { namespace dao { struct dao_v2_outcome_record; } }
 
 #include <string>
 #include <exception>
@@ -2192,6 +2193,15 @@ public:
     virtual bool get_dao_supply_snapshot(uint64_t height, dao::dao_supply_snapshot& snapshot) const = 0;
     virtual void remove_dao_supply_snapshot(uint64_t height) = 0;
     // ---------- VNS DAO SUPPLY HISTORY END ----------
+
+    // ---------- VNS DAO V2 OUTCOMES START ----------
+    // Final automatic tally outcome. Written by the governance engine
+    // once the threshold of valid committee shares has been received.
+    virtual void add_dao_v2_outcome(const dao::dao_v2_outcome_record& rec) = 0;
+    virtual bool get_dao_v2_outcome(const crypto::hash& proposal_id,
+                                    dao::dao_v2_outcome_record& rec) const = 0;
+    virtual void remove_dao_v2_outcome(const crypto::hash& proposal_id) = 0;
+    // ---------- VNS DAO V2 OUTCOMES END ----------
 
     // BEGIN_VNS_ELIGIBLE
     virtual void add_committee_eligible(const crypto::key_image& ki, const committee_eligible_record& rec) = 0;

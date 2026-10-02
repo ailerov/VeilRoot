@@ -190,6 +190,10 @@ public:
   virtual bool get_dao_supply_snapshot(uint64_t, dao::dao_supply_snapshot&) const override { return false; }
   virtual void remove_dao_supply_snapshot(uint64_t) override {}
 
+  virtual void add_dao_v2_outcome(const dao::dao_v2_outcome_record&) override {}
+  virtual bool get_dao_v2_outcome(const crypto::hash&, dao::dao_v2_outcome_record&) const override { return false; }
+  virtual void remove_dao_v2_outcome(const crypto::hash&) override {}
+
   virtual void add_vns_domain_record(const std::string&, const vns_domain_record&) override {}
   virtual bool get_vns_domain_record(const std::string&, vns_domain_record&) const override { return false; }
   virtual void remove_vns_domain_record(const std::string&) override {}
