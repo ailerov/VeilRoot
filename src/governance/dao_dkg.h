@@ -59,6 +59,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <openssl/bn.h>
@@ -595,6 +596,12 @@ struct dkg_config
 
     uint64_t test_seed      = 0;
 
+    // Per-phase wall-clock budget in the distributed runner. On
+    // expiry the runner aborts and wait() returns false. 120 s is
+    // adequate for the 512-bit test group; production FFDHE-2048
+    // ceremonies calibrate this value.
+    uint32_t phase_timeout_seconds = 120;
+
     // Identity of the party running this DKG instance on the current
     // node, 1..committee_size. Zero means "no local identity", in
     // which case the driver does not export any secret share.
@@ -602,6 +609,17 @@ struct dkg_config
     // persist the returned share locally (see
     // dkg_result::local_secret_share).
     uint32_t local_party_id = 0;
+
+#ifdef VEILROOT_DAO_DKG_TESTING
+    // Test-only fixed contributions for arbitrary committee sizes.
+    // When both vectors have committee_size entries (decimal strings),
+    // the runner uses them in place of the built-in 3-party and 16-
+    // party constants. The caller is responsible for choosing values
+    // whose sums are prime, so that the biprimality check succeeds on
+    // the first attempt.
+    std::vector<std::string> test_p_i_dec;
+    std::vector<std::string> test_q_i_dec;
+#endif
 };
 
 using dkg_transport_factory =
@@ -621,6 +639,94 @@ struct dkg_inproc_network;
 
 dkg_inproc_network dkg_make_inproc_network(uint32_t n,
                                            dkg_tamper_hook hook = nullptr);
+
+// ====================================================================
+// Distributed (P2P) DKG
+//
+// One committee node runs one dkg_p2p_runner. The runner owns a single
+// dkg_party, a dkg_p2p_transport, and a worker thread that walks the
+// DKG phase sequence defined in docs/DAO-V2-DKG.md §14. All committee
+// members run the same code in parallel; no coordinator exists.
+//
+// Driver-level decisions (choose_g_bar, biprimality_check,
+// lagrange_interpolate_zero, theta_tilde mod N, gcd(theta,N)==1,
+// V derivation) are replicated locally on every node, because they are
+// deterministic functions of the broadcast message stream. Two honest
+// nodes with the same cfg.epoch, cfg.committee_size, cfg.member_ids,
+// and vss group parameters therefore produce byte-identical key
+// records from the same message set.
+//
+// Requires cfg.local_party_id in [1, cfg.committee_size].
+// ====================================================================
+
+struct dkg_p2p_callbacks
+{
+    // Targeted unicast to one committee member, addressed by public
+    // key. Returns false if no connection to that peer is available.
+    std::function<bool(const crypto::public_key&, const std::string&)> send_to;
+
+    // Unreliable broadcast to all currently-connected peers.
+    std::function<void(const std::string&)>                            broadcast;
+};
+
+class dkg_p2p_runner
+{
+public:
+    dkg_p2p_runner(const dkg_config& cfg,
+                   const dao_vss_group& vss,
+                   const dkg_p2p_callbacks& cb);
+    ~dkg_p2p_runner();
+
+    dkg_p2p_runner(const dkg_p2p_runner&) = delete;
+    dkg_p2p_runner& operator=(const dkg_p2p_runner&) = delete;
+
+    // Start the worker thread. Idempotent.
+    bool start();
+
+    // Stop the worker and wait. Idempotent.
+    void stop();
+
+    // Deliver one inbound dkg_msg. Safe from any thread.
+    void on_message(const dkg_msg& m);
+
+    // Block until the ceremony finishes. timeout_s == 0 means no
+    // timeout. Returns out.ok on success. If timeout_s is nonzero and
+    // the ceremony has not finished within that window, returns false
+    // and the runner is left in a stopped state.
+    bool wait(dkg_result& out, uint32_t timeout_s = 0);
+
+    bool running()  const;
+    bool finished() const;
+    uint32_t epoch() const;
+    uint32_t local_party_id() const;
+
+private:
+    struct impl;
+    std::unique_ptr<impl> p_;
+};
+
+// Convenience blocking entry point. Equivalent to:
+//   dkg_p2p_runner r(cfg, vss, cb);
+//   r.start();
+//   bool ok = r.wait(out);
+bool dkg_run_distributed(const dkg_config& cfg,
+                         const dao_vss_group& vss,
+                         const dkg_p2p_callbacks& cb,
+                         dkg_result& out);
+
+// Committee-index derivation for a given node identity.
+//
+// A node's persistent identity is its public key (loaded from LMDB by
+// Blockchain::init via committee_privkey). Committee membership is an
+// epoch-local list of ordered public keys. The local party index in a
+// DKG ceremony is derived by matching the node's own public key
+// against the ordered list. Returns 0 if the node is not in the list.
+//
+// This is the ONLY way the runner learns its local_party_id. Do not
+// persist a party index as node identity.
+uint32_t dao_dkg_party_index_for(
+    const std::vector<crypto::public_key>& member_ids,
+    const crypto::public_key& self_pk);
 
 // ====================================================================
 // Test-only helpers

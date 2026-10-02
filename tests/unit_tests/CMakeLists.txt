@@ -127,6 +127,7 @@ set(unit_tests_sources
   dao_tally_share.cpp
   dao_dkg.cpp
   dao_dkg_e2e.cpp
+  dao_dkg_distributed.cpp
   voting_weight.cpp
   vns_transfer.cpp)
 

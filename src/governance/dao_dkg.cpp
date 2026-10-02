@@ -2,6 +2,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "dao_dkg.h"
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <functional>
+#include <mutex>
+#include <queue>
+#include <set>
+#include <string>
+#include <thread>
+#include <unordered_map>
+
 #include "governance/dao_dkg_transport.h"
 
 #include <cstring>
@@ -1733,6 +1744,11 @@ public:
     }
 
     uint32_t id() const { return party_id_; }
+    uint32_t current_candidate_id() const { return candidate_id_; }
+    const BIGNUM* g_bar() const { return g_bar_; }
+    bool public_gamma_share(std::vector<uint8_t>& out) const;
+    const BIGNUM* Q_i() const { return Q_i_; }
+    bool last_broadcast(dkg_msg_type t, dkg_msg& out) const;
     uint32_t phase() const { return phase_; }
     bool     aborted() const { return aborted_; }
 
@@ -1788,6 +1804,7 @@ public:
 
     // Query.
     bool public_N(std::vector<uint8_t>& out) const;
+    bool public_N_i(std::vector<uint8_t>& out) const;   // own N_i for BGW broadcast
     bool has_candidate_N() const { return N_candidate_ != nullptr; }
 
     // Gap 3 - driver-side verification accessors.
@@ -1839,6 +1856,13 @@ private:
 
     BIGNUM* g_bar_ = nullptr;
     BIGNUM* Q_i_ = nullptr;
+
+    // Cache of the most recent broadcast message sent by this party,
+    // keyed by message type. The distributed runner uses this to
+    // inject the party's own contribution into driver-level reduction
+    // steps (theta shares, v_commit, v_reveal), because a broadcast is
+    // never routed back to its sender.
+    std::unordered_map<uint32_t, dkg_msg> last_broadcast_;
     std::vector<BIGNUM*> Q_received_;
 
     // Trial-division state (§4.1)
@@ -1941,6 +1965,9 @@ public:
 bool dkg_party::send_msg(const dkg_msg& m)
 {
     if (!transport_) return false;
+    if (m.hdr.recipient_id == 0) {
+        last_broadcast_[static_cast<uint32_t>(m.hdr.type)] = m;
+    }
     return transport_->send(m);
 }
 
@@ -2265,6 +2292,12 @@ bool dkg_party::do_publish_Q()
     serialize_Q_proof(proof, m.bytes_c);
 
     const bool sent = send_msg(m);
+
+    // Store own Q so the distributed runner can inject it into the
+    // reconstruction map (the transport does not deliver a party's own
+    // broadcast back to it).
+    free_bn(Q_i_);
+    Q_i_ = BN_dup(Q);
 
     BN_free(q_ord); BN_free(s); BN_free(x); BN_free(r); BN_free(y);
     BN_free(g4); BN_free(g4x); BN_free(hy); BN_free(C0p); BN_free(Q);
@@ -2774,12 +2807,43 @@ bool dkg_party::handle_message(const dkg_msg& m)
     }
 }
 
+bool dkg_party::last_broadcast(dkg_msg_type type, dkg_msg& out) const
+{
+    auto it = last_broadcast_.find(static_cast<uint32_t>(type));
+    if (it == last_broadcast_.end()) return false;
+    out = it->second;
+    return true;
+}
+
+bool dkg_party::public_gamma_share(std::vector<uint8_t>& out) const
+{
+    out.clear();
+    if (!gamma_share_) return false;
+    const bool neg = BN_is_negative(gamma_share_);
+    if (neg) return false;   // gamma is a non-negative integer by construction
+    const int nb = BN_num_bytes(gamma_share_);
+    out.assign(nb, 0);
+    if (nb > 0) BN_bn2bin(gamma_share_, out.data());
+    return true;
+}
+
 bool dkg_party::public_N(std::vector<uint8_t>& out) const
 {
     if (!N_candidate_) return false;
     const int nb = BN_num_bytes(N_candidate_);
     out.assign(nb, 0);
     BN_bn2bin(N_candidate_, out.data());
+    return true;
+}
+
+bool dkg_party::public_N_i(std::vector<uint8_t>& out) const
+{
+    if (!N_i_) return false;
+    const bool neg = BN_is_negative(N_i_);
+    if (neg) return false;   // N_i is non-negative by construction
+    const int nb = BN_num_bytes(N_i_);
+    out.assign(nb, 0);
+    BN_bn2bin(N_i_, out.data());
     return true;
 }
 
@@ -4330,6 +4394,62 @@ bool choose_g_bar(const BIGNUM* N, BIGNUM* out)
     return false;
 }
 
+// Deterministic g_bar derivation. Every committee node computes the
+// same value from (N, epoch, committee_id_hash), which is required for
+// the distributed ceremony: g_bar is public data, so no party needs to
+// broadcast it and no party can force a different value.
+bool choose_g_bar_deterministic(const BIGNUM* N,
+                                uint32_t epoch,
+                                const uint8_t committee_id_hash[32],
+                                BIGNUM* out)
+{
+    CtxGuard ctx;
+    if (!ctx.ok()) return false;
+
+    const char* dom = "VeilRoot-DAO-DKG-GBAR-V1";
+
+    for (uint32_t counter = 0; counter < 65536; ++counter) {
+        std::vector<uint8_t> buf;
+        buf.insert(buf.end(), dom, dom + std::strlen(dom));
+        for (int i = 0; i < 4; ++i) buf.push_back((epoch >> (8*i)) & 0xff);
+        buf.insert(buf.end(), committee_id_hash, committee_id_hash + 32);
+
+        std::vector<uint8_t> nb(BN_num_bytes(N));
+        BN_bn2bin(N, nb.data());
+        buf.insert(buf.end(), nb.begin(), nb.end());
+
+        for (int i = 0; i < 4; ++i) buf.push_back((counter >> (8*i)) & 0xff);
+
+        uint8_t h[64];
+        SHA512(buf.data(), buf.size(), h);
+
+        BIGNUM* candidate = BN_bin2bn(h, 64, nullptr);
+        if (!candidate) return false;
+        BIGNUM* reduced = BN_new();
+        BN_mod(reduced, candidate, N, ctx.ctx);
+        BN_free(candidate);
+        if (BN_is_zero(reduced) || BN_is_one(reduced)) {
+            BN_free(reduced);
+            continue;
+        }
+
+        BIGNUM* gcd = BN_new();
+        BN_gcd(gcd, reduced, N, ctx.ctx);
+        const bool coprime = BN_is_one(gcd);
+        BN_free(gcd);
+        if (!coprime) { BN_free(reduced); continue; }
+
+        const int jac = BN_kronecker(reduced, N, ctx.ctx);
+        if (jac == 1) {
+            BN_copy(out, reduced);
+            BN_free(reduced);
+            return true;
+        }
+        BN_free(reduced);
+    }
+    return false;
+}
+
 // Biprimality acceptance: R = Q_1 / prod_{i>=2} Q_i mod N, accept iff
 // R == 1 or R == -1. Returns 1 if accepted, 0 if rejected, -1 on error.
 int biprimality_check(const std::vector<const BIGNUM*>& Q,
@@ -5593,6 +5713,1411 @@ after_key_phase:
     out.ok = true;
     return true;
 }
+
+
+// ====================================================================
+// Distributed (P2P) DKG runner
+//
+// One committee node runs one dkg_p2p_runner. The runner owns a single
+// dkg_party, a dkg_p2p_transport_local, and a worker thread. All
+// committee members run the same code in parallel; no coordinator
+// exists. Driver-level decisions (choose_g_bar, biprimality_check,
+// lagrange_interpolate_zero, theta_tilde mod N, gcd(theta,N)==1,
+// V derivation) are recomputed locally on every node from the same
+// broadcast message set.
+// ====================================================================
+
+namespace {
+
+class dkg_p2p_transport_local final : public dkg_transport
+{
+public:
+    dkg_p2p_transport_local(std::vector<crypto::public_key> members,
+                            dkg_p2p_callbacks cb)
+        : members_(std::move(members)), cb_(std::move(cb)) {}
+
+    bool send(const dkg_msg& m) override
+    {
+        std::vector<uint8_t> buf;
+        if (!m.serialize(buf)) return false;
+        std::string payload(buf.begin(), buf.end());
+
+        if (m.hdr.recipient_id == 0) {
+            // Peer-only broadcast, matching dkg_inproc_hub::route.
+            if (cb_.broadcast) cb_.broadcast(payload);
+            // Park a copy for the runner to inject back into the local
+            // party. Not routed through try_recv(), which stays
+            // peer-only as required by the distributed design.
+            {
+                std::lock_guard<std::mutex> lk(own_mu_);
+                own_queue_.push(m);
+            }
+            return true;
+        }
+        const uint32_t idx = m.hdr.recipient_id;
+        if (idx < 1 || idx > members_.size()) return false;
+        if (!cb_.send_to) return false;
+        return cb_.send_to(members_[idx - 1], payload);
+    }
+
+    bool recv(dkg_msg& m) override
+    {
+        std::unique_lock<std::mutex> lk(mu_);
+        cv_.wait(lk, [&] { return stopped_ || !queue_.empty(); });
+        if (queue_.empty()) return false;
+        m = std::move(queue_.front());
+        queue_.pop();
+        return true;
+    }
+
+    bool try_recv(dkg_msg& m) override
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (queue_.empty()) return false;
+        m = std::move(queue_.front());
+        queue_.pop();
+        return true;
+    }
+
+    // Runner-only channel: broadcasts this party emitted. The runner
+    // feeds them back into the party so its own *_recv_[self] slots
+    // are populated, matching the single-process driver's view.
+    bool try_recv_own(dkg_msg& m)
+    {
+        std::lock_guard<std::mutex> lk(own_mu_);
+        if (own_queue_.empty()) return false;
+        m = std::move(own_queue_.front());
+        own_queue_.pop();
+        return true;
+    }
+
+    void shutdown() override
+    {
+        { std::lock_guard<std::mutex> lk(mu_); stopped_ = true; }
+        cv_.notify_all();
+    }
+
+    void deliver(const dkg_msg& m)
+    {
+        { std::lock_guard<std::mutex> lk(mu_); if (stopped_) return; queue_.push(m); }
+        cv_.notify_one();
+    }
+
+private:
+    std::vector<crypto::public_key> members_;
+    dkg_p2p_callbacks               cb_;
+    std::mutex                      mu_;
+    std::condition_variable         cv_;
+    std::queue<dkg_msg>             queue_;
+    bool                            stopped_ = false;
+
+    std::mutex                      own_mu_;
+    std::queue<dkg_msg>             own_queue_;
+};
+
+} // anonymous namespace
+
+struct dkg_p2p_runner::impl
+{
+    dkg_config              cfg;
+    const dao_vss_group*    vss = nullptr;
+    dkg_p2p_callbacks       cb;
+
+    std::unique_ptr<dkg_p2p_transport_local> transport;
+    std::unique_ptr<dkg_party>               party;
+
+    std::thread                     worker;
+    std::atomic<bool>               stop_flag{false};
+    std::atomic<bool>               finished_flag{false};
+    std::mutex                      done_mu;
+    std::condition_variable         done_cv;
+    dkg_result                      result;
+    dkg_transcript                  transcript;
+    uint8_t                         committee_id_hash[32] = {};
+
+    uint32_t phase_timeout_s = 120;   // overwritten from cfg in start()
+
+    // ---- helpers ----
+
+    bool collect_until(
+        const std::function<bool(const std::vector<dkg_msg>&)>& is_complete,
+        std::vector<dkg_msg>& out)
+    {
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::seconds(phase_timeout_s);
+        while (!is_complete(out)) {
+            if (stop_flag.load()) return false;
+            if (std::chrono::steady_clock::now() >= deadline) return false;
+            dkg_msg m;
+            if (transport->try_recv(m)) {
+                out.push_back(m);
+                transcript.append(m);
+                continue;
+            }
+            if (transport->try_recv_own(m)) {
+                out.push_back(m);
+                transcript.append(m);
+                continue;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        return true;
+    }
+
+    bool feed_party(const std::vector<dkg_msg>& msgs)
+    {
+        for (const auto& m : msgs) {
+            if (!party->handle_message(m)) {
+                std::cerr << "[p2p-dkg] node " << party->id()
+                          << ": handle_message failed for type "
+                          << static_cast<int>(m.hdr.type)
+                          << " sender=" << m.hdr.sender_id
+                          << " phase=" << m.hdr.phase << "\n";
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static uint32_t distinct_senders(const std::vector<dkg_msg>& msgs,
+                                     dkg_msg_type t)
+    {
+        std::set<uint32_t> s;
+        for (const auto& m : msgs)
+            if (m.hdr.type == t) s.insert(m.hdr.sender_id);
+        return static_cast<uint32_t>(s.size());
+    }
+
+    static uint32_t count_type(const std::vector<dkg_msg>& msgs,
+                               dkg_msg_type t)
+    {
+        uint32_t c = 0;
+        for (const auto& m : msgs) if (m.hdr.type == t) ++c;
+        return c;
+    }
+
+    // Construct a driver-level message (sender_id=0) and feed it to the
+    // local party as if received. Used for candidate_N and
+    // biprimality_base, which in the single-process driver are injected
+    // by the driver rather than produced by any party. Every node
+    // constructs the identical message, so no network transmission is
+    // needed.
+    bool inject_to_party(dkg_msg_type type, uint32_t phase,
+                         const BIGNUM* val)
+    {
+        dkg_msg m;
+        m.hdr.version = 1;
+        m.hdr.epoch = cfg.epoch;
+        m.hdr.candidate_id = party->current_candidate_id();
+        std::memcpy(m.hdr.committee_id_hash, committee_id_hash, 32);
+        m.hdr.sender_id = 0;
+        m.hdr.recipient_id = 0;
+        m.hdr.phase = phase;
+        m.hdr.type = type;
+        const int nb = BN_num_bytes(val);
+        m.bytes_a.assign(nb, 0);
+        BN_bn2bin(val, m.bytes_a.data());
+        return party->handle_message(m);
+    }
+
+    // ---- phase workers ----
+
+    bool run_modulus_attempt(BIGNUM* N_out);
+    bool run_phase_4_biprimality(const BIGNUM* N);
+    bool run_trial_division_factor(uint32_t selector);
+    bool run_key_phases(const BIGNUM* N);
+
+    // ---- main ----
+    void run();
+};
+
+// --------------------------------------------------------------------
+// Phases 1-2: modulus shares and reconstruction
+// --------------------------------------------------------------------
+
+bool dkg_p2p_runner::impl::run_modulus_attempt(BIGNUM* N_out)
+{
+    const uint32_t n = cfg.committee_size;
+    const uint32_t me = party->id();
+
+    // Phase 1: each party deals VSS and sends shares.
+    if (!party->start_phase(1, cfg.k, cfg.security_bits, cfg.target_N_bits)) {
+        std::cerr << "[p2p-dkg] node " << me << ": start_phase(1) failed\n";
+        return false;
+    }
+
+    std::vector<dkg_msg> msgs;
+    const auto complete_phase1 = [&](const std::vector<dkg_msg>& v) {
+        return count_type(v, dkg_msg_type::polynomial_commitment_p) >= n
+            && count_type(v, dkg_msg_type::polynomial_commitment_q) >= n
+            && count_type(v, dkg_msg_type::polynomial_commitment_h) >= n
+            && count_type(v, dkg_msg_type::polynomial_share)         >= n - 1;
+    };
+    if (!collect_until(complete_phase1, msgs)) {
+        std::cerr << "[p2p-dkg] node " << me << ": phase1 collect timeout\n";
+        return false;
+    }
+    if (!feed_party(msgs)) {
+        std::cerr << "[p2p-dkg] node " << me << ": phase1 feed_party failed"
+                  << " (msgs=" << msgs.size() << ")\n";
+        for (const auto& m : msgs) {
+            std::cerr << "  msg type=" << static_cast<int>(m.hdr.type)
+                      << " sender=" << m.hdr.sender_id
+                      << " recip=" << m.hdr.recipient_id << "\n";
+        }
+        return false;
+    }
+
+    // Phase 2: each party forms N_i and broadcasts.
+    msgs.clear();
+    if (!party->start_phase(2, cfg.k, cfg.security_bits, cfg.target_N_bits)) {
+        std::cerr << "[p2p-dkg] node " << me << ": start_phase(2) failed\n";
+        return false;
+    }
+
+    const auto complete_phase2 = [&](const std::vector<dkg_msg>& v) {
+        return count_type(v, dkg_msg_type::bgw_product_share) >= n;
+    };
+    if (!collect_until(complete_phase2, msgs)) {
+        std::cerr << "[p2p-dkg] node " << me << ": phase2 collect timeout\n";
+        return false;
+    }
+
+    // Collect remote N_i by sender id.
+    std::vector<BIGNUM*> N_i(n + 1, nullptr);
+    for (const auto& m : msgs) {
+        if (m.hdr.type != dkg_msg_type::bgw_product_share) continue;
+        const uint32_t j = m.hdr.sender_id;
+        if (j < 1 || j > n) continue;
+        if (N_i[j]) continue;
+        if (m.bytes_a.empty()) continue;
+        N_i[j] = BN_bin2bn(m.bytes_a.data(),
+                           static_cast<int>(m.bytes_a.size()), nullptr);
+    }
+    if (!feed_party(msgs)) {
+        std::cerr << "[p2p-dkg] node " << me << ": phase2 feed_party failed\n";
+        for (auto* x : N_i) if (x) BN_free(x);
+        return false;
+    }
+
+    // Own N_i. With the own-queue in the transport, the party's own
+    // bgw_product_share is already in `msgs` and N_i[me] is populated.
+    // Only inject from the party's local state if it is not.
+    if (me < 1 || me > n) {
+        std::cerr << "[p2p-dkg] node " << me << ": bad own party id\n";
+        for (auto* x : N_i) if (x) BN_free(x);
+        return false;
+    }
+    if (!N_i[me]) {
+        std::vector<uint8_t> own;
+        if (!party->public_N_i(own)) {
+            std::cerr << "[p2p-dkg] node " << me
+                      << ": public_N_i failed (phase 2 not complete?)\n";
+            for (auto* x : N_i) if (x) BN_free(x);
+            return false;
+        }
+        if (!own.empty()) {
+            N_i[me] = BN_bin2bn(own.data(),
+                                static_cast<int>(own.size()), nullptr);
+        }
+        if (!N_i[me]) {
+            std::cerr << "[p2p-dkg] node " << me << ": own N_i empty\n";
+            for (auto* x : N_i) if (x) BN_free(x);
+            return false;
+        }
+    }
+
+    for (uint32_t j = 1; j <= n; ++j) {
+        if (!N_i[j]) {
+            std::cerr << "[p2p-dkg] node " << me << ": N_i[" << j << "] missing\n";
+            for (auto* x : N_i) if (x) BN_free(x);
+            return false;
+        }
+    }
+
+    const uint32_t deg = 2 * (cfg.threshold - 1);
+    const uint32_t need = deg + 1;
+    if (n < need) {
+        std::cerr << "[p2p-dkg] node " << me << ": n < need\n";
+        for (auto* x : N_i) if (x) BN_free(x);
+        return false;
+    }
+
+    std::vector<uint32_t> idx;
+    std::vector<const BIGNUM*> vals;
+    for (uint32_t j = 1; j <= need; ++j) {
+        idx.push_back(j);
+        vals.push_back(N_i[j]);
+    }
+
+    CtxGuard ctx;
+    bool ok = ctx.ok() &&
+              lagrange_interpolate_zero(idx, vals, N_out, ctx.ctx);
+    if (!ok) std::cerr << "[p2p-dkg] node " << me << ": lagrange_interpolate_zero failed\n";
+    for (auto* x : N_i) if (x) BN_free(x);
+    return ok;
+}
+
+// --------------------------------------------------------------------
+// Phase 3-4: biprimality
+// --------------------------------------------------------------------
+
+bool dkg_p2p_runner::impl::run_phase_4_biprimality(const BIGNUM* N)
+{
+    const uint32_t n = cfg.committee_size;
+
+    // Phase 4: each party publishes Q_i.
+    if (!party->start_phase(4, cfg.k, cfg.security_bits, cfg.target_N_bits))
+        return false;
+
+    std::vector<dkg_msg> msgs;
+    const auto complete = [&](const std::vector<dkg_msg>& v) {
+        return count_type(v, dkg_msg_type::biprimality_Q) >= n;
+    };
+    if (!collect_until(complete, msgs)) {
+        std::cerr << "[p2p-dkg] node " << party->id()
+                  << ": biprimality collect timeout (msgs=" << msgs.size() << ")\n";
+        return false;
+    }
+
+    std::cerr << "[p2p-dkg] node " << party->id()
+              << ": biprimality collected " << msgs.size() << " messages\n";
+
+    std::vector<BIGNUM*> Q_own(n + 1, nullptr);
+    std::vector<const BIGNUM*> Q(n + 1, nullptr);
+    bool ok = true;
+
+    for (const auto& m : msgs) {
+        if (m.hdr.type != dkg_msg_type::biprimality_Q) continue;
+        const uint32_t j = m.tag32;
+        if (j < 1 || j > n) {
+            std::cerr << "[p2p-dkg] node " << party->id()
+                      << ": Q with bad tag j=" << j << "\n";
+            ok = false; break;
+        }
+        if (m.bytes_a.empty() || m.bytes_b.empty() || m.bytes_c.empty()) {
+            std::cerr << "[p2p-dkg] node " << party->id()
+                      << ": Q bytes empty for j=" << j << "\n";
+            ok = false; break;
+        }
+        if (Q_own[j]) continue;
+
+        BIGNUM* C0p = BN_bin2bn(m.bytes_a.data(),
+                                static_cast<int>(m.bytes_a.size()), nullptr);
+        BIGNUM* Qbn = BN_bin2bn(m.bytes_b.data(),
+                                static_cast<int>(m.bytes_b.size()), nullptr);
+        if (!C0p || !Qbn) {
+            if (C0p) BN_free(C0p);
+            if (Qbn) BN_free(Qbn);
+            ok = false; break;
+        }
+
+        dao_Q_proof proof;
+        if (!deserialize_Q_proof(m.bytes_c, proof) ||
+            proof.member_index != j) {
+            BN_free(C0p); BN_free(Qbn);
+            ok = false; break;
+        }
+
+        BIGNUM* g4 = BN_new();
+        BIGNUM* four2 = BN_new();
+        BN_set_word(four2, 4);
+        BN_CTX* qctx = BN_CTX_new();
+        if (!qctx) {
+            BN_free(C0p); BN_free(Qbn); BN_free(g4); BN_free(four2);
+            ok = false; break;
+        }
+        BN_mod_exp(g4, vss->g, four2, vss->P, qctx);
+        BN_free(four2);
+        BN_CTX_free(qctx);
+
+        // g_bar is read from the local party (set by biprimality_base
+        // injection before this function is called).
+        const BIGNUM* gbar = party->g_bar();
+        if (!gbar) { BN_free(g4); BN_free(C0p); BN_free(Qbn); ok = false; break; }
+
+        const bool vok = dao_Q_verify(*vss, N, g4, vss->h, gbar,
+                                      C0p, Qbn, proof);
+        BN_free(g4); BN_free(C0p);
+
+        if (!vok) {
+            std::cerr << "[p2p-dkg] node " << party->id()
+                      << ": Q verify failed for j=" << j << "\n";
+            BN_free(Qbn);
+            ok = false; break;
+        }
+
+        Q_own[j] = Qbn;
+        Q[j] = Qbn;
+    }
+
+    // Inject our own Q_i into the map. Q_i is computed during phase 4
+    // by do_publish_Q and is not routed back through the transport.
+    {
+        const uint32_t me = party->id();
+        if (me >= 1 && me <= n && !Q_own[me]) {
+            const BIGNUM* own = party->Q_i();
+            if (own) {
+                Q_own[me] = BN_dup(own);
+                Q[me] = Q_own[me];
+            }
+        }
+    }
+
+    for (size_t j = 1; j <= n && ok; ++j)
+        if (!Q[j]) {
+            std::cerr << "[p2p-dkg] node " << party->id()
+                      << ": Q[" << j << "] missing\n";
+            ok = false;
+        }
+
+    if (ok) {
+        const int bi = biprimality_check(Q, N);
+        std::cerr << "[p2p-dkg] node " << party->id()
+                  << ": biprimality_check = " << bi << "\n";
+        if (bi <= 0) {
+            if (bi == 0) result.biprimality_failures++;
+            ok = false;
+        }
+    }
+
+    for (auto* q : Q_own) if (q) BN_free(q);
+
+    if (!feed_party(msgs)) return false;
+    return ok;
+}
+
+// --------------------------------------------------------------------
+// Phase 5: trial division (one factor_selector)
+// --------------------------------------------------------------------
+
+bool dkg_p2p_runner::impl::run_trial_division_factor(uint32_t selector)
+{
+    const uint32_t n = cfg.committee_size;
+    const uint32_t t = cfg.threshold - 1;
+    const uint32_t deg = 2 * t;
+    const uint32_t need = deg + 1;
+    std::cerr << "[p2p-dkg] node " << party->id()
+              << ": trial_division_factor start sel=" << selector << "\n";
+
+    for (size_t r_idx = 0; r_idx < DAO_DKG_SMALL_PRIME_COUNT; ++r_idx) {
+        const uint32_t r = DAO_DKG_SMALL_PRIMES[r_idx];
+        bool passed = false;
+
+        for (uint32_t rep = 0;
+             rep < DAO_DKG_TRIAL_DIVISION_REPS && !passed; ++rep)
+        {
+            if (!party->do_trial_division_prolog(selector)) {
+                std::cerr << "[p2p-dkg] node " << party->id()
+                          << ": trial prolog failed r=" << r << " rep=" << rep << "\n";
+                return false;
+            }
+
+            std::vector<dkg_msg> msgs;
+            // Protocol sends only ra_commit, rb_commit (broadcasts) and
+            // ra_share (targeted; the message carries BOTH the ra and rb
+            // share for that recipient in bytes_a/bytes_b). There is no
+            // trial_division_rb_share message on the wire.
+            const auto prolog_complete = [&](const std::vector<dkg_msg>& v) {
+                return count_type(v, dkg_msg_type::trial_division_ra_commit) >= n
+                    && count_type(v, dkg_msg_type::trial_division_rb_commit) >= n
+                    && count_type(v, dkg_msg_type::trial_division_ra_share)  >= n - 1;
+            };
+            if (!collect_until(prolog_complete, msgs)) {
+                std::cerr << "[p2p-dkg] node " << party->id()
+                          << ": trial prolog collect timeout r=" << r << " rep=" << rep
+                          << " msgs=" << msgs.size() << "\n";
+                return false;
+            }
+            if (!feed_party(msgs)) {
+                std::cerr << "[p2p-dkg] node " << party->id()
+                          << ": trial prolog feed_party failed r=" << r << " rep=" << rep << "\n";
+                return false;
+            }
+
+            if (!party->do_trial_division_gamma(r)) {
+                std::cerr << "[p2p-dkg] node " << party->id()
+                          << ": trial gamma failed r=" << r << " rep=" << rep << "\n";
+                return false;
+            }
+
+            msgs.clear();
+            const auto gamma_complete = [&](const std::vector<dkg_msg>& v) {
+                return count_type(v, dkg_msg_type::trial_division_gamma) >= n;
+            };
+            if (!collect_until(gamma_complete, msgs)) {
+                std::cerr << "[p2p-dkg] node " << party->id()
+                          << ": trial gamma collect timeout r=" << r << " rep=" << rep << "\n";
+                return false;
+            }
+
+            std::vector<BIGNUM*> gamma_shares(n + 1, nullptr);
+            for (const auto& m : msgs) {
+                if (m.hdr.type != dkg_msg_type::trial_division_gamma) continue;
+                const uint32_t j = m.tag32;
+                if (j < 1 || j > n) continue;
+                if (m.bytes_a.empty()) continue;
+                if (gamma_shares[j]) continue;
+                gamma_shares[j] = BN_bin2bn(m.bytes_a.data(),
+                                            static_cast<int>(m.bytes_a.size()),
+                                            nullptr);
+            }
+            // Own gamma share: reconstruct locally via direct method.
+            // do_trial_division_gamma internally computes gamma_share_,
+            // which is private. We obtain it via the same mechanism the
+            // driver uses: the party does not broadcast to itself, but
+            // the driver-level gamma reconstruction includes the local
+            // party's own share by construction of the injection set.
+            // For robustness, use the party's own id slot.
+            {
+                const uint32_t me = party->id();
+                if (me >= 1 && me <= n && !gamma_shares[me]) {
+                    std::vector<uint8_t> own;
+                    if (party->public_gamma_share(own) && !own.empty()) {
+                        gamma_shares[me] = BN_bin2bn(
+                            own.data(), static_cast<int>(own.size()), nullptr);
+                    }
+                }
+            }
+
+            if (!feed_party(msgs)) {
+                for (auto* x : gamma_shares) if (x) BN_free(x);
+                return false;
+            }
+
+            bool all_present = true;
+            for (uint32_t j = 1; j <= need; ++j)
+                if (!gamma_shares[j]) { all_present = false; break; }
+            if (!all_present) {
+                for (auto* x : gamma_shares) if (x) BN_free(x);
+                return false;
+            }
+
+            CtxGuard ctx;
+            if (!ctx.ok()) {
+                for (auto* x : gamma_shares) if (x) BN_free(x);
+                return false;
+            }
+
+            std::vector<uint32_t> idx;
+            std::vector<const BIGNUM*> vals;
+            for (uint32_t j = 1; j <= need; ++j) {
+                idx.push_back(j);
+                vals.push_back(gamma_shares[j]);
+            }
+            BIGNUM* gamma = BN_new();
+            bool ok = lagrange_interpolate_zero(idx, vals, gamma, ctx.ctx);
+            for (auto* x : gamma_shares) if (x) BN_free(x);
+            if (!ok) {
+                std::cerr << "[p2p-dkg] node " << party->id()
+                          << ": trial gamma lagrange failed r=" << r << " rep=" << rep << "\n";
+                BN_free(gamma); return false;
+            }
+
+            BIGNUM* rbn = BN_new();
+            BN_set_word(rbn, r);
+            BIGNUM* g = BN_new();
+            BN_gcd(g, gamma, rbn, ctx.ctx);
+            if (BN_is_one(g)) passed = true;
+            BN_free(rbn); BN_free(g); BN_free(gamma);
+        }
+
+        if (!passed) {
+            std::cerr << "[p2p-dkg] node " << party->id()
+                      << ": trial_division_factor sel=" << selector
+                      << " FAILED at r=" << r << "\n";
+            return false;
+        }
+    }
+    std::cerr << "[p2p-dkg] node " << party->id()
+              << ": trial_division_factor sel=" << selector << " OK\n";
+    return true;
+}
+
+// --------------------------------------------------------------------
+// Top-level worker
+// --------------------------------------------------------------------
+
+void dkg_p2p_runner::impl::run()
+{
+    result = dkg_result{};
+    result.epoch = cfg.epoch;
+
+    const uint32_t n = cfg.committee_size;
+
+    BIGNUM* attempt_N  = BN_new();
+    BIGNUM* accepted_N = BN_new();
+    bool accepted = false;
+
+    for (uint32_t attempt = 1;
+         attempt <= cfg.max_attempts && !accepted && !stop_flag.load();
+         ++attempt)
+    {
+        result.candidate_attempts = attempt;
+        party->set_candidate_id(attempt);
+        BN_zero(attempt_N);
+
+        std::cerr << "[p2p-dkg] node " << party->id() << " attempt " << attempt
+                  << ": phase1-2 start\n";
+        if (!run_modulus_attempt(attempt_N)) {
+            std::cerr << "[p2p-dkg] node " << party->id()
+                      << " attempt " << attempt << ": modulus attempt failed\n";
+            continue;
+        }
+        std::cerr << "[p2p-dkg] node " << party->id()
+                  << " attempt " << attempt << ": modulus ok, bits="
+                  << BN_num_bits(attempt_N) << "\n";
+        if (static_cast<uint32_t>(BN_num_bits(attempt_N)) != cfg.target_N_bits)
+            continue;
+
+        if (!BN_copy(accepted_N, attempt_N)) continue;
+        const BIGNUM* N = accepted_N;
+
+        if (!inject_to_party(dkg_msg_type::candidate_N, 3, N)) continue;
+
+        BIGNUM* g_bar = BN_new();
+        if (!choose_g_bar_deterministic(N, cfg.epoch, committee_id_hash, g_bar)) {
+            BN_free(g_bar); continue;
+        }
+        if (!inject_to_party(dkg_msg_type::biprimality_base, 3, g_bar)) {
+            BN_free(g_bar); continue;
+        }
+
+        std::cerr << "[p2p-dkg] node " << party->id()
+                  << " attempt " << attempt << ": biprimality start\n";
+        if (!run_phase_4_biprimality(N)) {
+            std::cerr << "[p2p-dkg] node " << party->id()
+                      << " attempt " << attempt << ": biprimality fail\n";
+            BN_free(g_bar); continue;
+        }
+        std::cerr << "[p2p-dkg] node " << party->id()
+                  << " attempt " << attempt << ": biprimality ok\n";
+
+        if (!party->do_compute_share_pq()) { BN_free(g_bar); continue; }
+
+        if (!run_trial_division_factor(0)) {
+            result.trial_division_failures++;
+            BN_free(g_bar);
+            continue;
+        }
+        if (!run_trial_division_factor(1)) {
+            result.trial_division_failures++;
+            BN_free(g_bar);
+            continue;
+        }
+
+        result.N.assign(PAILLIER_MODULUS_BYTES, 0);
+        BN_bn2binpad(N, result.N.data(), PAILLIER_MODULUS_BYTES);
+        BN_free(g_bar);
+        accepted = true;
+    }
+
+    BN_free(attempt_N);
+
+    if (!accepted) {
+        BN_free(accepted_N);
+        result.ok = false;
+        result.candidate_accepted = false;
+        {
+            std::lock_guard<std::mutex> lk(done_mu);
+            finished_flag.store(true);
+        }
+        done_cv.notify_all();
+        return;
+    }
+
+    result.candidate_accepted = true;
+    const BIGNUM* N = accepted_N;
+    std::cerr << "[p2p-dkg] node " << party->id()
+              << ": key phases start\n";
+    const bool key_ok = run_key_phases(N);
+    std::cerr << "[p2p-dkg] node " << party->id()
+              << ": key phases done ok=" << key_ok << "\n";
+    result.ok = key_ok;
+    BN_free(accepted_N);
+
+    {
+        std::lock_guard<std::mutex> lk(done_mu);
+        finished_flag.store(true);
+    }
+    done_cv.notify_all();
+    (void)n;
+}
+
+// --------------------------------------------------------------------
+// Lifecycle
+// --------------------------------------------------------------------
+
+
+// --------------------------------------------------------------------
+// Phases 6-13: threshold key derivation
+// --------------------------------------------------------------------
+
+bool dkg_p2p_runner::impl::run_key_phases(const BIGNUM* N)
+{
+    const uint32_t n  = cfg.committee_size;
+    const uint32_t me = party->id();
+
+    for (uint32_t beta_try = 1; beta_try <= 8; ++beta_try)
+    {
+        if (stop_flag.load()) return false;
+        if (beta_try > 1) result.beta_phase_retries++;
+
+        std::cerr << "[p2p-dkg] node " << party->id() << " beta_try=" << beta_try << ": phase 6 start\n";
+        if (!party->do_phi_share_init()) {
+            std::cerr << "[p2p-dkg] node " << party->id() << ": phase 6 FAIL\n";
+            return false;
+        }
+        std::cerr << "[p2p-dkg] node " << party->id() << ": phase 6 ok\n";
+
+        std::cerr << "[p2p-dkg] node " << party->id() << ": phase 7 start\n";
+        if (!party->do_beta_R_generate()) {
+            std::cerr << "[p2p-dkg] node " << party->id() << ": phase 7 generate FAIL\n";
+            return false;
+        }
+        std::cerr << "[p2p-dkg] node " << party->id() << ": phase 7 generate ok\n";
+        {
+            std::vector<dkg_msg> msgs;
+            // h_theta_share is sent twice per party (one broadcast
+            // commitment, one targeted share), so a receiving node sees
+            // 2*(n-1) of them.
+            const auto complete = [&](const std::vector<dkg_msg>& v) {
+                return count_type(v, dkg_msg_type::beta_commit)       >= n
+                    && count_type(v, dkg_msg_type::r_commit)          >= n
+                    && count_type(v, dkg_msg_type::h_theta_share)     >= 2 * n - 1
+                    && count_type(v, dkg_msg_type::beta_range_proof)  >= n
+                    && count_type(v, dkg_msg_type::r_range_proof)     >= n
+                    && count_type(v, dkg_msg_type::beta_share)        >= n - 1;
+            };
+            if (!collect_until(complete, msgs)) {
+                std::cerr << "[p2p-dkg] node " << party->id() << ": phase 7 collect timeout msgs=" << msgs.size() << "\n";
+                return false;
+            }
+            std::cerr << "[p2p-dkg] node " << party->id() << ": phase 7 collected " << msgs.size() << "\n";
+
+            std::vector<std::vector<uint8_t>> beta_C0(n + 1), dr_C0(n + 1);
+            for (const auto& m : msgs) {
+                const uint32_t j = m.tag32;
+                if (j < 1 || j > n) continue;
+                if (m.hdr.type == dkg_msg_type::beta_commit) {
+                    if (!m.vec_a.empty()) beta_C0[j] = m.vec_a[0];
+                } else if (m.hdr.type == dkg_msg_type::r_commit) {
+                    if (!m.vec_a.empty()) dr_C0[j] = m.vec_a[0];
+                }
+            }
+            for (const auto& m : msgs) {
+                if (m.hdr.type != dkg_msg_type::beta_range_proof &&
+                    m.hdr.type != dkg_msg_type::r_range_proof) continue;
+                const uint32_t j = m.tag32;
+                if (j < 1 || j > n) return false;
+                const bool is_beta = (m.hdr.type == dkg_msg_type::beta_range_proof);
+                const std::vector<uint8_t>& C0 = is_beta ? beta_C0[j] : dr_C0[j];
+                if (C0.empty()) return false;
+                BIGNUM* C_bn = BN_bin2bn(C0.data(), static_cast<int>(C0.size()), nullptr);
+                if (!C_bn) return false;
+                dao_range_proof proof;
+                if (!proof.deserialize(m.bytes_a)) { BN_free(C_bn); return false; }
+                const uint32_t value_tag = is_beta ? DAO_RANGE_VALUE_TAG_BETA
+                                                   : DAO_RANGE_VALUE_TAG_R;
+                const bool ok = dao_range_verify(*vss, cfg.epoch, j,
+                                                 value_tag, C_bn, proof);
+                BN_free(C_bn);
+                if (!ok) return false;
+            }
+            if (!feed_party(msgs)) {
+                std::cerr << "[p2p-dkg] node " << party->id() << ": phase 7 feed FAIL\n";
+                return false;
+            }
+            std::cerr << "[p2p-dkg] node " << party->id() << ": phase 7 feed ok\n";
+        }
+
+        std::cerr << "[p2p-dkg] node " << party->id() << ": phase 8 start\n";
+        if (!party->do_beta_R_collect()) {
+            std::cerr << "[p2p-dkg] node " << party->id() << ": phase 8 FAIL\n";
+            return false;
+        }
+        std::cerr << "[p2p-dkg] node " << party->id() << ": phase 8 ok\n";
+
+        std::cerr << "[p2p-dkg] node " << party->id() << ": phase 9 start\n";
+        if (!party->do_compute_theta_share()) {
+            std::cerr << "[p2p-dkg] node " << party->id() << ": phase 9 FAIL\n";
+            return false;
+        }
+        std::cerr << "[p2p-dkg] node " << party->id() << ": phase 9 ok\n";
+
+        BIGNUM* theta_tilde = nullptr;
+        {
+            std::vector<dkg_msg> msgs;
+            const auto complete = [&](const std::vector<dkg_msg>& v) {
+                return count_type(v, dkg_msg_type::theta_share) >= n;
+            };
+            if (!collect_until(complete, msgs)) return false;
+
+            const uint32_t deg = 2 * (cfg.threshold - 1);
+            const uint32_t need = deg + 1;
+            std::vector<BIGNUM*> theta_shares(n + 1, nullptr);
+            std::vector<BIGNUM*> C_prod_msgs(n + 1, nullptr);
+            std::vector<BIGNUM*> C_theta_msgs(n + 1, nullptr);
+            std::vector<dao_theta_mul_proof> mul_proofs(n + 1);
+            std::vector<dao_theta_open_proof> open_proofs(n + 1);
+            std::vector<bool> proof_seen(n + 1, false);
+            bool proofs_ok = true;
+
+            for (const auto& m : msgs) {
+                if (m.hdr.type != dkg_msg_type::theta_share) continue;
+                const uint32_t j = m.tag32;
+                if (j < 1 || j > n) continue;
+                if (theta_shares[j]) continue;
+                if (m.bytes_a.empty()) { proofs_ok = false; break; }
+                theta_shares[j] = bn_from_signed(m.bytes_a);
+                if (!theta_shares[j]) { proofs_ok = false; break; }
+                if (m.bytes_b.empty() || m.bytes_c.empty() ||
+                    m.bytes_d.empty() || m.vec_a.empty() ||
+                    m.vec_a[0].empty()) { proofs_ok = false; break; }
+                C_prod_msgs[j] = BN_bin2bn(m.bytes_b.data(),
+                                           static_cast<int>(m.bytes_b.size()), nullptr);
+                C_theta_msgs[j] = BN_bin2bn(m.bytes_c.data(),
+                                            static_cast<int>(m.bytes_c.size()), nullptr);
+                if (!C_prod_msgs[j] || !C_theta_msgs[j]) { proofs_ok = false; break; }
+                if (!mul_proofs[j].deserialize(m.bytes_d) ||
+                    !open_proofs[j].deserialize(m.vec_a[0])) {
+                    proofs_ok = false; break;
+                }
+                proof_seen[j] = true;
+            }
+
+            if (proofs_ok) {
+                const std::vector<dao_vss_commitments>& cpr = party->commits_p_recv();
+                const std::vector<dao_vss_commitments>& cqr = party->commits_q_recv();
+                const std::vector<dao_vss_commitments>& cbr = party->commits_beta_recv();
+                const std::vector<dao_vss_commitments>& cdr = party->commits_dr_recv();
+                const std::vector<dao_vss_commitments>& chr = party->commits_h_theta_recv();
+
+                for (uint32_t j = 1; j <= n; ++j) {
+                    if (!proof_seen[j]) continue;
+                    if (!theta_shares[j] || !C_prod_msgs[j] || !C_theta_msgs[j]) {
+                        proofs_ok = false; break;
+                    }
+
+                    BIGNUM* C_p_i    = BN_new();
+                    BIGNUM* C_q_i    = BN_new();
+                    BIGNUM* C_beta_i = BN_new();
+                    BIGNUM* C_f1_i   = BN_new();
+                    BIGNUM* C_h_i    = BN_new();
+                    BIGNUM* C_phi_i  = BN_new();
+                    bool cok = C_p_i && C_q_i && C_beta_i && C_f1_i && C_h_i && C_phi_i;
+                    if (cok) {
+                        cok = aggregate_eval_at(cpr, *vss, j, C_p_i) &&
+                              aggregate_eval_at(cqr, *vss, j, C_q_i) &&
+                              aggregate_eval_at(cbr, *vss, j, C_beta_i) &&
+                              aggregate_eval_at(cdr, *vss, j, C_f1_i) &&
+                              aggregate_eval_at(chr, *vss, j, C_h_i);
+                    }
+
+                    BN_CTX* vctx = cok ? BN_CTX_new() : nullptr;
+                    BIGNUM* Np1  = vctx ? BN_new() : nullptr;
+                    BIGNUM* Np1m = vctx ? BN_new() : nullptr;
+                    BIGNUM* gNp1 = vctx ? BN_new() : nullptr;
+                    BIGNUM* invp = vctx ? BN_new() : nullptr;
+                    BIGNUM* invq = vctx ? BN_new() : nullptr;
+                    if (cok && Np1 && Np1m && gNp1 && invp && invq) {
+                        BN_add(Np1, N, BN_value_one());
+                        BN_nnmod(Np1m, Np1, vss->P_prime, vctx);
+                        cok = BN_mod_exp(gNp1, vss->g, Np1m, vss->P, vctx) &&
+                              BN_mod_inverse(invp, C_p_i, vss->P, vctx) &&
+                              BN_mod_inverse(invq, C_q_i, vss->P, vctx) &&
+                              BN_mod_mul(C_phi_i, gNp1, invp, vss->P, vctx) &&
+                              BN_mod_mul(C_phi_i, C_phi_i, invq, vss->P, vctx);
+                    }
+                    BN_free(Np1); BN_free(Np1m); BN_free(gNp1);
+                    BN_free(invp); BN_free(invq);
+                    if (vctx) BN_CTX_free(vctx);
+                    BN_free(C_p_i); BN_free(C_q_i);
+                    BN_free(C_f1_i); BN_free(C_h_i);
+
+                    if (!cok) {
+                        BN_free(C_beta_i); BN_free(C_phi_i);
+                        proofs_ok = false; break;
+                    }
+
+                    const bool mvok = dao_theta_mul_verify(
+                        *vss, cfg.epoch, result.candidate_attempts, j, N,
+                        C_phi_i, C_beta_i, C_prod_msgs[j], mul_proofs[j]);
+                    const bool ovok = dao_theta_open_verify(
+                        *vss, cfg.epoch, result.candidate_attempts, j,
+                        C_theta_msgs[j], theta_shares[j], open_proofs[j]);
+                    BN_free(C_beta_i); BN_free(C_phi_i);
+                    if (!mvok || !ovok) { proofs_ok = false; break; }
+                }
+            }
+
+            for (auto* x : C_prod_msgs)  if (x) BN_free(x);
+            for (auto* x : C_theta_msgs) if (x) BN_free(x);
+
+            if (!proofs_ok) {
+                for (auto* x : theta_shares) if (x) BN_free(x);
+                return false;
+            }
+
+            bool have_all = true;
+            for (uint32_t j = 1; j <= need; ++j)
+                if (!theta_shares[j]) { have_all = false; break; }
+
+            if (have_all) {
+                CtxGuard ctx;
+                if (ctx.ok()) {
+                    std::vector<uint32_t> idx;
+                    std::vector<const BIGNUM*> vals;
+                    for (uint32_t j = 1; j <= need; ++j) {
+                        idx.push_back(j);
+                        vals.push_back(theta_shares[j]);
+                    }
+                    theta_tilde = BN_new();
+                    if (!lagrange_interpolate_zero(idx, vals, theta_tilde, ctx.ctx)) {
+                        BN_free(theta_tilde);
+                        theta_tilde = nullptr;
+                    }
+                }
+            }
+            for (auto* x : theta_shares) if (x) BN_free(x);
+
+            if (!theta_tilde) return false;
+            if (!feed_party(msgs)) { BN_free(theta_tilde); return false; }
+        }
+
+        BIGNUM* theta = BN_new();
+        BN_CTX* tctx = BN_CTX_new();
+        BN_nnmod(theta, theta_tilde, N, tctx);
+        BN_CTX_free(tctx);
+
+        BIGNUM* gcd = BN_new();
+        tctx = BN_CTX_new();
+        BN_gcd(gcd, theta, N, tctx);
+        const bool invertible = BN_is_one(gcd);
+        BN_CTX_free(tctx);
+        BN_free(gcd);
+
+        if (!invertible) {
+            BN_free(theta_tilde);
+            BN_free(theta);
+            continue;   // retry beta phase
+        }
+
+        if (!party->set_theta_tilde(theta_tilde)) {
+            BN_free(theta_tilde); BN_free(theta);
+            return false;
+        }
+        result.theta.assign(PAILLIER_MODULUS_BYTES, 0);
+        BN_bn2binpad(theta, result.theta.data(), PAILLIER_MODULUS_BYTES);
+
+        // Phase 10.
+        if (!party->do_compute_SK()) { BN_free(theta_tilde); BN_free(theta); return false; }
+
+        // Phase 11: V commit.
+        if (!party->do_v_commit()) { BN_free(theta_tilde); BN_free(theta); return false; }
+        std::vector<std::vector<uint8_t>> v_commits(n + 1);
+        {
+            std::vector<dkg_msg> msgs;
+            const auto complete = [&](const std::vector<dkg_msg>& v) {
+                return count_type(v, dkg_msg_type::v_commit) >= n;
+            };
+            if (!collect_until(complete, msgs)) { BN_free(theta_tilde); BN_free(theta); return false; }
+            bool commits_ok = true;
+            for (const auto& m : msgs) {
+                if (m.hdr.type != dkg_msg_type::v_commit) continue;
+                const uint32_t j = m.tag32;
+                if (j < 1 || j > n) { commits_ok = false; break; }
+                if (m.bytes_a.size() != 32) { commits_ok = false; break; }
+                if (!v_commits[j].empty()) {
+                    if (v_commits[j] != m.bytes_a) { commits_ok = false; break; }
+                    continue;
+                }
+                v_commits[j] = m.bytes_a;
+            }
+            for (uint32_t j = 1; j <= n; ++j)
+                if (v_commits[j].empty()) { commits_ok = false; break; }
+            if (!commits_ok || !feed_party(msgs)) {
+                BN_free(theta_tilde); BN_free(theta); return false;
+            }
+        }
+
+        // Phase 12: V reveal.
+        if (!party->do_v_reveal()) { BN_free(theta_tilde); BN_free(theta); return false; }
+        {
+            std::vector<dkg_msg> msgs;
+            const auto complete = [&](const std::vector<dkg_msg>& v) {
+                return count_type(v, dkg_msg_type::v_reveal) >= n;
+            };
+            if (!collect_until(complete, msgs)) { BN_free(theta_tilde); BN_free(theta); return false; }
+            std::vector<int> revealed(n + 1, 0);
+            bool reveals_ok = true;
+            for (const auto& m : msgs) {
+                if (m.hdr.type != dkg_msg_type::v_reveal) continue;
+                const uint32_t j = m.tag32;
+                if (j < 1 || j > n) { reveals_ok = false; break; }
+                if (m.bytes_a.empty()) { reveals_ok = false; break; }
+                if (revealed[j]) continue;
+                std::vector<uint8_t> recomputed;
+                compute_v_commit(cfg.epoch, j, m.bytes_a, recomputed);
+                if (recomputed != v_commits[j]) { reveals_ok = false; break; }
+                revealed[j] = 1;
+            }
+            for (uint32_t j = 1; j <= n; ++j)
+                if (!revealed[j]) { reveals_ok = false; break; }
+            if (!reveals_ok || !feed_party(msgs)) {
+                BN_free(theta_tilde); BN_free(theta); return false;
+            }
+        }
+
+        // Phase 13.
+        if (!party->do_compute_V()) { BN_free(theta_tilde); BN_free(theta); return false; }
+
+        // V_K_i: broadcast own, collect others. Uses the
+        // verification_key enum slot which is otherwise unused.
+        std::vector<uint8_t> my_vki;
+        if (!party->do_derive_VKi(my_vki)) { BN_free(theta_tilde); BN_free(theta); return false; }
+        {
+            dkg_msg m;
+            m.hdr.version = 1;
+            m.hdr.epoch = cfg.epoch;
+            m.hdr.candidate_id = party->current_candidate_id();
+            std::memcpy(m.hdr.committee_id_hash, committee_id_hash, 32);
+            m.hdr.sender_id = me;
+            m.hdr.recipient_id = 0;
+            m.hdr.phase = 13;
+            m.hdr.type = dkg_msg_type::verification_key;
+            m.tag32 = me;
+            m.bytes_a = my_vki;
+            transport->send(m);
+        }
+
+        std::vector<std::vector<uint8_t>> V_K_i(n + 1);
+        V_K_i[me] = my_vki;
+        {
+            std::vector<dkg_msg> msgs;
+            const auto complete = [&](const std::vector<dkg_msg>& v) {
+                return count_type(v, dkg_msg_type::verification_key) >= n;
+            };
+            if (!collect_until(complete, msgs)) { BN_free(theta_tilde); BN_free(theta); return false; }
+            for (const auto& m : msgs) {
+                if (m.hdr.type != dkg_msg_type::verification_key) continue;
+                const uint32_t j = m.tag32;
+                if (j < 1 || j > n) continue;
+                if (V_K_i[j].empty() && !m.bytes_a.empty()) V_K_i[j] = m.bytes_a;
+            }
+            bool all = true;
+            for (uint32_t j = 1; j <= n; ++j)
+                if (V_K_i[j].empty()) { all = false; break; }
+            if (!all) { BN_free(theta_tilde); BN_free(theta); return false; }
+        }
+
+        // Assemble record.
+        result.record.version        = 1;
+        result.record.epoch          = cfg.epoch;
+        result.record.committee_size = cfg.committee_size;
+        result.record.threshold      = cfg.threshold;
+        result.record.t              = cfg.threshold - 1;
+        result.record.committee_id_hash.assign(committee_id_hash, committee_id_hash + 32);
+        result.record.committee_members.clear();
+        for (const auto& pk : cfg.member_ids)
+            result.record.committee_members.push_back(
+                std::vector<uint8_t>(pk.data, pk.data + sizeof(pk.data)));
+        result.record.delta.assign(32, 0);
+        {
+            BIGNUM* d = BN_dup(dao_dkg_delta());
+            BN_bn2binpad(d, result.record.delta.data(), 32);
+            BN_free(d);
+        }
+        result.record.N.assign(PAILLIER_MODULUS_BYTES, 0);
+        BN_bn2binpad(N, result.record.N.data(), PAILLIER_MODULUS_BYTES);
+        {
+            BIGNUM* G = BN_new();
+            BN_add(G, N, BN_value_one());
+            result.record.G.assign(PAILLIER_MODULUS_BYTES, 0);
+            BN_bn2binpad(G, result.record.G.data(), PAILLIER_MODULUS_BYTES);
+            BN_free(G);
+        }
+        result.record.theta = result.theta;
+        result.record.V.assign(PAILLIER_CT_BYTES, 0);
+        {
+            const BIGNUM* Vbn = party->V();
+            if (!Vbn) { BN_free(theta_tilde); BN_free(theta); return false; }
+            BN_bn2binpad(Vbn, result.record.V.data(), PAILLIER_CT_BYTES);
+        }
+        result.record.V_K_i.assign(V_K_i.begin() + 1, V_K_i.end());
+
+        {
+            auto bn_to_vec = [](const BIGNUM* b, std::vector<uint8_t>& v) {
+                const int nb = BN_num_bytes(b);
+                v.assign(nb, 0);
+                BN_bn2bin(b, v.data());
+            };
+            bn_to_vec(vss->P, result.record.vss_P);
+            bn_to_vec(vss->g, result.record.vss_g);
+            bn_to_vec(vss->h, result.record.vss_h);
+            BIGNUM* pp = BN_new();
+            BN_sub(pp, vss->P, BN_value_one());
+            BN_rshift1(pp, pp);
+            bn_to_vec(pp, result.record.vss_P_prime);
+            BN_free(pp);
+        }
+        result.record.activation_height = 0;
+        transcript.hash(result.record.dkg_transcript_hash);
+        {
+            dao_tally_key_record tmp2 = result.record;
+            tmp2.key_id.assign(32, 0);
+            std::vector<uint8_t> body2;
+            tmp2.serialize(body2);
+            result.record.key_id.assign(32, 0);
+            SHA256(body2.data(), body2.size(), result.record.key_id.data());
+        }
+        result.key_id = result.record.key_id;
+
+        result.local_secret_share.clear();
+        if (cfg.local_party_id >= 1 && cfg.local_party_id <= cfg.committee_size) {
+            const BIGNUM* sk = party->SK();
+            if (sk) {
+                const bool neg = BN_is_negative(sk);
+                BIGNUM* abs_b = BN_new();
+                BN_copy(abs_b, sk);
+                BN_set_negative(abs_b, 0);
+                const int nb = BN_num_bytes(abs_b);
+                result.local_secret_share.reserve(1 + nb);
+                result.local_secret_share.push_back(neg ? 1 : 0);
+                if (nb > 0) {
+                    const size_t off = result.local_secret_share.size();
+                    result.local_secret_share.resize(off + nb);
+                    BN_bn2bin(abs_b, result.local_secret_share.data() + off);
+                }
+                BN_free(abs_b);
+            }
+        }
+
+        BN_free(theta_tilde);
+        BN_free(theta);
+        return true;
+    }
+
+    return false;
+}
+
+dkg_p2p_runner::dkg_p2p_runner(const dkg_config& cfg,
+                               const dao_vss_group& vss,
+                               const dkg_p2p_callbacks& cb)
+    : p_(new impl())
+{
+    p_->cfg = cfg;
+    p_->vss = &vss;
+    p_->cb  = cb;
+}
+
+dkg_p2p_runner::~dkg_p2p_runner()
+{
+    stop();
+}
+
+bool dkg_p2p_runner::start()
+{
+    if (p_->worker.joinable()) return true;
+    if (p_->cfg.local_party_id < 1 ||
+        p_->cfg.local_party_id > p_->cfg.committee_size)
+        return false;
+
+    // Committee id hash.
+    {
+        std::vector<uint8_t> buf;
+        const char* dom = DAO_DKG_COMMITTEE_DOMAIN;
+        buf.insert(buf.end(), dom, dom + std::strlen(dom));
+        for (int i = 0; i < 4; ++i)
+            buf.push_back((p_->cfg.epoch >> (8*i)) & 0xff);
+        for (const auto& pk : p_->cfg.member_ids)
+            buf.insert(buf.end(), pk.data, pk.data + sizeof(pk.data));
+        SHA256(buf.data(), buf.size(), p_->committee_id_hash);
+    }
+
+    p_->transport.reset(
+        new dkg_p2p_transport_local(p_->cfg.member_ids, p_->cb));
+
+    p_->party = dkg_party_create(p_->cfg.local_party_id,
+                                 p_->cfg.committee_size,
+                                 p_->cfg.threshold,
+                                 p_->cfg.epoch);
+    if (!p_->party) return false;
+
+    p_->party->attach_transport(p_->transport.get());
+    p_->party->attach_vss_group(p_->vss);
+    p_->party->set_qproof_rounds(p_->cfg.qproof_rounds);
+    p_->party->set_committee_id_hash(p_->committee_id_hash);
+
+#ifdef VEILROOT_DAO_DKG_TESTING
+    // Generic test-only contributions take priority: the caller
+    // supplies per-party decimal values whose sums are prime.
+    if (p_->cfg.test_p_i_dec.size() == p_->cfg.committee_size &&
+        p_->cfg.test_q_i_dec.size() == p_->cfg.committee_size)
+    {
+        const uint32_t me = p_->cfg.local_party_id;
+        if (me >= 1 && me <= p_->cfg.committee_size) {
+            BIGNUM* p = nullptr;
+            BIGNUM* q = nullptr;
+            if (BN_dec2bn(&p, p_->cfg.test_p_i_dec[me - 1].c_str()) == 0 ||
+                BN_dec2bn(&q, p_->cfg.test_q_i_dec[me - 1].c_str()) == 0) {
+                BN_free(p); BN_free(q);
+                return false;
+            }
+            p_->party->set_fixed_test_contribution(p, q);
+            BN_free(p); BN_free(q);
+        }
+    }
+    // Fixed known-good candidates, matching the single-process driver.
+    // When test_seed matches, every party uses the same fixed p_i/q_i,
+    // the candidate loop runs once, and N has the expected bit length.
+    static const char* TEST_P_I_3[3] = {
+        "4682386010002652227", "4682386010002652228", "4682386010002652228"
+    };
+    static const char* TEST_Q_I_3[3] = {
+        "4090544854494431319", "4090544854494431320", "4090544854494431320"
+    };
+    static const char* TEST_P_I_16[16] = {
+        "969268552214414479",  "888031839494547792",
+        "1079397876156048660", "1006574070186212908",
+        "877477030194816300",  "791836913387411172",
+        "768506220692087400",  "813633058001625364",
+        "666206511486790708",  "947746232640603164",
+        "1105465569543844360", "607439790306659332",
+        "1055474825484965160", "584154533438528320",
+        "765317402755487352",  "906859206339637076"
+    };
+    static const char* TEST_Q_I_16[16] = {
+        "788035984088342967",  "785893246012606672",
+        "1008809060784577456", "956801234593989956",
+        "622867011629669024",  "714583382660623768",
+        "1152027874352792244", "873607243235969604",
+        "1076454260578465704", "726189582184062888",
+        "923866761182567912",  "587248126720312492",
+        "979668901553805100",  "970721716908318012",
+        "1021503496685327708", "591266747085483712"
+    };
+    constexpr uint64_t FIXED_TEST_CANDIDATE_SEED   = 0x5645494C52544F54ULL;
+    constexpr uint64_t FIXED_TEST_CANDIDATE_SEED_3 = 0x5645494C52544F33ULL;
+
+    if (p_->cfg.test_seed == FIXED_TEST_CANDIDATE_SEED_3 &&
+        p_->cfg.committee_size == 3)
+    {
+        const uint32_t me = p_->cfg.local_party_id;
+        if (me >= 1 && me <= 3) {
+            BIGNUM* p = nullptr;
+            BIGNUM* q = nullptr;
+            if (BN_dec2bn(&p, TEST_P_I_3[me - 1]) == 0 ||
+                BN_dec2bn(&q, TEST_Q_I_3[me - 1]) == 0) {
+                BN_free(p); BN_free(q);
+                return false;
+            }
+            p_->party->set_fixed_test_contribution(p, q);
+            BN_free(p); BN_free(q);
+        }
+    } else if (p_->cfg.test_seed == FIXED_TEST_CANDIDATE_SEED &&
+               p_->cfg.committee_size == 16)
+    {
+        const uint32_t me = p_->cfg.local_party_id;
+        if (me >= 1 && me <= 16) {
+            BIGNUM* p = nullptr;
+            BIGNUM* q = nullptr;
+            if (BN_dec2bn(&p, TEST_P_I_16[me - 1]) == 0 ||
+                BN_dec2bn(&q, TEST_Q_I_16[me - 1]) == 0) {
+                BN_free(p); BN_free(q);
+                return false;
+            }
+            p_->party->set_fixed_test_contribution(p, q);
+            BN_free(p); BN_free(q);
+        }
+    }
+#endif
+
+    p_->phase_timeout_s = p_->cfg.phase_timeout_seconds;
+
+    p_->stop_flag.store(false);
+    p_->finished_flag.store(false);
+
+    p_->worker = std::thread([this]() { p_->run(); });
+    return true;
+}
+
+void dkg_p2p_runner::stop()
+{
+    if (!p_) return;
+    p_->stop_flag.store(true);
+    if (p_->transport) p_->transport->shutdown();
+    if (p_->worker.joinable()) p_->worker.join();
+}
+
+void dkg_p2p_runner::on_message(const dkg_msg& m)
+{
+    if (!p_ || !p_->transport) return;
+    if (p_->stop_flag.load()) return;
+    p_->transport->deliver(m);
+}
+
+bool dkg_p2p_runner::wait(dkg_result& out, uint32_t timeout_s)
+{
+    if (!p_) return false;
+    std::unique_lock<std::mutex> lk(p_->done_mu);
+    const auto pred = [&] { return p_->finished_flag.load(); };
+    if (timeout_s == 0) {
+        p_->done_cv.wait(lk, pred);
+    } else {
+        if (!p_->done_cv.wait_for(lk, std::chrono::seconds(timeout_s), pred)) {
+            lk.unlock();
+            stop();
+            return false;
+        }
+    }
+    out = p_->result;
+    return out.ok;
+}
+
+bool dkg_p2p_runner::running() const
+{
+    if (!p_) return false;
+    return p_->worker.joinable() && !p_->finished_flag.load();
+}
+
+bool dkg_p2p_runner::finished() const
+{
+    return p_ && p_->finished_flag.load();
+}
+
+uint32_t dkg_p2p_runner::epoch() const
+{
+    return p_ ? p_->cfg.epoch : 0;
+}
+
+uint32_t dkg_p2p_runner::local_party_id() const
+{
+    return p_ ? p_->cfg.local_party_id : 0;
+}
+
+uint32_t dao_dkg_party_index_for(
+    const std::vector<crypto::public_key>& member_ids,
+    const crypto::public_key& self_pk)
+{
+    for (size_t i = 0; i < member_ids.size(); ++i) {
+        if (std::memcmp(member_ids[i].data, self_pk.data,
+                        sizeof(self_pk.data)) == 0)
+            return static_cast<uint32_t>(i) + 1;
+    }
+    return 0;
+}
+
+bool dkg_run_distributed(const dkg_config& cfg,
+                         const dao_vss_group& vss,
+                         const dkg_p2p_callbacks& cb,
+                         dkg_result& out)
+{
+    dkg_p2p_runner r(cfg, vss, cb);
+    if (!r.start()) return false;
+    return r.wait(out);
+}
+
 
 bool dkg_run(const dkg_config& cfg, dkg_result& out)
 {
