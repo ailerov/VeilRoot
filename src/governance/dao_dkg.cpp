@@ -6295,11 +6295,7 @@ struct dkg_p2p_runner::impl
                 return false;
 
             if (!party->handle_message(m)) {
-                std::cerr << "[p2p-dkg] node " << party->id()
-                          << ": handle_message failed for type "
-                          << static_cast<int>(m.hdr.type)
-                          << " sender=" << m.hdr.sender_id
-                          << " phase=" << m.hdr.phase << "\n";
+                
                 return false;
             }
         }
@@ -6369,7 +6365,7 @@ bool dkg_p2p_runner::impl::run_modulus_attempt(BIGNUM* N_out)
 
     // Phase 1: each party deals VSS and sends shares.
     if (!party->start_phase(1, cfg.k, cfg.security_bits, cfg.target_N_bits)) {
-        std::cerr << "[p2p-dkg] node " << me << ": start_phase(1) failed\n";
+        
         return false;
     }
 
@@ -6387,12 +6383,11 @@ bool dkg_p2p_runner::impl::run_modulus_attempt(BIGNUM* N_out)
         dkg_msg_type::polynomial_share,
     };
     if (!collect_until(1, 0, phase1_types, complete_phase1, msgs)) {
-        std::cerr << "[p2p-dkg] node " << me << ": phase1 collect timeout\n";
+        
         return false;
     }
     if (!feed_party(msgs)) {
-        std::cerr << "[p2p-dkg] node " << me << ": phase1 feed_party failed"
-                  << " (msgs=" << msgs.size() << ")\n";
+        
         for (const auto& m : msgs) {
             std::cerr << "  msg type=" << static_cast<int>(m.hdr.type)
                       << " sender=" << m.hdr.sender_id
@@ -6404,7 +6399,7 @@ bool dkg_p2p_runner::impl::run_modulus_attempt(BIGNUM* N_out)
     // Phase 2: each party forms N_i and broadcasts.
     msgs.clear();
     if (!party->start_phase(2, cfg.k, cfg.security_bits, cfg.target_N_bits)) {
-        std::cerr << "[p2p-dkg] node " << me << ": start_phase(2) failed\n";
+        
         return false;
     }
 
@@ -6415,7 +6410,7 @@ bool dkg_p2p_runner::impl::run_modulus_attempt(BIGNUM* N_out)
         dkg_msg_type::bgw_product_share,
     };
     if (!collect_until(2, 0, phase2_types, complete_phase2, msgs)) {
-        std::cerr << "[p2p-dkg] node " << me << ": phase2 collect timeout\n";
+        
         return false;
     }
 
@@ -6431,7 +6426,7 @@ bool dkg_p2p_runner::impl::run_modulus_attempt(BIGNUM* N_out)
                            static_cast<int>(m.bytes_a.size()), nullptr);
     }
     if (!feed_party(msgs)) {
-        std::cerr << "[p2p-dkg] node " << me << ": phase2 feed_party failed\n";
+        
         for (auto* x : N_i) if (x) BN_free(x);
         return false;
     }
@@ -6440,15 +6435,14 @@ bool dkg_p2p_runner::impl::run_modulus_attempt(BIGNUM* N_out)
     // bgw_product_share is already in `msgs` and N_i[me] is populated.
     // Only inject from the party's local state if it is not.
     if (me < 1 || me > n) {
-        std::cerr << "[p2p-dkg] node " << me << ": bad own party id\n";
+        
         for (auto* x : N_i) if (x) BN_free(x);
         return false;
     }
     if (!N_i[me]) {
         std::vector<uint8_t> own;
         if (!party->public_N_i(own)) {
-            std::cerr << "[p2p-dkg] node " << me
-                      << ": public_N_i failed (phase 2 not complete?)\n";
+            
             for (auto* x : N_i) if (x) BN_free(x);
             return false;
         }
@@ -6457,7 +6451,7 @@ bool dkg_p2p_runner::impl::run_modulus_attempt(BIGNUM* N_out)
                                 static_cast<int>(own.size()), nullptr);
         }
         if (!N_i[me]) {
-            std::cerr << "[p2p-dkg] node " << me << ": own N_i empty\n";
+            
             for (auto* x : N_i) if (x) BN_free(x);
             return false;
         }
@@ -6465,7 +6459,7 @@ bool dkg_p2p_runner::impl::run_modulus_attempt(BIGNUM* N_out)
 
     for (uint32_t j = 1; j <= n; ++j) {
         if (!N_i[j]) {
-            std::cerr << "[p2p-dkg] node " << me << ": N_i[" << j << "] missing\n";
+            
             for (auto* x : N_i) if (x) BN_free(x);
             return false;
         }
@@ -6474,7 +6468,7 @@ bool dkg_p2p_runner::impl::run_modulus_attempt(BIGNUM* N_out)
     const uint32_t deg = 2 * (cfg.threshold - 1);
     const uint32_t need = deg + 1;
     if (n < need) {
-        std::cerr << "[p2p-dkg] node " << me << ": n < need\n";
+        
         for (auto* x : N_i) if (x) BN_free(x);
         return false;
     }
@@ -6489,7 +6483,7 @@ bool dkg_p2p_runner::impl::run_modulus_attempt(BIGNUM* N_out)
     CtxGuard ctx;
     bool ok = ctx.ok() &&
               lagrange_interpolate_zero(idx, vals, N_out, ctx.ctx);
-    if (!ok) std::cerr << "[p2p-dkg] node " << me << ": lagrange_interpolate_zero failed\n";
+    if (!ok) 
     for (auto* x : N_i) if (x) BN_free(x);
     return ok;
 }
@@ -6516,13 +6510,11 @@ bool dkg_p2p_runner::impl::run_phase_4_biprimality(const BIGNUM* N,
         dkg_msg_type::biprimality_Q,
     };
     if (!collect_until(4, 0, phase4_types, complete, msgs)) {
-        std::cerr << "[p2p-dkg] node " << party->id()
-                  << ": biprimality collect timeout (msgs=" << msgs.size() << ")\n";
+        
         return false;
     }
 
-    std::cerr << "[p2p-dkg] node " << party->id()
-              << ": biprimality collected " << msgs.size() << " messages\n";
+    
 
     std::vector<BIGNUM*> Q_own(n + 1, nullptr);
     std::vector<const BIGNUM*> Q(n + 1, nullptr);
@@ -6532,13 +6524,11 @@ bool dkg_p2p_runner::impl::run_phase_4_biprimality(const BIGNUM* N,
         if (m.hdr.type != dkg_msg_type::biprimality_Q) continue;
         const uint32_t j = m.tag32;
         if (j < 1 || j > n) {
-            std::cerr << "[p2p-dkg] node " << party->id()
-                      << ": Q with bad tag j=" << j << "\n";
+            
             ok = false; break;
         }
         if (m.bytes_a.empty() || m.bytes_b.empty() || m.bytes_c.empty()) {
-            std::cerr << "[p2p-dkg] node " << party->id()
-                      << ": Q bytes empty for j=" << j << "\n";
+            
             ok = false; break;
         }
         if (Q_own[j]) continue;
@@ -6582,8 +6572,7 @@ bool dkg_p2p_runner::impl::run_phase_4_biprimality(const BIGNUM* N,
         BN_free(g4); BN_free(C0p);
 
         if (!vok) {
-            std::cerr << "[p2p-dkg] node " << party->id()
-                      << ": Q verify failed for j=" << j << "\n";
+            
             BN_free(Qbn);
             ok = false; break;
         }
@@ -6607,15 +6596,13 @@ bool dkg_p2p_runner::impl::run_phase_4_biprimality(const BIGNUM* N,
 
     for (size_t j = 1; j <= n && ok; ++j)
         if (!Q[j]) {
-            std::cerr << "[p2p-dkg] node " << party->id()
-                      << ": Q[" << j << "] missing\n";
+            
             ok = false;
         }
 
     if (ok) {
         const int bi = biprimality_check(Q, N);
-        std::cerr << "[p2p-dkg] node " << party->id()
-                  << ": biprimality_check = " << bi << "\n";
+        
         if (bi <= 0) {
             if (bi == 0) result.biprimality_failures++;
             // Mathematical candidate rejection, not a protocol error.
@@ -6644,8 +6631,7 @@ bool dkg_p2p_runner::impl::run_trial_division_factor(uint32_t selector,
     const uint32_t t = cfg.threshold - 1;
     const uint32_t deg = 2 * t;
     const uint32_t need = deg + 1;
-    std::cerr << "[p2p-dkg] node " << party->id()
-              << ": trial_division_factor start sel=" << selector << "\n";
+    
 
     for (size_t r_idx = 0; r_idx < DAO_DKG_SMALL_PRIME_COUNT; ++r_idx) {
         const uint32_t r = DAO_DKG_SMALL_PRIMES[r_idx];
@@ -6657,16 +6643,10 @@ bool dkg_p2p_runner::impl::run_trial_division_factor(uint32_t selector,
             const uint32_t wire_round =
                 trial_division_wire_round(r_idx, rep);
 
-            std::cerr << "[p2p-dkg] node " << party->id()
-                      << ": trial prime=" << r
-                      << " rep=" << rep
-                      << " wire_round=" << wire_round
-                      << " prolog\n";
+            
 
             if (!party->do_trial_division_prolog(selector, wire_round)) {
-                std::cerr << "[p2p-dkg] node " << party->id()
-                          << ": trial prolog failed prime=" << r
-                          << " rep=" << rep << "\n";
+                
                 return false;
             }
 
@@ -6682,31 +6662,20 @@ bool dkg_p2p_runner::impl::run_trial_division_factor(uint32_t selector,
                 dkg_msg_type::trial_division_ra_share,
             };
             if (!collect_until(5, wire_round, prolog_types, prolog_complete, msgs)) {
-                std::cerr << "[p2p-dkg] node " << party->id()
-                          << ": trial prolog timeout prime=" << r
-                          << " rep=" << rep
-                          << " round=" << wire_round
-                          << " msgs=" << msgs.size() << "\n";
+                
                 return false;
             }
             if (!feed_party(msgs)) {
-                std::cerr << "[p2p-dkg] node " << party->id()
-                          << ": trial prolog feed failed prime=" << r
-                          << " rep=" << rep << "\n";
+                
                 return false;
             }
 
             msgs.clear();
 
-            std::cerr << "[p2p-dkg] node " << party->id()
-                      << ": trial prime=" << r
-                      << " rep=" << rep
-                      << " gamma\n";
+            
 
             if (!party->do_trial_division_gamma(r, wire_round)) {
-                std::cerr << "[p2p-dkg] node " << party->id()
-                          << ": trial gamma generation failed prime=" << r
-                          << " rep=" << rep << "\n";
+                
                 return false;
             }
 
@@ -6717,10 +6686,7 @@ bool dkg_p2p_runner::impl::run_trial_division_factor(uint32_t selector,
                 dkg_msg_type::trial_division_gamma,
             };
             if (!collect_until(5, wire_round, gamma_types, gamma_complete, msgs)) {
-                std::cerr << "[p2p-dkg] node " << party->id()
-                          << ": trial gamma timeout prime=" << r
-                          << " rep=" << rep
-                          << " round=" << wire_round << "\n";
+                
                 return false;
             }
 
@@ -6825,15 +6791,12 @@ bool dkg_p2p_runner::impl::run_trial_division_factor(uint32_t selector,
         }
 
         if (!passed) {
-            std::cerr << "[p2p-dkg] node " << party->id()
-                      << ": trial_division_factor sel=" << selector
-                      << " candidate rejected at r=" << r << "\n";
+            
             candidate_reject = true;
             return true;
         }
     }
-    std::cerr << "[p2p-dkg] node " << party->id()
-              << ": trial_division_factor sel=" << selector << " OK\n";
+    
     return true;
 }
 
@@ -6860,15 +6823,12 @@ void dkg_p2p_runner::impl::run()
         party->set_candidate_id(attempt);
         BN_zero(attempt_N);
 
-        std::cerr << "[p2p-dkg] node " << party->id() << " attempt " << attempt
-                  << ": phase1-2 start\n";
+        
 
         // Communication, VSS and proof failures are fatal, not
         // candidate rejections.
         if (!run_modulus_attempt(attempt_N)) {
-            std::cerr << "[p2p-dkg] node " << party->id()
-                      << " attempt " << attempt
-                      << ": modulus protocol failure\n";
+            
             break;
         }
 
@@ -6899,16 +6859,12 @@ void dkg_p2p_runner::impl::run()
                 break;
             }
 
-            std::cerr << "[p2p-dkg] node " << party->id()
-                      << " attempt " << attempt << ": biprimality start\n";
+            
             if (!run_phase_4_biprimality(N, candidate_reject)) {
                 BN_free(g_bar);
                 break;
             }
-            std::cerr << "[p2p-dkg] node " << party->id()
-                      << " attempt " << attempt
-                      << ": biprimality done reject="
-                      << candidate_reject << "\n";
+            
 
             if (!candidate_reject) {
                 if (!party->do_compute_share_pq()) {
@@ -6947,8 +6903,7 @@ void dkg_p2p_runner::impl::run()
 
         if (global_accept) {
             if (!local_accept) {
-                std::cerr << "[p2p-dkg] node " << party->id()
-                          << ": committee accepted candidate locally rejected\n";
+                
                 break;
             }
 
@@ -6967,10 +6922,6 @@ void dkg_p2p_runner::impl::run()
 
             break;
         }
-
-        std::cerr << "[p2p-dkg] node " << party->id()
-                  << ": candidate " << attempt
-                  << " rejected by committee; advancing\n";
     }
 
     BN_free(attempt_N);
@@ -6989,11 +6940,9 @@ void dkg_p2p_runner::impl::run()
 
     result.candidate_accepted = true;
     const BIGNUM* N = accepted_N;
-    std::cerr << "[p2p-dkg] node " << party->id()
-              << ": key phases start\n";
+    
     const bool key_ok = run_key_phases(N);
-    std::cerr << "[p2p-dkg] node " << party->id()
-              << ": key phases done ok=" << key_ok << "\n";
+    
     result.ok = key_ok;
     BN_free(accepted_N);
 
@@ -7024,19 +6973,19 @@ bool dkg_p2p_runner::impl::run_key_phases(const BIGNUM* N)
         if (stop_flag.load()) return false;
         if (beta_try > 1) result.beta_phase_retries++;
 
-        std::cerr << "[p2p-dkg] node " << party->id() << " beta_try=" << beta_try << ": phase 6 start\n";
+        
         if (!party->do_phi_share_init()) {
-            std::cerr << "[p2p-dkg] node " << party->id() << ": phase 6 FAIL\n";
+            
             return false;
         }
-        std::cerr << "[p2p-dkg] node " << party->id() << ": phase 6 ok\n";
+        
 
-        std::cerr << "[p2p-dkg] node " << party->id() << ": phase 7 start\n";
+        
         if (!party->do_beta_R_generate()) {
-            std::cerr << "[p2p-dkg] node " << party->id() << ": phase 7 generate FAIL\n";
+            
             return false;
         }
-        std::cerr << "[p2p-dkg] node " << party->id() << ": phase 7 generate ok\n";
+        
         {
             std::vector<dkg_msg> msgs;
             // h_theta_share is sent twice per party (one broadcast
@@ -7059,10 +7008,10 @@ bool dkg_p2p_runner::impl::run_key_phases(const BIGNUM* N)
                 dkg_msg_type::beta_share,
             };
             if (!collect_until(7, 0, phase7_types, complete, msgs)) {
-                std::cerr << "[p2p-dkg] node " << party->id() << ": phase 7 collect timeout msgs=" << msgs.size() << "\n";
+                
                 return false;
             }
-            std::cerr << "[p2p-dkg] node " << party->id() << ": phase 7 collected " << msgs.size() << "\n";
+            
 
             std::vector<std::vector<uint8_t>> beta_C0(n + 1), dr_C0(n + 1);
             for (const auto& m : msgs) {
@@ -7094,25 +7043,25 @@ bool dkg_p2p_runner::impl::run_key_phases(const BIGNUM* N)
                 if (!ok) return false;
             }
             if (!feed_party(msgs)) {
-                std::cerr << "[p2p-dkg] node " << party->id() << ": phase 7 feed FAIL\n";
+                
                 return false;
             }
-            std::cerr << "[p2p-dkg] node " << party->id() << ": phase 7 feed ok\n";
+            
         }
 
-        std::cerr << "[p2p-dkg] node " << party->id() << ": phase 8 start\n";
+        
         if (!party->do_beta_R_collect()) {
-            std::cerr << "[p2p-dkg] node " << party->id() << ": phase 8 FAIL\n";
+            
             return false;
         }
-        std::cerr << "[p2p-dkg] node " << party->id() << ": phase 8 ok\n";
+        
 
-        std::cerr << "[p2p-dkg] node " << party->id() << ": phase 9 start\n";
+        
         if (!party->do_compute_theta_share()) {
-            std::cerr << "[p2p-dkg] node " << party->id() << ": phase 9 FAIL\n";
+            
             return false;
         }
-        std::cerr << "[p2p-dkg] node " << party->id() << ": phase 9 ok\n";
+        
 
         BIGNUM* theta_tilde = nullptr;
         {
