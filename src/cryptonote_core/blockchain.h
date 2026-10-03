@@ -1377,6 +1377,15 @@ namespace cryptonote
       const std::vector<crypto::public_key>& committee,
       const dao::dao_vss_group& vss);
 
+  // Called from the DKG watcher thread when a ceremony finishes.
+  // Enqueues the result; the DB write happens on the blockchain owner
+  // thread via process_pending_dao_v2_dkg_results().
+  void queue_dao_v2_dkg_result(uint32_t epoch, dao::dkg_result result);
+
+  // Owner-thread persistence. Consumes the pending queue and writes
+  // each result under the caller's write transaction.
+  bool process_pending_dao_v2_dkg_results();
+
   // Installed by the protocol handler. Called when the runner needs
   // to send a DKG message; the handler broadcasts to peers, and the
   // receiver filters by the recipient id in the payload header.
@@ -1661,6 +1670,17 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
         m_dao_v2_dkg_watchers;
     std::function<bool(const std::string&)>
         m_dao_v2_dkg_send;
+
+    // Results queued by the DKG watcher thread, drained by the
+    // blockchain owner thread.
+    struct pending_dao_v2_dkg_result
+    {
+        uint32_t epoch = 0;
+        dao::dkg_result result;
+    };
+    mutable std::mutex m_dao_v2_dkg_result_mutex;
+    std::deque<pending_dao_v2_dkg_result>
+        m_pending_dao_v2_dkg_results;
     // END_VNS_DAO_V2_DKG
     // END_VNS_DECRYPTION_STATE
 
@@ -2086,11 +2106,13 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
   std::vector<std::pair<crypto::public_key, uint64_t>>
   select_dao_v2_committee(BlockchainDB& db, uint32_t max_committee_size);
 
-  // Wait for a running DKG runner to finish and persist the resulting
-  // public key record and this node's local secret share to `db`.
+  // Persist a completed DKG result. The caller owns the runner's
+  // wait() and passes the captured result plus this node's committee
+  // index. No DB write occurs on a DKG worker thread.
   bool persist_dao_v2_dkg_result(BlockchainDB& db,
                                  uint32_t epoch,
-                                 dkg_p2p_runner& runner);
+                                 const dkg_result& result,
+                                 uint32_t local_party_id);
 
   } // namespace dao
 }  // namespace cryptonote

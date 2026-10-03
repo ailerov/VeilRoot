@@ -8343,6 +8343,12 @@ namespace dao {
 std::vector<std::pair<crypto::public_key, uint64_t>>
 select_dao_v2_committee(BlockchainDB& db, uint32_t max_committee_size)
 {
+  // for_all_committee_eligible() opens the LMDB per-thread read
+  // transaction but does not close it (TXN_POSTFIX_RDONLY is empty).
+  // The guard owns it and stops it on return so the caller is free to
+  // start a write transaction afterwards.
+  db_rtxn_guard rtxn_guard(&db);
+
   std::unordered_map<crypto::key_image, committee_eligible_record> rows;
   db.for_all_committee_eligible(
       [&rows](const crypto::key_image& ki,
@@ -8373,13 +8379,14 @@ select_dao_v2_committee(BlockchainDB& db, uint32_t max_committee_size)
 
 bool persist_dao_v2_dkg_result(BlockchainDB& db,
                                uint32_t epoch,
-                               dkg_p2p_runner& runner)
+                               const dkg_result& res,
+                               uint32_t local_id)
 {
-  dkg_result res;
-  if (!runner.wait(res, 0)) return false;
   if (!res.ok) return false;
 
-  const uint32_t local_id = runner.local_party_id();
+  // Caller owns the write transaction. This helper must be invoked
+  // inside an active db_wtxn_guard on the blockchain-state owner
+  // thread.
   if (local_id >= 1 && !res.local_secret_share.empty()) {
     try {
       db.add_dao_local_share(epoch, local_id, res.local_secret_share);
@@ -8556,7 +8563,53 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     it->second->on_message(m);
   }
 
-  bool Blockchain::bootstrap_dao_v2_dkg(uint32_t epoch)
+  void Blockchain::queue_dao_v2_dkg_result(uint32_t epoch,
+                                          dao::dkg_result result)
+  {
+    std::lock_guard<std::mutex> lock(m_dao_v2_dkg_result_mutex);
+    m_pending_dao_v2_dkg_results.push_back(
+        pending_dao_v2_dkg_result{epoch, std::move(result)});
+  }
+
+  bool Blockchain::process_pending_dao_v2_dkg_results()
+  {
+    std::deque<pending_dao_v2_dkg_result> pending;
+    {
+      std::lock_guard<std::mutex> lock(m_dao_v2_dkg_result_mutex);
+      if (m_pending_dao_v2_dkg_results.empty()) return true;
+      pending.swap(m_pending_dao_v2_dkg_results);
+    }
+
+    for (auto& item : pending) {
+      if (!item.result.ok) {
+        MWARNING("DAO V2 DKG epoch " << item.epoch << ": result not ok");
+        continue;
+      }
+      auto runner_it = m_dao_v2_dkg_runners.find(item.epoch);
+      if (runner_it == m_dao_v2_dkg_runners.end()) {
+        MWARNING("DAO V2 DKG epoch " << item.epoch
+                 << ": runner no longer exists");
+        continue;
+      }
+      const uint32_t local_id = runner_it->second->local_party_id();
+      if (local_id == 0 || item.result.local_secret_share.empty()) {
+        MWARNING("DAO V2 DKG epoch " << item.epoch
+                 << ": invalid local share");
+        continue;
+      }
+      if (!dao::persist_dao_v2_dkg_result(*m_db, item.epoch,
+                                          item.result, local_id)) {
+        MWARNING("DAO V2 DKG epoch " << item.epoch
+                 << ": persistence failed");
+        continue;
+      }
+      MINFO("DAO V2 DKG epoch " << item.epoch
+            << ": key record persisted");
+    }
+    return true;
+  }
+
+    bool Blockchain::bootstrap_dao_v2_dkg(uint32_t epoch)
   {
     if (m_dao_v2_dkg_runners.count(epoch) > 0)
       return true;   // already running
@@ -8605,11 +8658,12 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     m_dao_v2_dkg_watchers.emplace(epoch, std::thread([self, epoch]() {
       auto it = self->m_dao_v2_dkg_runners.find(epoch);
       if (it == self->m_dao_v2_dkg_runners.end()) return;
-      if (!dao::persist_dao_v2_dkg_result(*self->m_db, epoch,
-                                           *it->second)) {
-        MWARNING("DAO V2 DKG epoch " << epoch
-                 << ": persistence failed");
+      dao::dkg_result res;
+      if (!it->second->wait(res, 0)) {
+        MWARNING("DAO V2 DKG epoch " << epoch << ": ceremony failed");
+        return;
       }
+      self->queue_dao_v2_dkg_result(epoch, std::move(res));
     }));
 
     return true;
