@@ -129,6 +129,7 @@ set(unit_tests_sources
   dao_dkg_e2e.cpp
   dao_dkg_distributed.cpp
   dao_dkg_bootstrap.cpp
+  dao_bootstrap_integration.cpp
   voting_weight.cpp
   vns_transfer.cpp)
 
@@ -167,6 +168,9 @@ target_include_directories(unit_tests PRIVATE ${CMAKE_SOURCE_DIR}/external/ixweb
 # Enable DKG test-only accessors on both the test binary and the
 # governance library object files.
 target_compile_definitions(unit_tests PRIVATE VEILROOT_DAO_DKG_TESTING=1)
+# The core object files that the integration test links against need the
+# same test flag so blockchain.cpp's #ifdef takes the test branch too.
+target_compile_definitions(obj_cryptonote_core PRIVATE VEILROOT_DAO_DKG_TESTING=1)
 set(VEILROOT_DAO_DKG_TESTING_BUILD 1 CACHE INTERNAL "Enable DKG test-only accessors")
 
 if (NOT MSVC)
