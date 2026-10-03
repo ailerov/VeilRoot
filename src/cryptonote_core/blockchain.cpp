@@ -8355,7 +8355,14 @@ void Blockchain::rebuild_committee_eligible_list()
 
   m_committee_eligible_sorted.assign(node_weights.begin(), node_weights.end());
   std::sort(m_committee_eligible_sorted.begin(), m_committee_eligible_sorted.end(),
-            [](const auto& a, const auto& b) { return a.second > b.second; });
+            [](const auto& a, const auto& b) {
+              if (a.second != b.second) return a.second > b.second;
+              // Deterministic tie-break: the committee order is part of
+              // the DKG key identity, so every node must produce the
+              // same ordering when stake-age weights are equal.
+              return std::memcmp(a.first.data, b.first.data,
+                                 sizeof(a.first.data)) < 0;
+            });
 
   size_t max = std::min<size_t>(m_committee_eligible_sorted.size(), m_governance_params.tally_committee_size);
   m_committee_eligible_sorted.resize(max);
