@@ -78,6 +78,7 @@
 #include "governance/tally_manager.h"
 #include "governance/dao_tally.h"
 #include "governance/dao_dkg.h"
+#include "governance/dao_dkg_transport.h"
 #include <openssl/evp.h>
 #include "common/domain_utils.h"
 #include "governance/parameter_update.h"
@@ -8454,6 +8455,114 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 // END_VNS_DKG
 
   // BEGIN_VNS_DAO_V2_TALLY_SHARE
+  // BEGIN_VNS_DAO_V2_DKG
+  void Blockchain::handle_dao_v2_dkg_msg(const crypto::public_key& member,
+                                         const std::string& payload)
+  {
+    dao::dkg_msg m;
+    {
+      std::vector<uint8_t> bytes(payload.begin(), payload.end());
+      if (!m.deserialize(bytes)) {
+        MWARNING("V2 DKG msg: deserialize failed");
+        return;
+      }
+    }
+
+    auto it = m_dao_v2_dkg_runners.find(m.hdr.epoch);
+    if (it == m_dao_v2_dkg_runners.end()) {
+      // No ceremony running for this epoch. Silent: peers may be
+      // ahead of us.
+      return;
+    }
+
+    // Sender must match the claimed sender_id in the header, and both
+    // must be a member of the committee bound by the running runner.
+    const auto* runner_cfg = it->second->config();
+    if (!runner_cfg) return;
+
+    const uint32_t claimed = m.hdr.sender_id;
+    if (claimed < 1 || claimed > runner_cfg->member_ids.size()) return;
+
+    const crypto::public_key& expected =
+        runner_cfg->member_ids[claimed - 1];
+    if (std::memcmp(expected.data, member.data,
+                    sizeof(member.data)) != 0) {
+      MWARNING("V2 DKG msg: sender " << member
+               << " claims id " << claimed
+               << " but the committee entry does not match");
+      return;
+    }
+
+    it->second->on_message(m);
+  }
+
+  bool Blockchain::start_dao_v2_dkg(
+      uint32_t epoch,
+      const std::vector<crypto::public_key>& committee,
+      const dao::dao_vss_group& vss)
+  {
+    if (m_dao_v2_dkg_runners.count(epoch) > 0) {
+      MWARNING("start_dao_v2_dkg: epoch " << epoch << " already running");
+      return false;
+    }
+    if (!m_dao_v2_dkg_send) {
+      MWARNING("start_dao_v2_dkg: no send callback installed");
+      return false;
+    }
+
+    crypto::public_key self_pk{};
+    if (!crypto::secret_key_to_public_key(m_node_privkey, self_pk)) {
+      MWARNING("start_dao_v2_dkg: cannot derive node pubkey");
+      return false;
+    }
+
+    const uint32_t local_id =
+        dao::dao_dkg_party_index_for(committee, self_pk);
+    if (local_id == 0) {
+      // This node is not part of this committee. Not an error.
+      MINFO("start_dao_v2_dkg: node is not in committee for epoch "
+            << epoch);
+      return false;
+    }
+
+    const uint32_t threshold =
+        dao::dao_dkg_expected_threshold(
+            static_cast<uint32_t>(committee.size()));
+    if (threshold == 0) return false;
+
+    dao::dkg_config cfg;
+    cfg.committee_size = static_cast<uint32_t>(committee.size());
+    cfg.threshold      = threshold;
+    cfg.epoch          = epoch;
+    cfg.member_ids     = committee;
+    cfg.local_party_id = local_id;
+
+    dao::dkg_p2p_callbacks cb;
+    cb.send_to = [](const crypto::public_key&, const std::string&) {
+      // The distributed runner broadcasts every message; per-target
+      // filtering happens on the receive side via header.recipient_id.
+      // We do not attempt peer-addressed delivery here.
+      return false;
+    };
+    cb.broadcast = [this](const std::string& payload) {
+      if (m_dao_v2_dkg_send) (void)m_dao_v2_dkg_send(payload);
+    };
+
+    auto runner = std::make_unique<dao::dkg_p2p_runner>(cfg, vss, cb);
+    if (!runner->start()) {
+      MWARNING("start_dao_v2_dkg: runner start failed for epoch " << epoch);
+      return false;
+    }
+
+    m_dao_v2_dkg_runners.emplace(epoch, std::move(runner));
+    MINFO("start_dao_v2_dkg: runner started for epoch " << epoch
+          << " n=" << committee.size()
+          << " t=" << threshold
+          << " local_id=" << local_id);
+    return true;
+  }
+  // END_VNS_DAO_V2_DKG
+
   void Blockchain::handle_dao_v2_tally_share(const crypto::public_key& member,
                                              const std::string& payload)
   {

@@ -1346,6 +1346,31 @@ namespace cryptonote
     m_dao_v2_tally_broadcast = std::move(cb);
   }
   // END_VNS_DAO_V2_TALLY_SHARE
+
+  // BEGIN_VNS_DAO_V2_DKG
+  // Receiving side of the distributed DKG. Called from the P2P
+  // handler. Validates the sender is a member of the ceremony's
+  // committee, then delivers the message to the running runner, if
+  // any.
+  void handle_dao_v2_dkg_msg(const crypto::public_key& member,
+                             const std::string& payload);
+
+  // Producer side. Called once from the bootstrap path. Spawns the
+  // runner for the current epoch and committee. Fails if a runner for
+  // this epoch is already running.
+  bool start_dao_v2_dkg(uint32_t epoch,
+                        const std::vector<crypto::public_key>& committee,
+                        const dao::dao_vss_group& vss);
+
+  // Installed by the protocol handler. Called when the runner needs
+  // to send a DKG message; the handler broadcasts to peers, and the
+  // receiver filters by the recipient id in the payload header.
+  void set_dao_v2_dkg_send(
+      std::function<bool(const std::string&)> cb)
+  {
+    m_dao_v2_dkg_send = std::move(cb);
+  }
+  // END_VNS_DAO_V2_DKG
   // BEGIN_VNS_DAO_EXEC
   void finalize_tally(const crypto::hash& proposal_id, uint64_t yes_weight, uint64_t no_weight);
   // END_VNS_DAO_EXEC
@@ -1614,6 +1639,12 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     std::function<void(const dao::dao_v2_tally_share&)>
         m_dao_v2_tally_broadcast;
     // END_VNS_DAO_V2_TALLY_SHARE
+    // BEGIN_VNS_DAO_V2_DKG
+    std::map<uint32_t, std::unique_ptr<dao::dkg_p2p_runner>>
+        m_dao_v2_dkg_runners;
+    std::function<bool(const std::string&)>
+        m_dao_v2_dkg_send;
+    // END_VNS_DAO_V2_DKG
     // END_VNS_DECRYPTION_STATE
 
     // ---------- VNS ADDITION END ----------

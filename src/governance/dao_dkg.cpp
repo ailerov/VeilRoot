@@ -7800,6 +7800,11 @@ uint32_t dkg_p2p_runner::local_party_id() const
     return p_ ? p_->cfg.local_party_id : 0;
 }
 
+const dkg_config* dkg_p2p_runner::config() const
+{
+    return p_ ? &p_->cfg : nullptr;
+}
+
 uint32_t dao_dkg_party_index_for(
     const std::vector<crypto::public_key>& member_ids,
     const crypto::public_key& self_pk)

@@ -48,6 +48,7 @@ namespace cryptonote
     // Fan out one committee member's V2 tally share to all connected
     // peers. The share is a P2P protocol message, not a transaction.
     virtual bool relay_dao_v2_tally_share(const std::string& payload)=0;
+    virtual bool relay_dao_v2_dkg_msg(const std::string& payload)=0;
     // END_VNS_DAO_V2_TALLY_BROADCAST
     //virtual bool request_objects(NOTIFY_REQUEST_GET_OBJECTS::request& arg, cryptonote_connection_context& context)=0;
   };
@@ -70,6 +71,10 @@ namespace cryptonote
       return false;
     }
     // BEGIN_VNS_DAO_V2_TALLY_BROADCAST
+    virtual bool relay_dao_v2_dkg_msg(const std::string& /*payload*/)
+    {
+      return false;
+    }
     virtual bool relay_dao_v2_tally_share(const std::string& payload)
     {
       return false;

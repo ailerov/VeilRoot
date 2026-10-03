@@ -100,6 +100,7 @@ namespace cryptonote
       HANDLE_NOTIFY_T2(NOTIFY_DKG_CONFIRM, &cryptonote_protocol_handler::handle_notify_dkg_confirm)
       HANDLE_NOTIFY_T2(NOTIFY_DECRYPTION_SHARE, &cryptonote_protocol_handler::handle_notify_decryption_share)
       HANDLE_NOTIFY_T2(NOTIFY_DAO_V2_TALLY_SHARE, &cryptonote_protocol_handler::handle_notify_dao_v2_tally_share)
+      HANDLE_NOTIFY_T2(NOTIFY_DAO_V2_DKG_MSG, &cryptonote_protocol_handler::handle_notify_dao_v2_dkg_msg)
       // END_VNS_DKG
     END_INVOKE_MAP2()
 
@@ -161,12 +162,18 @@ namespace cryptonote
     int handle_notify_dkg_confirm(int command, NOTIFY_DKG_CONFIRM::request& arg, cryptonote_connection_context& context);
     int handle_notify_decryption_share(int command, NOTIFY_DECRYPTION_SHARE::request& arg, cryptonote_connection_context& context);
     int handle_notify_dao_v2_tally_share(int command, NOTIFY_DAO_V2_TALLY_SHARE::request& arg, cryptonote_connection_context& context);
+    int handle_notify_dao_v2_dkg_msg(int command, NOTIFY_DAO_V2_DKG_MSG::request& arg, cryptonote_connection_context& context);
     // END_VNS_DKG
     //----------------- i_bc_protocol_layout ---------------------------------------
     virtual bool relay_block(NOTIFY_NEW_FLUFFY_BLOCK::request& arg, cryptonote_connection_context& exclude_context);
     virtual bool relay_transactions(NOTIFY_NEW_TRANSACTIONS::request& arg, const boost::uuids::uuid& source, epee::net_utils::zone zone, relay_method tx_relay);
     // BEGIN_VNS_DAO_V2_TALLY_BROADCAST
     virtual bool relay_dao_v2_tally_share(const std::string& payload);
+    // Relay a DKG message to every connected peer. The receiver
+    // filters by the recipient_id field in the payload header. The
+    // sender's own identity is stamped so receivers can validate
+    // committee membership.
+    virtual bool relay_dao_v2_dkg_msg(const std::string& payload);
     // END_VNS_DAO_V2_TALLY_BROADCAST
     //----------------------------------------------------------------------------------
     //bool get_payload_sync_data(HANDSHAKE_DATA::request& hshd, cryptonote_connection_context& context);

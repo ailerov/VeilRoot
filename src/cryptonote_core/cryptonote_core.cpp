@@ -245,6 +245,7 @@ namespace cryptonote
     if(pprotocol)
     {
       m_pprotocol = pprotocol;
+      install_dao_v2_dkg_broadcast();
       install_dao_v2_tally_broadcast();
     }
     else

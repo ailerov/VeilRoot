@@ -122,8 +122,10 @@ public:
   void handle_dkg_confirm(const crypto::hash&, const crypto::public_key&) {}
   void handle_decryption_share(const crypto::hash&, const crypto::public_key&, const rct::key&, const rct::key&) {}
   void handle_dao_v2_tally_share(const crypto::public_key&, const std::string&) {}
+  void handle_dao_v2_dkg_msg(const crypto::public_key&, const std::string&) {}
   bool get_node_pubkey(crypto::public_key&) const { return false; }
   void install_dao_v2_tally_broadcast() {}
+  void install_dao_v2_dkg_broadcast() {}
 };
 
 typedef nodetool::node_server<cryptonote::t_cryptonote_protocol_handler<test_core>> Server;

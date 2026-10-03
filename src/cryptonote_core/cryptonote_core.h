@@ -699,6 +699,12 @@ namespace cryptonote
        m_blockchain_storage.handle_dao_v2_tally_share(member, payload);
      }
 
+     void handle_dao_v2_dkg_msg(const crypto::public_key& member,
+                                const std::string& payload)
+     {
+       m_blockchain_storage.handle_dao_v2_dkg_msg(member, payload);
+     }
+
      // BEGIN_VNS_DAO_V2_TALLY_BROADCAST
      // This node's own public key, if one is set.
      bool get_node_pubkey(crypto::public_key& out) const
@@ -712,6 +718,18 @@ namespace cryptonote
 
      // Install the P2P broadcast callback onto the blockchain's tally
      // engine. Called from init() after the protocol handler is wired.
+     // Install the P2P send callback onto the DKG runner. Called from
+     // init() after the protocol handler is wired.
+     void install_dao_v2_dkg_broadcast()
+     {
+       m_blockchain_storage.set_dao_v2_dkg_send(
+         [this](const std::string& payload) -> bool {
+           if (get_protocol())
+             return get_protocol()->relay_dao_v2_dkg_msg(payload);
+           return false;
+         });
+     }
+
      void install_dao_v2_tally_broadcast()
      {
        m_blockchain_storage.set_dao_v2_tally_broadcast(

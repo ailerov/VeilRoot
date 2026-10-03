@@ -261,6 +261,32 @@ namespace cryptonote
   };
   // END_VNS_DAO_V2_TALLY_SHARE
 
+  // BEGIN_VNS_DAO_V2_DKG_MSG
+  //
+  // P2P message carrying one DKG protocol message between two
+  // committee members. Directed to a specific peer (targeted messages)
+  // or broadcast to all connected peers (broadcast messages). Not a
+  // transaction, not block state, not user-submitted. Mirrors
+  // NOTIFY_DAO_V2_TALLY_SHARE.
+  struct NOTIFY_DAO_V2_DKG_MSG
+  {
+    const static int ID = BC_COMMANDS_POOL_BASE + 15;
+
+    struct request_t
+    {
+      crypto::public_key member;      // sender's identity
+      std::string        payload;     // serialized dao::dkg_msg
+
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE_VAL_POD_AS_BLOB(member)
+        KV_SERIALIZE(payload)
+      END_KV_SERIALIZE_MAP()
+    };
+
+    typedef epee::misc_utils::struct_init<request_t> request;
+  };
+  // END_VNS_DAO_V2_DKG_MSG
+
   // BEGIN_VNS_DECRYPTION_SHARE
   struct NOTIFY_DECRYPTION_SHARE
   {

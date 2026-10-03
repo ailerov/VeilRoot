@@ -928,6 +928,18 @@ namespace cryptonote
     m_core.handle_dao_v2_tally_share(arg.member, arg.payload);
     return 1;
   }
+  //------------------------------------------------------------------------------------------------------------------------
+  template<class t_core>
+  int t_cryptonote_protocol_handler<t_core>::handle_notify_dao_v2_dkg_msg(int command, NOTIFY_DAO_V2_DKG_MSG::request& arg, cryptonote_connection_context& context)
+  {
+    MLOG_P2P_MESSAGE("Received NOTIFY_DAO_V2_DKG_MSG from " << arg.member);
+    if (context.m_state != cryptonote_connection_context::state_normal)
+      return 1;
+    m_core.handle_dao_v2_dkg_msg(arg.member, arg.payload);
+    return 1;
+  }
+  //------------------------------------------------------------------------------------------------------------------------
+
   // END_VNS_DKG
 
   //------------------------------------------------------------------------------------------------------------------------
@@ -2766,6 +2778,50 @@ skip:
     return true;
   }
   // END_VNS_DAO_V2_TALLY_BROADCAST
+
+  //------------------------------------------------------------------------------------------------------------------------
+  // Broadcast a DKG message to every connected peer. The message
+  // header carries the target recipient id; receivers ignore messages
+  // not addressed to them.
+  template<class t_core>
+  bool t_cryptonote_protocol_handler<t_core>::relay_dao_v2_dkg_msg(const std::string& payload)
+  {
+    NOTIFY_DAO_V2_DKG_MSG::request req{};
+    req.payload = payload;
+
+    crypto::public_key self_pk{};
+    if (!m_core.get_node_pubkey(self_pk))
+    {
+      MERROR("relay_dao_v2_dkg_msg: node public key unavailable");
+      return false;
+    }
+    req.member = self_pk;
+
+    std::vector<std::pair<epee::net_utils::zone, boost::uuids::uuid>> peers;
+    m_p2p->for_each_connection([&peers](connection_context& c,
+                                         nodetool::peerid_type peer_id,
+                                         uint32_t) -> bool {
+      if (peer_id)
+        peers.push_back({c.m_remote_address.get_zone(), c.m_connection_id});
+      return true;
+    });
+    if (peers.empty())
+    {
+      MDEBUG("relay_dao_v2_dkg_msg: no peers connected");
+      return true;
+    }
+
+    epee::levin::message_writer writer{256 * 1024};
+    epee::serialization::store_t_to_binary(req, writer.buffer);
+    m_p2p->relay_notify_to_list(NOTIFY_DAO_V2_DKG_MSG::ID,
+                                std::move(writer), std::move(peers));
+    return true;
+  }
+
+  //------------------------------------------------------------------------------------------------------------------------
+  // Relay a DKG message. Targeted when `recipient` is nonzero; that
+  // peer is looked up by connection context and the message is
+  // delivered only to it. Broadcast when `recipient` is the zero key.
   //------------------------------------------------------------------------------------------------------------------------
   template<class t_core>
   bool t_cryptonote_protocol_handler<t_core>::request_txpool_complement(cryptonote_connection_context &context)

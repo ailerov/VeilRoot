@@ -704,6 +704,7 @@ public:
     bool finished() const;
     uint32_t epoch() const;
     uint32_t local_party_id() const;
+    const dkg_config* config() const;
 
 private:
     struct impl;
