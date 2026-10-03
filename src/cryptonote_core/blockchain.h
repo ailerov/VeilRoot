@@ -1367,7 +1367,9 @@ namespace cryptonote
   // this epoch is already running.
   bool start_dao_v2_dkg(uint32_t epoch,
                         const std::vector<crypto::public_key>& committee,
-                        const dao::dao_vss_group& vss);
+                        const dao::dao_vss_group& vss,
+                        uint32_t target_N_bits,
+                        uint32_t qproof_rounds);
 
   // Extracted worker. Performs the committee check, derives local
   // party id, builds cfg and callbacks, spawns the runner, and stores
@@ -1375,7 +1377,9 @@ namespace cryptonote
   bool start_dao_v2_dkg_for_committee(
       uint32_t epoch,
       const std::vector<crypto::public_key>& committee,
-      const dao::dao_vss_group& vss);
+      const dao::dao_vss_group& vss,
+      uint32_t target_N_bits,
+      uint32_t qproof_rounds);
 
   // Called from the DKG watcher thread when a ceremony finishes.
   // Enqueues the result; the DB write happens on the blockchain owner
@@ -1666,6 +1670,11 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     // BEGIN_VNS_DAO_V2_DKG
     std::map<uint32_t, std::unique_ptr<dao::dkg_p2p_runner>>
         m_dao_v2_dkg_runners;
+    // VSS groups are owned here for the lifetime of the runner. The
+    // runner holds a raw pointer to the group, so the group must
+    // outlive it.
+    std::map<uint32_t, std::unique_ptr<dao::dao_vss_group>>
+        m_dao_v2_dkg_vss;
     std::map<uint32_t, std::thread>
         m_dao_v2_dkg_watchers;
     std::function<bool(const std::string&)>

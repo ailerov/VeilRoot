@@ -146,9 +146,13 @@ Blockchain::Blockchain(tx_memory_pool& tx_pool) :
 Blockchain::~Blockchain()
 {
     // BEGIN_VNS_DAO_V2_DKG
+    // Stop runners first, then watchers, then drop the VSS groups
+    // they reference. Order matters: the runner holds a raw pointer
+    // to the VSS group.
     for (auto& kv : m_dao_v2_dkg_runners) if (kv.second) kv.second->stop();
     for (auto& kv : m_dao_v2_dkg_watchers)
         if (kv.second.joinable()) kv.second.join();
+    m_dao_v2_dkg_vss.clear();
     // END_VNS_DAO_V2_DKG
 
   // Defensive: if a caller destroyed Blockchain without calling deinit(),
@@ -8646,19 +8650,34 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     // named group and derives h from a canonical tuple of the group
     // parameters, so every node derives the same group for the same
     // epoch.
+#ifdef VEILROOT_DAO_DKG_TESTING
+    const uint32_t target_N_bits = 128;
+    const uint32_t qproof_rounds = dao::DAO_DKG_QPROOF_ROUNDS_TEST;
+#else
+    const uint32_t target_N_bits = dao::DAO_DKG_TARGET_N_BITS_PROD;
+    const uint32_t qproof_rounds = dao::DAO_DKG_QPROOF_ROUNDS_PROD;
+#endif
+
     const uint32_t required_bits = dao::dao_dkg_required_vss_bits(
-        60, 2048, 32);
-    dao::dao_vss_group vss;
-    if (!dao::dao_vss_group_generate(vss, required_bits)) {
+        dao::DAO_DKG_K_BITS_PROD, target_N_bits,
+        dao::DAO_DKG_SECURITY_BITS_PROD);
+
+    // The runner stores a raw pointer to the VSS group, so the group
+    // must outlive the runner. Own it alongside the runner.
+    auto vss_holder = std::make_unique<dao::dao_vss_group>();
+    if (!dao::dao_vss_group_generate(*vss_holder, required_bits)) {
       MWARNING("bootstrap_dao_v2_dkg: VSS group generation failed");
       return false;
     }
 
-    if (!start_dao_v2_dkg(epoch, committee, vss)) {
+    if (!start_dao_v2_dkg(epoch, committee, *vss_holder,
+                          target_N_bits, qproof_rounds)) {
       // Not in committee is not an error.
       MINFO("bootstrap_dao_v2_dkg: runner not started for epoch " << epoch);
       return false;
     }
+
+    m_dao_v2_dkg_vss.emplace(epoch, std::move(vss_holder));
 
     // Watcher: waits for the runner to finish, then persists the
     // outcome. Runs on its own thread so the caller is not blocked.
@@ -8680,7 +8699,9 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     bool Blockchain::start_dao_v2_dkg_for_committee(
       uint32_t epoch,
       const std::vector<crypto::public_key>& committee,
-      const dao::dao_vss_group& vss)
+      const dao::dao_vss_group& vss,
+      uint32_t target_N_bits,
+      uint32_t qproof_rounds)
   {
     if (m_dao_v2_dkg_runners.count(epoch) > 0) {
       MWARNING("start_dao_v2_dkg: epoch " << epoch << " already running");
@@ -8717,6 +8738,10 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     cfg.epoch          = epoch;
     cfg.member_ids     = committee;
     cfg.local_party_id = local_id;
+    cfg.k              = dao::DAO_DKG_K_BITS_PROD;
+    cfg.target_N_bits  = target_N_bits;
+    cfg.security_bits  = dao::DAO_DKG_SECURITY_BITS_PROD;
+    cfg.qproof_rounds  = qproof_rounds;
 
     dao::dkg_p2p_callbacks cb;
     // The P2P layer has no public-key-to-connection mapping, so both
@@ -8747,9 +8772,12 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
   bool Blockchain::start_dao_v2_dkg(
       uint32_t epoch,
       const std::vector<crypto::public_key>& committee,
-      const dao::dao_vss_group& vss)
+      const dao::dao_vss_group& vss,
+      uint32_t target_N_bits,
+      uint32_t qproof_rounds)
   {
-    return start_dao_v2_dkg_for_committee(epoch, committee, vss);
+    return start_dao_v2_dkg_for_committee(epoch, committee, vss,
+                                          target_N_bits, qproof_rounds);
   }
   // END_VNS_DAO_V2_DKG
 

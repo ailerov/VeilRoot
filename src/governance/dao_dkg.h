@@ -89,6 +89,14 @@ constexpr uint32_t DAO_DKG_TRIAL_DIVISION_REPS = 64;
 constexpr uint32_t DAO_DKG_QPROOF_ROUNDS_PROD = 128;
 constexpr uint32_t DAO_DKG_QPROOF_ROUNDS_TEST = 32;
 
+// Production cryptographic parameters for the DKG ceremony.
+// These values are frozen by the V2 implementation spec (N = 2048,
+// Paillier ciphertext 512 bytes). Test builds use a reduced modulus
+// so the ceremony runs at unit-test scale.
+constexpr uint32_t DAO_DKG_K_BITS_PROD        = 60;
+constexpr uint32_t DAO_DKG_TARGET_N_BITS_PROD = 2048;
+constexpr uint32_t DAO_DKG_SECURITY_BITS_PROD = 32;
+
 // Delta = 16!, process-lifetime singleton.
 const BIGNUM* dao_dkg_delta();
 
