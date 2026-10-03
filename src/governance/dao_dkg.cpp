@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <deque>
 #include <functional>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <queue>
@@ -5884,6 +5885,370 @@ after_key_phase:
 // V derivation) are recomputed locally on every node from the same
 // broadcast message set.
 // ====================================================================
+
+namespace {
+
+constexpr char DAO_DKG_PRIVATE_MAGIC[4] = {'V','D','K','E'};
+constexpr uint8_t DAO_DKG_PRIVATE_VERSION = 1;
+constexpr const char* DAO_DKG_PRIVATE_DOMAIN =
+    "VeilRoot-DAO-DKG-PRIVATE-V1";
+
+constexpr size_t DAO_DKG_PRIVATE_NONCE_SIZE = 12;
+constexpr size_t DAO_DKG_PRIVATE_TAG_SIZE = 16;
+
+inline void dkg_private_push_u32(std::string& out, uint32_t v)
+{
+    out.push_back(static_cast<char>(v & 0xff));
+    out.push_back(static_cast<char>((v >> 8) & 0xff));
+    out.push_back(static_cast<char>((v >> 16) & 0xff));
+    out.push_back(static_cast<char>((v >> 24) & 0xff));
+}
+
+inline bool dkg_private_pull_u32(const std::string& in, size_t& off, uint32_t& v)
+{
+    if (off + 4 > in.size()) return false;
+    const auto b = [&](size_t n) -> uint32_t {
+        return static_cast<uint8_t>(in[off + n]);
+    };
+    v = b(0) | (b(1) << 8) | (b(2) << 16) | (b(3) << 24);
+    off += 4;
+    return true;
+}
+
+inline bool dkg_private_magic_ok(const std::string& payload)
+{
+    return payload.size() >= 5 &&
+           std::memcmp(payload.data(), DAO_DKG_PRIVATE_MAGIC, 4) == 0 &&
+           static_cast<uint8_t>(payload[4]) == DAO_DKG_PRIVATE_VERSION;
+}
+
+void dkg_private_make_aad(const crypto::public_key& sender_pub,
+                          const crypto::public_key& recipient_pub,
+                          const crypto::public_key& ephemeral_pub,
+                          std::string& aad)
+{
+    aad.clear();
+    aad.append(DAO_DKG_PRIVATE_MAGIC, sizeof(DAO_DKG_PRIVATE_MAGIC));
+    aad.push_back(static_cast<char>(DAO_DKG_PRIVATE_VERSION));
+    aad.append(reinterpret_cast<const char*>(sender_pub.data),
+               sizeof(sender_pub.data));
+    aad.append(reinterpret_cast<const char*>(recipient_pub.data),
+               sizeof(recipient_pub.data));
+    aad.append(reinterpret_cast<const char*>(ephemeral_pub.data),
+               sizeof(ephemeral_pub.data));
+}
+
+void dkg_private_derive_material(
+    const crypto::key_derivation& derivation,
+    const crypto::public_key& recipient_pub,
+    const crypto::public_key& ephemeral_pub,
+    std::vector<uint8_t>& material)
+{
+    material.clear();
+    const char* dom = DAO_DKG_PRIVATE_DOMAIN;
+    material.insert(material.end(), dom, dom + std::strlen(dom));
+    material.push_back(0);
+    material.insert(material.end(),
+                    reinterpret_cast<const uint8_t*>(&derivation),
+                    reinterpret_cast<const uint8_t*>(&derivation) +
+                        sizeof(derivation));
+    material.insert(material.end(),
+                    reinterpret_cast<const uint8_t*>(recipient_pub.data),
+                    reinterpret_cast<const uint8_t*>(recipient_pub.data) +
+                        sizeof(recipient_pub.data));
+    material.insert(material.end(),
+                    reinterpret_cast<const uint8_t*>(ephemeral_pub.data),
+                    reinterpret_cast<const uint8_t*>(ephemeral_pub.data) +
+                        sizeof(ephemeral_pub.data));
+}
+
+bool dkg_private_aes_gcm_encrypt(
+    const std::string& plaintext,
+    const crypto::hash& key_hash,
+    const std::string& aad,
+    const uint8_t* nonce,
+    std::string& ciphertext,
+    std::array<uint8_t, DAO_DKG_PRIVATE_TAG_SIZE>& tag)
+{
+    if (plaintext.size() >
+        static_cast<size_t>(std::numeric_limits<int>::max()))
+        return false;
+
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) return false;
+
+    bool ok = false;
+    do {
+        if (EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(),
+                               nullptr, nullptr, nullptr) != 1)
+            break;
+        if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN,
+                                DAO_DKG_PRIVATE_NONCE_SIZE, nullptr) != 1)
+            break;
+        if (EVP_EncryptInit_ex(ctx, nullptr, nullptr,
+                               reinterpret_cast<const unsigned char*>(&key_hash),
+                               nonce) != 1)
+            break;
+
+        int len = 0;
+        if (!aad.empty() &&
+            EVP_EncryptUpdate(ctx, nullptr, &len,
+                reinterpret_cast<const unsigned char*>(aad.data()),
+                static_cast<int>(aad.size())) != 1)
+            break;
+
+        ciphertext.resize(plaintext.size() + 16);
+        int out_len = 0;
+        if (!plaintext.empty() &&
+            EVP_EncryptUpdate(ctx,
+                reinterpret_cast<unsigned char*>(&ciphertext[0]),
+                &len,
+                reinterpret_cast<const unsigned char*>(plaintext.data()),
+                static_cast<int>(plaintext.size())) != 1)
+            break;
+
+        out_len = len;
+        if (EVP_EncryptFinal_ex(ctx,
+                reinterpret_cast<unsigned char*>(&ciphertext[0]) + out_len,
+                &len) != 1)
+            break;
+        out_len += len;
+        ciphertext.resize(static_cast<size_t>(out_len));
+
+        if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG,
+                                DAO_DKG_PRIVATE_TAG_SIZE, tag.data()) != 1)
+            break;
+        ok = true;
+    } while (false);
+
+    EVP_CIPHER_CTX_free(ctx);
+    return ok;
+}
+
+bool dkg_private_aes_gcm_decrypt(
+    const std::string& ciphertext,
+    const crypto::hash& key_hash,
+    const std::string& aad,
+    const uint8_t* nonce,
+    const uint8_t* tag,
+    std::string& plaintext)
+{
+    if (ciphertext.size() >
+        static_cast<size_t>(std::numeric_limits<int>::max()))
+        return false;
+
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) return false;
+
+    bool ok = false;
+    do {
+        if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(),
+                               nullptr, nullptr, nullptr) != 1)
+            break;
+        if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN,
+                                DAO_DKG_PRIVATE_NONCE_SIZE, nullptr) != 1)
+            break;
+        if (EVP_DecryptInit_ex(ctx, nullptr, nullptr,
+                               reinterpret_cast<const unsigned char*>(&key_hash),
+                               nonce) != 1)
+            break;
+
+        int len = 0;
+        if (!aad.empty() &&
+            EVP_DecryptUpdate(ctx, nullptr, &len,
+                reinterpret_cast<const unsigned char*>(aad.data()),
+                static_cast<int>(aad.size())) != 1)
+            break;
+
+        plaintext.resize(ciphertext.size() + 16);
+        int out_len = 0;
+        if (!ciphertext.empty() &&
+            EVP_DecryptUpdate(ctx,
+                reinterpret_cast<unsigned char*>(&plaintext[0]),
+                &len,
+                reinterpret_cast<const unsigned char*>(ciphertext.data()),
+                static_cast<int>(ciphertext.size())) != 1)
+            break;
+
+        out_len = len;
+        if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG,
+                                DAO_DKG_PRIVATE_TAG_SIZE,
+                                const_cast<uint8_t*>(tag)) != 1)
+            break;
+
+        if (EVP_DecryptFinal_ex(ctx,
+                reinterpret_cast<unsigned char*>(&plaintext[0]) + out_len,
+                &len) != 1) {
+            plaintext.clear();
+            break;
+        }
+
+        out_len += len;
+        plaintext.resize(static_cast<size_t>(out_len));
+        ok = true;
+    } while (false);
+
+    EVP_CIPHER_CTX_free(ctx);
+    return ok;
+}
+
+} // anonymous namespace
+
+bool encrypt_dkg_private_payload(
+    const std::string& plaintext,
+    const crypto::public_key& sender_pub,
+    const crypto::public_key& recipient_pub,
+    std::string& envelope)
+{
+    crypto::public_key ephemeral_pub;
+    crypto::secret_key ephemeral_priv;
+    crypto::generate_keys(ephemeral_pub, ephemeral_priv);
+
+    crypto::key_derivation derivation;
+    if (!crypto::generate_key_derivation(recipient_pub,
+                                         ephemeral_priv,
+                                         derivation))
+        return false;
+
+    std::vector<uint8_t> material;
+    dkg_private_derive_material(derivation, recipient_pub,
+                                ephemeral_pub, material);
+
+    crypto::hash key_hash;
+    crypto::cn_fast_hash(material.data(), material.size(), key_hash);
+
+    std::array<uint8_t, DAO_DKG_PRIVATE_NONCE_SIZE> nonce{};
+    crypto::generate_random_bytes_thread_safe(nonce.size(), nonce.data());
+
+    std::string aad;
+    dkg_private_make_aad(sender_pub, recipient_pub, ephemeral_pub, aad);
+
+    std::string ciphertext;
+    std::array<uint8_t, DAO_DKG_PRIVATE_TAG_SIZE> tag{};
+
+    if (!dkg_private_aes_gcm_encrypt(plaintext, key_hash, aad,
+                                     nonce.data(), ciphertext, tag))
+        return false;
+
+    if (ciphertext.size() > std::numeric_limits<uint32_t>::max())
+        return false;
+
+    envelope.clear();
+    envelope.reserve(4 + 1 +
+                     sizeof(recipient_pub.data) +
+                     sizeof(ephemeral_pub.data) +
+                     DAO_DKG_PRIVATE_NONCE_SIZE +
+                     4 + ciphertext.size() +
+                     DAO_DKG_PRIVATE_TAG_SIZE);
+
+    envelope.append(DAO_DKG_PRIVATE_MAGIC, sizeof(DAO_DKG_PRIVATE_MAGIC));
+    envelope.push_back(static_cast<char>(DAO_DKG_PRIVATE_VERSION));
+    envelope.append(reinterpret_cast<const char*>(recipient_pub.data),
+                    sizeof(recipient_pub.data));
+    envelope.append(reinterpret_cast<const char*>(ephemeral_pub.data),
+                    sizeof(ephemeral_pub.data));
+    envelope.append(reinterpret_cast<const char*>(nonce.data()),
+                    nonce.size());
+    dkg_private_push_u32(envelope,
+        static_cast<uint32_t>(ciphertext.size()));
+    envelope += ciphertext;
+    envelope.append(reinterpret_cast<const char*>(tag.data()),
+                    tag.size());
+    return true;
+}
+
+bool is_dkg_private_payload(const std::string& payload)
+{
+    return dkg_private_magic_ok(payload);
+}
+
+bool decrypt_dkg_private_payload(
+    const std::string& envelope,
+    const crypto::public_key& sender_pub,
+    const crypto::secret_key& recipient_priv,
+    std::string& plaintext)
+{
+    plaintext.clear();
+
+    if (!dkg_private_magic_ok(envelope))
+        return false;
+
+    const size_t min_size =
+        4 + 1 +
+        sizeof(crypto::public_key::data) +
+        sizeof(crypto::public_key::data) +
+        DAO_DKG_PRIVATE_NONCE_SIZE +
+        4 +
+        DAO_DKG_PRIVATE_TAG_SIZE;
+
+    if (envelope.size() < min_size)
+        return false;
+
+    size_t off = 0;
+    if (std::memcmp(envelope.data(), DAO_DKG_PRIVATE_MAGIC, 4) != 0)
+        return false;
+    off += 4;
+    if (static_cast<uint8_t>(envelope[off++]) != DAO_DKG_PRIVATE_VERSION)
+        return false;
+
+    crypto::public_key recipient_pub{};
+    std::memcpy(recipient_pub.data, envelope.data() + off,
+                sizeof(recipient_pub.data));
+    off += sizeof(recipient_pub.data);
+
+    crypto::public_key self_pub{};
+    if (!crypto::secret_key_to_public_key(recipient_priv, self_pub))
+        return false;
+    if (std::memcmp(self_pub.data, recipient_pub.data,
+                    sizeof(self_pub.data)) != 0)
+        return false;
+
+    crypto::public_key ephemeral_pub{};
+    std::memcpy(ephemeral_pub.data, envelope.data() + off,
+                sizeof(ephemeral_pub.data));
+    off += sizeof(ephemeral_pub.data);
+
+    if (!crypto::check_key(ephemeral_pub))
+        return false;
+
+    if (off + DAO_DKG_PRIVATE_NONCE_SIZE > envelope.size())
+        return false;
+    const uint8_t* nonce =
+        reinterpret_cast<const uint8_t*>(envelope.data() + off);
+    off += DAO_DKG_PRIVATE_NONCE_SIZE;
+
+    uint32_t ciphertext_size = 0;
+    if (!dkg_private_pull_u32(envelope, off, ciphertext_size))
+        return false;
+
+    const size_t needed = static_cast<size_t>(ciphertext_size) +
+                          DAO_DKG_PRIVATE_TAG_SIZE;
+    if (off + needed != envelope.size())
+        return false;
+
+    const std::string ciphertext = envelope.substr(off, ciphertext_size);
+    off += ciphertext_size;
+    const uint8_t* tag =
+        reinterpret_cast<const uint8_t*>(envelope.data() + off);
+
+    crypto::key_derivation derivation;
+    if (!crypto::generate_key_derivation(ephemeral_pub, recipient_priv,
+                                         derivation))
+        return false;
+
+    std::vector<uint8_t> material;
+    dkg_private_derive_material(derivation, recipient_pub,
+                                ephemeral_pub, material);
+
+    crypto::hash key_hash;
+    crypto::cn_fast_hash(material.data(), material.size(), key_hash);
+
+    std::string aad;
+    dkg_private_make_aad(sender_pub, recipient_pub, ephemeral_pub, aad);
+
+    return dkg_private_aes_gcm_decrypt(ciphertext, key_hash, aad,
+                                       nonce, tag, plaintext);
+}
 
 namespace {
 

@@ -682,6 +682,24 @@ struct dkg_p2p_callbacks
     std::function<void(const std::string&)>                            broadcast;
 };
 
+// End-to-end encryption for targeted DKG messages.
+// The outer P2P transport may broadcast the ciphertext to every peer;
+// only the committee member whose public key is embedded in the
+// envelope can decrypt it.
+bool encrypt_dkg_private_payload(
+    const std::string& plaintext,
+    const crypto::public_key& sender_pub,
+    const crypto::public_key& recipient_pub,
+    std::string& envelope);
+
+bool decrypt_dkg_private_payload(
+    const std::string& envelope,
+    const crypto::public_key& sender_pub,
+    const crypto::secret_key& recipient_priv,
+    std::string& plaintext);
+
+bool is_dkg_private_payload(const std::string& payload);
+
 class dkg_p2p_runner
 {
 public:
