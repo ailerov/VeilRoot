@@ -8530,9 +8530,23 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
   void Blockchain::handle_dao_v2_dkg_msg(const crypto::public_key& member,
                                          const std::string& payload)
   {
+    std::string plaintext;
+    const std::string* wire_payload = &payload;
+
+    if (dao::is_dkg_private_payload(payload)) {
+      if (!dao::decrypt_dkg_private_payload(payload, member,
+                                             m_node_privkey, plaintext)) {
+        MWARNING("V2 DKG msg: targeted private payload "
+                 "decryption failed");
+        return;
+      }
+      wire_payload = &plaintext;
+    }
+
     dao::dkg_msg m;
     {
-      std::vector<uint8_t> bytes(payload.begin(), payload.end());
+      std::vector<uint8_t> bytes(wire_payload->begin(),
+                                 wire_payload->end());
       if (!m.deserialize(bytes)) {
         MWARNING("V2 DKG msg: deserialize failed");
         return;
@@ -8744,12 +8758,25 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     cfg.qproof_rounds  = qproof_rounds;
 
     dao::dkg_p2p_callbacks cb;
-    // The P2P layer has no public-key-to-connection mapping, so both
-    // targeted and broadcast messages go out over the same relay. The
-    // receiver drops targeted messages not addressed to it.
-    cb.send_to = [this](const crypto::public_key&, const std::string& payload) {
+    // The P2P layer does not need a public-key-to-connection mapping.
+    // Targeted DKG messages are encrypted to the recipient public key
+    // before entering the ordinary broadcast relay.
+    const crypto::public_key sender_pk = self_pk;
+
+    cb.send_to =
+        [this, sender_pk](const crypto::public_key& recipient_pk,
+                          const std::string& payload) -> bool
+    {
       if (!m_dao_v2_dkg_send) return false;
-      return m_dao_v2_dkg_send(payload);
+
+      std::string encrypted;
+      if (!dao::encrypt_dkg_private_payload(
+              payload, sender_pk, recipient_pk, encrypted)) {
+        MWARNING("start_dao_v2_dkg: failed to encrypt targeted "
+                 "private DKG message");
+        return false;
+      }
+      return m_dao_v2_dkg_send(encrypted);
     };
     cb.broadcast = [this](const std::string& payload) {
       if (m_dao_v2_dkg_send) (void)m_dao_v2_dkg_send(payload);
