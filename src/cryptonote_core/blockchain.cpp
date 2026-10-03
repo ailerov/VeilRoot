@@ -145,6 +145,12 @@ Blockchain::Blockchain(tx_memory_pool& tx_pool) :
 //------------------------------------------------------------------
 Blockchain::~Blockchain()
 {
+    // BEGIN_VNS_DAO_V2_DKG
+    for (auto& kv : m_dao_v2_dkg_runners) if (kv.second) kv.second->stop();
+    for (auto& kv : m_dao_v2_dkg_watchers)
+        if (kv.second.joinable()) kv.second.join();
+    // END_VNS_DAO_V2_DKG
+
   // Defensive: if a caller destroyed Blockchain without calling deinit(),
   // join the Nostr worker before anything else is torn down. stop_nostr_fetcher()
   // is idempotent and noexcept, so this is safe even when deinit() also ran.
@@ -8496,7 +8502,96 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     it->second->on_message(m);
   }
 
-  bool Blockchain::start_dao_v2_dkg(
+  bool Blockchain::bootstrap_dao_v2_dkg(uint32_t epoch)
+  {
+    if (m_dao_v2_dkg_runners.count(epoch) > 0)
+      return true;   // already running
+
+    rebuild_committee_eligible_list();
+
+    if (m_committee_eligible_sorted.empty()) {
+      MWARNING("bootstrap_dao_v2_dkg: no eligible nodes");
+      return false;
+    }
+
+    const size_t max_n =
+        std::min<size_t>(m_committee_eligible_sorted.size(),
+                         dao::DAO_DKG_MAX_COMMITTEE_SIZE);
+    if (max_n < dao::DAO_DKG_MIN_COMMITTEE_SIZE) {
+      MWARNING("bootstrap_dao_v2_dkg: not enough eligible nodes");
+      return false;
+    }
+
+    std::vector<crypto::public_key> committee;
+    committee.reserve(max_n);
+    for (size_t i = 0; i < max_n; ++i)
+      committee.push_back(m_committee_eligible_sorted[i].first);
+
+    // Deterministic VSS group. In production this selects an FFDHE
+    // named group and derives h from a canonical tuple of the group
+    // parameters, so every node derives the same group for the same
+    // epoch.
+    const uint32_t required_bits = dao::dao_dkg_required_vss_bits(
+        60, 2048, 32);
+    dao::dao_vss_group vss;
+    if (!dao::dao_vss_group_generate(vss, required_bits)) {
+      MWARNING("bootstrap_dao_v2_dkg: VSS group generation failed");
+      return false;
+    }
+
+    if (!start_dao_v2_dkg(epoch, committee, vss)) {
+      // Not in committee is not an error.
+      MINFO("bootstrap_dao_v2_dkg: runner not started for epoch " << epoch);
+      return false;
+    }
+
+    // Watcher: waits for the runner to finish, then persists the
+    // outcome. Runs on its own thread so the caller is not blocked.
+    auto* self = this;
+    m_dao_v2_dkg_watchers.emplace(epoch, std::thread([self, epoch]() {
+      auto it = self->m_dao_v2_dkg_runners.find(epoch);
+      if (it == self->m_dao_v2_dkg_runners.end()) return;
+      dao::dkg_result res;
+      if (!it->second->wait(res, 0)) {
+        MWARNING("DAO V2 DKG epoch " << epoch << ": ceremony failed");
+        return;
+      }
+      if (!res.ok) {
+        MWARNING("DAO V2 DKG epoch " << epoch << ": not ok");
+        return;
+      }
+
+      // Persist the local secret share under this node's committee
+      // index.
+      const auto* cfg = it->second->config();
+      if (!cfg) return;
+      const uint32_t local_id = it->second->local_party_id();
+      if (local_id >= 1 && !res.local_secret_share.empty()) {
+        try {
+          self->m_db->add_dao_local_share(epoch, local_id,
+                                          res.local_secret_share);
+        } catch (const std::exception& e) {
+          MWARNING("DAO V2 DKG epoch " << epoch
+                   << ": local share persist failed: " << e.what());
+        }
+      }
+
+      try {
+        self->m_db->add_dao_tally_key(epoch, res.record);
+      } catch (const std::exception& e) {
+        MWARNING("DAO V2 DKG epoch " << epoch
+                 << ": tally key persist failed: " << e.what());
+        return;
+      }
+
+      MINFO("DAO V2 DKG epoch " << epoch
+            << ": key record persisted");
+    }));
+
+    return true;
+  }
+
+    bool Blockchain::start_dao_v2_dkg(
       uint32_t epoch,
       const std::vector<crypto::public_key>& committee,
       const dao::dao_vss_group& vss)

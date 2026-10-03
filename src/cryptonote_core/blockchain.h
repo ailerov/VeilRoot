@@ -1355,6 +1355,13 @@ namespace cryptonote
   void handle_dao_v2_dkg_msg(const crypto::public_key& member,
                              const std::string& payload);
 
+  // Bootstrap entry point. Selects the current committee (top-N
+  // eligible nodes by stake-age weight), derives the epoch VSS group
+  // deterministically, spawns the runner, and starts a watcher that
+  // persists the outcome when the ceremony finishes. Idempotent per
+  // epoch: calling with an already-running epoch is a no-op.
+  bool bootstrap_dao_v2_dkg(uint32_t epoch);
+
   // Producer side. Called once from the bootstrap path. Spawns the
   // runner for the current epoch and committee. Fails if a runner for
   // this epoch is already running.
@@ -1642,6 +1649,8 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     // BEGIN_VNS_DAO_V2_DKG
     std::map<uint32_t, std::unique_ptr<dao::dkg_p2p_runner>>
         m_dao_v2_dkg_runners;
+    std::map<uint32_t, std::thread>
+        m_dao_v2_dkg_watchers;
     std::function<bool(const std::string&)>
         m_dao_v2_dkg_send;
     // END_VNS_DAO_V2_DKG
