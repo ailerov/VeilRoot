@@ -1369,6 +1369,14 @@ namespace cryptonote
                         const std::vector<crypto::public_key>& committee,
                         const dao::dao_vss_group& vss);
 
+  // Extracted worker. Performs the committee check, derives local
+  // party id, builds cfg and callbacks, spawns the runner, and stores
+  // it. `start_dao_v2_dkg` is a thin forwarder.
+  bool start_dao_v2_dkg_for_committee(
+      uint32_t epoch,
+      const std::vector<crypto::public_key>& committee,
+      const dao::dao_vss_group& vss);
+
   // Installed by the protocol handler. Called when the runner needs
   // to send a DKG message; the handler broadcasts to peers, and the
   // receiver filters by the recipient id in the payload header.
@@ -2066,4 +2074,23 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
      */
     void send_miner_notifications(uint64_t height, const crypto::hash &seed_hash, const crypto::hash &prev_id, uint64_t already_generated_coins);
   };
+
+  // Free function declarations for the extracted DKG bootstrap pieces.
+  // These operate on BlockchainDB directly so they can be unit-tested
+  // without constructing a full Blockchain.
+  namespace dao {
+
+  // Group eligible records by node public key, sum stake-age weight,
+  // sort by weight descending with a deterministic tie-break on the
+  // public key, and return the top `max_committee_size` entries.
+  std::vector<std::pair<crypto::public_key, uint64_t>>
+  select_dao_v2_committee(BlockchainDB& db, uint32_t max_committee_size);
+
+  // Wait for a running DKG runner to finish and persist the resulting
+  // public key record and this node's local secret share to `db`.
+  bool persist_dao_v2_dkg_result(BlockchainDB& db,
+                                 uint32_t epoch,
+                                 dkg_p2p_runner& runner);
+
+  } // namespace dao
 }  // namespace cryptonote

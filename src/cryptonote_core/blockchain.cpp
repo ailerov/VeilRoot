@@ -8338,10 +8338,72 @@ uint64_t Blockchain::get_total_stake_age_weighted_supply(uint64_t height) const
 }
 // END_VNS_STAKE_AGE
 // BEGIN_VNS_ELIGIBLE
+namespace dao {
+
+std::vector<std::pair<crypto::public_key, uint64_t>>
+select_dao_v2_committee(BlockchainDB& db, uint32_t max_committee_size)
+{
+  std::unordered_map<crypto::key_image, committee_eligible_record> rows;
+  db.for_all_committee_eligible(
+      [&rows](const crypto::key_image& ki,
+              const committee_eligible_record& rec) {
+        rows[ki] = rec;
+        return true;
+      });
+
+  std::unordered_map<crypto::public_key, uint64_t> node_weights;
+  for (const auto& [ki, rec] : rows)
+    node_weights[rec.node_pubkey] += rec.stake_age_weight;
+
+  std::vector<std::pair<crypto::public_key, uint64_t>> sorted(
+      node_weights.begin(), node_weights.end());
+
+  std::sort(sorted.begin(), sorted.end(),
+      [](const auto& a, const auto& b) {
+        if (a.second != b.second) return a.second > b.second;
+        return std::memcmp(a.first.data, b.first.data,
+                           sizeof(a.first.data)) < 0;
+      });
+
+  const size_t max =
+      std::min<size_t>(sorted.size(), max_committee_size);
+  sorted.resize(max);
+  return sorted;
+}
+
+bool persist_dao_v2_dkg_result(BlockchainDB& db,
+                               uint32_t epoch,
+                               dkg_p2p_runner& runner)
+{
+  dkg_result res;
+  if (!runner.wait(res, 0)) return false;
+  if (!res.ok) return false;
+
+  const uint32_t local_id = runner.local_party_id();
+  if (local_id >= 1 && !res.local_secret_share.empty()) {
+    try {
+      db.add_dao_local_share(epoch, local_id, res.local_secret_share);
+    } catch (const std::exception& e) {
+      MERROR("persist_dao_v2_dkg_result: local share persist failed: "
+             << e.what());
+    }
+  }
+
+  try {
+    db.add_dao_tally_key(epoch, res.record);
+  } catch (const std::exception& e) {
+    MERROR("persist_dao_v2_dkg_result: tally key persist failed: "
+           << e.what());
+    return false;
+  }
+  return true;
+}
+
+} // namespace dao
+
 void Blockchain::rebuild_committee_eligible_list()
 {
   m_committee_eligible.clear();
-  m_committee_eligible_sorted.clear();
 
   m_db->for_all_committee_eligible(
     [this](const crypto::key_image& ki, const committee_eligible_record& rec) {
@@ -8349,23 +8411,8 @@ void Blockchain::rebuild_committee_eligible_list()
       return true;
     });
 
-  std::unordered_map<crypto::public_key, uint64_t> node_weights;
-  for (const auto& [ki, rec] : m_committee_eligible)
-    node_weights[rec.node_pubkey] += rec.stake_age_weight;
-
-  m_committee_eligible_sorted.assign(node_weights.begin(), node_weights.end());
-  std::sort(m_committee_eligible_sorted.begin(), m_committee_eligible_sorted.end(),
-            [](const auto& a, const auto& b) {
-              if (a.second != b.second) return a.second > b.second;
-              // Deterministic tie-break: the committee order is part of
-              // the DKG key identity, so every node must produce the
-              // same ordering when stake-age weights are equal.
-              return std::memcmp(a.first.data, b.first.data,
-                                 sizeof(a.first.data)) < 0;
-            });
-
-  size_t max = std::min<size_t>(m_committee_eligible_sorted.size(), m_governance_params.tally_committee_size);
-  m_committee_eligible_sorted.resize(max);
+  m_committee_eligible_sorted = dao::select_dao_v2_committee(
+      *m_db, m_governance_params.tally_committee_size);
 }
 // END_VNS_ELIGIBLE
 // BEGIN_VNS_DKG
@@ -8558,47 +8605,17 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     m_dao_v2_dkg_watchers.emplace(epoch, std::thread([self, epoch]() {
       auto it = self->m_dao_v2_dkg_runners.find(epoch);
       if (it == self->m_dao_v2_dkg_runners.end()) return;
-      dao::dkg_result res;
-      if (!it->second->wait(res, 0)) {
-        MWARNING("DAO V2 DKG epoch " << epoch << ": ceremony failed");
-        return;
-      }
-      if (!res.ok) {
-        MWARNING("DAO V2 DKG epoch " << epoch << ": not ok");
-        return;
-      }
-
-      // Persist the local secret share under this node's committee
-      // index.
-      const auto* cfg = it->second->config();
-      if (!cfg) return;
-      const uint32_t local_id = it->second->local_party_id();
-      if (local_id >= 1 && !res.local_secret_share.empty()) {
-        try {
-          self->m_db->add_dao_local_share(epoch, local_id,
-                                          res.local_secret_share);
-        } catch (const std::exception& e) {
-          MWARNING("DAO V2 DKG epoch " << epoch
-                   << ": local share persist failed: " << e.what());
-        }
-      }
-
-      try {
-        self->m_db->add_dao_tally_key(epoch, res.record);
-      } catch (const std::exception& e) {
+      if (!dao::persist_dao_v2_dkg_result(*self->m_db, epoch,
+                                           *it->second)) {
         MWARNING("DAO V2 DKG epoch " << epoch
-                 << ": tally key persist failed: " << e.what());
-        return;
+                 << ": persistence failed");
       }
-
-      MINFO("DAO V2 DKG epoch " << epoch
-            << ": key record persisted");
     }));
 
     return true;
   }
 
-    bool Blockchain::start_dao_v2_dkg(
+    bool Blockchain::start_dao_v2_dkg_for_committee(
       uint32_t epoch,
       const std::vector<crypto::public_key>& committee,
       const dao::dao_vss_group& vss)
@@ -8662,6 +8679,14 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
           << " t=" << threshold
           << " local_id=" << local_id);
     return true;
+  }
+
+  bool Blockchain::start_dao_v2_dkg(
+      uint32_t epoch,
+      const std::vector<crypto::public_key>& committee,
+      const dao::dao_vss_group& vss)
+  {
+    return start_dao_v2_dkg_for_committee(epoch, committee, vss);
   }
   // END_VNS_DAO_V2_DKG
 
