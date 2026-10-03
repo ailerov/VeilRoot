@@ -8560,6 +8560,14 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       return;
     }
 
+    // Targeted messages: only the addressed committee member may
+    // process them. Broadcast (recipient_id == 0) is accepted by every
+    // committee member for this epoch.
+    if (m.hdr.recipient_id != 0 &&
+        m.hdr.recipient_id != runner_cfg->local_party_id) {
+      return;
+    }
+
     it->second->on_message(m);
   }
 
@@ -8711,11 +8719,12 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     cfg.local_party_id = local_id;
 
     dao::dkg_p2p_callbacks cb;
-    cb.send_to = [](const crypto::public_key&, const std::string&) {
-      // The distributed runner broadcasts every message; per-target
-      // filtering happens on the receive side via header.recipient_id.
-      // We do not attempt peer-addressed delivery here.
-      return false;
+    // The P2P layer has no public-key-to-connection mapping, so both
+    // targeted and broadcast messages go out over the same relay. The
+    // receiver drops targeted messages not addressed to it.
+    cb.send_to = [this](const crypto::public_key&, const std::string& payload) {
+      if (!m_dao_v2_dkg_send) return false;
+      return m_dao_v2_dkg_send(payload);
     };
     cb.broadcast = [this](const std::string& payload) {
       if (m_dao_v2_dkg_send) (void)m_dao_v2_dkg_send(payload);
