@@ -880,3 +880,86 @@ TEST(dao_dkg, transcript_hash_duplicates_collapse)
 
     EXPECT_EQ(h_single, h_many);
 }
+
+// ================= DKG private-payload envelope =================
+
+TEST(DaoDkgPrivateEnvelope, RoundTrip)
+{
+    crypto::public_key sender_pub;
+    crypto::secret_key sender_priv;
+    crypto::generate_keys(sender_pub, sender_priv);
+
+    crypto::public_key recipient_pub;
+    crypto::secret_key recipient_priv;
+    crypto::generate_keys(recipient_pub, recipient_priv);
+
+    const std::string plain = "VeilRoot-DAO-DKG-private-test";
+
+    std::string envelope;
+    ASSERT_TRUE(encrypt_dkg_private_payload(plain, sender_pub,
+                                            recipient_pub, envelope));
+    ASSERT_TRUE(is_dkg_private_payload(envelope));
+
+    std::string recovered;
+    ASSERT_TRUE(decrypt_dkg_private_payload(envelope, sender_pub,
+                                            recipient_priv, recovered));
+    EXPECT_EQ(plain, recovered);
+}
+
+TEST(DaoDkgPrivateEnvelope, WrongRecipientCannotDecrypt)
+{
+    crypto::public_key sender_pub, recipient_pub, wrong_pub;
+    crypto::secret_key sender_priv, recipient_priv, wrong_priv;
+    crypto::generate_keys(sender_pub, sender_priv);
+    crypto::generate_keys(recipient_pub, recipient_priv);
+    crypto::generate_keys(wrong_pub, wrong_priv);
+
+    std::string envelope;
+    ASSERT_TRUE(encrypt_dkg_private_payload("secret", sender_pub,
+                                            recipient_pub, envelope));
+
+    std::string recovered;
+    EXPECT_FALSE(decrypt_dkg_private_payload(envelope, sender_pub,
+                                             wrong_priv, recovered));
+}
+
+TEST(DaoDkgPrivateEnvelope, TamperFailsAuthentication)
+{
+    crypto::public_key sender_pub, recipient_pub;
+    crypto::secret_key sender_priv, recipient_priv;
+    crypto::generate_keys(sender_pub, sender_priv);
+    crypto::generate_keys(recipient_pub, recipient_priv);
+
+    std::string envelope;
+    ASSERT_TRUE(encrypt_dkg_private_payload("secret", sender_pub,
+                                            recipient_pub, envelope));
+    ASSERT_GT(envelope.size(), 1u);
+    envelope.back() ^= 0x01;
+
+    std::string recovered;
+    EXPECT_FALSE(decrypt_dkg_private_payload(envelope, sender_pub,
+                                             recipient_priv, recovered));
+}
+
+TEST(DaoDkgPrivateEnvelope, OuterSenderBindingFails)
+{
+    crypto::public_key sender_pub, other_sender_pub, recipient_pub;
+    crypto::secret_key sender_priv, other_sender_priv, recipient_priv;
+    crypto::generate_keys(sender_pub, sender_priv);
+    crypto::generate_keys(other_sender_pub, other_sender_priv);
+    crypto::generate_keys(recipient_pub, recipient_priv);
+
+    std::string envelope;
+    ASSERT_TRUE(encrypt_dkg_private_payload("secret", sender_pub,
+                                            recipient_pub, envelope));
+
+    std::string recovered;
+    EXPECT_FALSE(decrypt_dkg_private_payload(envelope, other_sender_pub,
+                                             recipient_priv, recovered));
+}
+
+TEST(DaoDkgPrivateEnvelope, PlainMessageIsNotEnvelope)
+{
+    const std::string plain = "not-an-envelope";
+    EXPECT_FALSE(is_dkg_private_payload(plain));
+}
