@@ -199,6 +199,9 @@ namespace cryptonote
         MAP_JON_RPC_WE("get_governance_params",  on_get_governance_params,    COMMAND_RPC_GET_GOVERNANCE_PARAMS)
         MAP_JON_RPC_WE("get_proposals",          on_get_proposals,            COMMAND_RPC_GET_PROPOSALS)
         MAP_JON_RPC_WE("get_proposal",           on_get_proposal,             COMMAND_RPC_GET_PROPOSAL)
+        MAP_JON_RPC_WE("get_committee",          on_get_committee,            COMMAND_RPC_GET_COMMITTEE)
+        MAP_JON_RPC_WE("get_committee_key",      on_get_committee_key,        COMMAND_RPC_GET_COMMITTEE_KEY)
+        MAP_JON_RPC_WE("get_dao_tally_key",      on_get_dao_tally_key,        COMMAND_RPC_GET_DAO_TALLY_KEY)
 
         // All write/state-changing VNS methods are denied in restricted mode.
         MAP_JON_RPC_WE_IF("submit_heartbeat",       on_submit_heartbeat,           COMMAND_RPC_SUBMIT_HEARTBEAT, !m_restricted)
@@ -308,6 +311,7 @@ namespace cryptonote
     bool on_get_proposal(const COMMAND_RPC_GET_PROPOSAL::request& req, COMMAND_RPC_GET_PROPOSAL::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx = NULL);
     bool on_submit_vote(const COMMAND_RPC_SUBMIT_VOTE::request& req, COMMAND_RPC_SUBMIT_VOTE::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx = NULL);
     bool on_get_committee_key(const COMMAND_RPC_GET_COMMITTEE_KEY::request& req, COMMAND_RPC_GET_COMMITTEE_KEY::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx = NULL);
+    bool on_get_dao_tally_key(const COMMAND_RPC_GET_DAO_TALLY_KEY::request& req, COMMAND_RPC_GET_DAO_TALLY_KEY::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx = NULL);
     // ---------- VNS ADDITION END ----------
     //-----------------------
 

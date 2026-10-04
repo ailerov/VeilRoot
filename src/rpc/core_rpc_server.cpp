@@ -4743,6 +4743,45 @@ bool core_rpc_server::on_publish_service_descriptor(const COMMAND_RPC_PUBLISH_SE
     }
     return true;
   }
+
+
+  //------------------------------------------------------------------------------------------------------------------------
+  bool core_rpc_server::on_get_dao_tally_key(const COMMAND_RPC_GET_DAO_TALLY_KEY::request& req, COMMAND_RPC_GET_DAO_TALLY_KEY::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx)
+  {
+    RPC_TRACKER(get_dao_tally_key);
+
+    if (req.epoch == 0)
+    {
+      error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
+      error_resp.message = "epoch must be non-zero";
+      return false;
+    }
+
+    dao::dao_tally_key_record rec;
+    if (!m_core.get_blockchain_storage().get_db().get_dao_tally_key(req.epoch, rec))
+    {
+      res.status = CORE_RPC_STATUS_OK;
+      return true;
+    }
+
+    if (rec.N.size() != 256 || rec.key_id.size() != 32)
+    {
+      error_resp.code = CORE_RPC_ERROR_CODE_INTERNAL_ERROR;
+      error_resp.message = "tally key record malformed";
+      return false;
+    }
+
+    res.version = rec.version;
+    res.epoch   = rec.epoch;
+    res.key_id  = epee::string_tools::buff_to_hex_nodelimer(
+        std::string(rec.key_id.begin(), rec.key_id.end()));
+    res.modulus = epee::string_tools::buff_to_hex_nodelimer(
+        std::string(rec.N.begin(), rec.N.end()));
+    return true;
+  }
+
+
+  //------------------------------------------------------------------------------------------------------------------------
   // BEGIN_VNS_GET_PROPOSALS
   bool core_rpc_server::on_get_proposals(const COMMAND_RPC_GET_PROPOSALS::request& req, COMMAND_RPC_GET_PROPOSALS::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx)
  {
@@ -4909,6 +4948,8 @@ bool core_rpc_server::on_publish_service_descriptor(const COMMAND_RPC_PUBLISH_SE
   res.submission_height = rec.submission_height;
   res.voting_end_height = rec.voting_end_height;
   res.submission_tx_hash = epee::string_tools::pod_to_hex(rec.submission_tx_hash);
+  res.tally_key_epoch = rec.tally_key_epoch;
+  res.tally_key_epoch = rec.tally_key_epoch;
 
   // BEGIN_VNS_GET_PROPOSAL_DATA_BLOB
   res.data_blob.clear();
