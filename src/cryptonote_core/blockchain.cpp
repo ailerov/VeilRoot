@@ -8746,6 +8746,23 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
         continue;
       }
 
+      // Activate the epoch so subsequent proposals bind to it.
+      // Only advance forward: an out-of-order drain of an older
+      // epoch must not roll the current epoch back.
+      {
+        uint32_t current_epoch = 0;
+        const bool have_current =
+            m_db->get_current_dao_tally_key_epoch(current_epoch);
+        if (!have_current || item.epoch > current_epoch) {
+          try {
+            m_db->set_current_dao_tally_key_epoch(item.epoch);
+          } catch (const std::exception& e) {
+            MWARNING("DAO V2 DKG epoch " << item.epoch
+                     << ": failed to activate epoch: " << e.what());
+          }
+        }
+      }
+
       try {
         m_db->block_wtxn_stop();
       } catch (const std::exception& e) {
@@ -8755,7 +8772,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       }
 
       MINFO("DAO V2 DKG epoch " << item.epoch
-            << ": key record persisted");
+            << ": key record persisted and activated");
     }
     return true;
   }
