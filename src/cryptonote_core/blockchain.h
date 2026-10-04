@@ -1362,6 +1362,15 @@ namespace cryptonote
   // epoch: calling with an already-running epoch is a no-op.
   bool bootstrap_dao_v2_dkg(uint32_t epoch);
 
+  // Lifecycle hook called from the daemon idle loop. Bootstraps the
+  // current epoch's DKG once when the node has eligible records and
+  // no key record exists yet for the epoch. No-op otherwise.
+  void maybe_bootstrap_dao_v2_dkg();
+
+  // Lifecycle hook called from the daemon idle loop. Drains any
+  // results queued by the DKG watcher threads onto this owner thread.
+  void maybe_process_dao_v2_dkg_results();
+
   // Producer side. Called once from the bootstrap path. Spawns the
   // runner for the current epoch and committee. Fails if a runner for
   // this epoch is already running.

@@ -8589,7 +8589,42 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     it->second->on_message(m);
   }
 
-  void Blockchain::queue_dao_v2_dkg_result(uint32_t epoch,
+  void Blockchain::maybe_bootstrap_dao_v2_dkg()
+  {
+    // Only relevant when DAO V2 is active for this chain.
+    const uint64_t height = get_current_blockchain_height();
+    if (!config::dao_v2_active(height)) return;
+
+    const uint32_t epoch = 1;
+
+    // Already running or already persisted.
+    if (m_dao_v2_dkg_runners.count(epoch) > 0) return;
+
+    {
+      dao::dao_tally_key_record existing;
+      try {
+        if (m_db->get_dao_tally_key(epoch, existing)) return;
+      } catch (...) {
+        // Read failure is not fatal here; try to bootstrap next cycle.
+      }
+    }
+
+    // Refresh committee from eligible records.
+    rebuild_committee_eligible_list();
+    if (m_committee_eligible_sorted.size() <
+        dao::DAO_DKG_MIN_COMMITTEE_SIZE)
+      return;
+
+    // Not in committee is fine — other nodes will do it.
+    (void)bootstrap_dao_v2_dkg(epoch);
+  }
+
+  void Blockchain::maybe_process_dao_v2_dkg_results()
+  {
+    (void)process_pending_dao_v2_dkg_results();
+  }
+
+    void Blockchain::queue_dao_v2_dkg_result(uint32_t epoch,
                                           dao::dkg_result result)
   {
     std::lock_guard<std::mutex> lock(m_dao_v2_dkg_result_mutex);
@@ -8623,12 +8658,32 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
                  << ": invalid local share");
         continue;
       }
+      // Owner-thread persistence. Each result gets its own write
+      // transaction, mirroring update_domain_heartbeat.
+      try {
+        m_db->block_wtxn_start();
+      } catch (const std::exception& e) {
+        MWARNING("DAO V2 DKG epoch " << item.epoch
+                 << ": failed to start write txn: " << e.what());
+        continue;
+      }
+
       if (!dao::persist_dao_v2_dkg_result(*m_db, item.epoch,
                                           item.result, local_id)) {
+        try { m_db->block_wtxn_abort(); } catch (...) {}
         MWARNING("DAO V2 DKG epoch " << item.epoch
                  << ": persistence failed");
         continue;
       }
+
+      try {
+        m_db->block_wtxn_stop();
+      } catch (const std::exception& e) {
+        MWARNING("DAO V2 DKG epoch " << item.epoch
+                 << ": commit failed: " << e.what());
+        continue;
+      }
+
       MINFO("DAO V2 DKG epoch " << item.epoch
             << ": key record persisted");
     }
