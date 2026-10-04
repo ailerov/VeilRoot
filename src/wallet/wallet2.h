@@ -1311,6 +1311,14 @@ private:
         size_t fake_outputs_count,
         std::vector<dao_v2_ring_member> &ring,
         size_t &real_index);
+
+    // Build a DAO V2 vote transaction. Fetches the proposal and the
+    // epoch tally key, selects every eligible unlocked RCT output, and
+    // constructs a vote_proof_v2 over them. direction: 0 = YES, 1 = NO.
+    vote_tx_result create_vote_v2_tx(
+        const crypto::hash &proposal_id,
+        uint8_t direction,
+        uint32_t priority);
     // END_VNS_VOTE
 
     // -----

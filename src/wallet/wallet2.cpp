@@ -86,6 +86,7 @@ using namespace epee;
 #include "governance/parameter_update.h"
 #include "governance/governance_payload.h"
 #include "governance/proposal.h"
+#include "governance/dao_wallet_v2.h"
 #include "governance/dao_clsag.h"
 
 #include "int-util.h"
@@ -17340,6 +17341,222 @@ bool wallet2::get_dao_v2_ring(
   return real_index != SIZE_MAX;
 }
 //----------------------------------------------------------------------------------------------------
+
+
+//----------------------------------------------------------------------------------------------------
+// DAO V2 vote builder wrapper. Fetches proposal + tally key RPCs,
+// collects eligible outputs, then hands everything to
+// build_dao_v2_vote().
+//----------------------------------------------------------------------------------------------------
+wallet2::vote_tx_result wallet2::create_vote_v2_tx(
+    const crypto::hash &proposal_id,
+    uint8_t direction,
+    uint32_t /*priority*/)
+{
+  vote_tx_result result{};
+
+  if (direction > 1)
+  {
+    result.error = "Direction must be 0 (yes) or 1 (no)";
+    return result;
+  }
+
+  // ---- Chain height + proposal ----
+  uint64_t chain_height = 0;
+  {
+    boost::optional<std::string> err = m_node_rpc_proxy.get_height(chain_height);
+    if (err)
+    {
+      result.error = "Failed to fetch chain height";
+      return result;
+    }
+  }
+  const uint64_t vote_height = chain_height + 1;
+
+  COMMAND_RPC_GET_PROPOSAL::request prop_req = AUTO_VAL_INIT(prop_req);
+  COMMAND_RPC_GET_PROPOSAL::response prop_res = AUTO_VAL_INIT(prop_res);
+  prop_req.proposal_id = epee::string_tools::pod_to_hex(proposal_id);
+  {
+    const boost::lock_guard<boost::recursive_mutex> lock{m_daemon_rpc_mutex};
+    bool r = net_utils::invoke_http_json_rpc("/json_rpc", "get_proposal",
+        prop_req, prop_res, *m_http_client, rpc_timeout);
+    if (!r || prop_res.proposal_id.empty())
+    {
+      result.error = "Failed to fetch proposal";
+      return result;
+    }
+  }
+  if (prop_res.tally_key_epoch == 0)
+  {
+    result.error = "Proposal has no tally key epoch";
+    return result;
+  }
+  const uint32_t tally_epoch = prop_res.tally_key_epoch;
+  const uint64_t submission_height = prop_res.submission_height;
+
+  // ---- Tally key record ----
+  COMMAND_RPC_GET_DAO_TALLY_KEY::request tk_req = AUTO_VAL_INIT(tk_req);
+  COMMAND_RPC_GET_DAO_TALLY_KEY::response tk_res = AUTO_VAL_INIT(tk_res);
+  tk_req.epoch = tally_epoch;
+  {
+    const boost::lock_guard<boost::recursive_mutex> lock{m_daemon_rpc_mutex};
+    bool r = net_utils::invoke_http_json_rpc("/json_rpc", "get_dao_tally_key",
+        tk_req, tk_res, *m_http_client, rpc_timeout);
+    if (!r || tk_res.modulus.empty() || tk_res.key_id.empty())
+    {
+      result.error = "Failed to fetch tally key";
+      return result;
+    }
+  }
+  std::string modulus_str, key_id_str;
+  if (!epee::string_tools::parse_hexstr_to_binbuff(tk_res.modulus, modulus_str) ||
+      !epee::string_tools::parse_hexstr_to_binbuff(tk_res.key_id, key_id_str) ||
+      modulus_str.size() != 256 || key_id_str.size() != 32)
+  {
+    result.error = "Malformed tally key";
+    return result;
+  }
+  std::vector<uint8_t> modulus_bytes(modulus_str.begin(), modulus_str.end());
+  crypto::hash tally_key_id{};
+  std::memcpy(tally_key_id.data, key_id_str.data(), 32);
+
+  // ---- Select eligible transfers ----
+  std::vector<size_t> selected;
+  for (size_t i = 0; i < m_transfers.size(); ++i)
+  {
+    const auto &td = m_transfers[i];
+    if (td.m_spent || td.m_frozen) continue;
+    if (!td.is_rct()) continue;
+    if (td.amount() == 0) continue;
+    if (!is_transfer_unlocked(td)) continue;
+    if (td.m_block_height >= vote_height) continue;
+    selected.push_back(i);
+  }
+  if (selected.empty())
+  {
+    result.error = "No eligible unlocked outputs for V2 voting";
+    return result;
+  }
+
+  const size_t ring_size = get_min_ring_size();
+  if (ring_size < 2)
+  {
+    result.error = "Ring size too small";
+    return result;
+  }
+
+  // ---- Build the sources vector ----
+  std::vector<dao::dao_v2_vote_source> sources;
+  sources.reserve(selected.size());
+
+  for (size_t sel : selected)
+  {
+    const auto &td = m_transfers[sel];
+
+    std::vector<dao_v2_ring_member> ring;
+    size_t real_index = SIZE_MAX;
+    if (!get_dao_v2_ring(sel, ring_size - 1, ring, real_index))
+    {
+      result.error = "Failed to build ring for a selected output";
+      return result;
+    }
+    if (real_index == SIZE_MAX || ring.size() != ring_size)
+    {
+      result.error = "Ring construction failed";
+      return result;
+    }
+
+    // Real output secret key.
+    crypto::secret_key real_sk;
+    {
+      const crypto::public_key tx_pubkey = get_tx_pub_key_from_received_outs(td);
+      if (tx_pubkey == crypto::null_pkey)
+      {
+        result.error = "Failed to get tx pubkey";
+        return result;
+      }
+      crypto::key_derivation deriv;
+      if (!generate_key_derivation(tx_pubkey,
+            m_account.get_keys().m_view_secret_key, deriv))
+      {
+        result.error = "Failed to derive key";
+        return result;
+      }
+      derive_secret_key(deriv, td.m_internal_output_index,
+                        m_account.get_keys().m_spend_secret_key, real_sk);
+    }
+
+    // Ring member data in the order the helper produced them.
+    dao::dao_v2_vote_source src;
+    src.P.reserve(ring.size());
+    src.C.reserve(ring.size());
+    src.output_indices.reserve(ring.size());
+    src.output_heights.reserve(ring.size());
+    src.key_offsets.reserve(ring.size());
+    for (size_t j = 0; j < ring.size(); ++j)
+    {
+      rct::key P{};
+      std::memcpy(P.bytes, ring[j].P.data, sizeof(P.bytes));
+      src.P.push_back(P);
+      src.C.push_back(ring[j].C);
+      src.output_indices.push_back(ring[j].global_index);
+      src.output_heights.push_back(ring[j].height);
+    }
+    // Relative offsets: cumulative differences of sorted globals.
+    for (size_t j = 0; j < src.output_indices.size(); ++j)
+    {
+      if (j == 0)
+        src.key_offsets.push_back(src.output_indices[0]);
+      else
+        src.key_offsets.push_back(src.output_indices[j] - src.output_indices[j-1]);
+    }
+
+    src.real_index        = real_index;
+    src.real_spend_secret = real_sk;
+    src.real_mask         = td.m_mask;
+    src.real_amount       = td.amount();
+
+    sources.push_back(std::move(src));
+  }
+
+  // ---- Construct the proof ----
+  vote_proof_v2 proof;
+  if (!dao::build_dao_v2_vote(
+        proposal_id,
+        submission_height,
+        vote_height,
+        tally_epoch,
+        tally_key_id,
+        modulus_bytes,
+        direction,
+        sources,
+        proof))
+  {
+    result.error = "Failed to build V2 vote proof";
+    return result;
+  }
+
+  // ---- Wrap in tx ----
+  governance_payload gp;
+  gp.type = governance_object::vote_v2;
+  std::string blob = t_serializable_object_to_blob(proof);
+  gp.data.assign(blob.begin(), blob.end());
+
+  tx_extra_governance_payload tgp{gp};
+  tx_extra_field ef = tgp;
+  std::string extra = t_serializable_object_to_blob(ef);
+
+  transaction tx;
+  tx.version = 2;
+  tx.unlock_time = 0;
+  tx.extra.assign(extra.begin(), extra.end());
+  tx.rct_signatures.type = rct::RCTTypeNull;
+
+  crypto::hash tx_hash = cryptonote::get_transaction_hash(tx);
+  result.tx_hash = epee::string_tools::pod_to_hex(tx_hash);
+  result.tx_blob = epee::string_tools::buff_to_hex_nodelimer(cryptonote::tx_to_blob(tx));
+  return result;
+}
 // END_VNS_VOTE
 
 // BEGIN_VNS_TREASURY_DONATION
