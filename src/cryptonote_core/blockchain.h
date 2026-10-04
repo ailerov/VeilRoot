@@ -1792,6 +1792,14 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
      */
     bool check_tx_inputs(transaction& tx, tx_verification_context &tvc, uint64_t* pmax_used_block_height = NULL, uint64_t block_height = 0) const;
 
+  // Validate a single txin_vns_eligible input: recompute the signed
+  // message hash and verify the Ed25519 proof against the node public
+  // key carried in the input. Called from check_tx_inputs.
+  bool validate_vns_eligible_input(const txin_vns_eligible& in,
+                                   const crypto::hash& tx_prefix_hash,
+                                   tx_verification_context& tvc,
+                                   uint64_t block_height) const;
+
     /**
      * @brief performs a blockchain reorganization according to the longest chain rule
      *

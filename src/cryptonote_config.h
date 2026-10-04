@@ -216,6 +216,7 @@ constexpr uint64_t VNS_DOMAIN_FEE_BURN_HEIGHT = 50000;
 #define HF_VERSION_BULLETPROOF_PLUS             15
 #define HF_VERSION_VIEW_TAGS                    15
 #define HF_VERSION_2021_SCALING                 15
+#define HF_VERSION_DAO_V2                       20
 
 #define PER_KB_FEE_QUANTIZATION_DECIMALS        8
 #define CRYPTONOTE_SCALING_2021_FEE_ROUNDING_PLACES 2
@@ -275,7 +276,7 @@ namespace config
 #ifdef VEILROOT_DAO_DKG_TESTING
     uint64_t const DAO_V2_ACTIVATION_HEIGHT = 10000;
 #else
-    uint64_t const DAO_V2_ACTIVATION_HEIGHT = UINT64_MAX;
+    uint64_t const DAO_V2_ACTIVATION_HEIGHT = 75000;
 #endif
 
     inline bool dao_v2_active(uint64_t block_height)

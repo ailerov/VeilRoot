@@ -3942,6 +3942,43 @@ bool Blockchain::is_non_consuming_tx(const transaction& tx) const
 }
 // END_VNS_NON_CONSUMING_TX
 
+bool Blockchain::validate_vns_eligible_input(
+    const txin_vns_eligible& in,
+    const crypto::hash& /*tx_prefix_hash*/,
+    tx_verification_context& tvc,
+    uint64_t /*block_height*/) const
+{
+  // The wallet signs a domain-separated hash of the node public key.
+  // Recomputation is done here so a tampered node_pubkey fails.
+  constexpr char ELIG_MSG_DOMAIN[] = "COMMITTEE_ELIGIBLE";
+  std::string msg_data;
+  msg_data.reserve(sizeof(ELIG_MSG_DOMAIN) - 1 +
+                   sizeof(in.node_pubkey));
+  msg_data.append(ELIG_MSG_DOMAIN, sizeof(ELIG_MSG_DOMAIN) - 1);
+  msg_data.append(reinterpret_cast<const char*>(&in.node_pubkey),
+                  sizeof(in.node_pubkey));
+
+  crypto::hash msg_hash;
+  crypto::cn_fast_hash(msg_data.data(), msg_data.size(), msg_hash);
+
+  if (!crypto::check_signature(msg_hash, in.node_pubkey, in.proof_sig))
+  {
+    MERROR_VER("committee-eligible input: signature verification failed");
+    tvc.m_verifivation_failed = true;
+    return false;
+  }
+
+  // The key image must not already have been registered.
+  if (have_tx_keyimg_as_spent(in.k_image))
+  {
+    MERROR_VER("committee-eligible input: key image already registered");
+    tvc.m_double_spend = true;
+    return false;
+  }
+
+  return true;
+}
+
 bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, uint64_t* pmax_used_block_height, uint64_t block_height) const
 {
   PERF_TIMER(check_tx_inputs);
@@ -4173,6 +4210,10 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
     // BEGIN_VNS_ELIGIBLE
     if (txin.type() == typeid(cryptonote::txin_vns_eligible))
     {
+      const auto& elig_in = boost::get<cryptonote::txin_vns_eligible>(txin);
+      if (!validate_vns_eligible_input(elig_in, tx_prefix_hash,
+                                       tvc, block_height))
+        return false;
       continue;
     }
     // END_VNS_ELIGIBLE
@@ -6799,6 +6840,35 @@ leave:
       return false;
   }
   // END_VNS_GOVERNANCE_PROCESS
+
+  // BEGIN_VNS_ELIGIBLE_APPLY
+  // Register any committee-eligible announcements carried by this
+  // block. Rollback removes them by key image.
+  for (const auto& tx_pair : txs)
+  {
+    const transaction& tx = tx_pair.first;
+    for (const auto& in : tx.vin)
+    {
+      if (in.type() != typeid(cryptonote::txin_vns_eligible))
+        continue;
+
+      const auto& elig = boost::get<cryptonote::txin_vns_eligible>(in);
+
+      committee_eligible_record rec{};
+      rec.node_pubkey      = elig.node_pubkey;
+      rec.amount           = elig.amount;
+      rec.unlock_height    = new_height;
+      rec.stake_age_weight = get_stake_age_weight(
+          elig.amount, new_height, new_height);
+
+      m_db->add_committee_eligible(elig.k_image, rec);
+      MINFO("Committee-eligible registered: node " << elig.node_pubkey
+            << " amount " << elig.amount
+            << " weight " << rec.stake_age_weight
+            << " at height " << new_height);
+    }
+  }
+  // END_VNS_ELIGIBLE_APPLY
 
   // BEGIN_VNS_DAO_V2_TALLY_TRIGGER
   // If any proposal's voting window closed at new_height - 1, produce
