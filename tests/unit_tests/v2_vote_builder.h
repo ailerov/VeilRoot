@@ -81,7 +81,7 @@ inline bool build_valid_vote(
     ValidVote& fx,
     const dao::PaillierPublicKey& ppk,
     const crypto::hash& proposal_id,
-    const crypto::hash& nullifier,
+    uint8_t variant,
     uint32_t tally_epoch,
     uint64_t vote_height,
     uint64_t proposal_submission_height,
@@ -89,7 +89,6 @@ inline bool build_valid_vote(
 {
     fx = ValidVote{};
     fx.proposal_id = proposal_id;
-    fx.nullifier = nullifier;
     fx.vote_height = vote_height;
     fx.proposal_submission_height = proposal_submission_height;
     fx.proposal_voting_end_height = proposal_voting_end_height;
@@ -106,8 +105,8 @@ inline bool build_valid_vote(
 
     rct::key x_s[N], mask[N], P[N], C[N], f_s[N], Q[N];
     for (size_t i = 0; i < N; ++i) {
-        x_s[i]  = mk_scalar(static_cast<uint8_t>(0x10 + i));
-        mask[i] = mk_scalar(static_cast<uint8_t>(0x20 + i));
+        x_s[i]  = mk_scalar(static_cast<uint8_t>(0x10 + i + variant));
+        mask[i] = mk_scalar(static_cast<uint8_t>(0x20 + i + variant));
         rct::scalarmultBase(P[i], x_s[i]);
 
         rct::key aH, mG;
@@ -190,6 +189,19 @@ inline bool build_valid_vote(
     fx.key_rec.dkg_transcript_hash.assign(32, 0);
     fx.key_rec.key_id.assign(32, 0);
     std::memset(fx.key_rec.key_id.data(), 0x11, 32);
+
+    // --- Derive the proposal-scoped DAO nullifier the same way the
+    // DAO CLSAG will when it computes sig.I = x * H_vote(P, pid). This
+    // is the only value accepted on the wire; the CLSAG I produced
+    // below must equal it. ---
+    crypto::hash nullifier{};
+    {
+        rct::key H_l = cryptonote::dao_hash_to_point(P[L], proposal_id);
+        rct::key N{};
+        rct::scalarmultKey(N, H_l, x_s[L]);
+        std::memcpy(nullifier.data, N.bytes, sizeof(nullifier.data));
+    }
+    fx.nullifier = nullifier;
 
     // --- Build transcript input ---
     dao::dao_vote_transcript_input ti;
@@ -308,6 +320,19 @@ inline bool build_valid_vote(
         return false;
     }
 
+    // The CLSAG I must equal the nullifier we committed to in the
+    // transcript and OR proof.
+    {
+        crypto::hash from_I{};
+        std::memcpy(from_I.data, w_sig.I.bytes,
+                    sizeof(from_I.data));
+        if (std::memcmp(from_I.data, nullifier.data, 32) != 0) {
+            BN_free(W_bn); BN_free(S_bn); BN_free(B_bn);
+            BN_free(r_W);  BN_free(r_S);  BN_free(r_B);
+            return false;
+        }
+    }
+
     // --- Balance CLSAG (same ring, f=1) ---
     dao_clsag_context bcc = cc;
     bcc.age_factors.assign(N, 1);
@@ -315,6 +340,11 @@ inline bool build_valid_vote(
 
     rct::clsag b_sig;
     if (!dao_clsag_generate(bcc, L, sk, rho_B, b_sig)) {
+        BN_free(W_bn); BN_free(S_bn); BN_free(B_bn);
+        BN_free(r_W);  BN_free(r_S);  BN_free(r_B);
+        return false;
+    }
+    if (!(w_sig.I == b_sig.I)) {
         BN_free(W_bn); BN_free(S_bn); BN_free(B_bn);
         BN_free(r_W);  BN_free(r_S);  BN_free(r_B);
         return false;

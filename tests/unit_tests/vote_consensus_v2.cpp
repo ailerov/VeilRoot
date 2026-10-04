@@ -136,7 +136,7 @@ TEST_F(ConsensusFixture, apply_writes_aggregate_nullifier_and_record)
 {
     ValidVote fx;
     ASSERT_TRUE(build_valid_vote(fx, shared_pk(),
-        hash_from_byte(0x33), hash_from_byte(0xAA),
+        hash_from_byte(0x33), 0xAA,
         /*tally_epoch=*/1, /*vote_height=*/51000,
         /*submission=*/50000, /*end=*/60000));
     install(fx);
@@ -165,7 +165,7 @@ TEST_F(ConsensusFixture, rollback_restores_aggregate_byte_for_byte)
 {
     ValidVote fx;
     ASSERT_TRUE(build_valid_vote(fx, shared_pk(),
-        hash_from_byte(0x33), hash_from_byte(0xAA),
+        hash_from_byte(0x33), 0xAA,
         /*tally_epoch=*/1, /*vote_height=*/51000,
         /*submission=*/50000, /*end=*/60000));
     install(fx);
@@ -218,7 +218,7 @@ TEST_F(ConsensusFixture, duplicate_nullifier_in_two_txs_of_one_block_is_invalid)
 {
     ValidVote fx;
     ASSERT_TRUE(build_valid_vote(fx, shared_pk(),
-        hash_from_byte(0x33), hash_from_byte(0xAA),
+        hash_from_byte(0x33), 0xAA,
         /*tally_epoch=*/1, /*vote_height=*/51000,
         /*submission=*/50000, /*end=*/60000));
     install(fx);
@@ -244,15 +244,11 @@ TEST_F(ConsensusFixture, rollback_restores_prior_aggregate_byte_for_byte)
     // modular multiplication; inverse() is the exact group inverse of
     // the ciphertext, so (A * B) * B^-1 == A exactly.
     const crypto::hash pid  = hash_from_byte(0x33);
-    const crypto::hash nf_a = hash_from_byte(0xAA);
-    const crypto::hash nf_b = hash_from_byte(0xBB);
 
     ValidVote fx_a, fx_b;
-    ASSERT_TRUE(build_valid_vote(fx_a, shared_pk(), pid, nf_a,
-        /*tally_epoch=*/1, /*vote_height=*/51000,
+    ASSERT_TRUE(build_valid_vote(fx_a, shared_pk(), pid, 0xA, /*tally_epoch=*/1, /*vote_height=*/51000,
         /*submission=*/50000, /*end=*/60000));
-    ASSERT_TRUE(build_valid_vote(fx_b, shared_pk(), pid, nf_b,
-        /*tally_epoch=*/1, /*vote_height=*/51000,
+    ASSERT_TRUE(build_valid_vote(fx_b, shared_pk(), pid, 0xB, /*tally_epoch=*/1, /*vote_height=*/51000,
         /*submission=*/50000, /*end=*/60000));
     install(fx_a);
 
@@ -297,22 +293,19 @@ TEST_F(ConsensusFixture, rollback_restores_prior_aggregate_byte_for_byte)
     EXPECT_EQ(std::memcmp(restored.aggregate_C_S.bytes, before_C_S.bytes, 32), 0);
 
     // Nullifiers: A's still present, B's gone.
-    EXPECT_TRUE(m_db->has_vote_nullifier(pid, nf_a));
-    EXPECT_FALSE(m_db->has_vote_nullifier(pid, nf_b));
+    EXPECT_TRUE(m_db->has_vote_nullifier(pid, fx_a.nullifier));
+    EXPECT_FALSE(m_db->has_vote_nullifier(pid, fx_b.nullifier));
 }
 
 
 TEST_F(ConsensusFixture, rollback_of_c_restores_post_ab_aggregate)
 {
     const crypto::hash pid  = hash_from_byte(0x33);
-    const crypto::hash nf_a = hash_from_byte(0xA1);
-    const crypto::hash nf_b = hash_from_byte(0xB1);
-    const crypto::hash nf_c = hash_from_byte(0xC1);
 
     ValidVote fx_a, fx_b, fx_c;
-    ASSERT_TRUE(build_valid_vote(fx_a, shared_pk(), pid, nf_a, 1, 51000, 50000, 60000));
-    ASSERT_TRUE(build_valid_vote(fx_b, shared_pk(), pid, nf_b, 1, 51000, 50000, 60000));
-    ASSERT_TRUE(build_valid_vote(fx_c, shared_pk(), pid, nf_c, 1, 51000, 50000, 60000));
+    ASSERT_TRUE(build_valid_vote(fx_a, shared_pk(), pid, 0xA, 1, 51000, 50000, 60000));
+    ASSERT_TRUE(build_valid_vote(fx_b, shared_pk(), pid, 0xB, 1, 51000, 50000, 60000));
+    ASSERT_TRUE(build_valid_vote(fx_c, shared_pk(), pid, 0xC, 1, 51000, 50000, 60000));
     install(fx_a);
 
     ASSERT_TRUE(apply(fx_a));
@@ -343,20 +336,18 @@ TEST_F(ConsensusFixture, rollback_of_c_restores_post_ab_aggregate)
     EXPECT_EQ(after.aggregate_E_S, before_ES);
     EXPECT_EQ(std::memcmp(after.aggregate_C_W.bytes, before_CW.bytes, 32), 0);
     EXPECT_EQ(std::memcmp(after.aggregate_C_S.bytes, before_CS.bytes, 32), 0);
-    EXPECT_TRUE (m_db->has_vote_nullifier(pid, nf_a));
-    EXPECT_TRUE (m_db->has_vote_nullifier(pid, nf_b));
-    EXPECT_FALSE(m_db->has_vote_nullifier(pid, nf_c));
+    EXPECT_TRUE (m_db->has_vote_nullifier(pid, fx_a.nullifier));
+    EXPECT_TRUE (m_db->has_vote_nullifier(pid, fx_b.nullifier));
+    EXPECT_FALSE(m_db->has_vote_nullifier(pid, fx_c.nullifier));
 }
 
 TEST_F(ConsensusFixture, rollback_in_reverse_order_returns_to_empty)
 {
     const crypto::hash pid  = hash_from_byte(0x33);
-    const crypto::hash nf_a = hash_from_byte(0xA2);
-    const crypto::hash nf_b = hash_from_byte(0xB2);
 
     ValidVote fx_a, fx_b;
-    ASSERT_TRUE(build_valid_vote(fx_a, shared_pk(), pid, nf_a, 1, 51000, 50000, 60000));
-    ASSERT_TRUE(build_valid_vote(fx_b, shared_pk(), pid, nf_b, 1, 51000, 50000, 60000));
+    ASSERT_TRUE(build_valid_vote(fx_a, shared_pk(), pid, 0xA, 1, 51000, 50000, 60000));
+    ASSERT_TRUE(build_valid_vote(fx_b, shared_pk(), pid, 0xB, 1, 51000, 50000, 60000));
     install(fx_a);
 
     ASSERT_TRUE(apply(fx_a));
@@ -372,8 +363,8 @@ TEST_F(ConsensusFixture, rollback_in_reverse_order_returns_to_empty)
         db_wtxn_guard g(m_db);
         ASSERT_TRUE(vm.rollback_block(blk, txs, fx_b.vote_height));
     }
-    EXPECT_TRUE (m_db->has_vote_nullifier(pid, nf_a));
-    EXPECT_FALSE(m_db->has_vote_nullifier(pid, nf_b));
+    EXPECT_TRUE (m_db->has_vote_nullifier(pid, fx_a.nullifier));
+    EXPECT_FALSE(m_db->has_vote_nullifier(pid, fx_b.nullifier));
 
     {
         block blk = make_block({ make_v2_tx(fx_a.proof) });
@@ -381,8 +372,8 @@ TEST_F(ConsensusFixture, rollback_in_reverse_order_returns_to_empty)
         db_wtxn_guard g(m_db);
         ASSERT_TRUE(vm.rollback_block(blk, txs, fx_a.vote_height));
     }
-    EXPECT_FALSE(m_db->has_vote_nullifier(pid, nf_a));
-    EXPECT_FALSE(m_db->has_vote_nullifier(pid, nf_b));
+    EXPECT_FALSE(m_db->has_vote_nullifier(pid, fx_a.nullifier));
+    EXPECT_FALSE(m_db->has_vote_nullifier(pid, fx_b.nullifier));
 
     dao_proposal_aggregate agg;
     EXPECT_FALSE(m_db->get_dao_proposal_aggregate(pid, agg));

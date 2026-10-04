@@ -531,11 +531,10 @@ TEST(vote_proof_verifier, valid_vote_passes_all_24_steps)
     PaillierPublicKey ppk = psk.public_key();
 
     crypto::hash proposal_id = v2test::hash_from_byte(0x33);
-    crypto::hash nullifier   = v2test::hash_from_byte(0xAA);
 
     v2test::ValidVote fx;
     ASSERT_TRUE(v2test::build_valid_vote(fx, ppk,
-        proposal_id, nullifier,
+        proposal_id, 0xAA,
         TALLY_EPOCH, VOTE_HEIGHT, PROPOSAL_SUB, PROPOSAL_END));
 
     VerifierTestDB db;
@@ -554,17 +553,74 @@ TEST(vote_proof_verifier, valid_vote_passes_all_24_steps)
     EXPECT_TRUE(r.success) << "reason: " << r.reason;
 
     // Prior-chain nullifier lookup rejects.
-    db.persistent_nullifiers.insert(nullifier);
+    db.persistent_nullifiers.insert(fx.nullifier);
     auto r23 = VoteProofVerifier::verify(fx.proof, db, VOTE_HEIGHT, block_nfs);
     EXPECT_FALSE(r23.success);
     EXPECT_NE(r23.reason.find("step27"), std::string::npos);
     db.persistent_nullifiers.clear();
 
     // Same-block nullifier set rejects.
-    block_nfs.insert(nullifier);
+    block_nfs.insert(fx.nullifier);
     auto r24 = VoteProofVerifier::verify(fx.proof, db, VOTE_HEIGHT, block_nfs);
     EXPECT_FALSE(r24.success);
     EXPECT_NE(r24.reason.find("step28"), std::string::npos);
+}
+
+TEST(vote_proof_verifier, step17_wire_nullifier_must_match_dao_clsag_I)
+{
+    dao::PaillierPrivateKey psk;
+    ASSERT_TRUE(psk.generate_for_testing(1024));
+    PaillierPublicKey ppk = psk.public_key();
+
+    crypto::hash proposal_id = v2test::hash_from_byte(0x33);
+
+    v2test::ValidVote fx;
+    ASSERT_TRUE(v2test::build_valid_vote(fx, ppk, proposal_id, 0xAA,
+        1, 51000, 50000, 60000));
+
+    // Sanity: the derived nullifier is the CLSAG I.
+    ASSERT_EQ(std::memcmp(fx.proof.nullifiers[0].data,
+                          fx.proof.inputs[0].weight_signature.I.bytes, 32),
+              0);
+
+    // Tamper: change one byte of the wire nullifier.
+    vote_proof_v2 tampered = fx.proof;
+    tampered.nullifiers[0].data[0] ^= 0x01;
+
+    VerifierTestDB db;
+    db.have_proposal = true;
+    db.proposal_submission_height = 50000;
+    db.proposal_voting_end_height = 60000;
+    db.proposal_tally_key_epoch   = 1;
+    db.have_tally_key = true;
+    db.tally_key_record = fx.key_rec;
+    for (const auto& kv : fx.outputs) db.outputs[kv.first] = kv.second;
+
+    std::unordered_set<crypto::hash> block_nfs;
+    auto r = VoteProofVerifier::verify(tampered, db, 51000, block_nfs);
+    EXPECT_FALSE(r.success);
+    EXPECT_NE(r.reason.find("step17"), std::string::npos);
+}
+
+TEST(vote_proof_verifier, nullifier_differs_across_proposals)
+{
+    dao::PaillierPrivateKey psk;
+    ASSERT_TRUE(psk.generate_for_testing(1024));
+    PaillierPublicKey ppk = psk.public_key();
+
+    crypto::hash proposal_a = v2test::hash_from_byte(0x44);
+    crypto::hash proposal_b = v2test::hash_from_byte(0x55);
+
+    v2test::ValidVote fx_a, fx_b;
+    ASSERT_TRUE(v2test::build_valid_vote(fx_a, ppk, proposal_a, 0xAA,
+        1, 51000, 50000, 60000));
+    ASSERT_TRUE(v2test::build_valid_vote(fx_b, ppk, proposal_b, 0xAA,
+        1, 51000, 50000, 60000));
+
+    // Same output, same variant: the only difference is the proposal.
+    EXPECT_NE(std::memcmp(fx_a.proof.nullifiers[0].data,
+                          fx_b.proof.nullifiers[0].data, 32),
+              0);
 }
 
 // ---- V2 carrier roundtrip ----

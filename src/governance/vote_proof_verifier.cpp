@@ -195,11 +195,19 @@ verification_result VoteProofVerifier::verify(
             return fail("step16: balance CLSAG verification failed");
     }
 
-    // Step 17: weight_signature.I == balance_signature.I per input.
+    // Step 17: the two DAO CLSAGs must use the same proposal-scoped
+    // nullifier, and the public wire field must be that exact value.
+    // dao_clsag_generate computes sig.I = x * H_vote(P_real, proposal_id),
+    // so after step15/16 verify, weight_signature.I is already a
+    // proof-backed proposal-scoped nullifier.
     for (size_t i = 0; i < proof.inputs.size(); ++i) {
-        if (!(proof.inputs[i].weight_signature.I ==
-              proof.inputs[i].balance_signature.I))
+        const auto& in = proof.inputs[i];
+        if (!(in.weight_signature.I == in.balance_signature.I))
             return fail("step17: weight/balance nullifier mismatch");
+        if (std::memcmp(proof.nullifiers[i].data,
+                        in.weight_signature.I.bytes,
+                        sizeof(proof.nullifiers[i].data)) != 0)
+            return fail("step17: wire nullifier does not match DAO CLSAG I");
     }
 
     // Step 18: C_W == sum of per-input weight_commitment.
