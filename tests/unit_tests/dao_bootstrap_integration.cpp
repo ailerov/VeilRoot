@@ -21,6 +21,8 @@
 #include "gtest/gtest.h"
 
 #include <cstring>
+#include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -30,9 +32,11 @@
 #include "cryptonote_basic/cryptonote_basic.h"
 #include "cryptonote_core/cryptonote_core.h"
 #include "governance/dao_dkg.h"
+#include "governance/dao_dkg_transport.h"
 
 namespace po = boost::program_options;
 using namespace cryptonote;
+using namespace cryptonote::dao;
 
 namespace {
 
@@ -174,4 +178,130 @@ TEST_F(DaoBootstrapIntegration, BootstrapStartsRunnerForThisCommittee)
     // A runner for epoch 1 now exists. It cannot complete without
     // peers; teardown stops it via ~Blockchain.
     SUCCEED();
+}
+
+
+// ------------------------------------------------------------------
+// Activation chain: DKG result queued -> drained on owner thread ->
+// epoch active -> new proposals bind to it.
+//
+// The DKG itself runs on three offline runners (the same construction
+// the bootstrap unit test uses), so this test isolates the persistence
+// and epoch-activation path in Blockchain.
+// ------------------------------------------------------------------
+
+namespace {
+
+struct act_network
+{
+    std::mutex mu;
+    std::map<crypto::public_key, dkg_p2p_runner*> by_pk;
+    std::map<uint32_t, dkg_p2p_runner*>          by_id;
+
+    void reg(uint32_t id, const crypto::public_key& pk, dkg_p2p_runner* r)
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        by_id.emplace(id, r);
+        by_pk.emplace(pk, r);
+    }
+
+    dkg_p2p_callbacks cb()
+    {
+        dkg_p2p_callbacks c;
+        c.send_to = [this](const crypto::public_key& to,
+                           const std::string& payload) -> bool {
+            dkg_p2p_runner* t = nullptr;
+            {
+                std::lock_guard<std::mutex> lk(mu);
+                auto it = by_pk.find(to);
+                if (it == by_pk.end()) return false;
+                t = it->second;
+            }
+            dkg_msg m;
+            std::vector<uint8_t> buf(payload.begin(), payload.end());
+            if (!m.deserialize(buf)) return false;
+            t->on_message(m);
+            return true;
+        };
+        c.broadcast = [this](const std::string& payload) {
+            dkg_msg m;
+            std::vector<uint8_t> buf(payload.begin(), payload.end());
+            if (!m.deserialize(buf)) return;
+            std::vector<dkg_p2p_runner*> targets;
+            {
+                std::lock_guard<std::mutex> lk(mu);
+                for (auto it = by_id.begin(); it != by_id.end(); ++it)
+                    if (it->first != m.hdr.sender_id)
+                        targets.push_back(it->second);
+            }
+            for (auto* t : targets) t->on_message(m);
+        };
+        return c;
+    }
+};
+
+} // namespace
+
+TEST_F(DaoBootstrapIntegration, ActivationChainBindsEpochAfterPersistence)
+{
+    // The integration node's identity is already installed in LMDB.
+    // Build a committee whose first entry is this node, then run three
+    // offline runners to produce a real dkg_result.
+    std::vector<crypto::public_key> committee;
+    committee.push_back(m_node_pub);
+    for (int i = 0; i < 2; ++i) {
+        crypto::public_key pk;
+        crypto::secret_key sk;
+        crypto::generate_keys(pk, sk);
+        committee.push_back(pk);
+    }
+
+    dao_vss_group vss;
+    ASSERT_TRUE(dao_vss_group_generate(vss,
+        dao_dkg_required_vss_bits(60, 128, 32)));
+
+    act_network net;
+    std::vector<std::unique_ptr<dkg_p2p_runner>> runners;
+    for (uint32_t i = 0; i < 3; ++i) {
+        dkg_config cfg;
+        cfg.committee_size = 3;
+        cfg.threshold      = dao_dkg_expected_threshold(3);
+        cfg.epoch          = 1;
+        cfg.member_ids     = committee;
+        cfg.local_party_id = i + 1;
+        cfg.test_seed      = 0x5645494C52544F33ULL;   // 3-party fixed
+        cfg.target_N_bits  = 128;
+        cfg.phase_timeout_seconds = 30;
+        auto cb = net.cb();
+        runners.emplace_back(new dkg_p2p_runner(cfg, vss, cb));
+    }
+    for (uint32_t i = 0; i < 3; ++i)
+        net.reg(i + 1, committee[i], runners[i].get());
+    for (auto& r : runners) ASSERT_TRUE(r->start());
+
+    dkg_result completed;
+    ASSERT_TRUE(runners[0]->wait(completed, 60));
+    ASSERT_TRUE(completed.ok);
+    ASSERT_FALSE(completed.local_secret_share.empty());
+
+    // Queue the result on the blockchain and drain it on this thread.
+    auto& bc = m_core->get_blockchain_storage();
+    bc.queue_dao_v2_dkg_result(1, completed);
+    bc.maybe_process_dao_v2_dkg_results();
+
+    // Key record persisted.
+    dao::dao_tally_key_record rec;
+    ASSERT_TRUE(bc.get_db().get_dao_tally_key(1, rec));
+    EXPECT_EQ(rec.committee_size, 3u);
+    EXPECT_EQ(rec.threshold, 2u);
+
+    // Epoch activated.
+    uint32_t ep = 0;
+    ASSERT_TRUE(bc.get_db().get_current_dao_tally_key_epoch(ep));
+    EXPECT_EQ(ep, 1u);
+
+    // Local share stored under this node's committee index.
+    std::vector<uint8_t> share;
+    ASSERT_TRUE(bc.get_db().get_dao_local_share(1, 1, share));
+    EXPECT_FALSE(share.empty());
 }

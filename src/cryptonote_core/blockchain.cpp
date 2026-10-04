@@ -8716,16 +8716,30 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
         MWARNING("DAO V2 DKG epoch " << item.epoch << ": result not ok");
         continue;
       }
-      auto runner_it = m_dao_v2_dkg_runners.find(item.epoch);
-      if (runner_it == m_dao_v2_dkg_runners.end()) {
+      // Derive this node's committee index from the accepted record
+      // and m_node_privkey. Same value the runner computed at startup,
+      // but does not require the runner to still be alive.
+      crypto::public_key self_pk{};
+      if (!crypto::secret_key_to_public_key(m_node_privkey, self_pk)) {
         MWARNING("DAO V2 DKG epoch " << item.epoch
-                 << ": runner no longer exists");
+                 << ": cannot derive node pubkey");
         continue;
       }
-      const uint32_t local_id = runner_it->second->local_party_id();
+      uint32_t local_id = 0;
+      for (size_t i = 0;
+           i < item.result.record.committee_members.size(); ++i) {
+        const auto& km = item.result.record.committee_members[i];
+        if (km.size() != sizeof(self_pk.data)) continue;
+        if (std::memcmp(km.data(), self_pk.data,
+                        sizeof(self_pk.data)) == 0) {
+          local_id = static_cast<uint32_t>(i) + 1;
+          break;
+        }
+      }
       if (local_id == 0 || item.result.local_secret_share.empty()) {
         MWARNING("DAO V2 DKG epoch " << item.epoch
-                 << ": invalid local share");
+                 << ": this node is not in the accepted committee or "
+                    "has no local share");
         continue;
       }
       // Owner-thread persistence. Each result gets its own write
