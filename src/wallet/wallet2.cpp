@@ -86,6 +86,7 @@ using namespace epee;
 #include "governance/parameter_update.h"
 #include "governance/governance_payload.h"
 #include "governance/proposal.h"
+#include "governance/dao_clsag.h"
 
 #include "int-util.h"
 #include "profile_tools.h"
