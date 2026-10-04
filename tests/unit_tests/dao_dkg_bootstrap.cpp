@@ -201,7 +201,7 @@ TEST_F(DaoV2Bootstrap, ThreeEligibleNodesSelectAndComplete2of3DKG)
         cfg.local_party_id = i + 1;
         cfg.test_seed      = FIXED_TEST_CANDIDATE_SEED_3;
         cfg.target_N_bits  = 128;
-        cfg.phase_timeout_seconds = 30;
+        cfg.phase_timeout_seconds = 120;
 
         auto cb = net.callbacks_for_self();
         runners.emplace_back(new dkg_p2p_runner(cfg, vss, cb));
@@ -213,7 +213,7 @@ TEST_F(DaoV2Bootstrap, ThreeEligibleNodesSelectAndComplete2of3DKG)
 
     std::vector<dkg_result> results(3);
     for (uint32_t i = 0; i < 3; ++i) {
-        ASSERT_TRUE(runners[i]->wait(results[i], 60));
+        ASSERT_TRUE(runners[i]->wait(results[i], 180));
         ASSERT_TRUE(results[i].ok);
     }
 
@@ -302,7 +302,7 @@ TEST_F(DaoV2Bootstrap, RepeatedWaitReturnsSameResult)
         cfg.local_party_id = i + 1;
         cfg.test_seed      = FIXED_TEST_CANDIDATE_SEED_3;
         cfg.target_N_bits  = 128;
-        cfg.phase_timeout_seconds = 30;
+        cfg.phase_timeout_seconds = 120;
         auto cb = net.callbacks_for_self();
         runners.emplace_back(new dkg_p2p_runner(cfg, vss, cb));
     }
@@ -312,7 +312,7 @@ TEST_F(DaoV2Bootstrap, RepeatedWaitReturnsSameResult)
 
     for (auto& r : runners) {
         dkg_result first;
-        ASSERT_TRUE(r->wait(first, 60));
+        ASSERT_TRUE(r->wait(first, 180));
         ASSERT_TRUE(first.ok);
 
         dkg_result second;

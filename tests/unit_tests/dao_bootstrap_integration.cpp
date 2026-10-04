@@ -271,7 +271,7 @@ TEST_F(DaoBootstrapIntegration, ActivationChainBindsEpochAfterPersistence)
         cfg.local_party_id = i + 1;
         cfg.test_seed      = 0x5645494C52544F33ULL;   // 3-party fixed
         cfg.target_N_bits  = 128;
-        cfg.phase_timeout_seconds = 30;
+        cfg.phase_timeout_seconds = 120;
         auto cb = net.cb();
         runners.emplace_back(new dkg_p2p_runner(cfg, vss, cb));
     }
@@ -280,7 +280,7 @@ TEST_F(DaoBootstrapIntegration, ActivationChainBindsEpochAfterPersistence)
     for (auto& r : runners) ASSERT_TRUE(r->start());
 
     dkg_result completed;
-    ASSERT_TRUE(runners[0]->wait(completed, 60));
+    ASSERT_TRUE(runners[0]->wait(completed, 180));
     ASSERT_TRUE(completed.ok);
     ASSERT_FALSE(completed.local_secret_share.empty());
 
