@@ -5660,8 +5660,28 @@ bool wallet_rpc_server::on_vote(const wallet_rpc::COMMAND_RPC_VOTE::request& req
 
     const uint8_t direction = req.support ? 0 : 1;
 
-    tools::wallet2::vote_tx_result result = m_wallet->create_vote_tx(
-        proposal_id, direction, req.priority);
+    // Dispatch on the DAO V2 activation height. Before activation, V1
+    // ballots remain valid. At and after activation, V1 ballots are
+    // rejected and V2 ballots are required. The wallet's own height is
+    // a good local approximation; if the mempool later rejects for a
+    // height mismatch the transaction simply does not confirm.
+    const uint64_t height = m_wallet->get_blockchain_current_height();
+
+    tools::wallet2::vote_tx_result result;
+
+    if (height >= config::DAO_V2_ACTIVATION_HEIGHT)
+    {
+        // V2: fetch the proposal's tally key epoch and build the
+        // four-channel ballot.
+        result = m_wallet->create_vote_v2_tx(
+            proposal_id, direction, req.priority);
+    }
+    else
+    {
+        // Pre-activation: the frozen V1 construction is still valid.
+        result = m_wallet->create_vote_tx(
+            proposal_id, direction, req.priority);
+    }
 
     if (result.tx_hash.empty() || result.tx_blob.empty())
     {
