@@ -1290,6 +1290,27 @@ private:
         const crypto::hash &proposal_id,
         uint8_t direction,
         uint32_t priority);
+
+    // One ring member for a V2 DAO vote. Unlike the standard spend-ring
+    // tuple, this retains the chain height of each member so that the
+    // V2 age factor can be recomputed for every ring member exactly as
+    // the consensus verifier does.
+    struct dao_v2_ring_member
+    {
+        uint64_t           global_index = 0;
+        crypto::public_key P{};
+        rct::key           C{};
+        uint64_t           height = 0;
+    };
+
+    // Fetch a ring for transfer_idx. Returns false on failure. Reuses
+    // the wallet's normal decoy selection via get_outs(), then makes a
+    // second minimal get_outs.bin call to obtain each member's height.
+    bool get_dao_v2_ring(
+        size_t transfer_idx,
+        size_t fake_outputs_count,
+        std::vector<dao_v2_ring_member> &ring,
+        size_t &real_index);
     // END_VNS_VOTE
 
     // -----

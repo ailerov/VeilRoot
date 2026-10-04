@@ -17228,6 +17228,117 @@ wallet2::vote_tx_result wallet2::create_vote_tx(
   result.error = "";
   return result;
 }
+
+//----------------------------------------------------------------------------------------------------
+// V2 DAO ring helper. Reuses the wallet's normal decoy selection so
+// that the ring obeys the same privacy heuristics as ordinary spends,
+// then fetches chain heights for every member via a second minimal
+// get_outs.bin call. The height is required by the V2 DAO age factor
+// (see vote_proof_verifier.cpp step 14), which is not carried on the
+// wire and must be recomputed identically by wallet and consensus.
+bool wallet2::get_dao_v2_ring(
+    size_t transfer_idx,
+    size_t fake_outputs_count,
+    std::vector<dao_v2_ring_member> &ring,
+    size_t &real_index)
+{
+  ring.clear();
+  real_index = SIZE_MAX;
+
+  if (transfer_idx >= m_transfers.size())
+    return false;
+
+  const transfer_details &td = m_transfers[transfer_idx];
+  if (!td.is_rct())
+    return false;
+
+  const uint64_t real_global = td.m_global_output_index;
+
+  // Step 1: reuse the existing decoy selection. get_outs() already
+  // produces (global_index, P, C) tuples with correct decoys and the
+  // real output included at some position.
+  std::vector<size_t> selected_transfers{transfer_idx};
+  std::unordered_set<crypto::public_key> valid_public_keys_cache;
+  std::vector<std::vector<get_outs_entry>> outs;
+  try
+  {
+    get_outs(outs, selected_transfers, fake_outputs_count, true,
+             valid_public_keys_cache);
+  }
+  catch (const std::exception &e)
+  {
+    LOG_ERROR("get_dao_v2_ring: decoy selection failed: " << e.what());
+    return false;
+  }
+
+  if (outs.empty() || outs[0].empty())
+    return false;
+
+  // Step 2: fetch heights for the same set of global indices.
+  COMMAND_RPC_GET_OUTPUTS_BIN::request req = AUTO_VAL_INIT(req);
+  COMMAND_RPC_GET_OUTPUTS_BIN::response resp = AUTO_VAL_INIT(resp);
+  req.get_txid = false;
+  req.outputs.reserve(outs[0].size());
+  for (const auto &e : outs[0])
+  {
+    get_outputs_out goo;
+    goo.amount = 0;
+    goo.index  = std::get<0>(e);
+    req.outputs.push_back(goo);
+  }
+
+  std::sort(req.outputs.begin(), req.outputs.end(),
+      [](const get_outputs_out &a, const get_outputs_out &b) {
+        return std::tie(a.amount, a.index) < std::tie(b.amount, b.index);
+      });
+  req.outputs.erase(
+      std::unique(req.outputs.begin(), req.outputs.end(),
+          [](const get_outputs_out &a, const get_outputs_out &b) {
+            return std::tie(a.amount, a.index) == std::tie(b.amount, b.index);
+          }),
+      req.outputs.end());
+
+  try
+  {
+    const boost::lock_guard<boost::recursive_mutex> lock{m_daemon_rpc_mutex};
+    uint64_t pre_call_credits = m_rpc_payment_state.credits;
+    req.client = get_client_signature();
+    bool r = epee::net_utils::invoke_http_bin(
+        "/get_outs.bin", req, resp, *m_http_client, rpc_timeout);
+    THROW_ON_RPC_RESPONSE_ERROR(r, {}, resp, "get_outs.bin",
+        error::get_outs_error, get_rpc_status(resp.status));
+    THROW_WALLET_EXCEPTION_IF(resp.outs.size() != req.outputs.size(),
+        error::wallet_internal_error,
+        "daemon returned wrong response for get_outs.bin, wrong count = " +
+        std::to_string(resp.outs.size()) + ", expected " +
+        std::to_string(req.outputs.size()));
+    check_rpc_cost("/get_outs.bin", resp.credits, pre_call_credits,
+                   resp.outs.size() * COST_PER_OUT);
+  }
+  catch (const std::exception &e)
+  {
+    LOG_ERROR("get_dao_v2_ring: get_outs.bin failed: " << e.what());
+    return false;
+  }
+
+  // Step 3: assemble. The daemon response is in the same order as the
+  // sorted request.
+  ring.reserve(req.outputs.size());
+  for (size_t i = 0; i < req.outputs.size(); ++i)
+  {
+    dao_v2_ring_member m;
+    m.global_index = req.outputs[i].index;
+    m.P            = resp.outs[i].key;
+    m.C            = resp.outs[i].mask;
+    m.height       = resp.outs[i].height;
+    ring.push_back(m);
+    if (m.global_index == real_global)
+      real_index = ring.size() - 1;
+  }
+
+  return real_index != SIZE_MAX;
+}
+//----------------------------------------------------------------------------------------------------
 // END_VNS_VOTE
 
 // BEGIN_VNS_TREASURY_DONATION
