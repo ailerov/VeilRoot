@@ -130,6 +130,7 @@ set(unit_tests_sources
   dao_dkg_distributed.cpp
   dao_dkg_bootstrap.cpp
   dao_dkg_reset.cpp
+  dao_dkg_reset_integration.cpp
   dao_wallet_v2.cpp
   dao_bootstrap_integration.cpp
   voting_weight.cpp
