@@ -71,8 +71,10 @@
 #include "governance/domain_policy.h"
 #include "governance/dao_tally_share.h"
 #include "governance/dao_dkg.h"
+#include "governance/dao_dkg_reset.h"
 #include <array>
 #include <deque>
+#include <mutex>
 #include "nostr_client.h"
 
 #include <boost/asio/deadline_timer.hpp>
@@ -1377,6 +1379,20 @@ namespace cryptonote
   // on_idle; does not decide anything, only starts work for sessions
   // already recorded.
   void drain_dao_v2_session_reshares();
+  // Start the P2P Reset ceremony for the session bound to this
+  // proposal. Runners are keyed by share_epoch internally, so
+  // proposals that share an epoch share one ceremony.
+  void start_dao_v2_reset_for_session(const crypto::hash& proposal_id);
+
+  // Drain Reset results queued by watcher threads. Writes the local
+  // dynamic share and marks the session resharing_complete. Owner
+  // thread only.
+  void process_pending_dao_v2_session_results();
+
+  // Called from the watcher thread to hand a finished Reset result
+  // back to the owner thread. Thread-safe.
+  void queue_dao_v2_session_result(uint32_t share_epoch,
+                                   dao::dao_dkg_reset_result result);
 
   // Lifecycle hook called from the daemon idle loop. Drains any
   // results queued by the DKG watcher threads onto this owner thread.
@@ -1694,6 +1710,27 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     // BEGIN_VNS_DAO_V2_DKG
     std::map<uint32_t, std::unique_ptr<dao::dkg_p2p_runner>>
         m_dao_v2_dkg_runners;
+    // Per-share-epoch Reset runners. A Reset takes the bootstrap
+    // shareholders' shares and derives the temporary tally
+    // committee's shares of the same secret. The VSS group is owned
+    // alongside the runner because the runner holds a raw pointer.
+    struct dao_v2_session_runner_entry
+    {
+      std::unique_ptr<dao::dkg_p2p_reshare_runner> runner;
+      std::unique_ptr<dao::dao_vss_group>          vss;
+    };
+    std::map<uint32_t, dao_v2_session_runner_entry>
+        m_dao_v2_session_runners;
+    std::map<uint32_t, std::thread>
+        m_dao_v2_session_watchers;
+
+    struct pending_dao_v2_session_result
+    {
+      uint32_t                    share_epoch = 0;
+      dao::dao_dkg_reset_result   result;
+    };
+    std::mutex                                       m_dao_v2_session_result_mutex;
+    std::deque<pending_dao_v2_session_result>        m_pending_dao_v2_session_results;
     // VSS groups are owned here for the lifetime of the runner. The
     // runner holds a raw pointer to the group, so the group must
     // outlive it.

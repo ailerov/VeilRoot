@@ -1048,7 +1048,9 @@ struct dkg_p2p_reshare_runner::impl
     dao_dkg_reset_config cfg;
     dao_tally_public_key_record public_key;
     dao_vss_group vss;
-    const BIGNUM* N2 = nullptr;
+    BIGNUM* N2 = nullptr;
+
+    ~impl() { if (N2) BN_free(N2); }
     crypto::public_key self_pk;
     crypto::secret_key self_sk;
     std::vector<uint8_t> local_old_share;
@@ -1242,7 +1244,7 @@ dkg_p2p_reshare_runner::dkg_p2p_reshare_runner(
 {
     p_->cfg = cfg;
     p_->public_key = public_key;
-    p_->N2 = N2;
+    p_->N2 = N2 ? BN_dup(N2) : nullptr;
     p_->self_pk = self_pk;
     p_->self_sk = self_sk;
     p_->local_old_share = local_old_share;

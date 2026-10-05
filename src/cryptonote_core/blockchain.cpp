@@ -8635,6 +8635,24 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       }
     }
 
+    // Reshare (Reset) messages route to the session runner keyed by
+    // the share_epoch carried in hdr.epoch. They are a distinct
+    // ceremony from the bootstrap DKG.
+    if (m.hdr.type == dao::dkg_msg_type::reshare_start ||
+        m.hdr.type == dao::dkg_msg_type::reshare_commit ||
+        m.hdr.type == dao::dkg_msg_type::reshare_share ||
+        m.hdr.type == dao::dkg_msg_type::reshare_proof ||
+        m.hdr.type == dao::dkg_msg_type::reshare_complete ||
+        m.hdr.type == dao::dkg_msg_type::reshare_abort) {
+      auto sit = m_dao_v2_session_runners.find(m.hdr.epoch);
+      if (sit == m_dao_v2_session_runners.end()) {
+        // No session running for this share_epoch. Silent.
+        return;
+      }
+      sit->second.runner->on_message(m);
+      return;
+    }
+
     auto it = m_dao_v2_dkg_runners.find(m.hdr.epoch);
     if (it == m_dao_v2_dkg_runners.end()) {
       // No ceremony running for this epoch. Silent: peers may be
@@ -8838,21 +8856,271 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     }
   }
 
-  void Blockchain::drain_dao_v2_session_reshares()
-  {
-    // Owner-thread only. Copies out under a short lock, then releases.
-    std::deque<crypto::hash> jobs;
-    {
-      std::lock_guard<std::mutex> lk(m_dao_v2_dkg_result_mutex);
-      jobs.swap(m_pending_dao_v2_session_reshares);
-    }
-    // The actual P2P reshare runner kick is wired in a following step.
-    // For now, notify that the queue has been drained so a later step
-    // can hook in without changing block-apply.
-    for (const auto& pid : jobs) {
-      MINFO("DAO V2 session reshare queued for proposal " << pid);
-    }
+  // ------------------------------------------------------------------
+// DAO V2 Reset runners
+// ------------------------------------------------------------------
+//
+// The Reset takes each bootstrap shareholder's persistent local share
+// and produces fresh shares for the temporary tally committee selected
+// at voting end. The bootstrap shares are never erased; every session
+// resets from them independently.
+//
+// Root participant subset R is the top T_root bootstrap shareholders
+// by the same canonical ranking used to select the tally committee.
+// Deterministic across nodes.
+void Blockchain::start_dao_v2_reset_for_session(const crypto::hash& proposal_id)
+{
+  // Look up the session record by proposal_id.
+  dao::dao_tally_session session;
+  try {
+    if (!m_db->get_dao_tally_session(proposal_id, session)) return;
+  } catch (...) { return; }
+  const uint32_t share_epoch = session.share_epoch;
+  if (share_epoch == 0) return;
+  if (session.resharing_complete) return;
+  if (m_dao_v2_session_runners.count(share_epoch) > 0) return;
+  if (!m_dao_v2_dkg_send) {
+    MINFO("start_dao_v2_reset_for_session: no send callback yet");
+    return;
   }
+
+  crypto::public_key self_pk{};
+  if (!crypto::secret_key_to_public_key(m_node_privkey, self_pk)) return;
+
+  // Locate the bootstrap key record.
+  const uint32_t bootstrap_key_epoch = 1;
+  dao::dao_tally_key_record bootstrap_rec;
+  try {
+    if (!m_db->get_dao_tally_key(bootstrap_key_epoch, bootstrap_rec)) {
+      MINFO("start_dao_v2_reset_for_session: no bootstrap key record");
+      return;
+    }
+  } catch (...) { return; }
+
+  // Rebuild the ordered bootstrap shareholder list from the record.
+  std::vector<crypto::public_key> bootstrap_members;
+  bootstrap_members.reserve(bootstrap_rec.committee_members.size());
+  for (const auto& m : bootstrap_rec.committee_members) {
+    if (m.size() != 32) continue;
+    crypto::public_key pk{};
+    std::memcpy(pk.data, m.data(), 32);
+    bootstrap_members.push_back(pk);
+  }
+  if (bootstrap_members.size() < dao::DAO_DKG_MIN_COMMITTEE_SIZE) return;
+
+  const uint32_t bootstrap_threshold =
+      dao::dao_dkg_expected_threshold(
+          static_cast<uint32_t>(bootstrap_members.size()));
+  if (bootstrap_threshold == 0) return;
+
+  // Root subset R: top T_root bootstrap shareholders under the same
+  // canonical ranking used for tally committee selection. Determinism
+  // requires that every node derive the same R from the same chain.
+  rebuild_committee_eligible_list();
+  std::vector<crypto::public_key> root_subset;
+  for (const auto& e : m_committee_eligible_sorted) {
+    for (const auto& bm : bootstrap_members) {
+      if (std::memcmp(bm.data, e.first.data, 32) == 0) {
+        root_subset.push_back(bm);
+        break;
+      }
+    }
+    if (root_subset.size() >= bootstrap_threshold) break;
+  }
+  if (root_subset.size() < bootstrap_threshold) {
+    MINFO("start_dao_v2_reset_for_session: not enough live root "
+          "shareholders for epoch " << share_epoch);
+    return;
+  }
+
+  // Local bootstrap share.
+  const uint32_t local_bootstrap_id =
+      dao::dao_dkg_party_index_for(bootstrap_members, self_pk);
+  if (local_bootstrap_id == 0) {
+    // This node is not a bootstrap shareholder. It only participates
+    // if it is in the new committee, and then only as a collector.
+    MINFO("start_dao_v2_reset_for_session: not a bootstrap shareholder");
+  }
+
+  std::vector<uint8_t> local_old_share;
+  if (local_bootstrap_id != 0) {
+    try {
+      if (!m_db->get_dao_local_share(bootstrap_key_epoch,
+                                     local_bootstrap_id,
+                                     local_old_share)) {
+        MINFO("start_dao_v2_reset_for_session: local bootstrap share "
+              "missing for id " << local_bootstrap_id);
+        return;
+      }
+    } catch (...) { return; }
+  }
+
+  // VSS group: decoded from the bootstrap record.
+  auto vss_holder = std::make_unique<dao::dao_vss_group>();
+  vss_holder->P       = BN_bin2bn(bootstrap_rec.vss_P.data(),
+                                  (int)bootstrap_rec.vss_P.size(), nullptr);
+  vss_holder->P_prime = BN_bin2bn(bootstrap_rec.vss_P_prime.data(),
+                                  (int)bootstrap_rec.vss_P_prime.size(), nullptr);
+  vss_holder->g       = BN_bin2bn(bootstrap_rec.vss_g.data(),
+                                  (int)bootstrap_rec.vss_g.size(), nullptr);
+  vss_holder->h       = BN_bin2bn(bootstrap_rec.vss_h.data(),
+                                  (int)bootstrap_rec.vss_h.size(), nullptr);
+  if (!vss_holder->valid()) {
+    MINFO("start_dao_v2_reset_for_session: VSS group decode failed");
+    return;
+  }
+
+  // N^2.
+  BIGNUM* N  = BN_bin2bn(bootstrap_rec.N.data(),
+                         (int)bootstrap_rec.N.size(), nullptr);
+  if (!N) return;
+  BN_CTX* ctx = BN_CTX_new();
+  BIGNUM* N2 = BN_new();
+  BN_sqr(N2, N, ctx);
+  BN_free(N);
+  BN_CTX_free(ctx);
+
+  dao::dao_dkg_reset_config rcfg;
+  rcfg.old_epoch = bootstrap_key_epoch;
+  rcfg.new_epoch = share_epoch;
+  rcfg.old_threshold = bootstrap_threshold;
+  rcfg.new_threshold = session.threshold;
+  rcfg.old_members = root_subset;
+  rcfg.new_members = session.committee_members;
+  if (bootstrap_rec.key_id.size() == 32)
+    std::memcpy(rcfg.key_id.data, bootstrap_rec.key_id.data(), 32);
+
+  // public_key record used by the runner: only V and VSS group fields
+  // are read.
+  dao::dao_tally_public_key_record pk_rec;
+  pk_rec.V = bootstrap_rec.V;
+  pk_rec.vss_P = bootstrap_rec.vss_P;
+  pk_rec.vss_P_prime = bootstrap_rec.vss_P_prime;
+  pk_rec.vss_g = bootstrap_rec.vss_g;
+  pk_rec.vss_h = bootstrap_rec.vss_h;
+
+  dao::dkg_p2p_reshare_callbacks cb;
+  const crypto::public_key sender_pk = self_pk;
+  cb.send_to =
+      [this, sender_pk](const crypto::public_key& recipient_pk,
+                        const std::string& payload) -> bool
+  {
+    if (!m_dao_v2_dkg_send) return false;
+    std::string encrypted;
+    if (!dao::encrypt_dkg_private_payload(payload, sender_pk,
+                                          recipient_pk, encrypted))
+      return false;
+    return m_dao_v2_dkg_send(encrypted);
+  };
+  cb.broadcast = [this](const std::string& payload) {
+    if (m_dao_v2_dkg_send) (void)m_dao_v2_dkg_send(payload);
+  };
+
+  auto runner = std::make_unique<dao::dkg_p2p_reshare_runner>(
+      rcfg, pk_rec, *vss_holder, N2, self_pk, m_node_privkey,
+      local_old_share, bootstrap_rec.V_K_i, cb);
+  BN_free(N2);
+  if (!runner->start()) {
+    MWARNING("start_dao_v2_reset_for_session: runner start failed for "
+             "share_epoch " << share_epoch);
+    return;
+  }
+
+  dao_v2_session_runner_entry entry;
+  entry.runner = std::move(runner);
+  entry.vss    = std::move(vss_holder);
+  m_dao_v2_session_runners.emplace(share_epoch, std::move(entry));
+
+  auto* self = this;
+  m_dao_v2_session_watchers.emplace(share_epoch,
+    std::thread([self, share_epoch]() {
+      auto it = self->m_dao_v2_session_runners.find(share_epoch);
+      if (it == self->m_dao_v2_session_runners.end()) return;
+      dao::dao_dkg_reset_result res;
+      if (!it->second.runner->wait(res, 0)) {
+        MWARNING("DAO V2 Reset epoch " << share_epoch
+                 << ": ceremony failed");
+        return;
+      }
+      self->queue_dao_v2_session_result(share_epoch, std::move(res));
+    }));
+
+  MINFO("start_dao_v2_reset_for_session: runner started for share_epoch "
+        << share_epoch << " root_subset " << root_subset.size()
+        << " committee " << session.committee_size);
+}
+
+void Blockchain::queue_dao_v2_session_result(
+    uint32_t share_epoch, dao::dao_dkg_reset_result result)
+{
+  std::lock_guard<std::mutex> lk(m_dao_v2_session_result_mutex);
+  m_pending_dao_v2_session_results.push_back(
+      pending_dao_v2_session_result{share_epoch, std::move(result)});
+}
+
+void Blockchain::process_pending_dao_v2_session_results()
+{
+  std::deque<pending_dao_v2_session_result> pending;
+  {
+    std::lock_guard<std::mutex> lk(m_dao_v2_session_result_mutex);
+    if (m_pending_dao_v2_session_results.empty()) return;
+    pending.swap(m_pending_dao_v2_session_results);
+  }
+
+  for (auto& item : pending) {
+    const uint32_t share_epoch = item.share_epoch;
+    if (!item.result.ok) {
+      MWARNING("DAO V2 session " << share_epoch << ": Reset not ok");
+      continue;
+    }
+    if (item.result.local_share.empty()) {
+      // This node was not a member of the new committee. Nothing to
+      // persist; the session will still be marked complete by whichever
+      // node is.
+      continue;
+    }
+    try {
+      m_db->add_dao_local_dynamic_share(share_epoch,
+                                        item.result.local_share);
+    } catch (const std::exception& e) {
+      MERROR("Failed to persist local dynamic share: " << e.what());
+      continue;
+    }
+    MINFO("DAO V2 session " << share_epoch
+          << ": local reset share installed");
+  }
+}
+
+void Blockchain::drain_dao_v2_session_reshares()
+{
+  // Owner-thread only. Copies the queue out under a short lock, then
+  // releases before doing any work.
+  std::deque<crypto::hash> jobs;
+  {
+    std::lock_guard<std::mutex> lk(m_dao_v2_dkg_result_mutex);
+    jobs.swap(m_pending_dao_v2_session_reshares);
+  }
+
+  // Dedupe by share_epoch. Multiple proposals whose voting window
+  // closed at the same height share one committee and therefore one
+  // Reset ceremony.
+  std::set<uint32_t> seen_epochs;
+  for (const auto& pid : jobs) {
+    dao::dao_tally_session s{};
+    try {
+      if (!m_db->get_dao_tally_session(pid, s)) continue;
+    } catch (...) {
+      continue;
+    }
+    if (s.share_epoch == 0) continue;
+    if (s.resharing_complete) continue;
+    if (seen_epochs.count(s.share_epoch) > 0) continue;
+    if (m_dao_v2_session_runners.count(s.share_epoch) > 0) continue;
+
+    seen_epochs.insert(s.share_epoch);
+    start_dao_v2_reset_for_session(pid);
+  }
+}
 
     void Blockchain::queue_dao_v2_dkg_result(uint32_t epoch,
                                           dao::dkg_result result)
