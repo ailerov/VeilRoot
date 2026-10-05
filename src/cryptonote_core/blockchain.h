@@ -1356,6 +1356,11 @@ namespace cryptonote
   // any.
   void handle_dao_v2_dkg_msg(const crypto::public_key& member,
                              const std::string& payload);
+  // Inbound reshare_vki_set: a member of the temporary tally
+  // committee published its V_K'_j. Signature checked against the
+  // member public key from the session.
+  void handle_dao_v2_reshare_vki_set(const crypto::public_key& member,
+                                     const dao::dkg_msg& m);
 
   // Bootstrap entry point. Selects the current committee (top-N
   // eligible nodes by stake-age weight), derives the epoch VSS group
@@ -1388,6 +1393,10 @@ namespace cryptonote
   // dynamic share and marks the session resharing_complete. Owner
   // thread only.
   void process_pending_dao_v2_session_results();
+  // Owner-thread. Promotes fully collected V_K'_j sets into the
+  // session records and marks them resharing_complete. Called from
+  // on_idle.
+  void drain_dao_v2_session_vki();
 
   // Called from the watcher thread to hand a finished Reset result
   // back to the owner thread. Thread-safe.
@@ -1731,6 +1740,14 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     };
     std::mutex                                       m_dao_v2_session_result_mutex;
     std::deque<pending_dao_v2_session_result>        m_pending_dao_v2_session_results;
+    // share_epoch -> proposal_id. Populated by
+    // open_dao_v2_tally_sessions() so that inbound reshare_vki_set
+    // messages can be routed to the right session without a scan.
+    std::map<uint32_t, crypto::hash> m_dao_v2_session_proposal;
+    std::mutex                       m_dao_v2_session_vki_mutex;
+    // share_epoch -> member_index -> V_K'_j.
+    std::map<uint32_t, std::map<uint32_t, std::vector<uint8_t>>>
+                                     m_dao_v2_session_vki;
     // VSS groups are owned here for the lifetime of the runner. The
     // runner holds a raw pointer to the group, so the group must
     // outlive it.

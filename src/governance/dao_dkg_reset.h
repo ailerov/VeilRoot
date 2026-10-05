@@ -51,6 +51,16 @@ struct dao_dkg_reset_result
     crypto::hash transcript_hash{};
     crypto::hash new_committee_id{};
     std::vector<uint8_t> local_share;
+
+    // 1-based index of this node in the new committee. 0 if this node
+    // is not a member.
+    uint32_t local_member_index = 0;
+
+    // V_K'_j = V_K^(Delta * SK'_j). The verification key for this
+    // node's temporary tally share. 512 bytes (mod N^2). Empty when
+    // this node is not a member of the new committee.
+    std::vector<uint8_t> local_vki;
+
     std::vector<std::vector<uint8_t>> new_verification_keys;
 };
 

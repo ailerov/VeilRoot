@@ -170,6 +170,7 @@ enum class dkg_msg_type : uint8_t
     reshare_proof            = 0x77,
     reshare_complete         = 0x78,
     reshare_abort            = 0x79,
+    reshare_vki_set          = 0x7A,
 
 };
 

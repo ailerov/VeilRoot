@@ -1217,7 +1217,41 @@ void dkg_p2p_reshare_runner::impl::try_finish()
     result.ok = true;
     result.new_epoch = cfg.new_epoch;
     result.new_threshold = cfg.new_threshold;
+    result.local_member_index = self_new_id;
     result.local_share = std::move(new_share);
+
+    // Compute the verification key V_K'_j = V_K^(Delta * SK'_j) for
+    // this node's new share. Uses the same construction as the DKG's
+    // do_derive_VKi(). Broadcast as a signed reshare_vki_set message
+    // so every node can populate session.committee_V_K_i.
+    if (!result.local_share.empty()) {
+        BIGNUM* sk = signed_vec_to_bn(result.local_share);
+        BIGNUM* Vb = BN_bin2bn(public_key.V.data(),
+                               (int)public_key.V.size(), nullptr);
+        if (sk && Vb) {
+            BN_CTX* c = BN_CTX_new();
+            BIGNUM* V2 = BN_new();
+            BN_sqr(V2, Vb, c);
+            BIGNUM* exp = BN_new();
+            BN_mul(exp, dao_dkg_delta(), sk, c);
+            BIGNUM* res = BN_new();
+            if (BN_is_negative(exp)) {
+                BIGNUM* Vinv = BN_mod_inverse(nullptr, Vb, V2, c);
+                BIGNUM* pos = BN_dup(exp);
+                BN_set_negative(pos, 0);
+                BN_mod_exp(res, Vinv, pos, V2, c);
+                BN_free(Vinv); BN_free(pos);
+            } else {
+                BN_mod_exp(res, Vb, exp, V2, c);
+            }
+            result.local_vki.assign(PAILLIER_CT_BYTES, 0);
+            BN_bn2binpad(res, result.local_vki.data(), PAILLIER_CT_BYTES);
+            BN_free(res); BN_free(exp); BN_free(V2);
+            BN_CTX_free(c);
+        }
+        BN_free(sk); BN_free(Vb);
+    }
+
     finished.store(true);
     done_cv.notify_all();
 }

@@ -8638,6 +8638,11 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     // Reshare (Reset) messages route to the session runner keyed by
     // the share_epoch carried in hdr.epoch. They are a distinct
     // ceremony from the bootstrap DKG.
+    if (m.hdr.type == dao::dkg_msg_type::reshare_vki_set) {
+      handle_dao_v2_reshare_vki_set(member, m);
+      return;
+    }
+
     if (m.hdr.type == dao::dkg_msg_type::reshare_start ||
         m.hdr.type == dao::dkg_msg_type::reshare_commit ||
         m.hdr.type == dao::dkg_msg_type::reshare_share ||
@@ -8845,6 +8850,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
       try {
         m_db->add_dao_tally_session(pid, s);
+        m_dao_v2_session_proposal[s.share_epoch] = pid;
         m_pending_dao_v2_session_reshares.push_back(pid);
         MINFO("DAO V2 tally session opened: proposal " << pid
               << " vote_end " << voting_end_height
@@ -8993,6 +8999,7 @@ void Blockchain::start_dao_v2_reset_for_session(const crypto::hash& proposal_id)
   // public_key record used by the runner: only V and VSS group fields
   // are read.
   dao::dao_tally_public_key_record pk_rec;
+  pk_rec.N = bootstrap_rec.N;
   pk_rec.V = bootstrap_rec.V;
   pk_rec.vss_P = bootstrap_rec.vss_P;
   pk_rec.vss_P_prime = bootstrap_rec.vss_P_prime;
@@ -9088,6 +9095,175 @@ void Blockchain::process_pending_dao_v2_session_results()
     }
     MINFO("DAO V2 session " << share_epoch
           << ": local reset share installed");
+
+    // Broadcast this node's V_K'_j so every peer can populate the
+    // session's committee_V_K_i and mark resharing complete.
+    const uint32_t my_index = item.result.local_member_index;
+    if (item.result.local_vki.size() == dao::PAILLIER_CT_BYTES &&
+        my_index != 0 &&
+        m_dao_v2_dkg_send) {
+      crypto::public_key self_pk{};
+      if (crypto::secret_key_to_public_key(m_node_privkey, self_pk)) {
+        const char* dom = "VeilRoot-DAO-RESHARE-VKI-V1";
+        std::vector<uint8_t> buf;
+        buf.insert(buf.end(), dom, dom + std::strlen(dom));
+        for (int i = 0; i < 4; ++i)
+          buf.push_back((share_epoch >> (8*i)) & 0xff);
+        for (int i = 0; i < 4; ++i)
+          buf.push_back((my_index >> (8*i)) & 0xff);
+        buf.insert(buf.end(),
+                   item.result.local_vki.begin(),
+                   item.result.local_vki.end());
+        crypto::hash h;
+        crypto::cn_fast_hash(buf.data(), buf.size(), h);
+        crypto::signature sig{};
+        crypto::generate_signature(h, self_pk, m_node_privkey, sig);
+
+        dao::dkg_msg vm;
+        vm.hdr.version = 1;
+        vm.hdr.epoch = share_epoch;
+        vm.hdr.sender_id = my_index;
+        vm.hdr.recipient_id = 0;
+        vm.hdr.type = dao::dkg_msg_type::reshare_vki_set;
+        vm.tag32 = my_index;
+        vm.bytes_a = item.result.local_vki;
+        vm.bytes_b.assign(
+            reinterpret_cast<const uint8_t*>(&sig),
+            reinterpret_cast<const uint8_t*>(&sig) + sizeof(sig));
+        std::vector<uint8_t> ser;
+        vm.serialize(ser);
+        (void)m_dao_v2_dkg_send(std::string(ser.begin(), ser.end()));
+      }
+    }
+  }
+}
+
+void Blockchain::handle_dao_v2_reshare_vki_set(
+    const crypto::public_key& member, const dao::dkg_msg& m)
+{
+  const uint32_t share_epoch = m.hdr.epoch;
+  const uint32_t claimed_index = m.tag32;
+  if (claimed_index == 0) return;
+  if (m.bytes_a.size() != dao::PAILLIER_CT_BYTES) return;
+  if (m.bytes_b.size() != sizeof(crypto::signature)) return;
+
+  // Signature over domain || share_epoch || claimed_index || V_K'_j.
+  {
+    const char* dom = "VeilRoot-DAO-RESHARE-VKI-V1";
+    std::vector<uint8_t> buf;
+    buf.insert(buf.end(), dom, dom + std::strlen(dom));
+    for (int i = 0; i < 4; ++i)
+      buf.push_back((share_epoch >> (8*i)) & 0xff);
+    for (int i = 0; i < 4; ++i)
+      buf.push_back((claimed_index >> (8*i)) & 0xff);
+    buf.insert(buf.end(), m.bytes_a.begin(), m.bytes_a.end());
+    crypto::hash h;
+    crypto::cn_fast_hash(buf.data(), buf.size(), h);
+    crypto::signature sig;
+    std::memcpy(&sig, m.bytes_b.data(), sizeof(sig));
+    if (!crypto::check_signature(h, member, sig)) {
+      MWARNING("reshare_vki_set: bad signature from " << member);
+      return;
+    }
+  }
+
+  // The claimed_index must point at this sender in the session.
+  crypto::hash pid{};
+  {
+    std::lock_guard<std::mutex> lk(m_dao_v2_session_result_mutex);
+    auto it = m_dao_v2_session_proposal.find(share_epoch);
+    if (it == m_dao_v2_session_proposal.end()) return;
+    pid = it->second;
+  }
+
+  dao::dao_tally_session session;
+  try {
+    if (!m_db->get_dao_tally_session(pid, session)) return;
+  } catch (...) { return; }
+  if (session.share_epoch != share_epoch) return;
+  if (claimed_index > session.committee_members.size()) return;
+  if (std::memcmp(session.committee_members[claimed_index - 1].data,
+                  member.data, 32) != 0) {
+    MWARNING("reshare_vki_set: sender does not match claimed index");
+    return;
+  }
+
+  {
+    std::lock_guard<std::mutex> lk(m_dao_v2_session_vki_mutex);
+    auto& slot = m_dao_v2_session_vki[share_epoch];
+    if (slot.count(claimed_index) > 0) return;
+    slot[claimed_index] = m.bytes_a;
+  }
+  MINFO("reshare_vki_set stored: share_epoch " << share_epoch
+        << " index " << claimed_index);
+}
+
+void Blockchain::drain_dao_v2_session_vki()
+{
+  // Owner-thread only. Copies the accumulated map out under a short
+  // lock, then does DB work without holding it.
+  std::map<uint32_t, std::map<uint32_t, std::vector<uint8_t>>> pending;
+  {
+    std::lock_guard<std::mutex> lk(m_dao_v2_session_vki_mutex);
+    if (m_dao_v2_session_vki.empty()) return;
+    pending.swap(m_dao_v2_session_vki);
+  }
+
+  for (auto& kv : pending) {
+    const uint32_t share_epoch = kv.first;
+    auto& vkis = kv.second;
+
+    crypto::hash pid{};
+    {
+      std::lock_guard<std::mutex> lk(m_dao_v2_session_result_mutex);
+      auto it = m_dao_v2_session_proposal.find(share_epoch);
+      if (it == m_dao_v2_session_proposal.end()) continue;
+      pid = it->second;
+    }
+
+    dao::dao_tally_session session;
+    try {
+      if (!m_db->get_dao_tally_session(pid, session)) continue;
+    } catch (...) { continue; }
+    if (session.resharing_complete) continue;
+    if (session.committee_size == 0) continue;
+
+    // Not complete yet. Put back what we have and try again next
+    // on_idle.
+    if (vkis.size() < session.committee_size) {
+      std::lock_guard<std::mutex> lk(m_dao_v2_session_vki_mutex);
+      auto& slot = m_dao_v2_session_vki[share_epoch];
+      for (auto& e : vkis) slot.emplace(e.first, std::move(e.second));
+      continue;
+    }
+
+    // Fully collected. Fill the session in committee order.
+    session.committee_V_K_i.assign(session.committee_size, {});
+    bool all_present = true;
+    for (uint32_t i = 1; i <= session.committee_size; ++i) {
+      auto it = vkis.find(i);
+      if (it == vkis.end() || it->second.size() != dao::PAILLIER_CT_BYTES) {
+        all_present = false;
+        break;
+      }
+      session.committee_V_K_i[i - 1] = it->second;
+    }
+    if (!all_present) {
+      // Stash back what we had.
+      std::lock_guard<std::mutex> lk(m_dao_v2_session_vki_mutex);
+      auto& slot = m_dao_v2_session_vki[share_epoch];
+      for (auto& e : vkis) slot.emplace(e.first, std::move(e.second));
+      continue;
+    }
+
+    session.resharing_complete = true;
+    try {
+      m_db->add_dao_tally_session(pid, session);
+      MINFO("DAO V2 session " << share_epoch
+            << ": committee verification set complete");
+    } catch (const std::exception& e) {
+      MERROR("Failed to update session V_K_i: " << e.what());
+    }
   }
 }
 
