@@ -49,6 +49,7 @@
 #include "governance/dao_dkg.h"
 #include "governance/dao_supply.h"
 #include "governance/dao_tally.h"
+#include "governance/dao_tally_session_cycle.h"
 
 #undef MONERO_DEFAULT_LOG_CATEGORY
 #define MONERO_DEFAULT_LOG_CATEGORY "blockchain.db.lmdb"
@@ -1733,6 +1734,10 @@ void BlockchainLMDB::open(const std::string& filename, const int db_flags)
   // BEGIN_VNS_DAO_LOCAL_DYNAMIC_SHARES
   lmdb_db_open(txn, LMDB_DAO_LOCAL_DYNAMIC_SHARES, MDB_CREATE, m_dao_local_dynamic_shares, "Failed to open db handle for dao_local_dynamic_shares");
   // END_VNS_DAO_LOCAL_DYNAMIC_SHARES
+
+  // BEGIN_VNS_DAO_TALLY_SESSIONS
+  lmdb_db_open(txn, LMDB_DAO_TALLY_SESSIONS, MDB_CREATE, m_dao_tally_sessions, "Failed to open db handle for dao_tally_sessions");
+  // END_VNS_DAO_TALLY_SESSIONS
 
 
   lmdb_db_open(txn, LMDB_HF_VERSIONS, MDB_INTEGERKEY | MDB_CREATE, m_hf_versions, "Failed to open db handle for m_hf_versions");
@@ -3806,6 +3811,60 @@ void BlockchainLMDB::remove_dao_local_dynamic_share(uint32_t share_epoch)
     throw0(DB_ERROR(lmdb_error("Failed to remove dao local dynamic share: ", result).c_str()));
 }
 // END_VNS_DAO_LOCAL_DYNAMIC_SHARES
+
+
+// BEGIN_VNS_DAO_TALLY_SESSIONS
+void BlockchainLMDB::add_dao_tally_session(const crypto::hash& proposal_id,
+                                           const dao::dao_tally_session& rec)
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+  std::vector<uint8_t> blob;
+  if (!rec.serialize(blob))
+    throw0(DB_ERROR("Failed to serialize dao tally session"));
+  lmdb_cursor_guard cur(m_write_txn->m_txn, m_dao_tally_sessions);
+  MDB_val k = { sizeof(proposal_id), (void*)&proposal_id };
+  MDB_val v = { blob.size(), blob.empty() ? nullptr : blob.data() };
+  int result = mdb_cursor_put(cur.get(), &k, &v, MDB_NODUPDATA);
+  if (result == MDB_KEYEXIST)
+    result = mdb_cursor_put(cur.get(), &k, &v, MDB_CURRENT);
+  if (result)
+    throw0(DB_ERROR(lmdb_error("Failed to add dao tally session: ", result).c_str()));
+}
+
+bool BlockchainLMDB::get_dao_tally_session(const crypto::hash& proposal_id,
+                                           dao::dao_tally_session& rec) const
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+  TXN_PREFIX_RDONLY();
+  RCURSOR(dao_tally_sessions)
+  MDB_val k = { sizeof(proposal_id), (void*)&proposal_id };
+  MDB_val v;
+  int result = mdb_cursor_get(m_cur_dao_tally_sessions, &k, &v, MDB_SET);
+  if (result == MDB_NOTFOUND) { TXN_POSTFIX_RDONLY(); return false; }
+  if (result)
+    throw0(DB_ERROR(lmdb_error("Failed to get dao tally session: ", result).c_str()));
+  std::vector<uint8_t> blob(static_cast<const uint8_t*>(v.mv_data),
+                            static_cast<const uint8_t*>(v.mv_data) + v.mv_size);
+  const bool ok = rec.deserialize(blob);
+  TXN_POSTFIX_RDONLY();
+  return ok;
+}
+
+void BlockchainLMDB::remove_dao_tally_session(const crypto::hash& proposal_id)
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+  lmdb_cursor_guard cur(m_write_txn->m_txn, m_dao_tally_sessions);
+  MDB_val k = { sizeof(proposal_id), (void*)&proposal_id };
+  int result = mdb_cursor_get(cur.get(), &k, NULL, MDB_SET);
+  if (result == MDB_SUCCESS)
+    mdb_cursor_del(cur.get(), 0);
+  else if (result != MDB_NOTFOUND)
+    throw0(DB_ERROR(lmdb_error("Failed to remove dao tally session: ", result).c_str()));
+}
+// END_VNS_DAO_TALLY_SESSIONS
 
 
 // BEGIN_VNS_TREASURY_AMOUNT_TXN

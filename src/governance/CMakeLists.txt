@@ -27,6 +27,7 @@ set(governance_sources
     dao_dkg_transport.cpp
     dao_consistency.cpp
     dao_tally_key.cpp
+    dao_tally_session_cycle.cpp
     dao_dkg_reset.cpp
     parameter_manager.cpp
 )

@@ -30,7 +30,7 @@
 
 #pragma once
 
-namespace cryptonote { namespace dao { struct dao_tally_key_record; } }
+namespace cryptonote { namespace dao { struct dao_tally_key_record; struct dao_tally_session; } }
 namespace cryptonote { namespace dao { struct dao_supply_snapshot; } }
 namespace cryptonote { namespace dao { struct dao_v2_outcome_record; } }
 
@@ -2223,6 +2223,15 @@ public:
                                              std::vector<uint8_t>& share_blob) const = 0;
     virtual void remove_dao_local_dynamic_share(uint32_t share_epoch) = 0;
     // ---------- VNS DAO LOCAL DYNAMIC SHARES END ----------
+    // BEGIN_VNS_DAO_TALLY_SESSIONS
+    // Public per-proposal tally session. Consensus state.
+    // Key: proposal_id (32 bytes).
+    virtual void add_dao_tally_session(const crypto::hash& proposal_id,
+                                       const dao::dao_tally_session& rec) = 0;
+    virtual bool get_dao_tally_session(const crypto::hash& proposal_id,
+                                       dao::dao_tally_session& rec) const = 0;
+    virtual void remove_dao_tally_session(const crypto::hash& proposal_id) = 0;
+    // ---------- VNS DAO TALLY SESSIONS END ----------
 
     // BEGIN_VNS_ELIGIBLE
     virtual void add_committee_eligible(const crypto::key_image& ki, const committee_eligible_record& rec) = 0;
