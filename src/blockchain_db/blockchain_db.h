@@ -2214,6 +2214,16 @@ public:
     virtual void remove_dao_local_share(uint32_t epoch, uint32_t member_index) = 0;
     // ---------- VNS DAO LOCAL SHARE END ----------
 
+    // BEGIN_VNS_DAO_LOCAL_DYNAMIC_SHARES
+    // Local-only per-node share for a dynamic tally session.
+    // Key: share_epoch (4 BE). Not consensus state. Never transmitted.
+    virtual void add_dao_local_dynamic_share(uint32_t share_epoch,
+                                             const std::vector<uint8_t>& share_blob) = 0;
+    virtual bool get_dao_local_dynamic_share(uint32_t share_epoch,
+                                             std::vector<uint8_t>& share_blob) const = 0;
+    virtual void remove_dao_local_dynamic_share(uint32_t share_epoch) = 0;
+    // ---------- VNS DAO LOCAL DYNAMIC SHARES END ----------
+
     // BEGIN_VNS_ELIGIBLE
     virtual void add_committee_eligible(const crypto::key_image& ki, const committee_eligible_record& rec) = 0;
     virtual bool get_committee_eligible(const crypto::key_image& ki, committee_eligible_record& rec) const = 0;
