@@ -396,15 +396,24 @@ The final result is recorded on-chain.
 
 A proposal passes only when both required conditions are satisfied.
 
+Two distinct quantities are used. **Voting weight** (age-weighted) determines majority. **Participation coins** (the raw VNS amount represented by accepted votes) determines quorum. The two quantities are never substituted for one another.
+
 ## Condition 1 — Majority
 
-**Total_Yes > Total_No**
+**Total_Yes_Weight > Total_No_Weight**
 
 ## Condition 2 — Quorum
 
-**Total_Yes + Total_No ≥ Quorum**
+**Participation_Coins_Total ≥ Quorum**
 
-The default quorum is defined as **10% of the total minted supply at the voting-end height**.
+The default quorum is defined as **10% of the circulating supply at the voting-end height**, where
+
+    circulating_supply =
+        minted_supply
+        - treasury_balance
+        - burned_fees
+
+evaluated at the voting-end height. Circulating supply represents VNS held by users and available for participation. It excludes locked treasury VNS and permanently burned fees, neither of which can participate in governance.
 
 The DAO may modify the quorum through governance in order to adapt the requirement to changes in the effective votable supply.
 

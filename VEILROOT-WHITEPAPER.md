@@ -138,7 +138,7 @@ The VNS blockchain embeds a fully permissionless DAO that controls the treasury 
 - These nodes collaboratively decrypt the aggregate blinding factor (using their DKG shares) and publish the plaintext totals: `Total_Yes_Weight` and `Total_No_Weight`.
 - A proposal passes if:
   1. `Total_Yes_Weight > Total_No_Weight`
-  2. The total voting weight (`Total_Yes + Total_No`) meets or exceeds the quorum (default: 10% of the total minted supply at the voting end height). Fees are permanently burned and never enter the UTXO set, so the minted supply (already-generated coins) provides a conservative, privacy-preserving approximation of the votable supply. The DAO may adjust the quorum percentage via on-chain proposals to compensate for spent outputs.
+  2. The total participation coins (the raw VNS amount represented by accepted votes) meets or exceeds the quorum (default: 10% of the circulating supply at the voting end height). Circulating supply is `minted_supply - treasury_balance - burned_fees`, representing VNS held by users and available for participation; it excludes locked treasury VNS and permanently burned fees. The DAO may adjust the quorum percentage via on-chain proposals.
 - The final result (adopted/rejected), the aggregate totals, and the quorum percentage are publicly recorded on-chain.
 
 **Execution:** Once a proposal passes, anyone may submit an execution transaction that references the proposal ID. The blockchain validates the proof and, if successful, releases treasury funds or updates the governance parameters.
@@ -420,7 +420,7 @@ When a user attempts to register a domain `label..extension`:
 | Tally Committee Size | 16 | Number of top stake-age nodes selected to decrypt vote totals. |
 | Bridge Operator Committee Size | 32 | Number of top stake-age nodes selected to sign XMR transactions. |
 | Threshold Ratio | 2/3 | Required fraction of committee signatures for decryption or XMR signing. |
-| Voting Quorum | 10% | 10% of total minted supply (already-generated coins) |
+| Voting Quorum | 10% | 10% of circulating supply (minted - treasury - burned) at voting-end height |
 | Minimum Stake-Age Weight | > 0 | Minimum weight to be eligible for tally or bridge committees. |
 | Proposal Submission Fee | 0.00001 VNS | Burned to prevent spam. |
 
