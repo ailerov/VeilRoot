@@ -315,3 +315,141 @@ TEST(dao_dkg_reset, various_resizes_preserve_secret)
     BN_free(q); BN_free(nineteen); BN_free(N);
     BN_CTX_free(ctx);
 }
+
+// -------------------------------------------------------------------
+// Pedersen-verified Reset, single-process.
+// 3 old shareholders, threshold 2 -> 5 new, threshold 3.
+// -------------------------------------------------------------------
+TEST(dao_dkg_reset, pedersen_verified_resize)
+{
+    BN_CTX* ctx = BN_CTX_new();
+    ASSERT_NE(ctx, nullptr);
+
+    // Small VSS group. For test speed: a small prime P = 2*P' + 1 with
+    // g=2 and h=3 (h != g, no known log). Both g, h lie in the order-P'
+    // subgroup. P' = 11 for illustration is too small for cryptographic
+    // use but fine for the equation check.
+    dao_vss_group vss;
+    vss.P       = BN_new();
+    vss.P_prime = BN_new();
+    vss.g       = BN_new();
+    vss.h       = BN_new();
+    BN_set_word(vss.P,       23);   // 2*11 + 1
+    BN_set_word(vss.P_prime, 11);
+    BN_set_word(vss.g,       2);
+    BN_set_word(vss.h,       4);    // 4 = 2^2 in the P' subgroup
+
+    // Old shares: f(1)=142, f(2)=242, f(3)=342. Secret f(0) = 42.
+    std::vector<std::vector<uint8_t>> old_shares(3);
+    auto set_share = [](std::vector<uint8_t>& v, int64_t x) {
+        BIGNUM* b = BN_new();
+        BN_set_word(b, static_cast<BN_ULONG>(x));
+        const int nb = BN_num_bytes(b);
+        v.assign(1 + nb, 0);
+        BN_bn2bin(b, v.data() + 1);
+        BN_free(b);
+    };
+    set_share(old_shares[0], 142);
+    set_share(old_shares[1], 242);
+    set_share(old_shares[2], 342);
+
+    dao_dkg_reset_config cfg{};
+    cfg.old_threshold = 2;
+    cfg.new_threshold = 3;
+    cfg.old_members.resize(3);
+    cfg.new_members.resize(5);
+
+    std::vector<dao_reset_public_contribution> publics(3);
+    std::vector<std::vector<dao_reset_private_subshare>> private_sets(3);
+
+    for (uint32_t l = 1; l <= 3; ++l) {
+        ASSERT_TRUE(dao_dkg_reset_generate_contribution(
+            cfg, l, old_shares[l-1], vss, publics[l-1], private_sets[l-1]));
+        ASSERT_EQ(publics[l-1].coefficient_commitments.size(), 3u);
+        ASSERT_EQ(private_sets[l-1].size(), 5u);
+    }
+
+    // Each new shareholder accepts.
+    std::vector<std::vector<uint8_t>> new_shares(5);
+    for (uint32_t j = 1; j <= 5; ++j) {
+        std::vector<dao_reset_private_subshare> my;
+        for (uint32_t l = 1; l <= 3; ++l) {
+            for (const auto& ss : private_sets[l-1]) {
+                if (ss.to_new_member_id == j) my.push_back(ss);
+            }
+        }
+        ASSERT_TRUE(dao_dkg_reset_accept(
+            cfg, j, publics, my, vss, new_shares[j-1]));
+    }
+
+    // Sanity: reconstruct SK(0) from any 3 new shares at 1..5 via integer
+    // Lagrange. Must equal 42.
+    BIGNUM* acc = BN_new();
+    BN_zero(acc);
+    std::vector<uint32_t> subset = {1, 2, 3};
+    for (uint32_t i = 1; i <= 3; ++i) {
+        BIGNUM* mu = BN_new();
+        ASSERT_TRUE(dao_dkg_lagrange_mu(subset, i, mu));
+
+        BIGNUM* si = BN_new();
+        BN_bin2bn(new_shares[i-1].data() + 1,
+                  static_cast<int>(new_shares[i-1].size() - 1), si);
+        if (new_shares[i-1][0]) BN_set_negative(si, 1);
+
+        BIGNUM* term = BN_new();
+        BN_mul(term, mu, si, ctx);
+        BN_add(acc, acc, term);
+
+        BN_free(term); BN_free(si); BN_free(mu);
+    }
+    BIGNUM* Delta = BN_dup(dao_dkg_delta());
+    BIGNUM* q = BN_new();
+    BIGNUM* r = BN_new();
+    BN_div(q, r, acc, Delta, ctx);
+    ASSERT_TRUE(BN_is_zero(r));
+    EXPECT_EQ(BN_get_word(q), 42u);
+
+    BN_free(r); BN_free(q); BN_free(Delta); BN_free(acc);
+    BN_CTX_free(ctx);
+}
+
+// -------------------------------------------------------------------
+// A single malicious old shareholder publishing a subshare that does not
+// match its coefficient commitments must be rejected.
+// -------------------------------------------------------------------
+TEST(dao_dkg_reset, tampered_subshare_rejected)
+{
+    dao_vss_group vss;
+    vss.P       = BN_new();
+    vss.P_prime = BN_new();
+    vss.g       = BN_new();
+    vss.h       = BN_new();
+    BN_set_word(vss.P,       23);
+    BN_set_word(vss.P_prime, 11);
+    BN_set_word(vss.g,       2);
+    BN_set_word(vss.h,       4);
+
+    std::vector<uint8_t> old_share(2, 0);
+    old_share[0] = 0;
+    old_share[1] = 0x8e;   // 142
+
+    dao_dkg_reset_config cfg{};
+    cfg.old_threshold = 2;
+    cfg.new_threshold = 3;
+    cfg.old_members.resize(3);
+    cfg.new_members.resize(5);
+
+    dao_reset_public_contribution pub;
+    std::vector<dao_reset_private_subshare> priv;
+    ASSERT_TRUE(dao_dkg_reset_generate_contribution(
+        cfg, 1, old_share, vss, pub, priv));
+    ASSERT_FALSE(priv.empty());
+
+    // Flip a byte of the subshare for new member 2.
+    auto& ss = priv[1];
+    ss.subshare.back() ^= 0x01;
+
+    EXPECT_FALSE(dao_dkg_reset_verify_subshare(
+        vss, 2, ss.subshare, ss.blinding, pub.coefficient_commitments));
+
+}
