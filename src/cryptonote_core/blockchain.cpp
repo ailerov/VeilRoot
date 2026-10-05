@@ -9420,33 +9420,48 @@ void Blockchain::drain_dao_v2_session_reshares()
       return;
     }
 
-    dao::dao_tally_key_record key_rec;
-    if (!m_db->get_dao_tally_key(
-            static_cast<uint32_t>(share.tally_key_epoch), key_rec)) {
-      MWARNING("V2 tally share: key record not found for epoch "
-               << share.tally_key_epoch);
+    // Session that actually performed the tally.
+    dao::dao_tally_session session;
+    try {
+      if (!m_db->get_dao_tally_session(share.proposal_id, session)) {
+        MWARNING("V2 tally share: no session for proposal");
+        return;
+      }
+    } catch (...) {
+      MWARNING("V2 tally share: session lookup threw");
+      return;
+    }
+    if (share.share_epoch != session.share_epoch) {
+      MWARNING("V2 tally share: share_epoch mismatch");
+      return;
+    }
+    if (!session.resharing_complete) {
+      MWARNING("V2 tally share: session resharing not complete");
+      return;
+    }
+    if (session.committee_V_K_i.size() != session.committee_size) {
+      MWARNING("V2 tally share: session V_K_i set incomplete");
       return;
     }
 
-    // Sender's public key must be one of the recorded committee
+    // Sender's public key must be one of the SESSION committee
     // members, and its position must match the share's member_index.
     int found_index = -1;
-    for (size_t i = 0; i < key_rec.committee_members.size(); ++i) {
-      const auto& km = key_rec.committee_members[i];
-      if (km.size() != sizeof(member.data)) continue;
-      if (std::memcmp(km.data(), member.data, sizeof(member.data)) == 0) {
+    for (size_t i = 0; i < session.committee_members.size(); ++i) {
+      const auto& km = session.committee_members[i];
+      if (std::memcmp(km.data, member.data, sizeof(member.data)) == 0) {
         found_index = static_cast<int>(i) + 1;
         break;
       }
     }
     if (found_index < 0) {
       MWARNING("V2 tally share: sender " << member
-               << " is not in the epoch committee");
+               << " is not in the session committee");
       return;
     }
     if (static_cast<uint32_t>(found_index) != share.member_index) {
       MWARNING("V2 tally share: member_index mismatch (claimed "
-               << share.member_index << ", committee " << found_index << ")");
+               << share.member_index << ", session " << found_index << ")");
       return;
     }
 
@@ -9515,25 +9530,29 @@ void Blockchain::drain_dao_v2_session_reshares()
     }
 
     // Walk proposals looking for those whose voting window closed at
-    // height - 1. This is O(n_proposals); the proposal count is small
-    // relative to blocks and the operation runs once per block.
+    // height - 1. For each, look up the tally session opened by
+    // open_dao_v2_tally_sessions() at that height. The producer is a
+    // member of the SESSION committee, not the bootstrap shareholder
+    // set. The Reset must have completed for this node to have a share.
     m_db->for_all_proposal_records(
       [&](const crypto::hash& pid, const proposal_record& rec) -> bool {
         if (rec.status != PROPOSAL_STATUS_ACTIVE) return true;
         if (rec.voting_end_height + 1 != height) return true;
         if (rec.tally_key_epoch == 0) return true;
 
-        dao::dao_tally_key_record key_rec;
-        if (!m_db->get_dao_tally_key(
-                static_cast<uint32_t>(rec.tally_key_epoch), key_rec))
+        dao::dao_tally_session session;
+        try {
+          if (!m_db->get_dao_tally_session(pid, session)) return true;
+        } catch (...) { return true; }
+        if (!session.resharing_complete) return true;
+        if (session.committee_V_K_i.size() != session.committee_size)
           return true;
 
-        // Find this node's 1-based index within the epoch committee.
+        // Find this node's 1-based index within the session committee.
         uint32_t local_index = 0;
-        for (size_t i = 0; i < key_rec.committee_members.size(); ++i) {
-          const auto& km = key_rec.committee_members[i];
-          if (km.size() != sizeof(self_pk.data)) continue;
-          if (std::memcmp(km.data(), self_pk.data,
+        for (size_t i = 0; i < session.committee_members.size(); ++i) {
+          const auto& km = session.committee_members[i];
+          if (std::memcmp(km.data, self_pk.data,
                           sizeof(self_pk.data)) == 0) {
             local_index = static_cast<uint32_t>(i) + 1;
             break;
@@ -9546,7 +9565,8 @@ void Blockchain::drain_dao_v2_session_reshares()
         if (!tm.produce_local_share(pid, local_index, share)) return true;
 
         MINFO("V2 tally: producing share for proposal " << pid
-              << " as member " << local_index);
+              << " as session member " << local_index
+              << " share_epoch " << session.share_epoch);
         m_dao_v2_tally_broadcast(share);
         return true;
       });

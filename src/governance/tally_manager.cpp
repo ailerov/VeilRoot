@@ -11,6 +11,7 @@
 #include "cryptonote_core/blockchain.h"   // for proposal_record, status enum
 #include "governance/dao_paillier.h"
 #include "governance/dao_supply.h"
+#include "governance/dao_tally_session_cycle.h"
 #include "governance/dao_threshold.h"
 #include "misc_log_ex.h"
 
@@ -45,18 +46,30 @@ bool TallyManager::try_finalize(
     // Already finalized.
     {
         dao::dao_v2_outcome_record existing;
-        if (m_db.get_dao_v2_outcome(proposal_id, existing)) return true;
+        if (m_db.get_dao_v2_outcome(proposal_id, existing)) {
+            return true;
+        }
     }
 
     proposal_record prop;
-    if (!m_db.get_proposal_record(proposal_id, prop)) return false;
+    if (!m_db.get_proposal_record(proposal_id, prop)) {
+    }
 
+    // Temporary tally session: names the committee that must have
+    // produced these shares. Bound to the proposal.
+    dao::dao_tally_session session;
+    if (!m_db.get_dao_tally_session(proposal_id, session)) return false;
+    if (!session.resharing_complete) return false;
+    if (session.committee_V_K_i.size() != session.committee_size)
+        return false;
+
+    // Stable Paillier key epoch, unchanged from bootstrap.
     dao::dao_tally_key_record key_rec;
     if (!m_db.get_dao_tally_key(static_cast<uint32_t>(prop.tally_key_epoch),
                                 key_rec))
         return false;
 
-    if (shares.size() < key_rec.threshold) return false;
+    if (shares.size() < session.threshold) return false;
 
     dao_proposal_aggregate agg;
     if (!m_db.get_dao_proposal_aggregate(proposal_id, agg)) return false;
@@ -74,7 +87,7 @@ bool TallyManager::try_finalize(
     // receive time (identity, epoch, aggregate binding, ZK proof).
     dao::dao_partial_set W_set, S_set, B_set;
     for (const auto& kv : shares) {
-        if (W_set.member_indices.size() >= key_rec.threshold) break;
+        if (W_set.member_indices.size() >= session.threshold) break;
         const auto& s = kv.second;
         if (std::memcmp(s.aggregate_ciphertext_hash.data,
                         agg_hash.data, 32) != 0)
@@ -89,7 +102,7 @@ bool TallyManager::try_finalize(
         B_set.partials.push_back(s.partial_B);
         B_set.proofs.push_back(s.proof_B);
     }
-    if (W_set.member_indices.size() < key_rec.threshold) return false;
+    if (W_set.member_indices.size() < session.threshold) return false;
 
     // Historical supply at the voting-end height.
     dao::dao_supply_snapshot snap;
@@ -99,11 +112,25 @@ bool TallyManager::try_finalize(
         return false;
     }
 
+    // Build a synthetic key record bound to the SESSION committee.
+    // The public Paillier material (N, G, theta, delta, V) is
+    // bootstrap; the committee material (threshold, t, V_K_i,
+    // committee_size) is the temporary session. This is what the
+    // frozen certificate builder consumes; its mathematics is
+    // unchanged.
+    dao::dao_tally_key_record cert_key_rec = key_rec;
+    cert_key_rec.committee_size = session.committee_size;
+    cert_key_rec.threshold      = session.threshold;
+    cert_key_rec.t              = session.t;
+    cert_key_rec.V_K_i          = session.committee_V_K_i;
+    // committee_members / committee_id_hash are not read by the
+    // certificate builder; leave them as-is.
+
     // Recombine through the existing certificate pipeline, which also
     // re-verifies each partial's ZK proof before use.
     dao::dao_tally_certificate cert;
     if (!dao::dao_build_tally_certificate(
-            key_rec, proposal_id, prop.voting_end_height,
+            cert_key_rec, proposal_id, prop.voting_end_height,
             agg.aggregate_E_W, agg.aggregate_E_S, agg.aggregate_E_B,
             W_set, S_set, B_set, cert))
     {
@@ -111,7 +138,7 @@ bool TallyManager::try_finalize(
         return false;
     }
     if (!dao::dao_verify_tally_certificate(
-            key_rec, snap, m_params.voting_quorum_percent,
+            cert_key_rec, snap, m_params.voting_quorum_percent,
             agg.aggregate_E_W, agg.aggregate_E_S, agg.aggregate_E_B, cert))
     {
         MERROR("V2 tally: certificate verification failed for " << proposal_id);
@@ -167,17 +194,28 @@ bool TallyManager::produce_local_share(
     proposal_record prop;
     if (!m_db.get_proposal_record(proposal_id, prop)) return false;
 
+    // The committee that performs this tally is the TEMPORARY tally
+    // session selected at voting end. Its shares are what the Reset
+    // produced. The stable Paillier public key epoch is the encryption
+    // domain; the session is the decryption domain.
+    dao::dao_tally_session session;
+    if (!m_db.get_dao_tally_session(proposal_id, session)) return false;
+    if (local_member_index < 1 ||
+        local_member_index > session.committee_size)
+        return false;
+    if (session.committee_V_K_i.size() != session.committee_size)
+        return false;
+
+    // The public Paillier key record, still needed for N and V.
     dao::dao_tally_key_record key_rec;
     if (!m_db.get_dao_tally_key(static_cast<uint32_t>(prop.tally_key_epoch),
                                 key_rec))
         return false;
-    if (local_member_index < 1 ||
-        local_member_index > key_rec.committee_size)
-        return false;
 
+    // Local dynamic share, installed by the Reset at the session's
+    // share_epoch. The bootstrap share is not used for the tally.
     std::vector<uint8_t> sk_blob;
-    if (!m_db.get_dao_local_share(prop.tally_key_epoch,
-                                  local_member_index, sk_blob))
+    if (!m_db.get_dao_local_dynamic_share(session.share_epoch, sk_blob))
         return false;
     BIGNUM* sk = bn_from_signed_share(sk_blob);
     if (!sk) return false;
@@ -199,6 +237,7 @@ bool TallyManager::produce_local_share(
     share_out.proposal_id     = proposal_id;
     share_out.vote_end_height = prop.voting_end_height;
     share_out.tally_key_epoch = prop.tally_key_epoch;
+    share_out.share_epoch     = session.share_epoch;
     share_out.member_index    = local_member_index;
     share_out.aggregate_ciphertext_hash =
         dao::dao_aggregate_ciphertext_hash(agg.aggregate_E_W,
@@ -212,8 +251,10 @@ bool TallyManager::produce_local_share(
         if (!dao_threshold_partial_decrypt(pk, c, sk, ci)) return false;
         BIGNUM* r = BN_new();
         if (!dao_dkg_sample_r(pk, r)) { BN_free(r); return false; }
+        // Bind the proof to the session's verification key, not the
+        // bootstrap key. Same math, different V_K_i set.
         const std::vector<uint8_t>& vk =
-            key_rec.V_K_i[local_member_index - 1];
+            session.committee_V_K_i[local_member_index - 1];
         const bool ok = dao_partial_decryption_prove(
             pk, key_rec.V, vk, local_member_index,
             c, ci, sk, r, proof_out);

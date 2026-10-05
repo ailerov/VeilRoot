@@ -119,9 +119,10 @@ TEST(dao_tally_share, tamper_detected)
 
     // Change every byte one at a time in a small window and confirm
     // that at least the re-deserialization sees the change or fails.
-    // We check that changing member_index (position 1 + 32 + 8 + 4 + 32)
-    // is observable.
-    const size_t mpos = 1 + 32 + 8 + 4 + 32;
+    // Layout: version(1) proposal_id(32) vote_end_height(8)
+    //         tally_key_epoch(4) share_epoch(4)
+    //         aggregate_ciphertext_hash(32) member_index(4)
+    const size_t mpos = 1 + 32 + 8 + 4 + 4 + 32;
     blob[mpos] ^= 0x01;
 
     dao_v2_tally_share t;

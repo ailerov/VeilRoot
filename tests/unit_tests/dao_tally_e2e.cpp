@@ -24,6 +24,7 @@
 #include "governance/dao_paillier.h"
 #include "governance/dao_supply.h"
 #include "governance/dao_tally.h"
+#include "governance/dao_tally_session_cycle.h"
 #include "governance/tally_manager.h"
 #include "blockchain_db/lmdb/db_lmdb.h"
 #include "blockchain_db/blockchain_db.h"
@@ -319,6 +320,7 @@ TEST(dao_tally_e2e, tally_manager_finalizes_automatically)
         sh.proposal_id = prop_id;
         sh.vote_end_height = VOTE_END;
         sh.tally_key_epoch = 1;
+        sh.share_epoch     = static_cast<uint32_t>(VOTE_END);
         sh.member_index = m;
         sh.aggregate_ciphertext_hash = agg_hash;
 
@@ -368,6 +370,29 @@ TEST(dao_tally_e2e, tally_manager_finalizes_automatically)
         db.add_proposal_record(prop_id, rec);
 
         db.add_dao_tally_key(1, out.record);
+
+        // The tally pipeline is driven by the per-proposal session.
+        // In this test the session committee is the bootstrap
+        // committee (no Reset), so committee_V_K_i == out.record.V_K_i.
+        // The reset is marked complete.
+        dao_tally_session session;
+        session.version              = 1;
+        session.share_epoch          = static_cast<uint32_t>(VOTE_END);
+        session.proposal_id          = prop_id;
+        session.selection_height     = VOTE_END;
+        session.vote_end_height      = VOTE_END;
+        session.committee_size       = out.record.committee_size;
+        session.threshold            = out.record.threshold;
+        session.t                    = out.record.t;
+        session.committee_V_K_i      = out.record.V_K_i;
+        session.resharing_complete   = true;
+        session.tally_complete       = false;
+        for (const auto& m : out.record.committee_members) {
+            crypto::public_key pk_m{};
+            std::memcpy(pk_m.data, m.data(), 32);
+            session.committee_members.push_back(pk_m);
+        }
+        db.add_dao_tally_session(prop_id, session);
 
         dao_proposal_aggregate agg;
         agg.aggregate_E_W = E_W;
