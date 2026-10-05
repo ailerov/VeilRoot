@@ -163,6 +163,14 @@ enum class dkg_msg_type : uint8_t
     key_record_ready         = 0x72,
     transcript_leaf          = 0x73,
 
+    // Dynamic tally-share Reset (separate ceremony from DKG).
+    reshare_start            = 0x74,
+    reshare_commit           = 0x75,
+    reshare_share            = 0x76,
+    reshare_proof            = 0x77,
+    reshare_complete         = 0x78,
+    reshare_abort            = 0x79,
+
 };
 
 // Domain separator for the committee identifier hash.

@@ -153,5 +153,59 @@ bool dao_dkg_reset(
     const dao_tally_public_key_record& public_key,
     dao_dkg_reset_result& result);
 
+// ====================================================================
+// P2P Reset ceremony
+// ====================================================================
+//
+// One round. Every old shareholder broadcasts its coefficient
+// commitments and link proof (reshare_commit), then sends the private
+// (subshare, blinding) pair targeted at each new shareholder
+// (reshare_share). Every new shareholder collects all commits and its
+// private subshares, verifies them, and produces its new share.
+//
+// A node can be in the old committee, the new committee, both, or
+// neither.
+//
+// Messages reuse dkg_msg (bytes_a, bytes_b, bytes_c, vec_a) and the
+// dkg_p2p transport. Private subshares are wrapped with
+// encrypt_dkg_private_payload.
+
+struct dkg_p2p_reshare_callbacks
+{
+    std::function<bool(const crypto::public_key&, const std::string&)> send_to;
+    std::function<void(const std::string&)>                            broadcast;
+};
+
+class dkg_p2p_reshare_runner
+{
+public:
+    dkg_p2p_reshare_runner(const dao_dkg_reset_config& cfg,
+                           const dao_tally_public_key_record& public_key,
+                           const dao_vss_group& vss,
+                           const BIGNUM* N2,
+                           const crypto::public_key& self_pk,
+                           const crypto::secret_key& self_sk,
+                           const std::vector<uint8_t>& local_old_share,
+                           const std::vector<std::vector<uint8_t>>& old_vk_i_list,
+                           const dkg_p2p_reshare_callbacks& cb);
+    ~dkg_p2p_reshare_runner();
+
+    dkg_p2p_reshare_runner(const dkg_p2p_reshare_runner&) = delete;
+    dkg_p2p_reshare_runner& operator=(const dkg_p2p_reshare_runner&) = delete;
+
+    bool start();
+    void stop();
+    void on_message(const dkg_msg& m);
+    bool wait(dao_dkg_reset_result& out, uint32_t timeout_s = 0);
+
+    bool running()  const;
+    bool finished() const;
+
+private:
+    struct impl;
+    std::unique_ptr<impl> p_;
+};
+
 } // namespace dao
+
 } // namespace cryptonote

@@ -8,6 +8,11 @@
 #include <openssl/bn.h>
 
 #include <cstring>
+#include <atomic>
+#include <mutex>
+#include <thread>
+#include <condition_variable>
+#include <functional>
 
 namespace cryptonote {
 namespace dao {
@@ -941,6 +946,393 @@ bool dao_dkg_reset(
     (void)cfg; (void)local_old_share; (void)public_key;
     result = dao_dkg_reset_result{};
     return false;
+}
+
+
+// ====================================================================
+// P2P Reset runner
+// ====================================================================
+
+namespace {
+
+void reset_push_u32(std::vector<uint8_t>& v, uint32_t x)
+{
+    for (int i = 0; i < 4; ++i) v.push_back((x >> (8 * i)) & 0xff);
+}
+
+bool reset_pull_u32(const std::vector<uint8_t>& v, size_t& off, uint32_t& x)
+{
+    if (off + 4 > v.size()) return false;
+    x = 0;
+    for (int i = 0; i < 4; ++i) x |= uint32_t(v[off++]) << (8 * i);
+    return true;
+}
+
+bool reset_push_blob(std::vector<uint8_t>& v, const std::vector<uint8_t>& b)
+{
+    reset_push_u32(v, static_cast<uint32_t>(b.size()));
+    v.insert(v.end(), b.begin(), b.end());
+    return true;
+}
+
+bool reset_pull_blob(const std::vector<uint8_t>& v, size_t& off,
+                     std::vector<uint8_t>& out)
+{
+    uint32_t n = 0;
+    if (!reset_pull_u32(v, off, n)) return false;
+    if (off + n > v.size()) return false;
+    out.assign(v.begin() + off, v.begin() + off + n);
+    off += n;
+    return true;
+}
+
+// Payload for reshare_commit:
+//   u32  old_member_id
+//   vec_a holds one commitment blob per coefficient
+//   bytes_a holds the serialized link proof
+bool serialize_reset_commit(
+    const dao_reset_public_contribution& c,
+    dkg_msg& m)
+{
+    m.tag32 = c.old_member_id;
+    m.vec_a = c.coefficient_commitments;
+    if (!c.share_link_proof.serialize(m.bytes_a)) return false;
+    return true;
+}
+
+bool deserialize_reset_commit(
+    const dkg_msg& m,
+    dao_reset_public_contribution& c)
+{
+    c.old_member_id = m.tag32;
+    c.coefficient_commitments = m.vec_a;
+    if (!c.share_link_proof.deserialize(m.bytes_a)) return false;
+    return true;
+}
+
+// Payload for reshare_share (encrypted):
+//   u32 from_old_member_id
+//   u32 to_new_member_id
+//   blob subshare
+//   blob blinding
+bool serialize_reset_subshare_plain(
+    const dao_reset_private_subshare& ss,
+    std::string& out)
+{
+    std::vector<uint8_t> buf;
+    reset_push_u32(buf, ss.from_old_member_id);
+    reset_push_u32(buf, ss.to_new_member_id);
+    reset_push_blob(buf, ss.subshare);
+    reset_push_blob(buf, ss.blinding);
+    out.assign(reinterpret_cast<const char*>(buf.data()), buf.size());
+    return true;
+}
+
+bool deserialize_reset_subshare_plain(
+    const std::string& in,
+    dao_reset_private_subshare& ss)
+{
+    std::vector<uint8_t> buf(in.begin(), in.end());
+    size_t off = 0;
+    if (!reset_pull_u32(buf, off, ss.from_old_member_id)) return false;
+    if (!reset_pull_u32(buf, off, ss.to_new_member_id))   return false;
+    if (!reset_pull_blob(buf, off, ss.subshare))          return false;
+    if (!reset_pull_blob(buf, off, ss.blinding))          return false;
+    return off == buf.size();
+}
+
+} // anonymous namespace
+
+struct dkg_p2p_reshare_runner::impl
+{
+    dao_dkg_reset_config cfg;
+    dao_tally_public_key_record public_key;
+    dao_vss_group vss;
+    const BIGNUM* N2 = nullptr;
+    crypto::public_key self_pk;
+    crypto::secret_key self_sk;
+    std::vector<uint8_t> local_old_share;
+    std::vector<std::vector<uint8_t>> old_vk_i_list;
+    dkg_p2p_reshare_callbacks cb;
+
+    uint32_t self_old_id = 0;   // 0 if not in old committee
+    uint32_t self_new_id = 0;   // 0 if not in new committee
+
+    std::mutex mu;
+    std::condition_variable done_cv;
+    std::atomic<bool> finished{false};
+    std::atomic<bool> stop_flag{false};
+
+    // Collected from peers.
+    std::vector<dao_reset_public_contribution> publics;
+    std::vector<dao_reset_private_subshare>    my_subshares;
+
+    dao_dkg_reset_result result;
+
+    std::thread worker;
+
+    void run();
+    void broadcast_my_contribution();
+    bool handle_commit(const dkg_msg& m);
+    bool handle_share(const dkg_msg& m);
+    void try_finish();
+};
+
+void dkg_p2p_reshare_runner::impl::broadcast_my_contribution()
+{
+    if (self_old_id == 0) return;
+    if (local_old_share.empty()) return;
+
+    dao_reset_public_contribution pub;
+    std::vector<dao_reset_private_subshare> priv;
+    if (!dao_dkg_reset_generate_contribution(
+            cfg, self_old_id, local_old_share, vss, N2,
+            [&]() -> const BIGNUM* {
+                // decode V_K from public_key.V
+                static thread_local BIGNUM* cached = nullptr;
+                if (cached) BN_free(cached);
+                cached = BN_bin2bn(public_key.V.data(),
+                                   (int)public_key.V.size(), nullptr);
+                return cached;
+            }(),
+            old_vk_i_list[self_old_id - 1], pub, priv)) {
+        return;
+    }
+
+    // Broadcast commit.
+    dkg_msg cm;
+    cm.hdr.version = 1;
+    cm.hdr.epoch = cfg.new_epoch;
+    cm.hdr.sender_id = self_old_id;
+    cm.hdr.recipient_id = 0;
+    cm.hdr.type = dkg_msg_type::reshare_commit;
+    if (!serialize_reset_commit(pub, cm)) return;
+    std::vector<uint8_t> ser;
+    cm.serialize(ser);
+    if (cb.broadcast)
+        cb.broadcast(std::string(ser.begin(), ser.end()));
+
+    // Targeted private subshares.
+    for (const auto& ss : priv) {
+        const size_t idx = ss.to_new_member_id - 1;
+        if (idx >= cfg.new_members.size()) continue;
+        const crypto::public_key& to = cfg.new_members[idx];
+
+        std::string plain;
+        if (!serialize_reset_subshare_plain(ss, plain)) continue;
+
+        std::string envelope;
+        if (!encrypt_dkg_private_payload(plain, self_pk, to, envelope)) continue;
+
+        dkg_msg sm;
+        sm.hdr.version = 1;
+        sm.hdr.epoch = cfg.new_epoch;
+        sm.hdr.sender_id = self_old_id;
+        sm.hdr.recipient_id = ss.to_new_member_id;
+        sm.hdr.type = dkg_msg_type::reshare_share;
+        sm.bytes_a.assign(envelope.begin(), envelope.end());
+        std::vector<uint8_t> s2;
+        sm.serialize(s2);
+        if (cb.send_to)
+            cb.send_to(to, std::string(s2.begin(), s2.end()));
+    }
+}
+
+bool dkg_p2p_reshare_runner::impl::handle_commit(const dkg_msg& m)
+{
+    dao_reset_public_contribution c;
+    if (!deserialize_reset_commit(m, c)) return false;
+    std::lock_guard<std::mutex> lk(mu);
+    for (auto& existing : publics) {
+        if (existing.old_member_id == c.old_member_id) return true;
+    }
+    publics.push_back(std::move(c));
+    return true;
+}
+
+bool dkg_p2p_reshare_runner::impl::handle_share(const dkg_msg& m)
+{
+    if (self_new_id == 0) return true;
+    if (m.hdr.recipient_id != self_new_id) return true;
+
+    // The sender's public key.
+    if (m.hdr.sender_id == 0 || m.hdr.sender_id > cfg.old_members.size())
+        return true;
+    const crypto::public_key& from_pk =
+        cfg.old_members[m.hdr.sender_id - 1];
+
+    std::string envelope(m.bytes_a.begin(), m.bytes_a.end());
+    std::string plain;
+    if (!decrypt_dkg_private_payload(envelope, from_pk, self_sk, plain))
+        return false;
+    if (!is_dkg_private_payload(envelope)) {
+        // already handled by decrypt; kept for clarity
+    }
+
+    dao_reset_private_subshare ss;
+    if (!deserialize_reset_subshare_plain(plain, ss)) return false;
+    if (ss.to_new_member_id != self_new_id) return false;
+
+    std::lock_guard<std::mutex> lk(mu);
+    for (const auto& existing : my_subshares) {
+        if (existing.from_old_member_id == ss.from_old_member_id)
+            return true;
+    }
+    my_subshares.push_back(std::move(ss));
+    return true;
+}
+
+void dkg_p2p_reshare_runner::impl::try_finish()
+{
+    if (self_new_id == 0) {
+        // Not a new shareholder: the ceremony completes as soon as we
+        // have broadcast our contribution.
+        std::lock_guard<std::mutex> lk(mu);
+        result.ok = true;
+        result.new_epoch = cfg.new_epoch;
+        result.new_threshold = cfg.new_threshold;
+        finished.store(true);
+        done_cv.notify_all();
+        return;
+    }
+
+    std::lock_guard<std::mutex> lk(mu);
+    if (publics.size() < cfg.old_members.size()) return;
+    if (my_subshares.size() < cfg.old_members.size()) return;
+
+    BIGNUM* V_K = BN_bin2bn(public_key.V.data(),
+                            (int)public_key.V.size(), nullptr);
+    if (!V_K) return;
+
+    std::vector<uint8_t> new_share;
+    const bool ok = dao_dkg_reset_accept(
+        cfg, self_new_id, publics, my_subshares, vss, N2, V_K,
+        old_vk_i_list, new_share);
+    BN_free(V_K);
+
+    if (!ok) return;
+
+    result.ok = true;
+    result.new_epoch = cfg.new_epoch;
+    result.new_threshold = cfg.new_threshold;
+    result.local_share = std::move(new_share);
+    finished.store(true);
+    done_cv.notify_all();
+}
+
+void dkg_p2p_reshare_runner::impl::run()
+{
+    broadcast_my_contribution();
+    if (self_new_id == 0) try_finish();
+    // Otherwise, wait for inbound commit + share messages to complete us.
+    // try_finish is re-invoked from handle_commit / handle_share.
+}
+
+dkg_p2p_reshare_runner::dkg_p2p_reshare_runner(
+    const dao_dkg_reset_config& cfg,
+    const dao_tally_public_key_record& public_key,
+    const dao_vss_group& vss_in,
+    const BIGNUM* N2,
+    const crypto::public_key& self_pk,
+    const crypto::secret_key& self_sk,
+    const std::vector<uint8_t>& local_old_share,
+    const std::vector<std::vector<uint8_t>>& old_vk_i_list,
+    const dkg_p2p_reshare_callbacks& cb)
+    : p_(new impl)
+{
+    p_->cfg = cfg;
+    p_->public_key = public_key;
+    p_->N2 = N2;
+    p_->self_pk = self_pk;
+    p_->self_sk = self_sk;
+    p_->local_old_share = local_old_share;
+    p_->old_vk_i_list = old_vk_i_list;
+    p_->cb = cb;
+
+    // VSS group: copy the four BIGNUMs (dao_vss_group is non-copyable).
+    p_->vss.P       = BN_dup(vss_in.P);
+    p_->vss.P_prime = BN_dup(vss_in.P_prime);
+    p_->vss.g       = BN_dup(vss_in.g);
+    p_->vss.h       = BN_dup(vss_in.h);
+
+    for (size_t i = 0; i < cfg.old_members.size(); ++i) {
+        if (memcmp(cfg.old_members[i].data, self_pk.data, 32) == 0) {
+            p_->self_old_id = static_cast<uint32_t>(i + 1);
+            break;
+        }
+    }
+    for (size_t i = 0; i < cfg.new_members.size(); ++i) {
+        if (memcmp(cfg.new_members[i].data, self_pk.data, 32) == 0) {
+            p_->self_new_id = static_cast<uint32_t>(i + 1);
+            break;
+        }
+    }
+}
+
+dkg_p2p_reshare_runner::~dkg_p2p_reshare_runner()
+{
+    stop();
+}
+
+bool dkg_p2p_reshare_runner::start()
+{
+    if (!p_) return false;
+    if (p_->worker.joinable()) return true;
+    p_->worker = std::thread([this] {
+        try { p_->run(); }
+        catch (...) {}
+    });
+    return true;
+}
+
+void dkg_p2p_reshare_runner::stop()
+{
+    if (!p_) return;
+    p_->stop_flag.store(true);
+    if (p_->worker.joinable()) p_->worker.join();
+}
+
+void dkg_p2p_reshare_runner::on_message(const dkg_msg& m)
+{
+    if (!p_ || p_->stop_flag.load()) return;
+    switch (m.hdr.type) {
+        case dkg_msg_type::reshare_commit:
+            if (p_->handle_commit(m)) p_->try_finish();
+            break;
+        case dkg_msg_type::reshare_share:
+            if (p_->handle_share(m)) p_->try_finish();
+            break;
+        default:
+            break;
+    }
+}
+
+bool dkg_p2p_reshare_runner::wait(dao_dkg_reset_result& out, uint32_t timeout_s)
+{
+    if (!p_) return false;
+    std::unique_lock<std::mutex> lk(p_->mu);
+    const auto pred = [&] { return p_->finished.load(); };
+    if (timeout_s == 0) {
+        p_->done_cv.wait(lk, pred);
+    } else {
+        if (!p_->done_cv.wait_for(lk, std::chrono::seconds(timeout_s), pred)) {
+            lk.unlock();
+            stop();
+            return false;
+        }
+    }
+    out = p_->result;
+    return out.ok;
+}
+
+bool dkg_p2p_reshare_runner::running() const
+{
+    return p_ && p_->worker.joinable() && !p_->finished.load();
+}
+
+bool dkg_p2p_reshare_runner::finished() const
+{
+    return p_ && p_->finished.load();
 }
 
 } // namespace dao
