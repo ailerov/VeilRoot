@@ -75,6 +75,10 @@ bool ProposalManager::index_proposal(const transaction& tx, const crypto::hash& 
     rec.submission_height = height;
     rec.submission_tx_hash = tx_hash;
     {
+        // tally_key_epoch names the STABLE Paillier public-key epoch
+        // the proposal's ballots are encrypted under. It has no
+        // relation to the tally committee, which is selected
+        // automatically at this proposal's voting end.
         uint32_t ep = 0;
         if (m_db.get_underlying_db().get_current_dao_tally_key_epoch(ep))
             rec.tally_key_epoch = ep;

@@ -2167,8 +2167,14 @@ public:
     // ---------- VNS PROPOSALS END ----------
 
     // ---------- VNS DAO TALLY KEYS START ----------
-    // Historical epoch records are retained. The active epoch pointer
-    // is a separate singleton in tally_state.
+    // Historical key-epoch records are retained. The active epoch
+    // pointer is a separate singleton in tally_state.
+    //
+    // A "tally key" record names the stable Paillier public key epoch
+    // and its BOOTSTRAP SHAREHOLDER SET. It does not name the
+    // temporary tally committee; that committee is derived from
+    // canonical state at a proposal's voting end and stored in a
+    // dao_tally_session record.
     virtual void add_dao_tally_key(uint32_t epoch, const dao::dao_tally_key_record& record) = 0;
     virtual bool get_dao_tally_key(uint32_t epoch, dao::dao_tally_key_record& record) const = 0;
     virtual bool get_current_dao_tally_key_epoch(uint32_t& epoch) const = 0;

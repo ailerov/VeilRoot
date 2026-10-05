@@ -8673,32 +8673,46 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
   void Blockchain::maybe_bootstrap_dao_v2_dkg()
   {
-    // Only relevant when DAO V2 is active for this chain.
+    // One-time bootstrap of the stable Paillier public key epoch.
+    //
+    // This establishes N, G, theta, V, V_K_i for the epoch and the
+    // initial distributed secret sharing among the bootstrap
+    // shareholders. The resulting shareholder set is key-share
+    // infrastructure, NOT a governance committee and NOT the tally
+    // committee.
+    //
+    // The tally committee for a proposal is chosen later, at the
+    // proposal's voting end, by open_dao_v2_tally_sessions(). That
+    // committee receives fresh shares of the SAME secret via a Reset.
+    //
+    // The bootstrap runs once per key epoch. This code is idempotent
+    // and does nothing once the epoch's key record exists.
     const uint64_t height = get_current_blockchain_height();
     if (!config::dao_v2_active(height)) return;
 
-    const uint32_t epoch = 1;
+    const uint32_t bootstrap_key_epoch = 1;
 
     // Already running or already persisted.
-    if (m_dao_v2_dkg_runners.count(epoch) > 0) return;
+    if (m_dao_v2_dkg_runners.count(bootstrap_key_epoch) > 0) return;
 
     {
       dao::dao_tally_key_record existing;
       try {
-        if (m_db->get_dao_tally_key(epoch, existing)) return;
+        if (m_db->get_dao_tally_key(bootstrap_key_epoch, existing)) return;
       } catch (...) {
         // Read failure is not fatal here; try to bootstrap next cycle.
       }
     }
 
-    // Refresh committee from eligible records.
+    // Select bootstrap shareholders from the currently eligible set.
+    // This is the initial share custodian set, not the tally committee.
     rebuild_committee_eligible_list();
     if (m_committee_eligible_sorted.size() <
         dao::DAO_DKG_MIN_COMMITTEE_SIZE)
       return;
 
-    // Not in committee is fine — other nodes will do it.
-    (void)bootstrap_dao_v2_dkg(epoch);
+    // Not a bootstrap shareholder is fine — other nodes will run it.
+    (void)bootstrap_dao_v2_dkg(bootstrap_key_epoch);
   }
 
   void Blockchain::maybe_process_dao_v2_dkg_results()

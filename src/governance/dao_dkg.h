@@ -500,6 +500,26 @@ bool dao_partial_decryption_verify(const PaillierPublicKey& pk,
 
 // ====================================================================
 // Public tally-key record
+//
+// This record describes the STABLE public Paillier key epoch and the
+// BOOTSTRAP SHAREHOLDER SET that generated it. It does NOT describe the
+// temporary tally committee. The temporary tally committee is selected
+// at a proposal's voting end and receives fresh shares of the same
+// secret via a Reset operation (see dao_dkg_reset.h and
+// dao_tally_session_cycle.h).
+//
+// Field names below retain their historical spelling for wire
+// compatibility. Read them with bootstrap semantics:
+//   committee_size      -> bootstrap_shareholder_count
+//   threshold           -> bootstrap_threshold
+//   t                   -> bootstrap_sharing_degree
+//   committee_members   -> bootstrap_shareholder_members
+//   committee_id_hash   -> bootstrap_shareholder_set_hash
+//   V_K_i               -> bootstrap_shareholder verification keys
+//
+// The whitepaper forbids a permanent GOVERNANCE committee. It does not
+// forbid the underlying distributed key-share custodians from
+// persisting. Those custodians are what this record names.
 // ====================================================================
 
 struct dao_tally_key_record
@@ -509,12 +529,12 @@ struct dao_tally_key_record
     uint32_t             committee_size = DAO_DKG_COMMITTEE_SIZE;
     uint32_t             threshold      = DAO_DKG_THRESHOLD;
     uint32_t             t              = DAO_DKG_SHARING_DEGREE;
-    std::vector<uint8_t> committee_id_hash;   // 32 bytes
+    std::vector<uint8_t> committee_id_hash;   // 32 bytes; bootstrap shareholder set hash
 
-    // Ordered committee member public keys. Exactly committee_size
+    // Ordered bootstrap shareholder public keys. Exactly committee_size
     // entries. Together with the epoch and the domain string this is
-    // what committee_id_hash commits to. A receiving node uses this
-    // list to map a P2P tally-share member_index to a real identity.
+    // what committee_id_hash commits to. Not the temporary tally
+    // committee.
     std::vector<std::vector<uint8_t>> committee_members;  // 32 bytes each
 
     std::vector<uint8_t> delta;               // 32 bytes, canonical big-endian
