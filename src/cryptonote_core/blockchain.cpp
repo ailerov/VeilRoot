@@ -75,10 +75,12 @@
 #include "governance/vote_utils.h"
 #include "governance/dao_supply.h"
 #include "governance/dao_tally_share.h"
+#include "governance/dao_tally_session_cycle.h"
 #include "governance/tally_manager.h"
 #include "governance/dao_tally.h"
 #include "governance/dao_dkg.h"
 #include "governance/dao_dkg_transport.h"
+#include <openssl/sha.h>
 #include <openssl/evp.h>
 #include "common/domain_utils.h"
 #include "governance/parameter_update.h"
@@ -6870,6 +6872,16 @@ leave:
   }
   // END_VNS_ELIGIBLE_APPLY
 
+  // BEGIN_VNS_DAO_V2_SESSION_OPEN
+  // If any ACTIVE proposal's voting window closed at new_height - 1,
+  // select its tally committee from the post-block eligible-node state
+  // and open a per-proposal session. The state read here is exactly
+  // "canonical at voting end": every eligible announcement carried by
+  // the block at new_height - 1 has just landed above. Idempotent —
+  // an existing session is left untouched.
+  open_dao_v2_tally_sessions(new_height - 1);
+  // END_VNS_DAO_V2_SESSION_OPEN
+
   // BEGIN_VNS_DAO_V2_TALLY_TRIGGER
   // If any proposal's voting window closed at new_height - 1, produce
   // and broadcast this node's committee share for it. This is the
@@ -8692,6 +8704,140 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
   void Blockchain::maybe_process_dao_v2_dkg_results()
   {
     (void)process_pending_dao_v2_dkg_results();
+  }
+
+  // ------------------------------------------------------------------
+  // DAO V2 tally session lifecycle
+  // ------------------------------------------------------------------
+  //
+  // A session is opened for a proposal at the block whose height equals
+  // the proposal's voting_end_height. The committee is selected from
+  // the eligible-node state after that block has fully applied, so every
+  // node reading its own chain derives the same session deterministically.
+  //
+  // No private material is touched here. The public record is written;
+  // the actual share transition happens over P2P, driven by on_idle via
+  // drain_dao_v2_session_reshares().
+  void Blockchain::open_dao_v2_tally_sessions(uint64_t voting_end_height)
+  {
+    using namespace cryptonote::dao;
+
+    if (!config::dao_v2_active(voting_end_height)) return;
+
+    // Refresh the committee snapshot from the post-block state.
+    rebuild_committee_eligible_list();
+    if (m_committee_eligible_sorted.size() <
+        dao::DAO_DKG_MIN_COMMITTEE_SIZE) {
+      // No committee possible yet. Sessions for any proposal ending at
+      // this height will simply not be opened; the proposal stays in
+      // the pre-tally state. Deterministic across nodes.
+      return;
+    }
+
+    const size_t max_committee = std::min<size_t>(
+        m_committee_eligible_sorted.size(),
+        m_governance_params.tally_committee_size);
+    const uint32_t committee_size =
+        static_cast<uint32_t>(std::max<size_t>(max_committee,
+                                               DAO_DKG_MIN_COMMITTEE_SIZE));
+    const uint32_t threshold = dao_dkg_expected_threshold(committee_size);
+    if (threshold == 0) return;
+    const uint32_t t_degree = threshold - 1;
+
+    // Walk proposals. For each ACTIVE one whose voting_end_height equals
+    // this height, open a session unless one is already present.
+    std::vector<std::pair<crypto::hash, const proposal_record*>> matches;
+    // for_all_proposal_records uses the currently active txn.
+    m_db->for_all_proposal_records(
+        [&](const crypto::hash& pid, const proposal_record& rec) {
+          if (rec.status != PROPOSAL_STATUS_ACTIVE) return true;
+          if (rec.voting_end_height != voting_end_height) return true;
+          matches.emplace_back(pid, &rec);
+          return true;
+        });
+
+    for (const auto& [pid, _rec] : matches) {
+      dao_tally_session existing;
+      try {
+        if (m_db->get_dao_tally_session(pid, existing)) continue;
+      } catch (...) {
+        // fallthrough: try to create
+      }
+
+      // Public key this proposal was encrypted under. Under the new
+      // lifecycle this is the long-lived bootstrap DKG key; until that
+      // is wired, tally_key_epoch is whatever was assigned at proposal
+      // submission. A proposal with no key yet gets no session.
+      dao_tally_key_record key_rec;
+      const uint32_t key_epoch = static_cast<uint32_t>(_rec->tally_key_epoch);
+      if (key_epoch == 0) continue;
+      try {
+        if (!m_db->get_dao_tally_key(key_epoch, key_rec)) continue;
+      } catch (...) {
+        continue;
+      }
+
+      dao_tally_session s{};
+      s.version       = 1;
+      s.share_epoch   = static_cast<uint32_t>(voting_end_height);
+      s.proposal_id   = pid;
+      s.selection_height = voting_end_height;
+      s.vote_end_height  = voting_end_height;
+      s.committee_size = committee_size;
+      s.threshold      = threshold;
+      s.t              = t_degree;
+
+      // Public key id.
+      if (key_rec.key_id.size() == 32)
+        std::memcpy(s.public_key_id.data, key_rec.key_id.data(), 32);
+
+      s.committee_members.reserve(committee_size);
+      for (uint32_t i = 0; i < committee_size; ++i)
+        s.committee_members.push_back(
+            m_committee_eligible_sorted[i].first);
+
+      // committee_id_hash: SHA256 over domain || share_epoch ||
+      // ordered member keys, matching the same canonical ordering
+      // used by the DKG committee hash.
+      {
+        const char* dom = "VeilRoot-DAO-TALLY-SESSION-COMMITTEE-V1";
+        std::vector<uint8_t> buf;
+        buf.insert(buf.end(), dom, dom + std::strlen(dom));
+        uint32_t se = s.share_epoch;
+        for (int i = 0; i < 4; ++i)
+          buf.push_back((se >> (8*(3-i))) & 0xff);
+        for (const auto& m : s.committee_members)
+          buf.insert(buf.end(), m.data, m.data + sizeof(m.data));
+        SHA256(buf.data(), buf.size(), reinterpret_cast<unsigned char*>(s.committee_id_hash.data));
+      }
+
+      try {
+        m_db->add_dao_tally_session(pid, s);
+        m_pending_dao_v2_session_reshares.push_back(pid);
+        MINFO("DAO V2 tally session opened: proposal " << pid
+              << " vote_end " << voting_end_height
+              << " committee " << committee_size
+              << " threshold " << threshold);
+      } catch (const std::exception& e) {
+        MERROR("Failed to persist dao_v2 tally session: " << e.what());
+      }
+    }
+  }
+
+  void Blockchain::drain_dao_v2_session_reshares()
+  {
+    // Owner-thread only. Copies out under a short lock, then releases.
+    std::deque<crypto::hash> jobs;
+    {
+      std::lock_guard<std::mutex> lk(m_dao_v2_dkg_result_mutex);
+      jobs.swap(m_pending_dao_v2_session_reshares);
+    }
+    // The actual P2P reshare runner kick is wired in a following step.
+    // For now, notify that the queue has been drained so a later step
+    // can hook in without changing block-apply.
+    for (const auto& pid : jobs) {
+      MINFO("DAO V2 session reshare queued for proposal " << pid);
+    }
   }
 
     void Blockchain::queue_dao_v2_dkg_result(uint32_t epoch,

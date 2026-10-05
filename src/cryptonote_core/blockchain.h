@@ -1366,6 +1366,17 @@ namespace cryptonote
   // current epoch's DKG once when the node has eligible records and
   // no key record exists yet for the epoch. No-op otherwise.
   void maybe_bootstrap_dao_v2_dkg();
+  // DAO V2 lifecycle: at the block whose height equals a proposal's
+  // voting_end_height, select the tally committee from the post-block
+  // eligible-node state and open a per-proposal tally session. Called
+  // from handle_block_to_main_chain; no-op when no proposal matches.
+  void open_dao_v2_tally_sessions(uint64_t voting_end_height);
+
+  // Drain the sessions queued by block-apply and kick the P2P reshare
+  // ceremony for any session this node participates in. Called from
+  // on_idle; does not decide anything, only starts work for sessions
+  // already recorded.
+  void drain_dao_v2_session_reshares();
 
   // Lifecycle hook called from the daemon idle loop. Drains any
   // results queued by the DKG watcher threads onto this owner thread.
@@ -1618,6 +1629,10 @@ namespace cryptonote
     // END_VNS_VOTE
     // BEGIN_VNS_ELIGIBLE
     std::unordered_map<crypto::key_image, committee_eligible_record> m_committee_eligible;
+    // Proposal IDs whose tally session was opened by block-apply and
+    // which still need the P2P reshare ceremony kicked. Drained by
+    // on_idle on the owner thread.
+    std::deque<crypto::hash> m_pending_dao_v2_session_reshares;
     std::vector<std::pair<crypto::public_key, uint64_t>> m_committee_eligible_sorted;
     // END_VNS_ELIGIBLE
 
