@@ -433,3 +433,202 @@ TEST(dao_dkg_reset, tampered_subshare_rejected)
     BN_free(VKi_bn); BN_free(e); BN_free(V_K); BN_free(N2); BN_free(N);
     BN_CTX_free(ctx);
 }
+
+// -------------------------------------------------------------------
+// Malicious-input tests for the Reset link proof and subshare layer.
+// Each case tampers with one value and asserts rejection.
+// -------------------------------------------------------------------
+namespace {
+
+struct ResetProofFixture
+{
+    dao_vss_group vss;
+    BIGNUM* N   = nullptr;
+    BIGNUM* N2  = nullptr;
+    BIGNUM* V_K = nullptr;
+    std::vector<uint8_t> old_share;
+    std::vector<uint8_t> VKi;
+    dao_dkg_reset_config cfg;
+    dao_reset_public_contribution pub;
+    std::vector<dao_reset_private_subshare> priv;
+    BIGNUM* mu   = nullptr;
+    std::vector<uint8_t> ctx_bytes;
+
+    ResetProofFixture() {
+        BN_CTX* ctx = BN_CTX_new();
+        N   = BN_new(); BN_set_bit(N, 127); BN_set_bit(N, 0); BN_set_bit(N, 63);
+        N2  = BN_new(); BN_sqr(N2, N, ctx);
+        V_K = BN_new(); BN_set_word(V_K, 12345);
+
+        make_signed_share(142, old_share);
+
+        BIGNUM* e = BN_new(); BN_set_word(e, 142);
+        BN_mul(e, e, dao_dkg_delta(), ctx);
+        BIGNUM* r = BN_new(); BN_mod_exp(r, V_K, e, N2, ctx);
+        bn_to_pad512(r, VKi);
+        BN_free(e); BN_free(r);
+
+        tiny_vss(vss);
+
+        cfg.old_threshold = 2;
+        cfg.new_threshold = 3;
+        cfg.old_members.resize(3);
+        cfg.new_members.resize(5);
+        for (size_t i = 0; i < sizeof(cfg.key_id.data); ++i)
+            cfg.key_id.data[i] = (uint8_t)i;
+
+        dao_dkg_reset_generate_contribution(cfg, 1, old_share, vss, N2, V_K,
+                                            VKi, pub, priv);
+
+        mu = BN_new();
+        std::vector<uint32_t> ids = {1,2,3};
+        dao_dkg_lagrange_mu(ids, 1, mu);
+
+        ctx_bytes.insert(ctx_bytes.end(), cfg.key_id.data, cfg.key_id.data + 32);
+        for (int i = 0; i < 8; ++i) ctx_bytes.push_back((cfg.old_epoch >> (8*i)) & 0xff);
+        for (int i = 0; i < 8; ++i) ctx_bytes.push_back((cfg.new_epoch >> (8*i)) & 0xff);
+
+        BN_CTX_free(ctx);
+    }
+
+    ~ResetProofFixture() {
+        BN_free(N); BN_free(N2); BN_free(V_K); BN_free(mu);
+    }
+
+    BIGNUM* C0() const {
+        return BN_bin2bn(pub.coefficient_commitments[0].data(),
+                         (int)pub.coefficient_commitments[0].size(), nullptr);
+    }
+
+    bool verify_with(const BIGNUM* mu_arg, const BIGNUM* C0_arg,
+                     const std::vector<uint8_t>& vki_arg,
+                     const dao_reset_share_link_proof& p) {
+        return dao_dkg_reset_share_link_verify(
+            vss, N2, V_K, vki_arg, mu_arg, C0_arg, ctx_bytes, p);
+    }
+
+    bool verify() { 
+        BIGNUM* c = C0();
+        bool r = verify_with(mu, c, VKi, pub.share_link_proof);
+        BN_free(c);
+        return r;
+    }
+};
+
+} // namespace
+
+TEST(dao_dkg_reset, link_proof_valid_baseline)
+{
+    ResetProofFixture fx;
+    ASSERT_FALSE(fx.priv.empty());
+    ASSERT_FALSE(fx.pub.coefficient_commitments.empty());
+    EXPECT_TRUE(fx.verify());
+}
+
+TEST(dao_dkg_reset, link_proof_rejects_tampered_T_vss)
+{
+    ResetProofFixture fx;
+    dao_reset_share_link_proof p = fx.pub.share_link_proof;
+    ASSERT_FALSE(p.T_vss.empty());
+    p.T_vss[0] ^= 0x01;
+    BIGNUM* c = fx.C0();
+    EXPECT_FALSE(fx.verify_with(fx.mu, c, fx.VKi, p));
+    BN_free(c);
+}
+
+TEST(dao_dkg_reset, link_proof_rejects_tampered_T_paillier)
+{
+    ResetProofFixture fx;
+    dao_reset_share_link_proof p = fx.pub.share_link_proof;
+    ASSERT_FALSE(p.T_paillier.empty());
+    p.T_paillier[0] ^= 0x01;
+    BIGNUM* c = fx.C0();
+    EXPECT_FALSE(fx.verify_with(fx.mu, c, fx.VKi, p));
+    BN_free(c);
+}
+
+TEST(dao_dkg_reset, link_proof_rejects_tampered_z_share)
+{
+    ResetProofFixture fx;
+    dao_reset_share_link_proof p = fx.pub.share_link_proof;
+    ASSERT_GE(p.z_share.size(), 2u);
+    p.z_share[1] ^= 0x01;
+    BIGNUM* c = fx.C0();
+    EXPECT_FALSE(fx.verify_with(fx.mu, c, fx.VKi, p));
+    BN_free(c);
+}
+
+TEST(dao_dkg_reset, link_proof_rejects_tampered_z_blinding)
+{
+    ResetProofFixture fx;
+    dao_reset_share_link_proof p = fx.pub.share_link_proof;
+    ASSERT_GE(p.z_blinding.size(), 2u);
+    p.z_blinding[1] ^= 0x01;
+    BIGNUM* c = fx.C0();
+    EXPECT_FALSE(fx.verify_with(fx.mu, c, fx.VKi, p));
+    BN_free(c);
+}
+
+TEST(dao_dkg_reset, link_proof_rejects_wrong_VKi)
+{
+    ResetProofFixture fx;
+    std::vector<uint8_t> wrong_vki = fx.VKi;
+    ASSERT_FALSE(wrong_vki.empty());
+    wrong_vki[0] ^= 0x01;
+    BIGNUM* c = fx.C0();
+    EXPECT_FALSE(fx.verify_with(fx.mu, c, wrong_vki, fx.pub.share_link_proof));
+    BN_free(c);
+}
+
+TEST(dao_dkg_reset, link_proof_rejects_wrong_mu)
+{
+    ResetProofFixture fx;
+    BIGNUM* wrong_mu = BN_new();
+    BN_add(wrong_mu, fx.mu, BN_value_one());
+    BIGNUM* c = fx.C0();
+    EXPECT_FALSE(fx.verify_with(wrong_mu, c, fx.VKi, fx.pub.share_link_proof));
+    BN_free(c); BN_free(wrong_mu);
+}
+
+TEST(dao_dkg_reset, link_proof_rejects_tampered_C0)
+{
+    ResetProofFixture fx;
+    BIGNUM* c = fx.C0();
+    ASSERT_NE(c, nullptr);
+    BIGNUM* wrong_c = BN_new();
+    BN_add(wrong_c, c, BN_value_one());
+    EXPECT_FALSE(fx.verify_with(fx.mu, wrong_c, fx.VKi, fx.pub.share_link_proof));
+    BN_free(c); BN_free(wrong_c);
+}
+
+TEST(dao_dkg_reset, subshare_rejects_tampered_blinding)
+{
+    ResetProofFixture fx;
+    ASSERT_GE(fx.priv.size(), 2u);
+    auto ss = fx.priv[1];
+    ASSERT_FALSE(ss.blinding.empty());
+    ss.blinding.back() ^= 0x01;
+    EXPECT_FALSE(dao_dkg_reset_verify_subshare(
+        fx.vss, 2, ss.subshare, ss.blinding, fx.pub.coefficient_commitments));
+}
+
+TEST(dao_dkg_reset, accept_rejects_missing_subshare)
+{
+    ResetProofFixture fx;
+    // Pass no private subshares at all.
+    std::vector<dao_reset_private_subshare> none;
+    std::vector<uint8_t> new_share;
+    EXPECT_FALSE(dao_dkg_reset_accept(
+        fx.cfg, 1, {fx.pub}, none, fx.vss, fx.N2, fx.V_K, {fx.VKi},
+        new_share));
+}
+
+TEST(dao_dkg_reset, accept_rejects_wrong_recipient_id)
+{
+    ResetProofFixture fx;
+    // Subshares exist for recipients 1..5, but we ask as recipient 99.
+    std::vector<uint8_t> new_share;
+    EXPECT_FALSE(dao_dkg_reset_accept(
+        fx.cfg, 99, {fx.pub}, fx.priv, fx.vss, fx.N2, fx.V_K, {fx.VKi},
+        new_share));
+}

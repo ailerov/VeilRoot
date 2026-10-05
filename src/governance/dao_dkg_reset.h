@@ -109,6 +109,19 @@ bool dao_dkg_reset_generate_contribution(
     dao_reset_public_contribution& public_out,
     std::vector<dao_reset_private_subshare>& private_out);
 
+// Verifier for the Schnorr proof binding C0 to V_K_i over the shared
+// witness SK_i. Exposed for testing; production code goes through
+// dao_dkg_reset_accept.
+bool dao_dkg_reset_share_link_verify(
+    const dao_vss_group& vss,
+    const BIGNUM* N2,
+    const BIGNUM* V_K,
+    const std::vector<uint8_t>& V_K_i_bytes,
+    const BIGNUM* mu,
+    const BIGNUM* C0,
+    const std::vector<uint8_t>& transcript_context,
+    const dao_reset_share_link_proof& proof);
+
 bool dao_dkg_reset_verify_subshare(
     const dao_vss_group& vss,
     uint32_t recipient_new_id,

@@ -561,9 +561,7 @@ done:
 // Link proof verification
 // --------------------------------------------------------------------
 
-namespace {
-
-bool dao_dkg_reset_share_link_verify_impl(
+bool dao_dkg_reset_share_link_verify(
     const dao_vss_group& vss,
     const BIGNUM* N2,
     const BIGNUM* V_K,
@@ -682,8 +680,6 @@ done:
     return ok;
 }
 
-} // anonymous namespace
-
 // --------------------------------------------------------------------
 // Reset acceptance
 // --------------------------------------------------------------------
@@ -746,7 +742,7 @@ bool dao_dkg_reset_accept(
         for (int i = 0; i < 8; ++i)
             ctx_bytes.push_back((cfg.new_epoch >> (8*i)) & 0xff);
 
-        bool proof_ok = dao_dkg_reset_share_link_verify_impl(
+        bool proof_ok = dao_dkg_reset_share_link_verify(
             vss, N2, V_K, *vk_i, mu, C0, ctx_bytes, pub.share_link_proof);
         BN_free(mu); BN_free(C0);
         if (!proof_ok) goto done;
