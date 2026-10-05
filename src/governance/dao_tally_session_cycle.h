@@ -36,7 +36,19 @@ struct dao_tally_session
 
     crypto::hash                      committee_id_hash;
 
+    // Ordered members of the TEMPORARY tally committee. Selected
+    // deterministically at the proposal's voting end from the
+    // canonical eligible-node state. Disjoint from the bootstrap
+    // shareholder set that owns the key epoch.
     std::vector<crypto::public_key>   committee_members;
+
+    // Per-member verification keys for the temporary committee, one
+    // per committee_members entry, in the same order. Derived after
+    // the Reset produces SK'_j for each member:
+    //   committee_V_K_i[i] = V_K^(Delta * SK'_j)
+    // The bootstrap record's V_K_i are for a different set and must
+    // not be used to verify partial decryptions from this committee.
+    std::vector<std::vector<uint8_t>> committee_V_K_i;
 
     bool                              resharing_complete = false;
     bool                              tally_complete     = false;

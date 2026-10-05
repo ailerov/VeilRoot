@@ -41,6 +41,10 @@ bool pull_u64(const std::vector<uint8_t>& v, size_t& off, uint64_t& out)
 bool dao_tally_session::serialize(std::vector<uint8_t>& out) const
 {
     if (committee_members.size() != committee_size) return false;
+    // committee_V_K_i is empty before the Reset completes; when
+    // present it must match committee_size one-for-one.
+    if (!committee_V_K_i.empty() &&
+        committee_V_K_i.size() != committee_size) return false;
 
     out.clear();
     push_u32(out, version);
@@ -58,6 +62,17 @@ bool dao_tally_session::serialize(std::vector<uint8_t>& out) const
                committee_id_hash.data + sizeof(committee_id_hash.data));
     for (const auto& m : committee_members)
         out.insert(out.end(), m.data, m.data + sizeof(m.data));
+
+    // Committee verification keys, length-prefixed per entry.
+    {
+        uint32_t n = static_cast<uint32_t>(committee_V_K_i.size());
+        push_u32(out, n);
+        for (const auto& vk : committee_V_K_i) {
+            push_u32(out, static_cast<uint32_t>(vk.size()));
+            out.insert(out.end(), vk.begin(), vk.end());
+        }
+    }
+
     out.push_back(resharing_complete ? 1 : 0);
     out.push_back(tally_complete ? 1 : 0);
     return true;
@@ -87,6 +102,22 @@ bool dao_tally_session::deserialize(const std::vector<uint8_t>& in)
         if (off + 32 > in.size()) return false;
         std::memcpy(committee_members[i].data, in.data() + off, 32);
         off += 32;
+    }
+
+    // Committee verification keys.
+    {
+        uint32_t n = 0;
+        if (!pull_u32(in, off, n)) return false;
+        if (n > 64) return false;
+        committee_V_K_i.assign(n, {});
+        for (uint32_t i = 0; i < n; ++i) {
+            uint32_t sz = 0;
+            if (!pull_u32(in, off, sz)) return false;
+            if (off + sz > in.size()) return false;
+            committee_V_K_i[i].assign(in.begin() + off,
+                                      in.begin() + off + sz);
+            off += sz;
+        }
     }
 
     if (off + 2 > in.size()) return false;
