@@ -9,19 +9,40 @@ implementation specification wins.
 No DKG code may deviate from this document. Amendments require a new
 revision with a documented consensus activation.
 
+REVISION 2 — lifecycle correction
+
+This document describes the cryptographic bootstrap DKG and the
+dynamic tally-share transition.
+
+The bootstrap DKG establishes the Paillier public key.
+
+The tally committee is selected at voting end.
+
+The existing public Paillier key is retained.
+
+A dynamic Reset/resharing operation changes the private-key sharing
+from the previous shareholder set to the newly selected committee
+without reconstructing the complete private key.
+
+Klinger et al. is therefore normative for the dynamic-share transition,
+while Nishide-Sakurai remains normative for the underlying dealer-free
+Paillier key generation and threshold decryption construction.
+
 ---
 
 ## 1. Frozen parameters
 
-    committee_size   = 16
-    threshold        = 8-of-16
-    sharing_degree   = 7         (t in the paper's notation)
+    committee_size   per share session, 3..16 (see impl spec §4)
+    threshold        per share session, T = ceil(n / 2)
+    sharing_degree   per share session, t = T - 1
     Delta            = 16!  =  20,922,789,888,000
 
-In Nishide-Sakurai notation: n = 16, t = 7, threshold = t + 1 = 8.
+In Nishide-Sakurai notation per session: n in [3,16], t = T - 1,
+threshold = t + 1 = ceil(n/2). n = 16 reproduces 8-of-16.
 
 Delta is the integer clearing factor used throughout the threshold
 sharing and Lagrange interpolation. It is 16!, not 11! and not 8!.
+Delta is retained unchanged for every committee size n <= 16.
 
 ---
 
@@ -50,8 +71,8 @@ Section map for the implementation:
 Damgård-Jurik 2000/008 is background/reference lineage only. Its special
 g, safe-prime structure, and secret-sharing equations MUST NOT be
 transplanted into this construction. Hazay et al. is not used as a
-second modulus-generation algorithm. Klinger et al. resharing is not
-used in V2.
+second modulus-generation algorithm. The dynamic tally-share transition
+uses the Klinger et al. Reset construction; see Revision 2 and §4.
 
 ---
 
@@ -79,16 +100,19 @@ The canonical public record for one key epoch contains, at minimum:
     G                    = N+1, derived
     theta                (public Paillier parameter)
     theta_prime          (public normalization parameter, see §8)
-    committee_size       = 16
-    threshold            = 8
-    sharing_degree       = 7
+    committee_size       (actual for this share session, 3..16)
+    threshold            (T = ceil(committee_size / 2))
+    sharing_degree       (t = T - 1)
     V_K                  (global verification base)
-    V_K_i                (per-member verification key, i = 1..16)
-    member_identities    (16 committee member identifiers)
+    V_K_i                (per-member verification key, one per member)
+    member_identities    (one canonical public key per member)
     epoch                (uint32, monotone)
     epoch_id             (32-byte hash of the canonical record above)
 
-The record is written once at activation and never modified.
+The public-key portion of this record (version, N, G, theta, theta_prime,
+V_K, epoch, epoch_id) is written once at bootstrap and never modified.
+The share-session portion (committee_size, threshold, sharing_degree,
+V_K_i, member_identities) is per-committee and changes on each Reset.
 
 ---
 
@@ -411,16 +435,16 @@ participant's local state and asserting it fails below threshold.
 
 The following are frozen and MUST NOT be re-derived in code:
 
-    committee_size = 16
-    threshold      = 8
-    sharing_degree = 7
-    Delta          = 16!
+    committee_size (per share session, actual 3..16)
+    threshold      (per share session, T = ceil(committee_size / 2))
+    sharing_degree (per share session, t = T - 1)
+    Delta          = 16!  (retained across all committee sizes n <= 16)
     N bits         = 2048
     G              = N + 1
     ciphertext     = 512 bytes canonical big-endian
-    primary ref    = Nishide-Sakurai WISA 2010
+    bootstrap ref  = Nishide-Sakurai WISA 2010
+    transition ref = Klinger, Wüller, Traverso, Meyer (dynamic Reset)
     no libhcs
     no trusted dealer
-    no Klinger resharing in V2
     no DJ-2000 special-key equations in this construction
     no Hazay as a second modulus-generation algorithm

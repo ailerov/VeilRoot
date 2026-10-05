@@ -51,6 +51,34 @@ REVISION 3 (DAO V2). Changes from Revision 2:
 Revision 3 supersedes Revision 2 in full. Any disagreement is resolved
 in favour of this revision.
 
+REVISION 4 (DAO V2 lifecycle correction):
+
+- The tally committee is dynamically selected at voting-end/tally time
+  from the canonical eligible-node state.
+- No committee is permanently appointed.
+- The Paillier public key used by votes is established by the
+  dealer-free bootstrap DKG and remains the public encryption key
+  for its key epoch.
+- Committee membership and Paillier public-key identity are distinct
+  concepts.
+- At tally time the selected committee receives a fresh threshold
+  sharing of the existing private Paillier key using the published
+  dynamic-secret-sharing Reset construction, without reconstructing
+  the complete private key.
+- Existing ballots remain encrypted under the same public modulus N.
+  No ballot is re-encrypted.
+- The selected tally committee is temporary and is discarded after
+  completion of its tally session.
+- Historical public key records remain available for historical
+  vote/tally validation.
+- Secret shares never enter blockchain state.
+- `tally_key_epoch` identifies the public Paillier key epoch.
+  The dynamic committee/share session is a separate lifecycle object.
+
+Revision 4 is additive to Revision 3. It does not alter the numeric
+parameters of Revisions 2 and 3. The dynamic Reset construction is
+not yet implemented; this revision records the target architecture.
+
 ---
 
 ## 1. Governance weight
@@ -197,17 +225,26 @@ n = 16 reproduces the prior 8-of-16 parameterisation exactly.
 Delta remains 16! for every committee size n <= 16. The interpolation
 denominators for member indices 1..n divide n!, and n! divides 16!.
 
-Committee selection at tally time:
+Committee selection occurs at tally time.
 
-    eligible_nodes = existing eligible committee set
-    sort deterministically by the existing stake-age ranking
+For a proposal whose voting period has ended, the protocol evaluates
+the canonical eligible-node state at the voting-end height, deterministically
+orders eligible nodes using the existing stake-age ranking and public-key
+tie break, and selects the top n nodes, where:
+
     n = min(number_of_eligible_nodes, MAX_COMMITTEE_SIZE)
-    require n >= MIN_COMMITTEE_SIZE
-    committee = top n eligible nodes, deterministically ordered
 
-Committee membership is bound to the epoch's public key record by the
-canonical hash described in the DKG specification. Code MUST NOT use
-fixed member indexes 1..16 as committee identities.
+with:
+
+    MIN_COMMITTEE_SIZE <= n <= MAX_COMMITTEE_SIZE
+    threshold T = ceil(n / 2)
+    sharing degree t = T - 1.
+
+Committee membership is therefore temporary protocol state. It is not
+a permanent appointment and is not fixed at DAO activation. The
+committee is bound to the epoch's public key record by the canonical
+hash described in the DKG specification. Code MUST NOT use fixed
+member indexes 1..16 as committee identities.
 
 ---
 
@@ -763,14 +800,33 @@ ciphertexts, aggregate commitments, and vote records.
 No founder private key. No trusted dealer. No node can reconstruct the
 full decryption key.
 
-DKG uses a published distributed-Paillier or distributed-RSA-generation
-construction:
+The DAO V2 threshold key lifecycle consists of two distinct operations:
 
-- Nishide, Sakurai (WISA 2010) for dealerless distributed Paillier;
-- Hazay, Mikkelsen, Rabin, Toft, Nicolosi for malicious-adversary
-  distributed RSA generation and threshold Paillier;
-- Klinger, Wüller, Traverso, Meyer for dynamic resharing without secret
-  reconstruction.
+1. Bootstrap key generation:
+   Nishide-Sakurai dealer-free distributed Paillier key generation
+   establishes the Paillier public key and the initial private-key
+   sharing.
+
+2. Dynamic tally-share transition:
+   at tally time the currently selected committee receives a new
+   threshold sharing of the same private Paillier key, without
+   reconstructing the key.
+
+The dynamic transition follows the published dynamic/verifiable
+secret-sharing Reset construction used by:
+
+    Klinger, Wüller, Traverso, Meyer,
+    "Hierarchical and dynamic threshold Paillier cryptosystem
+    without trusted dealer", 2021.
+
+The Reset operation must preserve the private Paillier key exactly.
+It changes the shareholder/access structure, not the public modulus
+or the underlying private key.
+
+No trusted dealer.
+No complete secret reconstruction.
+No ballot re-encryption.
+No new Paillier modulus at tally time.
 
 Requirements:
 
@@ -790,26 +846,52 @@ The DKG has its own cryptographic test suite.
 
 ## 27. Key lifecycle
 
-DAO cryptographic key state:
+A DAO tally key has two logically separate pieces of state:
 
-    dao_tally_key_epoch
-    dao_tally_key_id          (hash of the canonical public key record)
+PUBLIC KEY EPOCH
+
+    key_epoch
+    key_id
     public modulus N
-    committee size N_committee          (3..16, actual for this epoch)
-    threshold T                         (= ceil(N_committee / 2))
-    sharing degree t                    (= T - 1)
-    Delta                               (= 16!)
-    committee member identities         (canonical public keys)
-    activation height
+    G
+    theta / theta_prime
+    public verification parameters
 
-Every vote binds to the epoch and key id. A different public key cannot be
-silently substituted.
+The public key epoch identifies the Paillier encryption domain.
+Votes bind to this epoch and key_id.
 
-When a new epoch activates:
+TALLY SHARE SESSION
 
-- old votes remain valid under their historical epoch;
-- new votes use the new epoch;
-- final tally for a proposal uses the epoch recorded in the proposal.
+    share_session_id
+    key_epoch
+    proposal_id
+    committee_size
+    threshold
+    t
+    committee member identities
+    committee verification material
+    selection height
+    tally height
+
+The share session determines who may perform threshold decryption
+for the tally.
+
+The public Paillier key does not change during a dynamic share reset.
+
+The committee/share session may change without changing N.
+
+Historical public key epochs remain available indefinitely.
+Private shares are local-only and temporary.
+
+Delta remains 16! for every committee size n <= 16.
+
+When a share session is reset:
+
+- old votes remain valid under their historical public key epoch;
+- new votes use the current public key epoch;
+- final tally for a proposal uses the epoch recorded in the proposal,
+  and the share session bound to that epoch and to the selected
+  committee.
 
 Secret shares never enter blockchain state.
 
@@ -824,6 +906,8 @@ Each partial decryption binds to:
 
 - proposal ID;
 - key epoch;
+- key_id;
+- share_session_id / committee_id_hash;
 - aggregate ciphertext hash;
 - shareholder id/index.
 
@@ -854,12 +938,14 @@ Contents:
     passed
 
 Valid only when at least T distinct committee members provide valid
-shares, where T is the threshold recorded in the proposal's tally-key
-record. The certificate must prove that each contributing member belongs
-to the exact committee bound by that key record. A share is not accepted
-merely because its numerical index lies in 1..n. Independently verifiable
-by every node. Anyone can collect shares and submit the tally object.
-No administrator is required.
+shares, where T is the threshold recorded in the share session bound to
+the proposal. The certificate must prove that each contributing member
+belongs to the exact committee bound by the share session and by
+committee_id_hash. A share is not accepted merely because its numerical
+index lies in 1..n. A share from an earlier committee session is invalid
+even if it refers to the same Paillier public key. Independently
+verifiable by every node. Anyone can collect shares and submit the tally
+object. No administrator is required.
 
 ---
 
