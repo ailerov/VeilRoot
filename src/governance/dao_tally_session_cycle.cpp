@@ -84,6 +84,15 @@ bool dao_tally_session::serialize(std::vector<uint8_t>& out) const
 
     out.push_back(resharing_complete ? 1 : 0);
     out.push_back(tally_complete ? 1 : 0);
+
+    // Reset manifest + transcript binding.
+    push_u32(out, static_cast<uint32_t>(reset_participant_ids.size()));
+    for (uint32_t id : reset_participant_ids) push_u32(out, id);
+    out.insert(out.end(), reset_manifest_hash.data,
+               reset_manifest_hash.data + sizeof(reset_manifest_hash.data));
+    out.insert(out.end(), reset_transcript_hash.data,
+               reset_transcript_hash.data + sizeof(reset_transcript_hash.data));
+
     return true;
 }
 
@@ -146,6 +155,21 @@ bool dao_tally_session::deserialize(const std::vector<uint8_t>& in)
     if (off + 2 > in.size()) return false;
     resharing_complete = (in[off++] != 0);
     tally_complete     = (in[off++] != 0);
+
+    {
+        uint32_t n = 0;
+        if (!pull_u32(in, off, n)) return false;
+        if (n > 64) return false;
+        reset_participant_ids.assign(n, 0);
+        for (uint32_t i = 0; i < n; ++i) {
+            if (!pull_u32(in, off, reset_participant_ids[i])) return false;
+        }
+    }
+    if (off + 32 > in.size()) return false;
+    std::memcpy(reset_manifest_hash.data, in.data() + off, 32); off += 32;
+    if (off + 32 > in.size()) return false;
+    std::memcpy(reset_transcript_hash.data, in.data() + off, 32); off += 32;
+
     if (off != in.size()) return false;
 
     version        = v;

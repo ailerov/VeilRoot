@@ -68,6 +68,19 @@ struct dao_tally_session
     bool                              resharing_complete = false;
     bool                              tally_complete     = false;
 
+    // Finalized Reset manifest: exactly old_threshold 1-based indices
+    // into the previous shareholder universe. Fixed at manifest
+    // finalization and never changed afterward.
+    std::vector<uint32_t>             reset_participant_ids;
+
+    // Hash of the finalized manifest. Binds the Reset participant set
+    // to the session.
+    crypto::hash                      reset_manifest_hash{};
+
+    // Hash of the Reset transcript for this session. A partial
+    // decryption is only accepted if it carries the same hash.
+    crypto::hash                      reset_transcript_hash{};
+
     bool serialize(std::vector<uint8_t>& out) const;
     bool deserialize(const std::vector<uint8_t>& in);
 };
