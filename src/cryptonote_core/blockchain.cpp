@@ -8453,6 +8453,40 @@ select_dao_v2_committee(BlockchainDB& db, uint32_t max_committee_size)
   return sorted;
 }
 
+// The bootstrap DKG shareholder set is every currently eligible node,
+// not a top-N subset. Later, at a proposal's voting end, the tally
+// committee is selected as a temporary subset of this shareholder
+// set. The two roles are deliberately distinct.
+std::vector<std::pair<crypto::public_key, uint64_t>>
+select_dao_v2_dkg_shareholders(BlockchainDB& db)
+{
+  db_rtxn_guard rtxn_guard(&db);
+
+  std::unordered_map<crypto::key_image, committee_eligible_record> rows;
+  db.for_all_committee_eligible(
+      [&rows](const crypto::key_image& ki,
+              const committee_eligible_record& rec) {
+        rows[ki] = rec;
+        return true;
+      });
+
+  std::unordered_map<crypto::public_key, uint64_t> node_weights;
+  for (const auto& [ki, rec] : rows)
+    node_weights[rec.node_pubkey] += rec.stake_age_weight;
+
+  std::vector<std::pair<crypto::public_key, uint64_t>> sorted(
+      node_weights.begin(), node_weights.end());
+
+  std::sort(sorted.begin(), sorted.end(),
+      [](const auto& a, const auto& b) {
+        if (a.second != b.second) return a.second > b.second;
+        return std::memcmp(a.first.data, b.first.data,
+                           sizeof(a.first.data)) < 0;
+      });
+
+  return sorted;
+}
+
 bool persist_dao_v2_dkg_result(BlockchainDB& db,
                                uint32_t epoch,
                                const dkg_result& res,
@@ -8666,17 +8700,17 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     // One-time bootstrap of the stable Paillier public key epoch.
     //
     // This establishes N, G, theta, V, V_K_i for the epoch and the
-    // initial distributed secret sharing among the bootstrap
-    // shareholders. The resulting shareholder set is key-share
-    // infrastructure, NOT a governance committee and NOT the tally
-    // committee.
+    // distributed secret sharing among the bootstrap shareholders.
+    // Every currently eligible node is a bootstrap shareholder, so
+    // every node that could ever be selected for a tally committee
+    // already holds a share for this key.
     //
-    // The tally committee for a proposal is chosen later, at the
-    // proposal's voting end, by open_dao_v2_tally_sessions(). That
-    // committee receives fresh shares of the SAME secret via a Reset.
+    // The tally committee for a proposal is a temporary subset of
+    // this shareholder set, selected at the proposal's voting end.
+    // No new DKG, no share transfer: the selected members use the
+    // shares they already hold.
     //
-    // The bootstrap runs once per key epoch. This code is idempotent
-    // and does nothing once the epoch's key record exists.
+    // Runs once per key epoch. Idempotent.
     const uint64_t height = get_current_blockchain_height();
     if (!config::dao_v2_active(height)) return;
 
@@ -8837,25 +8871,32 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     if (m_dao_v2_dkg_runners.count(epoch) > 0)
       return true;   // already running
 
-    rebuild_committee_eligible_list();
+    // The bootstrap DKG must run over the complete eligible
+    // shareholder set: every node that would be eligible to hold a
+    // DKG share for the key epoch. Selecting only the top-N here was
+    // the bug: it turned the bootstrap DKG shareholder set into the
+    // first tally committee.
+    const auto shareholders_sorted =
+        dao::select_dao_v2_dkg_shareholders(*m_db);
 
-    if (m_committee_eligible_sorted.empty()) {
-      MWARNING("bootstrap_dao_v2_dkg: no eligible nodes");
+    if (shareholders_sorted.size() < dao::DAO_DKG_MIN_COMMITTEE_SIZE) {
+      MWARNING("bootstrap_dao_v2_dkg: not enough eligible shareholders");
+      return false;
+    }
+    if (shareholders_sorted.size() > dao::DAO_DKG_MAX_COMMITTEE_SIZE) {
+      MERROR("bootstrap_dao_v2_dkg: " << shareholders_sorted.size()
+             << " eligible shareholders, but the current threshold "
+             "implementation supports at most "
+             << dao::DAO_DKG_MAX_COMMITTEE_SIZE
+             << ". Delta is fixed at 16! and the Lagrange machinery is "
+             "defined for member indices 1..16.");
       return false;
     }
 
-    const size_t max_n =
-        std::min<size_t>(m_committee_eligible_sorted.size(),
-                         dao::DAO_DKG_MAX_COMMITTEE_SIZE);
-    if (max_n < dao::DAO_DKG_MIN_COMMITTEE_SIZE) {
-      MWARNING("bootstrap_dao_v2_dkg: not enough eligible nodes");
-      return false;
-    }
-
-    std::vector<crypto::public_key> committee;
-    committee.reserve(max_n);
-    for (size_t i = 0; i < max_n; ++i)
-      committee.push_back(m_committee_eligible_sorted[i].first);
+    std::vector<crypto::public_key> shareholders;
+    shareholders.reserve(shareholders_sorted.size());
+    for (const auto& e : shareholders_sorted)
+      shareholders.push_back(e.first);
 
     // Deterministic VSS group. In production this selects an FFDHE
     // named group and derives h from a canonical tuple of the group
@@ -8881,7 +8922,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       return false;
     }
 
-    if (!start_dao_v2_dkg(epoch, committee, *vss_holder,
+    if (!start_dao_v2_dkg(epoch, shareholders, *vss_holder,
                           target_N_bits, qproof_rounds)) {
       // Not in committee is not an error.
       MINFO("bootstrap_dao_v2_dkg: runner not started for epoch " << epoch);
