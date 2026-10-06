@@ -645,3 +645,256 @@ TEST(dao_dkg_reset, accept_rejects_wrong_recipient_id)
         fx.cfg, 99, {fx.pub}, fx.priv, fx.vss, fx.N2, fx.V_K, {fx.VKi},
         new_share));
 }
+
+// -------------------------------------------------------------------
+// Partial old availability: 16 shareholders, threshold 8, but only 8
+// specific shareholders participate. The new committee still recovers
+// the same secret.
+// -------------------------------------------------------------------
+TEST(dao_dkg_reset, partial_subset_of_16_to_5of3)
+{
+    BN_CTX* ctx = BN_CTX_new();
+    ASSERT_NE(ctx, nullptr);
+
+    BIGNUM* N = BN_new();
+    BN_set_bit(N, 127); BN_set_bit(N, 0); BN_set_bit(N, 63);
+    BIGNUM* N2 = BN_new(); BN_sqr(N2, N, ctx);
+
+    BIGNUM* q = BN_new();
+    BN_set_bit(q, 255);
+    BIGNUM* nineteen = BN_new(); BN_set_word(nineteen, 19);
+    BN_sub(q, q, nineteen);
+    std::vector<uint8_t> q_bytes; bn_to_vec(q, q_bytes);
+
+    // Degree-7 sharing of 42 over 16 points.
+    std::vector<BIGNUM*> coeffs(8, nullptr);
+    for (int k = 0; k < 8; ++k) {
+        coeffs[k] = BN_new();
+        BN_set_word(coeffs[k], k == 0 ? 42 : (7 * (k + 1)));
+    }
+    std::vector<std::vector<uint8_t>> all_shares(16);
+    for (uint32_t i = 0; i < 16; ++i) {
+        BIGNUM* eval = BN_new();
+        dao_dkg_reset_evaluate(coeffs, i + 1, q, eval, ctx);
+        bn_to_vec(eval, all_shares[i]);
+        BN_free(eval);
+    }
+
+    // Participants: IDs {1,3,5,7,9,11,13,15}.
+    std::vector<uint32_t> subset = {1,3,5,7,9,11,13,15};
+    std::vector<std::vector<uint8_t>> participant_shares;
+    for (uint32_t id : subset) participant_shares.push_back(all_shares[id-1]);
+
+    // Encrypt m = 42 under N.
+    BIGNUM* g = BN_new(); BN_add(g, N, BN_value_one());
+    BIGNUM* me = BN_new(); BN_set_word(me, 42);
+    BIGNUM* c = BN_new(); BN_mod_exp(c, g, me, N2, ctx);
+    std::vector<uint8_t> c_bytes; bn_to_vec(c, c_bytes);
+
+    auto partial = [&](const BIGNUM* s) {
+        BIGNUM* exp = BN_new(); BN_mul(exp, dao_dkg_delta(), s, ctx);
+        BN_lshift(exp, exp, 1);
+        BIGNUM* res = BN_new();
+        if (BN_is_negative(exp)) {
+            BIGNUM* inv = BN_mod_inverse(nullptr, c, N2, ctx);
+            BIGNUM* pos = BN_dup(exp); BN_set_negative(pos, 0);
+            BN_mod_exp(res, inv, pos, N2, ctx);
+            BN_free(inv); BN_free(pos);
+        } else BN_mod_exp(res, c, exp, N2, ctx);
+        std::vector<uint8_t> out; bn_to_vec(res, out);
+        BN_free(exp); BN_free(res);
+        return out;
+    };
+
+    auto combine = [&](const std::vector<uint32_t>& sub,
+                       const std::vector<std::vector<uint8_t>>& parts) {
+        BIGNUM* C = BN_new(); BN_one(C);
+        for (size_t k = 0; k < sub.size(); ++k) {
+            BIGNUM* ci = BN_new();
+            BN_bin2bn(parts[k].data(), (int)parts[k].size(), ci);
+            BIGNUM* mu = BN_new(); dao_dkg_lagrange_mu(sub, sub[k], mu);
+            BIGNUM* exp = BN_new(); BN_lshift(exp, mu, 1);
+            BIGNUM* term = BN_new();
+            if (BN_is_negative(exp)) {
+                BIGNUM* inv = BN_mod_inverse(nullptr, ci, N2, ctx);
+                BIGNUM* pos = BN_dup(exp); BN_set_negative(pos, 0);
+                BN_mod_exp(term, inv, pos, N2, ctx);
+                BN_free(inv); BN_free(pos);
+            } else BN_mod_exp(term, ci, exp, N2, ctx);
+            BN_mod_mul(C, C, term, N2, ctx);
+            BN_free(ci); BN_free(mu); BN_free(exp); BN_free(term);
+        }
+        std::vector<uint8_t> out; bn_to_vec(C, out);
+        BN_free(C);
+        return out;
+    };
+
+    // Old combine over the participant set.
+    std::vector<std::vector<uint8_t>> old_partials(subset.size());
+    for (size_t k = 0; k < subset.size(); ++k) {
+        BIGNUM* s = BN_new();
+        BN_bin2bn(participant_shares[k].data(),
+                  (int)participant_shares[k].size(), s);
+        old_partials[k] = partial(s);
+        BN_free(s);
+    }
+    std::vector<uint8_t> C_old = combine(subset, old_partials);
+
+    // Reset 16 -> 5 with subset as manifest.
+    dao_dkg_reset_config cfg{};
+    cfg.old_threshold = 8; cfg.new_threshold = 3;
+    cfg.old_members.resize(16); cfg.new_members.resize(5);
+    cfg.reset_participant_ids = subset;
+
+    std::vector<std::vector<uint8_t>> new_shares;
+    ASSERT_TRUE(dao_dkg_reset_full_ceremony(
+        cfg, participant_shares, q_bytes, new_shares));
+    ASSERT_EQ(new_shares.size(), 5u);
+
+    std::vector<std::vector<uint8_t>> new_partials(3);
+    for (int i = 0; i < 3; ++i) {
+        BIGNUM* s = BN_new();
+        BN_bin2bn(new_shares[i].data(), (int)new_shares[i].size(), s);
+        new_partials[i] = partial(s);
+        BN_free(s);
+    }
+    std::vector<uint32_t> new_subset = {1, 2, 3};
+    std::vector<uint8_t> C_new = combine(new_subset, new_partials);
+
+    BIGNUM* co = BN_new(); BN_bin2bn(C_old.data(), (int)C_old.size(), co);
+    BIGNUM* cn = BN_new(); BN_bin2bn(C_new.data(), (int)C_new.size(), cn);
+    BIGNUM* d  = BN_new(); BN_mod_sub(d, co, cn, N2, ctx);
+    EXPECT_TRUE(BN_is_zero(d));
+
+    BN_free(d); BN_free(co); BN_free(cn);
+    BN_free(c); BN_free(me); BN_free(g);
+    for (auto* b : coeffs) BN_free(b);
+    BN_free(q); BN_free(nineteen); BN_free(N2); BN_free(N);
+    BN_CTX_free(ctx);
+}
+
+// -------------------------------------------------------------------
+// Two distinct valid participant subsets over the same old sharing
+// produce new shares of the same secret.
+// -------------------------------------------------------------------
+TEST(dao_dkg_reset, distinct_subsets_same_secret)
+{
+    BN_CTX* ctx = BN_CTX_new();
+    ASSERT_NE(ctx, nullptr);
+
+    BIGNUM* N = BN_new();
+    BN_set_bit(N, 127); BN_set_bit(N, 0); BN_set_bit(N, 63);
+    BIGNUM* N2 = BN_new(); BN_sqr(N2, N, ctx);
+
+    BIGNUM* q = BN_new();
+    BN_set_bit(q, 255);
+    BIGNUM* nineteen = BN_new(); BN_set_word(nineteen, 19);
+    BN_sub(q, q, nineteen);
+    std::vector<uint8_t> q_bytes; bn_to_vec(q, q_bytes);
+
+    std::vector<BIGNUM*> coeffs(8, nullptr);
+    for (int k = 0; k < 8; ++k) {
+        coeffs[k] = BN_new();
+        BN_set_word(coeffs[k], k == 0 ? 42 : (7 * (k + 1)));
+    }
+    std::vector<std::vector<uint8_t>> all_shares(16);
+    for (uint32_t i = 0; i < 16; ++i) {
+        BIGNUM* eval = BN_new();
+        dao_dkg_reset_evaluate(coeffs, i + 1, q, eval, ctx);
+        bn_to_vec(eval, all_shares[i]);
+        BN_free(eval);
+    }
+
+    BIGNUM* g = BN_new(); BN_add(g, N, BN_value_one());
+    BIGNUM* me = BN_new(); BN_set_word(me, 42);
+    BIGNUM* c = BN_new(); BN_mod_exp(c, g, me, N2, ctx);
+    std::vector<uint8_t> c_bytes; bn_to_vec(c, c_bytes);
+
+    auto partial = [&](const BIGNUM* s) {
+        BIGNUM* exp = BN_new(); BN_mul(exp, dao_dkg_delta(), s, ctx);
+        BN_lshift(exp, exp, 1);
+        BIGNUM* res = BN_new();
+        if (BN_is_negative(exp)) {
+            BIGNUM* inv = BN_mod_inverse(nullptr, c, N2, ctx);
+            BIGNUM* pos = BN_dup(exp); BN_set_negative(pos, 0);
+            BN_mod_exp(res, inv, pos, N2, ctx);
+            BN_free(inv); BN_free(pos);
+        } else BN_mod_exp(res, c, exp, N2, ctx);
+        std::vector<uint8_t> out; bn_to_vec(res, out);
+        BN_free(exp); BN_free(res);
+        return out;
+    };
+    auto combine = [&](const std::vector<uint32_t>& sub,
+                       const std::vector<std::vector<uint8_t>>& parts) {
+        BIGNUM* C = BN_new(); BN_one(C);
+        for (size_t k = 0; k < sub.size(); ++k) {
+            BIGNUM* ci = BN_new();
+            BN_bin2bn(parts[k].data(), (int)parts[k].size(), ci);
+            BIGNUM* mu = BN_new(); dao_dkg_lagrange_mu(sub, sub[k], mu);
+            BIGNUM* exp = BN_new(); BN_lshift(exp, mu, 1);
+            BIGNUM* term = BN_new();
+            if (BN_is_negative(exp)) {
+                BIGNUM* inv = BN_mod_inverse(nullptr, ci, N2, ctx);
+                BIGNUM* pos = BN_dup(exp); BN_set_negative(pos, 0);
+                BN_mod_exp(term, inv, pos, N2, ctx);
+                BN_free(inv); BN_free(pos);
+            } else BN_mod_exp(term, ci, exp, N2, ctx);
+            BN_mod_mul(C, C, term, N2, ctx);
+            BN_free(ci); BN_free(mu); BN_free(exp); BN_free(term);
+        }
+        std::vector<uint8_t> out; bn_to_vec(C, out);
+        BN_free(C);
+        return out;
+    };
+
+    auto run_with_manifest = [&](const std::vector<uint32_t>& subset) {
+        std::vector<std::vector<uint8_t>> pshares;
+        for (uint32_t id : subset) pshares.push_back(all_shares[id-1]);
+
+        std::vector<std::vector<uint8_t>> old_partials(subset.size());
+        for (size_t k = 0; k < subset.size(); ++k) {
+            BIGNUM* s = BN_new();
+            BN_bin2bn(pshares[k].data(), (int)pshares[k].size(), s);
+            old_partials[k] = partial(s);
+            BN_free(s);
+        }
+        std::vector<uint8_t> C_old = combine(subset, old_partials);
+
+        dao_dkg_reset_config cfg{};
+        cfg.old_threshold = 8; cfg.new_threshold = 3;
+        cfg.old_members.resize(16); cfg.new_members.resize(5);
+        cfg.reset_participant_ids = subset;
+
+        std::vector<std::vector<uint8_t>> new_shares;
+        bool ok = dao_dkg_reset_full_ceremony(cfg, pshares, q_bytes, new_shares);
+        if (!ok) return std::pair<bool, std::vector<uint8_t>>{false, {}};
+
+        std::vector<std::vector<uint8_t>> new_partials(3);
+        for (int i = 0; i < 3; ++i) {
+            BIGNUM* s = BN_new();
+            BN_bin2bn(new_shares[i].data(), (int)new_shares[i].size(), s);
+            new_partials[i] = partial(s);
+            BN_free(s);
+        }
+        std::vector<uint32_t> new_subset = {1, 2, 3};
+        std::vector<uint8_t> C_new = combine(new_subset, new_partials);
+
+        BIGNUM* co = BN_new(); BN_bin2bn(C_old.data(), (int)C_old.size(), co);
+        BIGNUM* cn = BN_new(); BN_bin2bn(C_new.data(), (int)C_new.size(), cn);
+        BIGNUM* d  = BN_new(); BN_mod_sub(d, co, cn, N2, ctx);
+        bool eq = BN_is_zero(d);
+        BN_free(d); BN_free(co); BN_free(cn);
+        return std::pair<bool, std::vector<uint8_t>>{eq, C_new};
+    };
+
+    auto [okA, CA] = run_with_manifest({1,2,3,4,5,6,7,8});
+    auto [okB, CB] = run_with_manifest({2,3,4,5,6,7,8,9});
+    EXPECT_TRUE(okA);
+    EXPECT_TRUE(okB);
+    EXPECT_EQ(CA, CB);
+
+    BN_free(c); BN_free(me); BN_free(g);
+    for (auto* b : coeffs) BN_free(b);
+    BN_free(q); BN_free(nineteen); BN_free(N2); BN_free(N);
+    BN_CTX_free(ctx);
+}

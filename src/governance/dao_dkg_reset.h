@@ -245,7 +245,12 @@ public:
 
 private:
     struct impl;
-    std::unique_ptr<impl> p_;
+
+    // p_mu guards p_. It is held only briefly to copy the shared_ptr
+    // out. No lock is held during a cascade, so a broadcast chain
+    // that loops back through this runner cannot deadlock.
+    mutable std::mutex     p_mu_;
+    std::shared_ptr<impl>  p_;
 };
 
 } // namespace dao

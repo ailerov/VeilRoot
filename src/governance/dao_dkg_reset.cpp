@@ -1151,6 +1151,11 @@ struct dkg_p2p_reshare_runner::impl
 
     std::thread worker;
 
+    // Set before the owner drops its last reference. Any on_message
+    // that already holds a shared_ptr keeps the impl alive but stops
+    // doing work.
+    std::atomic<bool> destroying{false};
+
     void run();
     void broadcast_ready();
     void maybe_propose_manifest();
@@ -1748,7 +1753,7 @@ dkg_p2p_reshare_runner::dkg_p2p_reshare_runner(
     const std::vector<uint8_t>& local_old_share,
     const std::vector<std::vector<uint8_t>>& old_vk_i_list,
     const dkg_p2p_reshare_callbacks& cb)
-    : p_(new impl)
+    : p_(std::make_shared<impl>())
 {
     p_->cfg = cfg;
     p_->public_key = public_key;
@@ -1781,15 +1786,26 @@ dkg_p2p_reshare_runner::dkg_p2p_reshare_runner(
 
 dkg_p2p_reshare_runner::~dkg_p2p_reshare_runner()
 {
-    stop();
+    std::shared_ptr<impl> sp;
+    {
+        std::lock_guard<std::mutex> lk(p_mu_);
+        sp = p_;
+        p_.reset();
+    }
+    if (!sp) return;
+    sp->destroying.store(true);
+    sp->stop_flag.store(true);
+    if (sp->worker.joinable()) sp->worker.join();
 }
 
 bool dkg_p2p_reshare_runner::start()
 {
-    if (!p_) return false;
-    if (p_->worker.joinable()) return true;
-    p_->worker = std::thread([this] {
-        try { p_->run(); }
+    std::shared_ptr<impl> sp;
+    { std::lock_guard<std::mutex> lk(p_mu_); sp = p_; }
+    if (!sp) return false;
+    if (sp->worker.joinable()) return true;
+    sp->worker = std::thread([sp] {
+        try { sp->run(); }
         catch (...) {}
     });
     return true;
@@ -1797,29 +1813,38 @@ bool dkg_p2p_reshare_runner::start()
 
 void dkg_p2p_reshare_runner::stop()
 {
-    if (!p_) return;
-    p_->stop_flag.store(true);
-    if (p_->worker.joinable()) p_->worker.join();
+    std::shared_ptr<impl> sp;
+    { std::lock_guard<std::mutex> lk(p_mu_); sp = p_; }
+    if (!sp) return;
+    sp->stop_flag.store(true);
+    if (sp->worker.joinable()) sp->worker.join();
 }
 
 void dkg_p2p_reshare_runner::on_message(const dkg_msg& m)
 {
-    if (!p_ || p_->stop_flag.load()) return;
+    // Copy the shared_ptr under p_mu_, then release. No lock is held
+    // during dispatch: a cascade that loops back through this runner
+    // simply takes another reference.
+    std::shared_ptr<impl> sp;
+    { std::lock_guard<std::mutex> lk(p_mu_); sp = p_; }
+    if (!sp) return;
+    if (sp->destroying.load()) return;
+    if (sp->stop_flag.load()) return;
     switch (m.hdr.type) {
         case dkg_msg_type::reshare_ready:
-            (void)p_->handle_ready(m);
+            (void)sp->handle_ready(m);
             break;
         case dkg_msg_type::reshare_manifest:
-            (void)p_->handle_manifest(m);
+            (void)sp->handle_manifest(m);
             break;
         case dkg_msg_type::reshare_manifest_ack:
-            (void)p_->handle_manifest_ack(m);
+            (void)sp->handle_manifest_ack(m);
             break;
         case dkg_msg_type::reshare_commit:
-            if (p_->handle_commit(m)) p_->try_finish();
+            if (sp->handle_commit(m)) sp->try_finish();
             break;
         case dkg_msg_type::reshare_share:
-            if (p_->handle_share(m)) p_->try_finish();
+            if (sp->handle_share(m)) sp->try_finish();
             break;
         default:
             break;
@@ -1828,30 +1853,37 @@ void dkg_p2p_reshare_runner::on_message(const dkg_msg& m)
 
 bool dkg_p2p_reshare_runner::wait(dao_dkg_reset_result& out, uint32_t timeout_s)
 {
-    if (!p_) return false;
-    std::unique_lock<std::mutex> lk(p_->mu);
-    const auto pred = [&] { return p_->finished.load(); };
+    std::shared_ptr<impl> sp;
+    { std::lock_guard<std::mutex> lk(p_mu_); sp = p_; }
+    if (!sp) return false;
+    std::unique_lock<std::mutex> lk(sp->mu);
+    const auto pred = [&] { return sp->finished.load(); };
     if (timeout_s == 0) {
-        p_->done_cv.wait(lk, pred);
+        sp->done_cv.wait(lk, pred);
     } else {
-        if (!p_->done_cv.wait_for(lk, std::chrono::seconds(timeout_s), pred)) {
+        if (!sp->done_cv.wait_for(lk, std::chrono::seconds(timeout_s), pred)) {
             lk.unlock();
-            stop();
+            sp->stop_flag.store(true);
+            if (sp->worker.joinable()) sp->worker.join();
             return false;
         }
     }
-    out = p_->result;
+    out = sp->result;
     return out.ok;
 }
 
 bool dkg_p2p_reshare_runner::running() const
 {
-    return p_ && p_->worker.joinable() && !p_->finished.load();
+    std::shared_ptr<impl> sp;
+    { std::lock_guard<std::mutex> lk(p_mu_); sp = p_; }
+    return sp && sp->worker.joinable() && !sp->finished.load();
 }
 
 bool dkg_p2p_reshare_runner::finished() const
 {
-    return p_ && p_->finished.load();
+    std::shared_ptr<impl> sp;
+    { std::lock_guard<std::mutex> lk(p_mu_); sp = p_; }
+    return sp && sp->finished.load();
 }
 
 } // namespace dao
