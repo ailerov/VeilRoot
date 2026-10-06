@@ -207,12 +207,13 @@ TEST(dao_dkg_reset_integration, real_dkg_reset_and_combine)
     rcfg.new_threshold = 3;
     rcfg.old_members   = test_member_ids(3);
     rcfg.new_members   = test_member_ids(5);
+    rcfg.reset_participant_ids = {1, 2};
     for (size_t i = 0; i < sizeof(rcfg.key_id.data); ++i)
         rcfg.key_id.data[i] = (uint8_t)i;
 
-    std::vector<dao_reset_public_contribution> publics(3);
-    std::vector<std::vector<dao_reset_private_subshare>> priv_sets(3);
-    for (uint32_t l = 1; l <= 3; ++l) {
+    std::vector<dao_reset_public_contribution> publics(2);
+    std::vector<std::vector<dao_reset_private_subshare>> priv_sets(2);
+    for (uint32_t l = 1; l <= 2; ++l) {
         ASSERT_TRUE(dao_dkg_reset_generate_contribution(
             rcfg, l, old_shares[l-1], vss, N2, V_K, VKi[l-1],
             publics[l-1], priv_sets[l-1]))
@@ -222,7 +223,7 @@ TEST(dao_dkg_reset_integration, real_dkg_reset_and_combine)
     std::vector<std::vector<uint8_t>> new_shares(5);
     for (uint32_t j = 1; j <= 5; ++j) {
         std::vector<dao_reset_private_subshare> mine;
-        for (uint32_t l = 1; l <= 3; ++l) {
+        for (uint32_t l = 1; l <= 2; ++l) {
             for (const auto& ss : priv_sets[l-1]) {
                 if (ss.to_new_member_id == j) mine.push_back(ss);
             }

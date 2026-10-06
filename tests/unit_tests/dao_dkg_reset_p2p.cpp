@@ -146,10 +146,11 @@ TEST(dao_dkg_reset_p2p, three_to_five_ceremony)
     dao_vss_group vss; decode_vss(krec, vss);
 
     dao_dkg_reset_config cfg{};
-    cfg.old_threshold = 2;
+    cfg.old_threshold = 3;
     cfg.new_threshold = 3;
     cfg.old_members = old_ids;
     cfg.new_members = new_ids;
+    cfg.reset_participant_ids = {1, 2, 3};
     for (size_t i = 0; i < sizeof(cfg.key_id.data); ++i) cfg.key_id.data[i] = (uint8_t)i;
 
     // Each old member and new member needs a distinct keypair. Old and

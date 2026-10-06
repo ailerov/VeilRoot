@@ -17,6 +17,26 @@
 namespace cryptonote {
 namespace dao {
 
+bool dao_dkg_reset_config::participant_set_valid() const
+{
+    if (old_threshold == 0) return false;
+    if (reset_participant_ids.size() != old_threshold) return false;
+    if (old_members.empty()) return false;
+
+    uint32_t prev = 0;
+    std::vector<bool> seen(old_members.size() + 1, false);
+    for (uint32_t id : reset_participant_ids) {
+        if (id == 0) return false;
+        if (id > old_members.size()) return false;
+        if (seen[id]) return false;
+        if (id <= prev) return false;   // strictly ascending, sorted
+        seen[id] = true;
+        prev = id;
+    }
+    return true;
+}
+
+
 namespace {
 
 BIGNUM* vec_to_bn(const std::vector<uint8_t>& v)
@@ -199,6 +219,14 @@ bool dao_dkg_reset_generate_contribution(
     if (cfg.new_threshold > cfg.new_members.size()) return false;
     if (old_member_id == 0) return false;
     if (V_K_i_bytes.empty()) return false;
+    if (!cfg.participant_set_valid()) return false;
+
+    // old_member_id must be one of the manifest participants.
+    bool is_participant = false;
+    for (uint32_t id : cfg.reset_participant_ids) {
+        if (id == old_member_id) { is_participant = true; break; }
+    }
+    if (!is_participant) return false;
 
     BN_CTX* ctx = BN_CTX_new();
     if (!ctx) return false;
@@ -206,8 +234,6 @@ bool dao_dkg_reset_generate_contribution(
 
     const uint32_t deg = cfg.new_threshold - 1;
 
-    // Hoisted so no goto crosses an initialization.
-    std::vector<uint32_t> old_ids;
     BIGNUM* SK      = nullptr;
     BIGNUM* mu      = nullptr;
     std::vector<BIGNUM*> a_raw;
@@ -218,14 +244,12 @@ bool dao_dkg_reset_generate_contribution(
     int p_bytes     = 0;
     bool ok         = false;
 
-    for (size_t i = 0; i < cfg.old_members.size(); ++i)
-        old_ids.push_back(static_cast<uint32_t>(i + 1));
-
     SK = signed_vec_to_bn(local_old_share);
     if (!SK) goto done;
 
     mu = BN_new();
-    if (!mu || !dao_dkg_lagrange_mu(old_ids, old_member_id, mu)) goto done;
+    if (!mu || !dao_dkg_lagrange_mu(cfg.reset_participant_ids,
+                                     old_member_id, mu)) goto done;
 
     a_raw.assign(deg + 1, nullptr);
     b_raw.assign(deg + 1, nullptr);
@@ -703,15 +727,13 @@ bool dao_dkg_reset_accept(
     if (!vss.valid() || !N2 || !V_K) return false;
     if (self_new_id == 0) return false;
     if (publics.empty()) return false;
+    if (!cfg.participant_set_valid()) return false;
     if (old_vk_i_list.size() != cfg.old_members.size()) return false;
+    if (publics.size() != cfg.reset_participant_ids.size()) return false;
 
     BN_CTX* ctx = BN_CTX_new();
     if (!ctx) return false;
     const BIGNUM* Delta = dao_dkg_delta();
-
-    std::vector<uint32_t> old_ids;
-    for (size_t i = 0; i < cfg.old_members.size(); ++i)
-        old_ids.push_back(static_cast<uint32_t>(i + 1));
 
     BIGNUM* sum_h = BN_new();
     if (!sum_h) { BN_CTX_free(ctx); return false; }
@@ -719,19 +741,29 @@ bool dao_dkg_reset_accept(
 
     bool ok = false;
     size_t matched = 0;
+    std::vector<bool> received(cfg.old_members.size() + 1, false);
 
     for (const auto& pub : publics) {
+        // Must be one of the manifest participants.
+        bool in_manifest = false;
+        for (uint32_t id : cfg.reset_participant_ids) {
+            if (id == pub.old_member_id) { in_manifest = true; break; }
+        }
+        if (!in_manifest) goto done;
+        if (received[pub.old_member_id]) goto done;
+        received[pub.old_member_id] = true;
+
+        // Sender's bootstrap verification key.
         const std::vector<uint8_t>* vk_i = nullptr;
-        for (size_t i = 0; i < old_ids.size(); ++i) {
-            if (old_ids[i] == pub.old_member_id) {
-                vk_i = &old_vk_i_list[i];
-                break;
-            }
+        if (pub.old_member_id >= 1 &&
+            pub.old_member_id <= old_vk_i_list.size()) {
+            vk_i = &old_vk_i_list[pub.old_member_id - 1];
         }
         if (!vk_i) goto done;
 
         BIGNUM* mu = BN_new();
-        if (!mu || !dao_dkg_lagrange_mu(old_ids, pub.old_member_id, mu)) {
+        if (!mu || !dao_dkg_lagrange_mu(cfg.reset_participant_ids,
+                                         pub.old_member_id, mu)) {
             BN_free(mu); goto done;
         }
 
@@ -839,20 +871,18 @@ bool dao_dkg_reset_full_ceremony(
     std::vector<std::vector<uint8_t>>& new_shares_out)
 {
     (void)field_modulus_bytes;
-    if (all_old_shares.size() != cfg.old_members.size()) return false;
     if (cfg.old_members.empty() || cfg.new_members.empty()) return false;
     if (cfg.new_threshold < 1) return false;
     if (cfg.new_threshold > cfg.new_members.size()) return false;
+    if (!cfg.participant_set_valid()) return false;
+    if (all_old_shares.size() != cfg.reset_participant_ids.size())
+        return false;
 
     BN_CTX* ctx = BN_CTX_new();
     if (!ctx) return false;
     const BIGNUM* Delta = dao_dkg_delta();
 
-    std::vector<uint32_t> old_ids;
-    for (size_t i = 0; i < cfg.old_members.size(); ++i)
-        old_ids.push_back(static_cast<uint32_t>(i + 1));
-
-    std::vector<BIGNUM*> old_shares(cfg.old_members.size(), nullptr);
+    std::vector<BIGNUM*> old_shares(cfg.reset_participant_ids.size(), nullptr);
     for (size_t i = 0; i < all_old_shares.size(); ++i) {
         old_shares[i] = vec_to_bn(all_old_shares[i]);
         if (!old_shares[i]) goto done_ceremony;
@@ -860,14 +890,14 @@ bool dao_dkg_reset_full_ceremony(
 
     {
         const uint32_t new_deg = cfg.new_threshold - 1;
-        std::vector<std::vector<BIGNUM*>> H(cfg.old_members.size());
+        std::vector<std::vector<BIGNUM*>> H(cfg.reset_participant_ids.size());
 
-        for (size_t l = 0; l < cfg.old_members.size(); ++l) {
+        for (size_t l = 0; l < cfg.reset_participant_ids.size(); ++l) {
             H[l].assign(new_deg + 1, nullptr);
             BIGNUM* mu_l = BN_new();
             if (!mu_l) goto done_ceremony;
-            if (!dao_dkg_lagrange_mu(old_ids,
-                                     static_cast<uint32_t>(l + 1),
+            if (!dao_dkg_lagrange_mu(cfg.reset_participant_ids,
+                                     cfg.reset_participant_ids[l],
                                      mu_l)) {
                 BN_free(mu_l); goto done_ceremony;
             }

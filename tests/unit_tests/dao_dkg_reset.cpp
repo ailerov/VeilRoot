@@ -154,9 +154,13 @@ TEST(dao_dkg_reset, shamir_small_secret_combine_matches)
     cfg.new_threshold = 3;
     cfg.old_members.resize(3);
     cfg.new_members.resize(5);
+    cfg.reset_participant_ids = {1, 2};
 
+    std::vector<std::vector<uint8_t>> participant_shares;
+    participant_shares.push_back(old_shares[0]);
+    participant_shares.push_back(old_shares[1]);
     std::vector<std::vector<uint8_t>> new_shares;
-    ASSERT_TRUE(dao_dkg_reset_full_ceremony(cfg, old_shares, q_bytes, new_shares));
+    ASSERT_TRUE(dao_dkg_reset_full_ceremony(cfg, participant_shares, q_bytes, new_shares));
     ASSERT_EQ(new_shares.size(), 5u);
 
     std::vector<std::vector<uint8_t>> new_partials(3);
@@ -273,9 +277,13 @@ TEST(dao_dkg_reset, various_resizes_preserve_secret)
         dao_dkg_reset_config cfg{};
         cfg.old_threshold = t_old; cfg.new_threshold = t_new;
         cfg.old_members.resize(n_old); cfg.new_members.resize(n_new);
+        for (uint32_t _pid = 1; _pid <= t_old; ++_pid)
+            cfg.reset_participant_ids.push_back(_pid);
 
+        std::vector<std::vector<uint8_t>> participant_shares(
+            old_shares.begin(), old_shares.begin() + t_old);
         std::vector<std::vector<uint8_t>> new_shares;
-        ASSERT_TRUE(dao_dkg_reset_full_ceremony(cfg, old_shares, q_bytes, new_shares));
+        ASSERT_TRUE(dao_dkg_reset_full_ceremony(cfg, participant_shares, q_bytes, new_shares));
         ASSERT_EQ(new_shares.size(), n_new);
 
         std::vector<uint32_t> new_subset;
@@ -343,11 +351,12 @@ TEST(dao_dkg_reset, pedersen_and_link_proof_resize)
     cfg.new_threshold = 3;
     cfg.old_members.resize(3);
     cfg.new_members.resize(5);
+    cfg.reset_participant_ids = {1, 2};
     for (size_t i = 0; i < sizeof(cfg.key_id.data); ++i) cfg.key_id.data[i] = (uint8_t)i;
 
-    std::vector<dao_reset_public_contribution> publics(3);
-    std::vector<std::vector<dao_reset_private_subshare>> priv_sets(3);
-    for (uint32_t l = 1; l <= 3; ++l) {
+    std::vector<dao_reset_public_contribution> publics(2);
+    std::vector<std::vector<dao_reset_private_subshare>> priv_sets(2);
+    for (uint32_t l = 1; l <= 2; ++l) {
         ASSERT_TRUE(dao_dkg_reset_generate_contribution(
             cfg, l, old_shares[l-1], vss, N2, V_K, VKi[l-1],
             publics[l-1], priv_sets[l-1]))
@@ -357,7 +366,7 @@ TEST(dao_dkg_reset, pedersen_and_link_proof_resize)
     std::vector<std::vector<uint8_t>> new_shares(5);
     for (uint32_t j = 1; j <= 5; ++j) {
         std::vector<dao_reset_private_subshare> mine;
-        for (uint32_t l = 1; l <= 3; ++l) {
+        for (uint32_t l = 1; l <= 2; ++l) {
             for (const auto& ss : priv_sets[l-1]) {
                 if (ss.to_new_member_id == j) mine.push_back(ss);
             }
@@ -417,6 +426,7 @@ TEST(dao_dkg_reset, tampered_subshare_rejected)
     dao_dkg_reset_config cfg{};
     cfg.old_threshold = 2; cfg.new_threshold = 3;
     cfg.old_members.resize(3); cfg.new_members.resize(5);
+    cfg.reset_participant_ids = {1, 2};
 
     dao_reset_public_contribution pub;
     std::vector<dao_reset_private_subshare> priv;
@@ -474,6 +484,7 @@ struct ResetProofFixture
         cfg.new_threshold = 3;
         cfg.old_members.resize(3);
         cfg.new_members.resize(5);
+        cfg.reset_participant_ids = {1, 2};
         for (size_t i = 0; i < sizeof(cfg.key_id.data); ++i)
             cfg.key_id.data[i] = (uint8_t)i;
 
@@ -481,7 +492,9 @@ struct ResetProofFixture
                                             VKi, pub, priv);
 
         mu = BN_new();
-        std::vector<uint32_t> ids = {1,2,3};
+        // The manifest for this fixture is {1, 2}; interpolation runs
+        // over that set, matching the contribution that was generated.
+        std::vector<uint32_t> ids = {1, 2};
         dao_dkg_lagrange_mu(ids, 1, mu);
 
         ctx_bytes.insert(ctx_bytes.end(), cfg.key_id.data, cfg.key_id.data + 32);

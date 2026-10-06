@@ -36,11 +36,28 @@ struct dao_dkg_reset_config
     uint32_t new_epoch = 0;
     uint32_t old_threshold = 0;
     uint32_t new_threshold = 0;
+
+    // The complete previous shareholder set.
+    // First tally: the bootstrap DKG shareholder set.
+    // Later tallies: the previous share-session committee.
     std::vector<crypto::public_key> old_members;
+
     std::vector<crypto::public_key> new_members;
+
+    // The exact old shareholders that participate in THIS Reset.
+    // Exactly old_threshold distinct 1-based indices into old_members,
+    // sorted ascending. Fixed by a finalized Reset manifest before any
+    // contribution is generated or accepted. The interpolation runs
+    // over exactly this set, not over 1..old_members.size().
+    std::vector<uint32_t> reset_participant_ids;
+
     crypto::hash key_id{};
     crypto::hash old_committee_id{};
     crypto::hash new_committee_id{};
+
+    // Validate reset_participant_ids: exactly old_threshold entries,
+    // sorted ascending, unique, in range 1..old_members.size().
+    bool participant_set_valid() const;
 };
 
 struct dao_dkg_reset_result
