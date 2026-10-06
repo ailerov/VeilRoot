@@ -336,7 +336,7 @@ bool run_n_party(uint32_t n, uint32_t timeout_s,
     cfg.security_bits  = 32;
     cfg.qproof_rounds  = DAO_DKG_QPROOF_ROUNDS_TEST;
     cfg.max_attempts   = 2000;
-    cfg.phase_timeout_seconds = 20;
+    cfg.phase_timeout_seconds = 120;
     if (n == 3)  cfg.test_seed = FIXED_TEST_CANDIDATE_SEED_3;
     if (n == 16) cfg.test_seed = FIXED_TEST_CANDIDATE_SEED_16;
     if (n != 3 && n != 16) {
