@@ -42,6 +42,21 @@ struct dao_tally_session
     // shareholder set that owns the key epoch.
     std::vector<crypto::public_key>   committee_members;
 
+    // Members of the share-holder set that owns the PREVIOUS share
+    // epoch. For the first session of a key epoch this is the
+    // bootstrap DKG shareholder set. For every later session it is
+    // the committee of the immediately preceding session. Used to
+    // authenticate reshare_ready / reshare_commit / reshare_share
+    // senders against their claimed 1-based old_member_id.
+    std::vector<crypto::public_key>   prev_committee_members;
+
+    // share_epoch of the previous session this one resets from.
+    // 0 means the bootstrap DKG: the old share is read from
+    // dao_local_share[bootstrap_key_epoch, bootstrap_id].
+    // Non-zero means the previous dynamic session's share is read
+    // from dao_local_dynamic_share[prev_share_epoch].
+    uint32_t                          prev_share_epoch = 0;
+
     // Per-member verification keys for the temporary committee, one
     // per committee_members entry, in the same order. Derived after
     // the Reset produces SK'_j for each member:

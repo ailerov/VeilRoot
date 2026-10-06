@@ -1071,6 +1071,33 @@ bool deserialize_reset_subshare_plain(
     return off == buf.size();
 }
 
+// Manifest payload: a length-prefixed list of 1-based participant IDs.
+bool serialize_reset_manifest_ids(const std::vector<uint32_t>& ids,
+                                  std::vector<uint8_t>& out)
+{
+    out.clear();
+    reset_push_u32(out, static_cast<uint32_t>(ids.size()));
+    for (uint32_t id : ids) reset_push_u32(out, id);
+    return true;
+}
+
+bool deserialize_reset_manifest_ids(const std::vector<uint8_t>& in,
+                                    std::vector<uint32_t>& ids)
+{
+    size_t off = 0;
+    uint32_t n = 0;
+    if (!reset_pull_u32(in, off, n)) return false;
+    if (n == 0 || n > 64) return false;
+    ids.clear();
+    ids.reserve(n);
+    for (uint32_t i = 0; i < n; ++i) {
+        uint32_t id = 0;
+        if (!reset_pull_u32(in, off, id)) return false;
+        ids.push_back(id);
+    }
+    return off == in.size();
+}
+
 } // anonymous namespace
 
 struct dkg_p2p_reshare_runner::impl
@@ -1099,52 +1126,339 @@ struct dkg_p2p_reshare_runner::impl
     std::vector<dao_reset_public_contribution> publics;
     std::vector<dao_reset_private_subshare>    my_subshares;
 
+    // Manifest-phase state.
+    std::set<uint32_t>                                 ready_ids;
+    std::map<crypto::hash, std::vector<uint32_t>>      manifest_proposals;
+    std::map<crypto::hash, std::set<uint32_t>>         manifest_acks;
+    std::set<uint32_t>                                 ready_broadcast_once;
+    bool                                               ready_sent = false;
+    bool                                               manifest_proposed = false;
+    bool                                               manifest_finalized = false;
+    bool                                               contribution_sent = false;
+    crypto::hash                                       final_manifest_hash{};
+    std::vector<uint32_t>                              final_participant_ids;
+
     dao_dkg_reset_result result;
 
     std::thread worker;
 
     void run();
+    void broadcast_ready();
+    void maybe_propose_manifest();
+    bool handle_ready(const dkg_msg& m);
+    bool handle_manifest(const dkg_msg& m);
+    bool handle_manifest_ack(const dkg_msg& m);
+    void maybe_finalize_manifest();
     void broadcast_my_contribution();
     bool handle_commit(const dkg_msg& m);
     bool handle_share(const dkg_msg& m);
     void try_finish();
 };
 
+namespace {
+
+crypto::hash compute_reset_manifest_hash(
+    const dao_dkg_reset_config& cfg,
+    const std::vector<uint32_t>& ids)
+{
+    std::vector<uint8_t> buf;
+    const char* dom = "VeilRoot-DAO-DKG-RESET-MANIFEST-V1";
+    buf.insert(buf.end(), dom, dom + std::strlen(dom));
+    buf.insert(buf.end(), cfg.key_id.data, cfg.key_id.data + 32);
+    buf.insert(buf.end(), cfg.proposal_id.data, cfg.proposal_id.data + 32);
+    auto put_u32 = [&](uint32_t x) {
+        for (int i = 0; i < 4; ++i)
+            buf.push_back((x >> (8*i)) & 0xff);
+    };
+    put_u32(cfg.old_epoch);
+    put_u32(cfg.new_epoch);
+    buf.insert(buf.end(), cfg.old_committee_id.data,
+               cfg.old_committee_id.data + 32);
+    buf.insert(buf.end(), cfg.new_committee_id.data,
+               cfg.new_committee_id.data + 32);
+    put_u32(static_cast<uint32_t>(ids.size()));
+    for (uint32_t id : ids) put_u32(id);
+    crypto::hash h;
+    crypto::cn_fast_hash(buf.data(), buf.size(), h);
+    return h;
+}
+
+} // anonymous namespace
+
+void dkg_p2p_reshare_runner::impl::broadcast_ready()
+{
+    // Only old-universe members announce readiness.
+    if (self_old_id == 0) return;
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        if (ready_sent) return;
+        ready_sent = true;
+        // Our own readiness counts locally; a broadcast is not
+        // delivered to the sender.
+        ready_ids.insert(self_old_id);
+    }
+
+    dkg_msg m;
+    m.hdr.version = 1;
+    m.hdr.epoch = cfg.new_epoch;
+    m.hdr.sender_id = self_old_id;
+    m.hdr.recipient_id = 0;
+    m.hdr.type = dkg_msg_type::reshare_ready;
+    m.tag32 = self_old_id;
+    std::vector<uint8_t> ser;
+    m.serialize(ser);
+    if (cb.broadcast)
+        cb.broadcast(std::string(ser.begin(), ser.end()));
+}
+
+bool dkg_p2p_reshare_runner::impl::handle_ready(const dkg_msg& m)
+{
+    const uint32_t id = m.tag32;
+    if (id == 0 || id > cfg.old_members.size()) return false;
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        ready_ids.insert(id);
+    }
+    maybe_propose_manifest();
+    return true;
+}
+
+void dkg_p2p_reshare_runner::impl::maybe_propose_manifest()
+{
+    // Only a new-committee member proposes.
+    if (self_new_id == 0) return;
+
+    std::vector<uint32_t> chosen;
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        if (manifest_proposed) return;
+        if (manifest_finalized) return;
+        if (ready_ids.size() < cfg.old_threshold) return;
+
+        // Deterministic: lowest cfg.old_threshold ready IDs, ascending.
+        // Different nodes may see different ready sets at different
+        // times, so two proposers may produce different manifests.
+        // Only one wins after ACK threshold.
+        size_t k = 0;
+        for (uint32_t id : ready_ids) {
+            chosen.push_back(id);
+            if (++k >= cfg.old_threshold) break;
+        }
+        manifest_proposed = true;
+    }
+
+    std::vector<uint8_t> payload;
+    if (!serialize_reset_manifest_ids(chosen, payload)) return;
+
+    dkg_msg m;
+    m.hdr.version = 1;
+    m.hdr.epoch = cfg.new_epoch;
+    m.hdr.sender_id = self_new_id;
+    m.hdr.recipient_id = 0;
+    m.hdr.type = dkg_msg_type::reshare_manifest;
+    m.tag32 = static_cast<uint32_t>(chosen.size());
+    m.bytes_a = std::move(payload);
+    std::vector<uint8_t> ser;
+    m.serialize(ser);
+    if (cb.broadcast)
+        cb.broadcast(std::string(ser.begin(), ser.end()));
+
+    // A proposer is implicitly an ACK of its own manifest.
+    crypto::hash h = compute_reset_manifest_hash(cfg, chosen);
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        manifest_proposals[h] = chosen;
+        manifest_acks[h].insert(self_new_id);
+    }
+    maybe_finalize_manifest();
+}
+
+bool dkg_p2p_reshare_runner::impl::handle_manifest(const dkg_msg& m)
+{
+    std::vector<uint32_t> ids;
+    if (!deserialize_reset_manifest_ids(m.bytes_a, ids)) return false;
+    if (ids.size() != cfg.old_threshold) return false;
+
+    // Structural checks only: ascending, unique, in range. Whether
+    // every listed ID has sent reshare_ready is NOT a gate here.
+    // Requiring readiness at manifest-receipt time makes the ceremony
+    // sensitive to message ordering: if the broadcast arrives before
+    // the last ready announcement, and no later broadcast follows, the
+    // node never finalizes. The new-threshold ACK count is the real
+    // gate; readiness is a soft liveness aid.
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        std::set<uint32_t> uniq;
+        for (size_t i = 0; i < ids.size(); ++i) {
+            if (ids[i] == 0 || ids[i] > cfg.old_members.size()) return false;
+            if (!uniq.insert(ids[i]).second) return false;
+            if (i > 0 && ids[i] <= ids[i-1]) return false;
+        }
+    }
+
+    crypto::hash h = compute_reset_manifest_hash(cfg, ids);
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        manifest_proposals[h] = ids;
+        // Implicit ACK only from new-committee members. Old members
+        // track the proposal so they can finalize locally and then
+        // generate their contribution, but their "ACK" does not count
+        // toward the new-committee threshold.
+        if (self_new_id != 0)
+            manifest_acks[h].insert(self_new_id);
+    }
+
+    // Broadcast our ACK only if we are a new-committee member.
+    if (self_new_id != 0) {
+        dkg_msg ack;
+        ack.hdr.version = 1;
+        ack.hdr.epoch = cfg.new_epoch;
+        ack.hdr.sender_id = self_new_id;
+        ack.hdr.recipient_id = 0;
+        ack.hdr.type = dkg_msg_type::reshare_manifest_ack;
+        ack.bytes_a.assign(h.data, h.data + 32);
+        std::vector<uint8_t> ser;
+        ack.serialize(ser);
+        if (cb.broadcast)
+            cb.broadcast(std::string(ser.begin(), ser.end()));
+    }
+
+    maybe_finalize_manifest();
+    return true;
+}
+
+bool dkg_p2p_reshare_runner::impl::handle_manifest_ack(const dkg_msg& m)
+{
+    if (m.bytes_a.size() != 32) return false;
+    crypto::hash h;
+    std::memcpy(h.data, m.bytes_a.data(), 32);
+
+    // Record ACKs unconditionally. A manifest broadcast and the ACKs
+    // it triggers can arrive in any order; if we discard ACKs for
+    // manifests we have not seen yet, peers that receive the ACK
+    // before the manifest never reach the ACK threshold.
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        if (m.hdr.sender_id != 0)
+            manifest_acks[h].insert(m.hdr.sender_id);
+    }
+    maybe_finalize_manifest();
+    return true;
+}
+
+void dkg_p2p_reshare_runner::impl::maybe_finalize_manifest()
+{
+    std::vector<uint32_t> winners;
+    crypto::hash winner_hash{};
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        if (manifest_finalized) return;
+        for (auto& kv : manifest_acks) {
+            if (kv.second.size() >= cfg.new_threshold) {
+                auto pit = manifest_proposals.find(kv.first);
+                if (pit == manifest_proposals.end()) continue;
+                winner_hash = kv.first;
+                winners = pit->second;
+                break;
+            }
+        }
+        if (winners.empty()) return;
+        manifest_finalized = true;
+        final_manifest_hash = winner_hash;
+        final_participant_ids = winners;
+    }
+
+    // Broadcast the finalized manifest so peers who have not seen it
+    // yet can finalize too.
+    std::vector<uint8_t> payload;
+    if (serialize_reset_manifest_ids(winners, payload)) {
+        dkg_msg m;
+        m.hdr.version = 1;
+        m.hdr.epoch = cfg.new_epoch;
+        m.hdr.sender_id = self_new_id;
+        m.hdr.recipient_id = 0;
+        m.hdr.type = dkg_msg_type::reshare_manifest;
+        m.tag32 = static_cast<uint32_t>(winners.size());
+        m.bytes_a = std::move(payload);
+        std::vector<uint8_t> ser;
+        m.serialize(ser);
+        if (cb.broadcast)
+            cb.broadcast(std::string(ser.begin(), ser.end()));
+    }
+
+    // Apply the finalized set to cfg so downstream generation and
+    // acceptance use exactly this manifest.
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        cfg.reset_participant_ids = winners;
+    }
+
+    // If this node is a listed old participant, generate and broadcast
+    // its contribution. broadcast_my_contribution itself performs the
+    // self_old_id and contribution_sent guards.
+    broadcast_my_contribution();
+}
+
 void dkg_p2p_reshare_runner::impl::broadcast_my_contribution()
 {
     if (self_old_id == 0) return;
     if (local_old_share.empty()) return;
 
+    // Require a finalized manifest, and self_old_id must be listed.
+    // Guard against repeated broadcast: only send once per runner.
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        if (!manifest_finalized) return;
+        if (contribution_sent) return;
+        bool listed = false;
+        for (uint32_t id : final_participant_ids) {
+            if (id == self_old_id) { listed = true; break; }
+        }
+        if (!listed) return;
+        contribution_sent = true;
+    }
+
+    // Contribution is generated under the finalized cfg. Copy cfg with
+    // the manifest set applied so downstream code interpolates over it.
+    dao_dkg_reset_config eff_cfg = cfg;
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        eff_cfg.reset_participant_ids = final_participant_ids;
+    }
+
+    // Compute V_K for the generator.
+    BIGNUM* V_K = BN_bin2bn(public_key.V.data(),
+                            (int)public_key.V.size(), nullptr);
+    if (!V_K) return;
+
     dao_reset_public_contribution pub;
     std::vector<dao_reset_private_subshare> priv;
-    if (!dao_dkg_reset_generate_contribution(
-            cfg, self_old_id, local_old_share, vss, N2,
-            [&]() -> const BIGNUM* {
-                // decode V_K from public_key.V
-                static thread_local BIGNUM* cached = nullptr;
-                if (cached) BN_free(cached);
-                cached = BN_bin2bn(public_key.V.data(),
-                                   (int)public_key.V.size(), nullptr);
-                return cached;
-            }(),
-            old_vk_i_list[self_old_id - 1], pub, priv)) {
+    const bool gen_ok = dao_dkg_reset_generate_contribution(
+            eff_cfg, self_old_id, local_old_share, vss, N2,
+            V_K,
+            old_vk_i_list[self_old_id - 1], pub, priv);
+    BN_free(V_K);
+    if (!gen_ok) {
         return;
     }
 
-    // Broadcast commit.
-    dkg_msg cm;
-    cm.hdr.version = 1;
-    cm.hdr.epoch = cfg.new_epoch;
-    cm.hdr.sender_id = self_old_id;
-    cm.hdr.recipient_id = 0;
-    cm.hdr.type = dkg_msg_type::reshare_commit;
-    if (!serialize_reset_commit(pub, cm)) return;
-    std::vector<uint8_t> ser;
-    cm.serialize(ser);
-    if (cb.broadcast)
-        cb.broadcast(std::string(ser.begin(), ser.end()));
+    // Broadcast commit under the ORIGINAL epoch headers but with the
+    // finalized manifest applied to the payload-generating config.
+    {
+        dkg_msg cm;
+        cm.hdr.version = 1;
+        cm.hdr.epoch = cfg.new_epoch;
+        cm.hdr.sender_id = self_old_id;
+        cm.hdr.recipient_id = 0;
+        cm.hdr.type = dkg_msg_type::reshare_commit;
+        if (!serialize_reset_commit(pub, cm)) return;
+        std::vector<uint8_t> ser;
+        cm.serialize(ser);
+        if (cb.broadcast)
+            cb.broadcast(std::string(ser.begin(), ser.end()));
+    }
 
-    // Targeted private subshares.
+    // Private subshares.
     for (const auto& ss : priv) {
         const size_t idx = ss.to_new_member_id - 1;
         if (idx >= cfg.new_members.size()) continue;
@@ -1169,7 +1483,6 @@ void dkg_p2p_reshare_runner::impl::broadcast_my_contribution()
             cb.send_to(to, std::string(s2.begin(), s2.end()));
     }
 }
-
 bool dkg_p2p_reshare_runner::impl::handle_commit(const dkg_msg& m)
 {
     dao_reset_public_contribution c;
@@ -1229,8 +1542,35 @@ void dkg_p2p_reshare_runner::impl::try_finish()
     }
 
     std::lock_guard<std::mutex> lk(mu);
-    if (publics.size() < cfg.old_members.size()) return;
-    if (my_subshares.size() < cfg.old_members.size()) return;
+    if (!manifest_finalized) return;
+    if (publics.size() != final_participant_ids.size()) return;
+    if (my_subshares.size() != final_participant_ids.size()) return;
+
+    // Exact ID-set match: every public contribution must be from a
+    // manifest-listed participant, and every listed participant must
+    // have a matching subshare.
+    {
+        std::set<uint32_t> expected(final_participant_ids.begin(),
+                                    final_participant_ids.end());
+        std::set<uint32_t> got_pub;
+        for (const auto& p : publics) {
+            if (!expected.count(p.old_member_id)) return;
+            if (!got_pub.insert(p.old_member_id).second) return;
+        }
+        if (got_pub != expected) return;
+
+        std::set<uint32_t> got_ss;
+        for (const auto& s : my_subshares) {
+            if (!expected.count(s.from_old_member_id)) continue;
+            got_ss.insert(s.from_old_member_id);
+        }
+        if (got_ss != expected) return;
+    }
+
+    // Copy cfg with the finalized manifest applied so accept
+    // interpolates over the manifest set.
+    dao_dkg_reset_config eff_cfg = cfg;
+    eff_cfg.reset_participant_ids = final_participant_ids;
 
     BIGNUM* V_K = BN_bin2bn(public_key.V.data(),
                             (int)public_key.V.size(), nullptr);
@@ -1238,7 +1578,7 @@ void dkg_p2p_reshare_runner::impl::try_finish()
 
     std::vector<uint8_t> new_share;
     const bool ok = dao_dkg_reset_accept(
-        cfg, self_new_id, publics, my_subshares, vss, N2, V_K,
+        eff_cfg, self_new_id, publics, my_subshares, vss, N2, V_K,
         old_vk_i_list, new_share);
     BN_free(V_K);
 
@@ -1288,10 +1628,20 @@ void dkg_p2p_reshare_runner::impl::try_finish()
 
 void dkg_p2p_reshare_runner::impl::run()
 {
-    broadcast_my_contribution();
+    // Manifest phase first: announce readiness. Only old-universe
+    // members participate. New-committee members wait for ready
+    // announcements and then propose/ACK a manifest. Once the
+    // manifest is finalized, contributions are generated and sent.
+    broadcast_ready();
+
+    // If this node is an old member and it is the only one, or if the
+    // manifest is already finalizable from what we have locally, the
+    // manifest-finalize path will call broadcast_my_contribution.
+    // For a pure old-member node (not in new committee) that never
+    // sees a manifest, fall back to letting try_finish complete it:
+    // the node has no contribution to make until a manifest exists,
+    // so nothing to do here except wait for inbound messages.
     if (self_new_id == 0) try_finish();
-    // Otherwise, wait for inbound commit + share messages to complete us.
-    // try_finish is re-invoked from handle_commit / handle_share.
 }
 
 dkg_p2p_reshare_runner::dkg_p2p_reshare_runner(
@@ -1362,6 +1712,15 @@ void dkg_p2p_reshare_runner::on_message(const dkg_msg& m)
 {
     if (!p_ || p_->stop_flag.load()) return;
     switch (m.hdr.type) {
+        case dkg_msg_type::reshare_ready:
+            (void)p_->handle_ready(m);
+            break;
+        case dkg_msg_type::reshare_manifest:
+            (void)p_->handle_manifest(m);
+            break;
+        case dkg_msg_type::reshare_manifest_ack:
+            (void)p_->handle_manifest_ack(m);
+            break;
         case dkg_msg_type::reshare_commit:
             if (p_->handle_commit(m)) p_->try_finish();
             break;

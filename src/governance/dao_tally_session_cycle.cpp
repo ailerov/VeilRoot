@@ -63,6 +63,15 @@ bool dao_tally_session::serialize(std::vector<uint8_t>& out) const
     for (const auto& m : committee_members)
         out.insert(out.end(), m.data, m.data + sizeof(m.data));
 
+    push_u32(out, prev_share_epoch);
+
+    {
+        uint32_t n = static_cast<uint32_t>(prev_committee_members.size());
+        push_u32(out, n);
+        for (const auto& m : prev_committee_members)
+            out.insert(out.end(), m.data, m.data + sizeof(m.data));
+    }
+
     // Committee verification keys, length-prefixed per entry.
     {
         uint32_t n = static_cast<uint32_t>(committee_V_K_i.size());
@@ -102,6 +111,20 @@ bool dao_tally_session::deserialize(const std::vector<uint8_t>& in)
         if (off + 32 > in.size()) return false;
         std::memcpy(committee_members[i].data, in.data() + off, 32);
         off += 32;
+    }
+
+    if (!pull_u32(in, off, prev_share_epoch)) return false;
+
+    {
+        uint32_t n = 0;
+        if (!pull_u32(in, off, n)) return false;
+        if (n > 64) return false;
+        prev_committee_members.assign(n, {});
+        for (uint32_t i = 0; i < n; ++i) {
+            if (off + 32 > in.size()) return false;
+            std::memcpy(prev_committee_members[i].data, in.data() + off, 32);
+            off += 32;
+        }
     }
 
     // Committee verification keys.

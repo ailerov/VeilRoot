@@ -55,6 +55,11 @@ struct dao_dkg_reset_config
     crypto::hash old_committee_id{};
     crypto::hash new_committee_id{};
 
+    // Proposal this Reset session is bound to. Used in the manifest
+    // hash so a manifest from a different proposal cannot be replayed
+    // into this session.
+    crypto::hash proposal_id{};
+
     // Validate reset_participant_ids: exactly old_threshold entries,
     // sorted ascending, unique, in range 1..old_members.size().
     bool participant_set_valid() const;

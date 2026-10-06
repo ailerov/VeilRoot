@@ -8643,7 +8643,10 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       return;
     }
 
-    if (m.hdr.type == dao::dkg_msg_type::reshare_start ||
+    if (m.hdr.type == dao::dkg_msg_type::reshare_ready ||
+        m.hdr.type == dao::dkg_msg_type::reshare_manifest ||
+        m.hdr.type == dao::dkg_msg_type::reshare_manifest_ack ||
+        m.hdr.type == dao::dkg_msg_type::reshare_start ||
         m.hdr.type == dao::dkg_msg_type::reshare_commit ||
         m.hdr.type == dao::dkg_msg_type::reshare_share ||
         m.hdr.type == dao::dkg_msg_type::reshare_proof ||
@@ -8833,6 +8836,38 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
         s.committee_members.push_back(
             m_committee_eligible_sorted[i].first);
 
+      // Previous share holder set for chain-of-resets. If a session
+      // with a smaller share_epoch exists, use its committee; else
+      // fall back to the bootstrap shareholder set.
+      {
+        uint32_t best_epoch = 0;
+        std::vector<crypto::public_key> best_members;
+        try {
+          m_db->for_all_dao_tally_sessions(
+            [&](const crypto::hash&, const dao::dao_tally_session& ss) {
+              if (ss.share_epoch < s.share_epoch &&
+                  ss.share_epoch > best_epoch &&
+                  !ss.committee_members.empty()) {
+                best_epoch = ss.share_epoch;
+                best_members = ss.committee_members;
+              }
+              return true;
+            });
+        } catch (...) {}
+        if (!best_members.empty()) {
+          s.prev_committee_members = std::move(best_members);
+          s.prev_share_epoch = best_epoch;
+        } else {
+          // Bootstrap shareholders from the key record.
+          for (const auto& m : key_rec.committee_members) {
+            if (m.size() != 32) continue;
+            crypto::public_key pk{};
+            std::memcpy(pk.data, m.data(), 32);
+            s.prev_committee_members.push_back(pk);
+          }
+        }
+      }
+
       // committee_id_hash: SHA256 over domain || share_epoch ||
       // ordered member keys, matching the same canonical ordering
       // used by the DKG committee hash.
@@ -8919,46 +8954,45 @@ void Blockchain::start_dao_v2_reset_for_session(const crypto::hash& proposal_id)
           static_cast<uint32_t>(bootstrap_members.size()));
   if (bootstrap_threshold == 0) return;
 
-  // Root subset R: top T_root bootstrap shareholders under the same
-  // canonical ranking used for tally committee selection. Determinism
-  // requires that every node derive the same R from the same chain.
-  rebuild_committee_eligible_list();
-  std::vector<crypto::public_key> root_subset;
-  for (const auto& e : m_committee_eligible_sorted) {
-    for (const auto& bm : bootstrap_members) {
-      if (std::memcmp(bm.data, e.first.data, 32) == 0) {
-        root_subset.push_back(bm);
-        break;
-      }
-    }
-    if (root_subset.size() >= bootstrap_threshold) break;
-  }
-  if (root_subset.size() < bootstrap_threshold) {
-    MINFO("start_dao_v2_reset_for_session: not enough live root "
-          "shareholders for epoch " << share_epoch);
-    return;
-  }
+  // The old shareholder universe is the previous session's committee.
+  // For the first session of a key epoch it is the bootstrap set.
+  const std::vector<crypto::public_key>& old_universe =
+      session.prev_committee_members.empty()
+          ? bootstrap_members
+          : session.prev_committee_members;
+  const uint32_t old_threshold =
+      dao::dao_dkg_expected_threshold(
+          static_cast<uint32_t>(old_universe.size()));
+  if (old_threshold == 0) return;
 
-  // Local bootstrap share.
-  const uint32_t local_bootstrap_id =
-      dao::dao_dkg_party_index_for(bootstrap_members, self_pk);
-  if (local_bootstrap_id == 0) {
-    // This node is not a bootstrap shareholder. It only participates
-    // if it is in the new committee, and then only as a collector.
-    MINFO("start_dao_v2_reset_for_session: not a bootstrap shareholder");
-  }
+  // Local old share. Chain-of-resets: if the session has a
+  // prev_share_epoch, the local share is the previous session's
+  // dynamic share. Otherwise it is the bootstrap share.
+  const uint32_t local_old_id =
+      dao::dao_dkg_party_index_for(old_universe, self_pk);
 
   std::vector<uint8_t> local_old_share;
-  if (local_bootstrap_id != 0) {
+  if (local_old_id != 0) {
     try {
-      if (!m_db->get_dao_local_share(bootstrap_key_epoch,
-                                     local_bootstrap_id,
-                                     local_old_share)) {
-        MINFO("start_dao_v2_reset_for_session: local bootstrap share "
-              "missing for id " << local_bootstrap_id);
-        return;
+      if (session.prev_share_epoch != 0) {
+        if (!m_db->get_dao_local_dynamic_share(
+                session.prev_share_epoch, local_old_share)) {
+          MINFO("start_dao_v2_reset_for_session: previous dynamic "
+                "share missing for epoch " << session.prev_share_epoch);
+          return;
+        }
+      } else {
+        if (!m_db->get_dao_local_share(bootstrap_key_epoch,
+                                       local_old_id,
+                                       local_old_share)) {
+          MINFO("start_dao_v2_reset_for_session: local bootstrap "
+                "share missing for id " << local_old_id);
+          return;
+        }
       }
     } catch (...) { return; }
+  } else {
+    MINFO("start_dao_v2_reset_for_session: not an old shareholder");
   }
 
   // VSS group: decoded from the bootstrap record.
@@ -8987,14 +9021,21 @@ void Blockchain::start_dao_v2_reset_for_session(const crypto::hash& proposal_id)
   BN_CTX_free(ctx);
 
   dao::dao_dkg_reset_config rcfg;
-  rcfg.old_epoch = bootstrap_key_epoch;
+  rcfg.old_epoch = (session.prev_share_epoch != 0)
+                       ? session.prev_share_epoch
+                       : bootstrap_key_epoch;
   rcfg.new_epoch = share_epoch;
-  rcfg.old_threshold = bootstrap_threshold;
+  rcfg.old_threshold = old_threshold;
   rcfg.new_threshold = session.threshold;
-  rcfg.old_members = root_subset;
+  rcfg.old_members = old_universe;
   rcfg.new_members = session.committee_members;
+  rcfg.proposal_id = proposal_id;
   if (bootstrap_rec.key_id.size() == 32)
     std::memcpy(rcfg.key_id.data, bootstrap_rec.key_id.data(), 32);
+
+  // reset_participant_ids is filled by the manifest phase at
+  // runtime (2b-iii). Until then it stays empty and the runner
+  // will refuse to accept contributions.
 
   // public_key record used by the runner: only V and VSS group fields
   // are read.
@@ -9053,7 +9094,8 @@ void Blockchain::start_dao_v2_reset_for_session(const crypto::hash& proposal_id)
     }));
 
   MINFO("start_dao_v2_reset_for_session: runner started for share_epoch "
-        << share_epoch << " root_subset " << root_subset.size()
+        << share_epoch << " old_universe " << old_universe.size()
+        << " old_threshold " << old_threshold
         << " committee " << session.committee_size);
 }
 

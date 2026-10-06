@@ -171,6 +171,9 @@ enum class dkg_msg_type : uint8_t
     reshare_complete         = 0x78,
     reshare_abort            = 0x79,
     reshare_vki_set          = 0x7A,
+    reshare_ready            = 0x7B,
+    reshare_manifest         = 0x7C,
+    reshare_manifest_ack     = 0x7D,
 
 };
 
