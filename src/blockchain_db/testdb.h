@@ -203,6 +203,7 @@ public:
   virtual void add_dao_tally_session(const crypto::hash&, const dao::dao_tally_session&) override {}
   virtual bool get_dao_tally_session(const crypto::hash&, dao::dao_tally_session&) const override { return false; }
   virtual void remove_dao_tally_session(const crypto::hash&) override {}
+  virtual bool for_all_dao_tally_sessions(std::function<bool(const crypto::hash&, const dao::dao_tally_session&)>) const override { return true; }
 
   virtual void add_vns_domain_record(const std::string&, const vns_domain_record&) override {}
   virtual bool get_vns_domain_record(const std::string&, vns_domain_record&) const override { return false; }

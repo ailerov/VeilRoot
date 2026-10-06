@@ -652,6 +652,8 @@ public:
   virtual bool get_dao_tally_session(const crypto::hash& proposal_id,
                                      dao::dao_tally_session& rec) const override;
   virtual void remove_dao_tally_session(const crypto::hash& proposal_id) override;
+  virtual bool for_all_dao_tally_sessions(
+      std::function<bool(const crypto::hash&, const dao::dao_tally_session&)> f) const override;
   // END_VNS_DAO_VOTE
 
   // BEGIN_VNS_TREASURY_LMDB_OVERRIDE

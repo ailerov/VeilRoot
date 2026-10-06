@@ -9198,6 +9198,72 @@ void Blockchain::handle_dao_v2_reshare_vki_set(
         << " index " << claimed_index);
 }
 
+void Blockchain::close_completed_dao_v2_sessions()
+{
+  std::map<uint32_t, std::vector<crypto::hash>> by_epoch;
+  std::map<uint32_t, bool> reshared;
+  try {
+    m_db->for_all_dao_tally_sessions(
+      [&](const crypto::hash& pid, const dao::dao_tally_session& s) {
+        if (s.tally_complete) return true;
+        by_epoch[s.share_epoch].push_back(pid);
+        auto it = reshared.find(s.share_epoch);
+        reshared[s.share_epoch] = (it == reshared.end())
+            ? s.resharing_complete
+            : (it->second && s.resharing_complete);
+        return true;
+      });
+  } catch (...) { return; }
+
+  for (auto& kv : by_epoch) {
+    const uint32_t share_epoch = kv.first;
+    auto rit = reshared.find(share_epoch);
+    if (rit == reshared.end() || !rit->second) continue;
+
+    bool all_done = true;
+    for (const auto& pid : kv.second) {
+      proposal_record p;
+      if (!m_db->get_proposal_record(pid, p)) { all_done = false; break; }
+      if (p.status == PROPOSAL_STATUS_ACTIVE) { all_done = false; break; }
+    }
+    if (!all_done) continue;
+
+    try {
+      db_wtxn_guard g(m_db);
+      try { m_db->remove_dao_local_dynamic_share(share_epoch); }
+      catch (...) {}
+
+      for (const auto& pid : kv.second) {
+        dao::dao_tally_session s;
+        if (!m_db->get_dao_tally_session(pid, s)) continue;
+        s.tally_complete = true;
+        try { m_db->add_dao_tally_session(pid, s); } catch (...) {}
+      }
+    } catch (const std::exception& e) {
+      MERROR("close_dao_v2_session " << share_epoch << ": " << e.what());
+      continue;
+    }
+
+    auto sit = m_dao_v2_session_runners.find(share_epoch);
+    if (sit != m_dao_v2_session_runners.end()) {
+      sit->second.runner.reset();
+      m_dao_v2_session_runners.erase(sit);
+    }
+
+    {
+      std::lock_guard<std::mutex> lk(m_dao_v2_session_result_mutex);
+      m_dao_v2_session_proposal.erase(share_epoch);
+    }
+    {
+      std::lock_guard<std::mutex> lk(m_dao_v2_session_vki_mutex);
+      m_dao_v2_session_vki.erase(share_epoch);
+    }
+
+    MINFO("DAO V2 session " << share_epoch
+          << " closed; temporary share erased");
+  }
+}
+
 void Blockchain::drain_dao_v2_session_vki()
 {
   // Owner-thread only. Copies the accumulated map out under a short

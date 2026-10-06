@@ -35,6 +35,7 @@ namespace cryptonote { namespace dao { struct dao_supply_snapshot; } }
 namespace cryptonote { namespace dao { struct dao_v2_outcome_record; } }
 
 #include <string>
+#include <functional>
 #include <exception>
 #include <boost/program_options.hpp>
 #include "common/command_line.h"
@@ -2237,6 +2238,8 @@ public:
     virtual bool get_dao_tally_session(const crypto::hash& proposal_id,
                                        dao::dao_tally_session& rec) const = 0;
     virtual void remove_dao_tally_session(const crypto::hash& proposal_id) = 0;
+    virtual bool for_all_dao_tally_sessions(
+        std::function<bool(const crypto::hash&, const dao::dao_tally_session&)> f) const = 0;
     // ---------- VNS DAO TALLY SESSIONS END ----------
 
     // BEGIN_VNS_ELIGIBLE

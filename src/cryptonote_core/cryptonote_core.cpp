@@ -1669,6 +1669,7 @@ namespace cryptonote
       m_blockchain_storage.drain_dao_v2_session_reshares();
       m_blockchain_storage.process_pending_dao_v2_session_results();
       m_blockchain_storage.drain_dao_v2_session_vki();
+      m_blockchain_storage.close_completed_dao_v2_sessions();
       return true;
     });
     m_miner.on_idle();

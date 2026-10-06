@@ -3866,6 +3866,36 @@ void BlockchainLMDB::remove_dao_tally_session(const crypto::hash& proposal_id)
 }
 // END_VNS_DAO_TALLY_SESSIONS
 
+bool BlockchainLMDB::for_all_dao_tally_sessions(
+    std::function<bool(const crypto::hash&, const dao::dao_tally_session&)> f) const
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  TXN_PREFIX_RDONLY();
+  RCURSOR(dao_tally_sessions)
+
+  MDB_val k, v;
+  int result = mdb_cursor_get(m_cur_dao_tally_sessions, &k, &v, MDB_FIRST);
+  while (result == 0)
+  {
+    if (k.mv_size == sizeof(crypto::hash) && v.mv_size > 0)
+    {
+      std::vector<uint8_t> blob(static_cast<const uint8_t*>(v.mv_data),
+                                static_cast<const uint8_t*>(v.mv_data) + v.mv_size);
+      dao::dao_tally_session rec;
+      if (rec.deserialize(blob)) {
+        const crypto::hash& id = *(const crypto::hash*)k.mv_data;
+        if (!f(id, rec)) break;
+      }
+    }
+    result = mdb_cursor_get(m_cur_dao_tally_sessions, &k, &v, MDB_NEXT);
+  }
+  TXN_POSTFIX_RDONLY();
+  return true;
+}
+
+
 
 // BEGIN_VNS_TREASURY_AMOUNT_TXN
 bool BlockchainLMDB::get_proposal_amount_in_txn(const crypto::hash& proposal_id, uint64_t& amount)

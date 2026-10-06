@@ -1397,6 +1397,11 @@ namespace cryptonote
   // session records and marks them resharing_complete. Called from
   // on_idle.
   void drain_dao_v2_session_vki();
+  // Owner-thread. Closes sessions whose proposals have all reached a
+  // terminal status: erases the temporary local dynamic share, marks
+  // each session tally_complete, clears the runner. Bootstrap shares
+  // and the public key record are untouched.
+  void close_completed_dao_v2_sessions();
 
   // Called from the watcher thread to hand a finished Reset result
   // back to the owner thread. Thread-safe.
