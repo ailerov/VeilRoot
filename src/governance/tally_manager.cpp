@@ -238,6 +238,7 @@ bool TallyManager::produce_local_share(
     share_out.vote_end_height = prop.voting_end_height;
     share_out.tally_key_epoch = prop.tally_key_epoch;
     share_out.share_epoch     = session.share_epoch;
+    share_out.reset_transcript_hash = session.reset_transcript_hash;
     share_out.member_index    = local_member_index;
     share_out.aggregate_ciphertext_hash =
         dao::dao_aggregate_ciphertext_hash(agg.aggregate_E_W,

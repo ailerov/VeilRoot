@@ -38,6 +38,11 @@ struct dao_v2_tally_share
     // matches.
     uint32_t     share_epoch = 0;
 
+    // Reset transcript hash for the session. A partial decryption
+    // generated under a different Reset ceremony carries a different
+    // hash and is rejected.
+    crypto::hash reset_transcript_hash{};
+
     crypto::hash aggregate_ciphertext_hash;
 
     uint32_t             member_index = 0;   // 1..committee_size

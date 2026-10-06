@@ -89,6 +89,8 @@ bool dao_v2_tally_share::serialize(std::vector<uint8_t>& out) const
     push_u64(out, vote_end_height);
     push_u32(out, tally_key_epoch);
     push_u32(out, share_epoch);
+    out.insert(out.end(), reset_transcript_hash.data,
+               reset_transcript_hash.data + 32);
     out.insert(out.end(), aggregate_ciphertext_hash.data,
                aggregate_ciphertext_hash.data + 32);
     push_u32(out, member_index);
@@ -110,6 +112,8 @@ bool dao_v2_tally_share::deserialize(const std::vector<uint8_t>& in)
     if (!pull_u64(in, off, vote_end_height)) return false;
     if (!pull_u32(in, off, tally_key_epoch)) return false;
     if (!pull_u32(in, off, share_epoch)) return false;
+    if (in.size() < off + 32) return false;
+    std::memcpy(reset_transcript_hash.data, in.data() + off, 32); off += 32;
     if (in.size() < off + 32) return false;
     std::memcpy(aggregate_ciphertext_hash.data, in.data() + off, 32); off += 32;
     if (!pull_u32(in, off, member_index)) return false;

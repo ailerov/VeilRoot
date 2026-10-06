@@ -83,6 +83,16 @@ struct dao_dkg_reset_result
     // this node is not a member of the new committee.
     std::vector<uint8_t> local_vki;
 
+    // Finalized Reset manifest: exactly old_threshold 1-based IDs.
+    std::vector<uint32_t> reset_participant_ids;
+
+    // Hash of the finalized manifest.
+    crypto::hash reset_manifest_hash{};
+
+    // Hash of the Reset transcript as seen by this node. Bound into
+    // the tally session and into every tally share produced from it.
+    crypto::hash reset_transcript_hash{};
+
     std::vector<std::vector<uint8_t>> new_verification_keys;
 };
 

@@ -9182,6 +9182,44 @@ void Blockchain::process_pending_dao_v2_session_results()
     MINFO("DAO V2 session " << share_epoch
           << ": local reset share installed");
 
+    // Persist the finalized manifest + transcript binding into the
+    // session. A session is only marked resharing_complete once these
+    // are non-empty; otherwise the tally producer/consumer rejects and
+    // the ceremony stays pending.
+    if (!item.result.reset_participant_ids.empty()) {
+      crypto::hash pid{};
+      {
+        std::lock_guard<std::mutex> lk(m_dao_v2_session_result_mutex);
+        auto it = m_dao_v2_session_proposal.find(share_epoch);
+        if (it != m_dao_v2_session_proposal.end()) pid = it->second;
+      }
+      if (pid != crypto::hash{}) {
+        try {
+          dao::dao_tally_session s;
+          if (m_db->get_dao_tally_session(pid, s) &&
+              s.share_epoch == share_epoch &&
+              !s.resharing_complete) {
+            s.reset_participant_ids = item.result.reset_participant_ids;
+            s.reset_manifest_hash   = item.result.reset_manifest_hash;
+            s.reset_transcript_hash = item.result.reset_transcript_hash;
+            // Only mark complete if the transcript hash is populated.
+            bool have_transcript = false;
+            for (uint8_t b : s.reset_transcript_hash.data) {
+              if (b != 0) { have_transcript = true; break; }
+            }
+            if (have_transcript) {
+              s.resharing_complete = true;
+              m_db->add_dao_tally_session(pid, s);
+              MINFO("DAO V2 session " << share_epoch
+                    << ": manifest + transcript bound");
+            }
+          }
+        } catch (const std::exception& e) {
+          MERROR("Failed to bind reset manifest: " << e.what());
+        }
+      }
+    }
+
     // Broadcast this node's V_K'_j so every peer can populate the
     // session's committee_V_K_i and mark resharing complete.
     const uint32_t my_index = item.result.local_member_index;
@@ -9761,6 +9799,11 @@ void Blockchain::drain_dao_v2_session_reshares()
     }
     if (share.share_epoch != session.share_epoch) {
       MWARNING("V2 tally share: share_epoch mismatch");
+      return;
+    }
+    if (std::memcmp(share.reset_transcript_hash.data,
+                    session.reset_transcript_hash.data, 32) != 0) {
+      MWARNING("V2 tally share: reset_transcript_hash mismatch");
       return;
     }
     if (!session.resharing_complete) {

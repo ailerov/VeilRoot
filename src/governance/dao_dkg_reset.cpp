@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "governance/dao_dkg_reset.h"
+#include "governance/dao_dkg_reset_transcript.h"
 
 #include <openssl/rand.h>
 #include <openssl/sha.h>
@@ -1126,6 +1127,14 @@ struct dkg_p2p_reshare_runner::impl
     std::vector<dao_reset_public_contribution> publics;
     std::vector<dao_reset_private_subshare>    my_subshares;
 
+    // Reset transcript. Every reshare message sent or received is
+    // appended. Private messages are appended as a domain-separated
+    // hash of the encrypted envelope; their plaintext is never stored.
+    // transcript_mu is separate from mu to avoid deadlock: transcript
+    // appends never run while mu is held.
+    dao_dkg_reset_transcript                          transcript;
+    mutable std::mutex                                transcript_mu;
+
     // Manifest-phase state.
     std::set<uint32_t>                                 ready_ids;
     std::map<crypto::hash, std::vector<uint32_t>>      manifest_proposals;
@@ -1207,6 +1216,10 @@ void dkg_p2p_reshare_runner::impl::broadcast_ready()
     m.tag32 = self_old_id;
     std::vector<uint8_t> ser;
     m.serialize(ser);
+    {
+        std::lock_guard<std::mutex> lk(transcript_mu);
+        transcript.append_public(m);
+    }
     if (cb.broadcast)
         cb.broadcast(std::string(ser.begin(), ser.end()));
 }
@@ -1215,6 +1228,10 @@ bool dkg_p2p_reshare_runner::impl::handle_ready(const dkg_msg& m)
 {
     const uint32_t id = m.tag32;
     if (id == 0 || id > cfg.old_members.size()) return false;
+    {
+        std::lock_guard<std::mutex> lk(transcript_mu);
+        transcript.append_public(m);
+    }
     {
         std::lock_guard<std::mutex> lk(mu);
         ready_ids.insert(id);
@@ -1260,6 +1277,10 @@ void dkg_p2p_reshare_runner::impl::maybe_propose_manifest()
     m.bytes_a = std::move(payload);
     std::vector<uint8_t> ser;
     m.serialize(ser);
+    {
+        std::lock_guard<std::mutex> lk(transcript_mu);
+        transcript.append_public(m);
+    }
     if (cb.broadcast)
         cb.broadcast(std::string(ser.begin(), ser.end()));
 
@@ -1278,6 +1299,11 @@ bool dkg_p2p_reshare_runner::impl::handle_manifest(const dkg_msg& m)
     std::vector<uint32_t> ids;
     if (!deserialize_reset_manifest_ids(m.bytes_a, ids)) return false;
     if (ids.size() != cfg.old_threshold) return false;
+
+    {
+        std::lock_guard<std::mutex> lk(transcript_mu);
+        transcript.append_public(m);
+    }
 
     // Structural checks only: ascending, unique, in range. Whether
     // every listed ID has sent reshare_ready is NOT a gate here.
@@ -1319,6 +1345,10 @@ bool dkg_p2p_reshare_runner::impl::handle_manifest(const dkg_msg& m)
         ack.bytes_a.assign(h.data, h.data + 32);
         std::vector<uint8_t> ser;
         ack.serialize(ser);
+        {
+            std::lock_guard<std::mutex> lk(transcript_mu);
+            transcript.append_public(ack);
+        }
         if (cb.broadcast)
             cb.broadcast(std::string(ser.begin(), ser.end()));
     }
@@ -1332,6 +1362,11 @@ bool dkg_p2p_reshare_runner::impl::handle_manifest_ack(const dkg_msg& m)
     if (m.bytes_a.size() != 32) return false;
     crypto::hash h;
     std::memcpy(h.data, m.bytes_a.data(), 32);
+
+    {
+        std::lock_guard<std::mutex> lk(transcript_mu);
+        transcript.append_public(m);
+    }
 
     // Record ACKs unconditionally. A manifest broadcast and the ACKs
     // it triggers can arrive in any order; if we discard ACKs for
@@ -1382,6 +1417,10 @@ void dkg_p2p_reshare_runner::impl::maybe_finalize_manifest()
         m.bytes_a = std::move(payload);
         std::vector<uint8_t> ser;
         m.serialize(ser);
+        {
+            std::lock_guard<std::mutex> lk(transcript_mu);
+            transcript.append_public(m);
+        }
         if (cb.broadcast)
             cb.broadcast(std::string(ser.begin(), ser.end()));
     }
@@ -1454,6 +1493,10 @@ void dkg_p2p_reshare_runner::impl::broadcast_my_contribution()
         if (!serialize_reset_commit(pub, cm)) return;
         std::vector<uint8_t> ser;
         cm.serialize(ser);
+        {
+            std::lock_guard<std::mutex> lk(transcript_mu);
+            transcript.append_public(cm);
+        }
         if (cb.broadcast)
             cb.broadcast(std::string(ser.begin(), ser.end()));
     }
@@ -1479,6 +1522,11 @@ void dkg_p2p_reshare_runner::impl::broadcast_my_contribution()
         sm.bytes_a.assign(envelope.begin(), envelope.end());
         std::vector<uint8_t> s2;
         sm.serialize(s2);
+        {
+            std::lock_guard<std::mutex> lk(transcript_mu);
+            // Private leaf: only the encrypted envelope is recorded.
+            transcript.append_private(sm);
+        }
         if (cb.send_to)
             cb.send_to(to, std::string(s2.begin(), s2.end()));
     }
@@ -1487,6 +1535,10 @@ bool dkg_p2p_reshare_runner::impl::handle_commit(const dkg_msg& m)
 {
     dao_reset_public_contribution c;
     if (!deserialize_reset_commit(m, c)) return false;
+    {
+        std::lock_guard<std::mutex> lk(transcript_mu);
+        transcript.append_public(m);
+    }
     std::lock_guard<std::mutex> lk(mu);
     for (auto& existing : publics) {
         if (existing.old_member_id == c.old_member_id) return true;
@@ -1499,6 +1551,14 @@ bool dkg_p2p_reshare_runner::impl::handle_share(const dkg_msg& m)
 {
     if (self_new_id == 0) return true;
     if (m.hdr.recipient_id != self_new_id) return true;
+
+    // Record the encrypted envelope. A share from a sender already
+    // recorded is deduplicated so that a rebroadcast does not skew the
+    // transcript.
+    {
+        std::lock_guard<std::mutex> lk(transcript_mu);
+        transcript.append_private(m);
+    }
 
     // The sender's public key.
     if (m.hdr.sender_id == 0 || m.hdr.sender_id > cfg.old_members.size())
@@ -1529,13 +1589,37 @@ bool dkg_p2p_reshare_runner::impl::handle_share(const dkg_msg& m)
 
 void dkg_p2p_reshare_runner::impl::try_finish()
 {
-    if (self_new_id == 0) {
-        // Not a new shareholder: the ceremony completes as soon as we
-        // have broadcast our contribution.
+    // Populate the finalized-manifest binding in the result regardless
+    // of whether this node is a new-committee member. The transcript
+    // is only defined once the manifest is finalized.
+    auto fill_result_binding = [&]() {
         std::lock_guard<std::mutex> lk(mu);
-        result.ok = true;
-        result.new_epoch = cfg.new_epoch;
-        result.new_threshold = cfg.new_threshold;
+        if (!manifest_finalized) return;
+        result.reset_participant_ids = final_participant_ids;
+        result.reset_manifest_hash   = final_manifest_hash;
+    };
+
+    if (self_new_id == 0) {
+        // Not a new shareholder: the ceremony completes once a
+        // manifest has finalized and this node (if it was listed) has
+        // broadcast its contribution.
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            if (!manifest_finalized) return;
+        }
+        fill_result_binding();
+        {
+            std::vector<uint8_t> th;
+            std::lock_guard<std::mutex> lk(transcript_mu);
+            transcript.hash(cfg, cfg.proposal_id, th);
+            std::memcpy(result.reset_transcript_hash.data, th.data(), 32);
+        }
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            result.ok = true;
+            result.new_epoch = cfg.new_epoch;
+            result.new_threshold = cfg.new_threshold;
+        }
         finished.store(true);
         done_cv.notify_all();
         return;
@@ -1589,6 +1673,16 @@ void dkg_p2p_reshare_runner::impl::try_finish()
     result.new_threshold = cfg.new_threshold;
     result.local_member_index = self_new_id;
     result.local_share = std::move(new_share);
+
+    // Bind the result to the finalized manifest and transcript.
+    result.reset_participant_ids = final_participant_ids;
+    result.reset_manifest_hash   = final_manifest_hash;
+    {
+        std::vector<uint8_t> th;
+        std::lock_guard<std::mutex> lk(transcript_mu);
+        transcript.hash(cfg, cfg.proposal_id, th);
+        std::memcpy(result.reset_transcript_hash.data, th.data(), 32);
+    }
 
     // Compute the verification key V_K'_j = V_K^(Delta * SK'_j) for
     // this node's new share. Uses the same construction as the DKG's

@@ -321,6 +321,7 @@ TEST(dao_tally_e2e, tally_manager_finalizes_automatically)
         sh.vote_end_height = VOTE_END;
         sh.tally_key_epoch = 1;
         sh.share_epoch     = static_cast<uint32_t>(VOTE_END);
+        std::memset(sh.reset_transcript_hash.data, 0xAB, 32);
         sh.member_index = m;
         sh.aggregate_ciphertext_hash = agg_hash;
 
@@ -387,6 +388,7 @@ TEST(dao_tally_e2e, tally_manager_finalizes_automatically)
         session.committee_V_K_i      = out.record.V_K_i;
         session.resharing_complete   = true;
         session.tally_complete       = false;
+        std::memset(session.reset_transcript_hash.data, 0xAB, 32);
         for (const auto& m : out.record.committee_members) {
             crypto::public_key pk_m{};
             std::memcpy(pk_m.data, m.data(), 32);
