@@ -41,10 +41,6 @@ bool pull_u64(const std::vector<uint8_t>& v, size_t& off, uint64_t& out)
 bool dao_tally_session::serialize(std::vector<uint8_t>& out) const
 {
     if (committee_members.size() != committee_size) return false;
-    // committee_V_K_i is empty before the Reset completes; when
-    // present it must match committee_size one-for-one.
-    if (!committee_V_K_i.empty() &&
-        committee_V_K_i.size() != committee_size) return false;
 
     out.clear();
     push_u32(out, version);
@@ -62,37 +58,7 @@ bool dao_tally_session::serialize(std::vector<uint8_t>& out) const
                committee_id_hash.data + sizeof(committee_id_hash.data));
     for (const auto& m : committee_members)
         out.insert(out.end(), m.data, m.data + sizeof(m.data));
-
-    push_u32(out, prev_share_epoch);
-
-    {
-        uint32_t n = static_cast<uint32_t>(prev_committee_members.size());
-        push_u32(out, n);
-        for (const auto& m : prev_committee_members)
-            out.insert(out.end(), m.data, m.data + sizeof(m.data));
-    }
-
-    // Committee verification keys, length-prefixed per entry.
-    {
-        uint32_t n = static_cast<uint32_t>(committee_V_K_i.size());
-        push_u32(out, n);
-        for (const auto& vk : committee_V_K_i) {
-            push_u32(out, static_cast<uint32_t>(vk.size()));
-            out.insert(out.end(), vk.begin(), vk.end());
-        }
-    }
-
-    out.push_back(resharing_complete ? 1 : 0);
     out.push_back(tally_complete ? 1 : 0);
-
-    // Reset manifest + transcript binding.
-    push_u32(out, static_cast<uint32_t>(reset_participant_ids.size()));
-    for (uint32_t id : reset_participant_ids) push_u32(out, id);
-    out.insert(out.end(), reset_manifest_hash.data,
-               reset_manifest_hash.data + sizeof(reset_manifest_hash.data));
-    out.insert(out.end(), reset_transcript_hash.data,
-               reset_transcript_hash.data + sizeof(reset_transcript_hash.data));
-
     return true;
 }
 
@@ -122,54 +88,8 @@ bool dao_tally_session::deserialize(const std::vector<uint8_t>& in)
         off += 32;
     }
 
-    if (!pull_u32(in, off, prev_share_epoch)) return false;
-
-    {
-        uint32_t n = 0;
-        if (!pull_u32(in, off, n)) return false;
-        if (n > 64) return false;
-        prev_committee_members.assign(n, {});
-        for (uint32_t i = 0; i < n; ++i) {
-            if (off + 32 > in.size()) return false;
-            std::memcpy(prev_committee_members[i].data, in.data() + off, 32);
-            off += 32;
-        }
-    }
-
-    // Committee verification keys.
-    {
-        uint32_t n = 0;
-        if (!pull_u32(in, off, n)) return false;
-        if (n > 64) return false;
-        committee_V_K_i.assign(n, {});
-        for (uint32_t i = 0; i < n; ++i) {
-            uint32_t sz = 0;
-            if (!pull_u32(in, off, sz)) return false;
-            if (off + sz > in.size()) return false;
-            committee_V_K_i[i].assign(in.begin() + off,
-                                      in.begin() + off + sz);
-            off += sz;
-        }
-    }
-
-    if (off + 2 > in.size()) return false;
-    resharing_complete = (in[off++] != 0);
-    tally_complete     = (in[off++] != 0);
-
-    {
-        uint32_t n = 0;
-        if (!pull_u32(in, off, n)) return false;
-        if (n > 64) return false;
-        reset_participant_ids.assign(n, 0);
-        for (uint32_t i = 0; i < n; ++i) {
-            if (!pull_u32(in, off, reset_participant_ids[i])) return false;
-        }
-    }
-    if (off + 32 > in.size()) return false;
-    std::memcpy(reset_manifest_hash.data, in.data() + off, 32); off += 32;
-    if (off + 32 > in.size()) return false;
-    std::memcpy(reset_transcript_hash.data, in.data() + off, 32); off += 32;
-
+    if (off + 1 > in.size()) return false;
+    tally_complete = (in[off++] != 0);
     if (off != in.size()) return false;
 
     version        = v;

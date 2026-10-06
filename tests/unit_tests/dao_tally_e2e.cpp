@@ -385,10 +385,7 @@ TEST(dao_tally_e2e, tally_manager_finalizes_automatically)
         session.committee_size       = out.record.committee_size;
         session.threshold            = out.record.threshold;
         session.t                    = out.record.t;
-        session.committee_V_K_i      = out.record.V_K_i;
-        session.resharing_complete   = true;
         session.tally_complete       = false;
-        std::memset(session.reset_transcript_hash.data, 0xAB, 32);
         for (const auto& m : out.record.committee_members) {
             crypto::public_key pk_m{};
             std::memcpy(pk_m.data, m.data(), 32);

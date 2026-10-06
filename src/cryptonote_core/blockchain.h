@@ -1356,12 +1356,6 @@ namespace cryptonote
   // any.
   void handle_dao_v2_dkg_msg(const crypto::public_key& member,
                              const std::string& payload);
-  // Inbound reshare_vki_set: a member of the temporary tally
-  // committee published its V_K'_j. Signature checked against the
-  // member public key from the session.
-  void handle_dao_v2_reshare_vki_set(const crypto::public_key& member,
-                                     const dao::dkg_msg& m);
-
   // Bootstrap entry point. Selects the current committee (top-N
   // eligible nodes by stake-age weight), derives the epoch VSS group
   // deterministically, spawns the runner, and starts a watcher that
@@ -1373,41 +1367,6 @@ namespace cryptonote
   // current epoch's DKG once when the node has eligible records and
   // no key record exists yet for the epoch. No-op otherwise.
   void maybe_bootstrap_dao_v2_dkg();
-  // DAO V2 lifecycle: at the block whose height equals a proposal's
-  // voting_end_height, select the tally committee from the post-block
-  // eligible-node state and open a per-proposal tally session. Called
-  // from handle_block_to_main_chain; no-op when no proposal matches.
-  void open_dao_v2_tally_sessions(uint64_t voting_end_height);
-
-  // Drain the sessions queued by block-apply and kick the P2P reshare
-  // ceremony for any session this node participates in. Called from
-  // on_idle; does not decide anything, only starts work for sessions
-  // already recorded.
-  void drain_dao_v2_session_reshares();
-  // Start the P2P Reset ceremony for the session bound to this
-  // proposal. Runners are keyed by share_epoch internally, so
-  // proposals that share an epoch share one ceremony.
-  void start_dao_v2_reset_for_session(const crypto::hash& proposal_id);
-
-  // Drain Reset results queued by watcher threads. Writes the local
-  // dynamic share and marks the session resharing_complete. Owner
-  // thread only.
-  void process_pending_dao_v2_session_results();
-  // Owner-thread. Promotes fully collected V_K'_j sets into the
-  // session records and marks them resharing_complete. Called from
-  // on_idle.
-  void drain_dao_v2_session_vki();
-  // Owner-thread. Closes sessions whose proposals have all reached a
-  // terminal status: erases the temporary local dynamic share, marks
-  // each session tally_complete, clears the runner. Bootstrap shares
-  // and the public key record are untouched.
-  void close_completed_dao_v2_sessions();
-
-  // Called from the watcher thread to hand a finished Reset result
-  // back to the owner thread. Thread-safe.
-  void queue_dao_v2_session_result(uint32_t share_epoch,
-                                   dao::dao_dkg_reset_result result);
-
   // Lifecycle hook called from the daemon idle loop. Drains any
   // results queued by the DKG watcher threads onto this owner thread.
   void maybe_process_dao_v2_dkg_results();
@@ -1659,10 +1618,6 @@ namespace cryptonote
     // END_VNS_VOTE
     // BEGIN_VNS_ELIGIBLE
     std::unordered_map<crypto::key_image, committee_eligible_record> m_committee_eligible;
-    // Proposal IDs whose tally session was opened by block-apply and
-    // which still need the P2P reshare ceremony kicked. Drained by
-    // on_idle on the owner thread.
-    std::deque<crypto::hash> m_pending_dao_v2_session_reshares;
     std::vector<std::pair<crypto::public_key, uint64_t>> m_committee_eligible_sorted;
     // END_VNS_ELIGIBLE
 
@@ -1724,35 +1679,6 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     // BEGIN_VNS_DAO_V2_DKG
     std::map<uint32_t, std::unique_ptr<dao::dkg_p2p_runner>>
         m_dao_v2_dkg_runners;
-    // Per-share-epoch Reset runners. A Reset takes the bootstrap
-    // shareholders' shares and derives the temporary tally
-    // committee's shares of the same secret. The VSS group is owned
-    // alongside the runner because the runner holds a raw pointer.
-    struct dao_v2_session_runner_entry
-    {
-      std::unique_ptr<dao::dkg_p2p_reshare_runner> runner;
-      std::unique_ptr<dao::dao_vss_group>          vss;
-    };
-    std::map<uint32_t, dao_v2_session_runner_entry>
-        m_dao_v2_session_runners;
-    std::map<uint32_t, std::thread>
-        m_dao_v2_session_watchers;
-
-    struct pending_dao_v2_session_result
-    {
-      uint32_t                    share_epoch = 0;
-      dao::dao_dkg_reset_result   result;
-    };
-    std::mutex                                       m_dao_v2_session_result_mutex;
-    std::deque<pending_dao_v2_session_result>        m_pending_dao_v2_session_results;
-    // share_epoch -> proposal_id. Populated by
-    // open_dao_v2_tally_sessions() so that inbound reshare_vki_set
-    // messages can be routed to the right session without a scan.
-    std::map<uint32_t, crypto::hash> m_dao_v2_session_proposal;
-    std::mutex                       m_dao_v2_session_vki_mutex;
-    // share_epoch -> member_index -> V_K'_j.
-    std::map<uint32_t, std::map<uint32_t, std::vector<uint8_t>>>
-                                     m_dao_v2_session_vki;
     // VSS groups are owned here for the lifetime of the runner. The
     // runner holds a raw pointer to the group, so the group must
     // outlive it.

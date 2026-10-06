@@ -59,9 +59,6 @@ bool TallyManager::try_finalize(
     // produced these shares. Bound to the proposal.
     dao::dao_tally_session session;
     if (!m_db.get_dao_tally_session(proposal_id, session)) return false;
-    if (!session.resharing_complete) return false;
-    if (session.committee_V_K_i.size() != session.committee_size)
-        return false;
 
     // Stable Paillier key epoch, unchanged from bootstrap.
     dao::dao_tally_key_record key_rec;
@@ -122,9 +119,9 @@ bool TallyManager::try_finalize(
     cert_key_rec.committee_size = session.committee_size;
     cert_key_rec.threshold      = session.threshold;
     cert_key_rec.t              = session.t;
-    cert_key_rec.V_K_i          = session.committee_V_K_i;
-    // committee_members / committee_id_hash are not read by the
-    // certificate builder; leave them as-is.
+    // V_K_i comes from the bootstrap key record; each partial
+    // decryption is verified against key_rec.V_K_i at the member's
+    // global index.
 
     // Recombine through the existing certificate pipeline, which also
     // re-verifies each partial's ZK proof before use.
@@ -195,15 +192,13 @@ bool TallyManager::produce_local_share(
     if (!m_db.get_proposal_record(proposal_id, prop)) return false;
 
     // The committee that performs this tally is the TEMPORARY tally
-    // session selected at voting end. Its shares are what the Reset
-    // produced. The stable Paillier public key epoch is the encryption
-    // domain; the session is the decryption domain.
+    // session selected at voting end. Its members are a subset of the
+    // bootstrap DKG shareholder set; each holds a bootstrap DKG share
+    // for the key epoch already.
     dao::dao_tally_session session;
     if (!m_db.get_dao_tally_session(proposal_id, session)) return false;
     if (local_member_index < 1 ||
         local_member_index > session.committee_size)
-        return false;
-    if (session.committee_V_K_i.size() != session.committee_size)
         return false;
 
     // The public Paillier key record, still needed for N and V.
@@ -212,10 +207,13 @@ bool TallyManager::produce_local_share(
                                 key_rec))
         return false;
 
-    // Local dynamic share, installed by the Reset at the session's
-    // share_epoch. The bootstrap share is not used for the tally.
+    // Local bootstrap DKG share for this member's global index. The
+    // same share is used for every tally this node is selected for;
+    // there is no per-proposal share transfer.
     std::vector<uint8_t> sk_blob;
-    if (!m_db.get_dao_local_dynamic_share(session.share_epoch, sk_blob))
+    if (!m_db.get_dao_local_share(
+            static_cast<uint32_t>(prop.tally_key_epoch),
+            local_member_index, sk_blob))
         return false;
     BIGNUM* sk = bn_from_signed_share(sk_blob);
     if (!sk) return false;
@@ -238,7 +236,6 @@ bool TallyManager::produce_local_share(
     share_out.vote_end_height = prop.voting_end_height;
     share_out.tally_key_epoch = prop.tally_key_epoch;
     share_out.share_epoch     = session.share_epoch;
-    share_out.reset_transcript_hash = session.reset_transcript_hash;
     share_out.member_index    = local_member_index;
     share_out.aggregate_ciphertext_hash =
         dao::dao_aggregate_ciphertext_hash(agg.aggregate_E_W,
@@ -252,10 +249,12 @@ bool TallyManager::produce_local_share(
         if (!dao_threshold_partial_decrypt(pk, c, sk, ci)) return false;
         BIGNUM* r = BN_new();
         if (!dao_dkg_sample_r(pk, r)) { BN_free(r); return false; }
-        // Bind the proof to the session's verification key, not the
-        // bootstrap key. Same math, different V_K_i set.
+        // Bind the proof to the bootstrap key record's V_K_i for the
+        // member's global index. The selected committee is a subset of
+        // the bootstrap shareholder set, so the correct verification
+        // key is the one recorded in the key epoch for that index.
         const std::vector<uint8_t>& vk =
-            session.committee_V_K_i[local_member_index - 1];
+            key_rec.V_K_i[local_member_index - 1];
         const bool ok = dao_partial_decryption_prove(
             pk, key_rec.V, vk, local_member_index,
             c, ci, sk, r, proof_out);

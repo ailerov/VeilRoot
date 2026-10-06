@@ -22,6 +22,9 @@ struct dao_tally_session
 {
     uint32_t                          version = 1;
 
+    // Bootstrap DKG key epoch the proposal's votes were encrypted
+    // under. Not a per-proposal key. Every proposal in a DAO shares
+    // the same bootstrap key epoch.
     uint32_t                          share_epoch = 0;
 
     crypto::hash                      proposal_id;
@@ -38,48 +41,12 @@ struct dao_tally_session
 
     // Ordered members of the TEMPORARY tally committee. Selected
     // deterministically at the proposal's voting end from the
-    // canonical eligible-node state. Disjoint from the bootstrap
-    // shareholder set that owns the key epoch.
+    // bootstrap DKG shareholder set, filtered by current eligibility.
+    // Temporary protocol role; not a permanent committee. Every
+    // listed member already holds a bootstrap DKG share.
     std::vector<crypto::public_key>   committee_members;
 
-    // Members of the share-holder set that owns the PREVIOUS share
-    // epoch. For the first session of a key epoch this is the
-    // bootstrap DKG shareholder set. For every later session it is
-    // the committee of the immediately preceding session. Used to
-    // authenticate reshare_ready / reshare_commit / reshare_share
-    // senders against their claimed 1-based old_member_id.
-    std::vector<crypto::public_key>   prev_committee_members;
-
-    // share_epoch of the previous session this one resets from.
-    // 0 means the bootstrap DKG: the old share is read from
-    // dao_local_share[bootstrap_key_epoch, bootstrap_id].
-    // Non-zero means the previous dynamic session's share is read
-    // from dao_local_dynamic_share[prev_share_epoch].
-    uint32_t                          prev_share_epoch = 0;
-
-    // Per-member verification keys for the temporary committee, one
-    // per committee_members entry, in the same order. Derived after
-    // the Reset produces SK'_j for each member:
-    //   committee_V_K_i[i] = V_K^(Delta * SK'_j)
-    // The bootstrap record's V_K_i are for a different set and must
-    // not be used to verify partial decryptions from this committee.
-    std::vector<std::vector<uint8_t>> committee_V_K_i;
-
-    bool                              resharing_complete = false;
-    bool                              tally_complete     = false;
-
-    // Finalized Reset manifest: exactly old_threshold 1-based indices
-    // into the previous shareholder universe. Fixed at manifest
-    // finalization and never changed afterward.
-    std::vector<uint32_t>             reset_participant_ids;
-
-    // Hash of the finalized manifest. Binds the Reset participant set
-    // to the session.
-    crypto::hash                      reset_manifest_hash{};
-
-    // Hash of the Reset transcript for this session. A partial
-    // decryption is only accepted if it carries the same hash.
-    crypto::hash                      reset_transcript_hash{};
+    bool                              tally_complete = false;
 
     bool serialize(std::vector<uint8_t>& out) const;
     bool deserialize(const std::vector<uint8_t>& in);
