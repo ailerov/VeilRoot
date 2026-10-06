@@ -1830,6 +1830,13 @@ void dkg_p2p_reshare_runner::on_message(const dkg_msg& m)
     if (!sp) return;
     if (sp->destroying.load()) return;
     if (sp->stop_flag.load()) return;
+
+    // Reject messages that do not belong to this ceremony's epoch.
+    // The router routes by epoch on the real network, but the runner
+    // must not depend on that: a message produced under a different
+    // share_epoch is never valid in this one.
+    if (m.hdr.epoch != sp->cfg.new_epoch) return;
+
     switch (m.hdr.type) {
         case dkg_msg_type::reshare_ready:
             (void)sp->handle_ready(m);

@@ -656,3 +656,109 @@ TEST(dao_dkg_reset_p2p, manifest_equivocation_no_majority)
     BN_free(V_K); BN_free(N2); BN_free(N);
     BN_CTX_free(ctx);
 }
+
+// -------------------------------------------------------------------
+// Replay: a message produced in session A (share_epoch 60000) delivered
+// into a runner running session B (share_epoch 60001) must be ignored.
+// -------------------------------------------------------------------
+TEST(dao_dkg_reset_p2p, foreign_epoch_message_rejected)
+{
+    dao_tally_key_record krec{};
+    {
+        BIGNUM* P  = BN_new(); BN_set_word(P, 47);
+        BIGNUM* Pp = BN_new(); BN_set_word(Pp, 23);
+        BIGNUM* g  = BN_new(); BN_set_word(g, 4);
+        BIGNUM* h  = BN_new(); BN_set_word(h, 16);
+        auto vec = [](const BIGNUM* b) {
+            std::vector<uint8_t> v(BN_num_bytes(b));
+            BN_bn2bin(b, v.data());
+            return v;
+        };
+        krec.vss_P = vec(P);
+        krec.vss_P_prime = vec(Pp);
+        krec.vss_g = vec(g);
+        krec.vss_h = vec(h);
+        BN_free(P); BN_free(Pp); BN_free(g); BN_free(h);
+    }
+    BN_CTX* ctx = BN_CTX_new();
+    BIGNUM* N  = BN_new(); BN_set_bit(N, 127); BN_set_bit(N, 0); BN_set_bit(N, 63);
+    BIGNUM* N2 = BN_new(); BN_sqr(N2, N, ctx);
+    BIGNUM* V_K = BN_new(); BN_set_word(V_K, 12345);
+    { std::vector<uint8_t> v(512, 0); BN_bn2binpad(V_K, v.data(), 512); krec.V = v; }
+
+    std::vector<int64_t> SKs = {142, 242, 342};
+    std::vector<std::vector<uint8_t>> old_shares(3);
+    krec.V_K_i.assign(3, {});
+    for (int i = 0; i < 3; ++i) {
+        make_signed_share(SKs[i], old_shares[i]);
+        BIGNUM* e = BN_new(); BN_set_word(e, (BN_ULONG)SKs[i]);
+        BN_mul(e, e, dao_dkg_delta(), ctx);
+        BIGNUM* r = BN_new(); BN_mod_exp(r, V_K, e, N2, ctx);
+        krec.V_K_i[i].assign(512, 0); BN_bn2binpad(r, krec.V_K_i[i].data(), 512);
+        BN_free(e); BN_free(r);
+    }
+    auto old_ids = reset_member_ids(3);
+    auto new_ids = reset_member_ids(3);
+    dao_vss_group vss; decode_vss(krec, vss);
+
+    std::vector<crypto::public_key> pks(6);
+    std::vector<crypto::secret_key> sks(6);
+    for (int i = 0; i < 6; ++i) crypto::generate_keys(pks[i], sks[i]);
+
+    // Session A config (epoch 60000) — never started.
+    dao_dkg_reset_config cfgA{};
+    cfgA.old_epoch = 1;
+    cfgA.new_epoch = 60000;
+    cfgA.old_threshold = 2;
+    cfgA.new_threshold = 2;
+    cfgA.old_members = old_ids;
+    cfgA.new_members = new_ids;
+    for (int i = 0; i < 3; ++i) cfgA.old_members[i] = pks[i];
+    for (int i = 0; i < 3; ++i) cfgA.new_members[i] = pks[3 + i];
+
+    // Session B config (epoch 60001) — the only one we run.
+    dao_dkg_reset_config cfgB = cfgA;
+    cfgB.new_epoch = 60001;
+
+    // Build a session-A reshare_ready message by hand.
+    dkg_msg a_msg;
+    a_msg.hdr.version = 1;
+    a_msg.hdr.epoch = 60000;   // foreign
+    a_msg.hdr.sender_id = 1;
+    a_msg.hdr.recipient_id = 0;
+    a_msg.hdr.type = dkg_msg_type::reshare_ready;
+    a_msg.tag32 = 1;
+
+    // Session-B runner for member 3 (new committee).
+    ReshareHub hub;
+    hub.broadcast_blocked = true;   // keep the runner from doing anything network
+    auto cb = hub.callbacks_for(pks[3]);
+    std::vector<uint8_t> no_old_share;
+    auto pk_rec = [&]() {
+        dao_tally_public_key_record p{};
+        p.V = krec.V; p.vss_P = krec.vss_P; p.vss_P_prime = krec.vss_P_prime;
+        p.vss_g = krec.vss_g; p.vss_h = krec.vss_h;
+        return p;
+    }();
+    auto rB = std::make_unique<dkg_p2p_reshare_runner>(
+        cfgB, pk_rec, vss, N2, pks[3], sks[3], no_old_share,
+        krec.V_K_i, cb);
+    hub.by_pk.emplace(std::string(reinterpret_cast<const char*>(pks[3].data), 32), rB.get());
+    rB->start();
+
+    // Deliver a foreign-epoch message directly to the runner.
+    rB->on_message(a_msg);
+
+    // The runner's wait must time out: it never assembled a session.
+    dao_dkg_reset_result res;
+    EXPECT_FALSE(rB->wait(res, 1));
+
+    // Explicit check: the result has no manifest binding. If a foreign
+    // message had been accepted, participant IDs would be non-empty.
+    EXPECT_TRUE(res.reset_participant_ids.empty());
+
+    rB->stop();
+
+    BN_free(V_K); BN_free(N2); BN_free(N);
+    BN_CTX_free(ctx);
+}
