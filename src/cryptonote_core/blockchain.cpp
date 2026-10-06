@@ -8652,6 +8652,50 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
         m.hdr.type == dao::dkg_msg_type::reshare_proof ||
         m.hdr.type == dao::dkg_msg_type::reshare_complete ||
         m.hdr.type == dao::dkg_msg_type::reshare_abort) {
+      // Authenticate the sender before handing the message to the
+      // runner. The runner trusts hdr.sender_id and indexes the
+      // committee list with it; without this check any peer can
+      // claim any identity.
+      const uint32_t claimed = m.hdr.sender_id;
+      if (claimed == 0) return;
+
+      crypto::hash pid{};
+      {
+        std::lock_guard<std::mutex> lk(m_dao_v2_session_result_mutex);
+        auto it = m_dao_v2_session_proposal.find(m.hdr.epoch);
+        if (it == m_dao_v2_session_proposal.end()) return;
+        pid = it->second;
+      }
+
+      dao::dao_tally_session session;
+      try {
+        if (!m_db->get_dao_tally_session(pid, session)) return;
+      } catch (...) { return; }
+      if (session.share_epoch != m.hdr.epoch) return;
+
+      // Accepted sender positions:
+      //   - old shareholder:   1..prev_committee_members.size()
+      //   - new committee member: 1..committee_members.size()
+      // The claimed index must map to `member` in at least one list.
+      bool matched = false;
+      if (claimed <= session.prev_committee_members.size() &&
+          std::memcmp(session.prev_committee_members[claimed - 1].data,
+                      member.data, 32) == 0) {
+        matched = true;
+      }
+      if (!matched &&
+          claimed <= session.committee_members.size() &&
+          std::memcmp(session.committee_members[claimed - 1].data,
+                      member.data, 32) == 0) {
+        matched = true;
+      }
+      if (!matched) {
+        MWARNING("V2 reshare msg: sender " << member
+                 << " claims index " << claimed
+                 << " but does not match either committee");
+        return;
+      }
+
       auto sit = m_dao_v2_session_runners.find(m.hdr.epoch);
       if (sit == m_dao_v2_session_runners.end()) {
         // No session running for this share_epoch. Silent.
