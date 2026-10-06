@@ -410,3 +410,110 @@ TEST(dao_dkg_reset_p2p, partial_old_availability)
     BN_free(V_K); BN_free(N2); BN_free(N);
     BN_CTX_free(ctx);
 }
+
+// -------------------------------------------------------------------
+// Insufficient old availability: 3 old shareholders, threshold 2, but
+// only member 1 runs. Member 2 and 3 are offline. The manifest cannot
+// reach a quorum of ready senders, so no reset happens. wait() times
+// out and resharing stays pending.
+// -------------------------------------------------------------------
+TEST(dao_dkg_reset_p2p, insufficient_old_availability_stays_pending)
+{
+    dao_tally_key_record krec{};
+    {
+        BIGNUM* P  = BN_new(); BN_set_word(P, 47);
+        BIGNUM* Pp = BN_new(); BN_set_word(Pp, 23);
+        BIGNUM* g  = BN_new(); BN_set_word(g, 4);
+        BIGNUM* h  = BN_new(); BN_set_word(h, 16);
+        auto vec = [](const BIGNUM* b) {
+            std::vector<uint8_t> v(BN_num_bytes(b));
+            BN_bn2bin(b, v.data());
+            return v;
+        };
+        krec.vss_P = vec(P);
+        krec.vss_P_prime = vec(Pp);
+        krec.vss_g = vec(g);
+        krec.vss_h = vec(h);
+        BN_free(P); BN_free(Pp); BN_free(g); BN_free(h);
+    }
+
+    BN_CTX* ctx = BN_CTX_new();
+    BIGNUM* N  = BN_new(); BN_set_bit(N, 127); BN_set_bit(N, 0); BN_set_bit(N, 63);
+    BIGNUM* N2 = BN_new(); BN_sqr(N2, N, ctx);
+    BIGNUM* V_K = BN_new(); BN_set_word(V_K, 12345);
+    {
+        std::vector<uint8_t> v(512, 0);
+        BN_bn2binpad(V_K, v.data(), 512);
+        krec.V = v;
+    }
+
+    std::vector<int64_t> SKs = {142, 242, 342};
+    std::vector<std::vector<uint8_t>> old_shares(3);
+    krec.V_K_i.assign(3, {});
+    for (int i = 0; i < 3; ++i) {
+        make_signed_share(SKs[i], old_shares[i]);
+        BIGNUM* e = BN_new(); BN_set_word(e, (BN_ULONG)SKs[i]);
+        BN_mul(e, e, dao_dkg_delta(), ctx);
+        BIGNUM* r = BN_new(); BN_mod_exp(r, V_K, e, N2, ctx);
+        krec.V_K_i[i].assign(512, 0);
+        BN_bn2binpad(r, krec.V_K_i[i].data(), 512);
+        BN_free(e); BN_free(r);
+    }
+
+    auto old_ids = reset_member_ids(3);
+    auto new_ids = reset_member_ids(5);
+    dao_vss_group vss; decode_vss(krec, vss);
+
+    dao_dkg_reset_config cfg{};
+    cfg.old_threshold = 3;   // need all 3
+    cfg.new_threshold = 3;
+    cfg.old_members = old_ids;
+    cfg.new_members = new_ids;
+
+    std::vector<crypto::public_key> pks(8);
+    std::vector<crypto::secret_key> sks(8);
+    for (int i = 0; i < 8; ++i) crypto::generate_keys(pks[i], sks[i]);
+    for (int i = 0; i < 3; ++i) cfg.old_members[i] = pks[i];
+    for (int i = 0; i < 5; ++i) cfg.new_members[i] = pks[3 + i];
+
+    ReshareHub hub;
+    // Only member 1 runs.
+    auto cb1 = hub.callbacks_for(pks[0]);
+    auto pk_rec = [&]() {
+        dao_tally_public_key_record p{};
+        p.V = krec.V;
+        p.vss_P = krec.vss_P;
+        p.vss_P_prime = krec.vss_P_prime;
+        p.vss_g = krec.vss_g;
+        p.vss_h = krec.vss_h;
+        return p;
+    }();
+    auto r1 = std::make_unique<dkg_p2p_reshare_runner>(
+        cfg, pk_rec, vss, N2, pks[0], sks[0], old_shares[0],
+        krec.V_K_i, cb1);
+    hub.by_pk.emplace(std::string(reinterpret_cast<const char*>(pks[0].data), 32), r1.get());
+    r1->start();
+
+    // One new-committee member runs and waits.
+    auto cb_new = hub.callbacks_for(pks[3]);
+    std::vector<uint8_t> no_old_share;
+    auto r_new = std::make_unique<dkg_p2p_reshare_runner>(
+        cfg, pk_rec, vss, N2, pks[3], sks[3], no_old_share,
+        krec.V_K_i, cb_new);
+    hub.by_pk.emplace(std::string(reinterpret_cast<const char*>(pks[3].data), 32), r_new.get());
+    r_new->start();
+
+    // 1 old shareholder is fewer than old_threshold=3, so no manifest
+    // can reach the required ready count. Both waits must time out.
+    dao_dkg_reset_result old_res, new_res;
+    EXPECT_FALSE(r1->wait(old_res, 2));
+    EXPECT_FALSE(r_new->wait(new_res, 2));
+
+    // The runners must still be running; the ceremony is pending, not
+    // aborted.
+    r_new->stop();
+    r1->stop();
+
+    BN_free(V_K); BN_free(N2); BN_free(N);
+    BN_CTX_free(ctx);
+}
