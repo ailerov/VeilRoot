@@ -116,7 +116,6 @@ bool TallyManager::try_finalize(
     // frozen certificate builder consumes; its mathematics is
     // unchanged.
     dao::dao_tally_key_record cert_key_rec = key_rec;
-    cert_key_rec.committee_size = session.committee_size;
     cert_key_rec.threshold      = session.threshold;
     cert_key_rec.t              = session.t;
     // V_K_i comes from the bootstrap key record; each partial
@@ -185,26 +184,15 @@ bool TallyManager::try_finalize(
 
 bool TallyManager::produce_local_share(
     const crypto::hash& proposal_id,
-    uint32_t local_member_index,
+    const dao::dao_tally_key_record& key_rec,
+    uint32_t global_member_index,
     dao::dao_v2_tally_share& share_out)
 {
     proposal_record prop;
     if (!m_db.get_proposal_record(proposal_id, prop)) return false;
 
-    // The committee that performs this tally is the TEMPORARY tally
-    // session selected at voting end. Its members are a subset of the
-    // bootstrap DKG shareholder set; each holds a bootstrap DKG share
-    // for the key epoch already.
-    dao::dao_tally_session session;
-    if (!m_db.get_dao_tally_session(proposal_id, session)) return false;
-    if (local_member_index < 1 ||
-        local_member_index > session.committee_size)
-        return false;
-
-    // The public Paillier key record, still needed for N and V.
-    dao::dao_tally_key_record key_rec;
-    if (!m_db.get_dao_tally_key(static_cast<uint32_t>(prop.tally_key_epoch),
-                                key_rec))
+    if (global_member_index < 1 ||
+        global_member_index > key_rec.committee_size)
         return false;
 
     // Local bootstrap DKG share for this member's global index. The
@@ -213,7 +201,7 @@ bool TallyManager::produce_local_share(
     std::vector<uint8_t> sk_blob;
     if (!m_db.get_dao_local_share(
             static_cast<uint32_t>(prop.tally_key_epoch),
-            local_member_index, sk_blob))
+            global_member_index, sk_blob))
         return false;
     BIGNUM* sk = bn_from_signed_share(sk_blob);
     if (!sk) return false;
@@ -235,8 +223,8 @@ bool TallyManager::produce_local_share(
     share_out.proposal_id     = proposal_id;
     share_out.vote_end_height = prop.voting_end_height;
     share_out.tally_key_epoch = prop.tally_key_epoch;
-    share_out.share_epoch     = session.share_epoch;
-    share_out.member_index    = local_member_index;
+    share_out.share_epoch     = prop.tally_key_epoch;
+    share_out.member_index    = global_member_index;
     share_out.aggregate_ciphertext_hash =
         dao::dao_aggregate_ciphertext_hash(agg.aggregate_E_W,
                                            agg.aggregate_E_S,
@@ -254,9 +242,9 @@ bool TallyManager::produce_local_share(
         // the bootstrap shareholder set, so the correct verification
         // key is the one recorded in the key epoch for that index.
         const std::vector<uint8_t>& vk =
-            key_rec.V_K_i[local_member_index - 1];
+            key_rec.V_K_i[global_member_index - 1];
         const bool ok = dao_partial_decryption_prove(
-            pk, key_rec.V, vk, local_member_index,
+            pk, key_rec.V, vk, global_member_index,
             c, ci, sk, r, proof_out);
         BN_free(r);
         if (!ok) return false;

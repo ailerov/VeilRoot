@@ -46,6 +46,13 @@ struct dao_tally_session
     // listed member already holds a bootstrap DKG share.
     std::vector<crypto::public_key>   committee_members;
 
+    // For each entry in committee_members, the 1-based index of the
+    // same node within the bootstrap key record's committee_members.
+    // This is the index used to look up the node's bootstrap DKG
+    // share and the V_K_i recorded in the key epoch. It is not the
+    // position inside the temporary committee.
+    std::vector<uint32_t>             committee_global_indices;
+
     bool                              tally_complete = false;
 
     bool serialize(std::vector<uint8_t>& out) const;

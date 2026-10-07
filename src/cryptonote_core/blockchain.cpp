@@ -8514,6 +8514,47 @@ select_dao_v2_dkg_shareholders(BlockchainDB& db, uint64_t selection_height)
   return sorted;
 }
 
+// Select the temporary tally committee for one proposal from the
+// bootstrap DKG shareholder set, filtered by current eligibility and
+// ranked by stake-age weight at the selection height. Returns both the
+// ordered members and their 1-based global indices within the
+// bootstrap key record.
+struct dao_tally_committee
+{
+  std::vector<crypto::public_key> members;
+  std::vector<uint32_t>           global_indices;
+};
+
+dao_tally_committee
+select_dao_v2_tally_committee(const dao_tally_key_record& key_rec,
+                              BlockchainDB& db,
+                              uint32_t max_committee_size,
+                              uint64_t selection_height)
+{
+  dao_tally_committee out;
+
+  const auto ranked = select_dao_v2_dkg_shareholders(db, selection_height);
+
+  auto find_global_index = [&](const crypto::public_key& pk) -> uint32_t {
+    for (size_t i = 0; i < key_rec.committee_members.size(); ++i) {
+      const auto& m = key_rec.committee_members[i];
+      if (m.size() != 32) continue;
+      if (std::memcmp(m.data(), pk.data, 32) == 0)
+        return static_cast<uint32_t>(i) + 1;
+    }
+    return 0;
+  };
+
+  for (const auto& [pk, weight] : ranked) {
+    if (out.members.size() >= max_committee_size) break;
+    const uint32_t gidx = find_global_index(pk);
+    if (gidx == 0) continue;
+    out.members.push_back(pk);
+    out.global_indices.push_back(gidx);
+  }
+  return out;
+}
+
 bool persist_dao_v2_dkg_result(BlockchainDB& db,
                                uint32_t epoch,
                                const dkg_result& res,
@@ -9119,24 +9160,29 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       return;
     }
 
-    // Sender's public key must be one of the SESSION committee
-    // members, and its position must match the share's member_index.
-    int found_index = -1;
+    // The sender must be one of the SESSION committee members, and
+    // share.member_index must equal that member's GLOBAL 1-based index
+    // into the bootstrap key record. That is the index the partial
+    // decryption was produced under, and the index the certificate
+    // builder will use to look up V_K_i.
+    uint32_t expected_global_index = 0;
     for (size_t i = 0; i < session.committee_members.size(); ++i) {
       const auto& km = session.committee_members[i];
-      if (std::memcmp(km.data, member.data, sizeof(member.data)) == 0) {
-        found_index = static_cast<int>(i) + 1;
+      if (std::memcmp(km.data, member.data, sizeof(km.data)) == 0) {
+        if (i < session.committee_global_indices.size())
+          expected_global_index = session.committee_global_indices[i];
         break;
       }
     }
-    if (found_index < 0) {
+    if (expected_global_index == 0) {
       MWARNING("V2 tally share: sender " << member
                << " is not in the session committee");
       return;
     }
-    if (static_cast<uint32_t>(found_index) != share.member_index) {
+    if (share.member_index != expected_global_index) {
       MWARNING("V2 tally share: member_index mismatch (claimed "
-               << share.member_index << ", session " << found_index << ")");
+               << share.member_index << ", expected global "
+               << expected_global_index << ")");
       return;
     }
 
@@ -9170,7 +9216,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     }
     per_prop.emplace(member, std::move(share));
     MINFO("V2 tally share stored for proposal " << proposal_id
-          << " from member " << found_index
+          << " from global index " << expected_global_index
           << " (total " << per_prop.size() << ")");
 
     // Automatic threshold combine + finalize. Governance params come
@@ -9192,8 +9238,6 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
   {
     if (!m_dao_v2_tally_broadcast) return;
 
-    // Node's own pubkey. If no node key is set, this node is not a
-    // committee member.
     crypto::public_key self_pk{};
     {
       bool all_zero = true;
@@ -9204,41 +9248,105 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
         return;
     }
 
-    // Walk proposals looking for those whose voting window closed at
-    // height - 1. For each, look up the tally session written when the
-    // session's committee was selected. The producer is a member of
-    // the SESSION committee. The node's DKG share is the bootstrap
-    // share it already holds for the key epoch; the session does not
-    // carry shares.
+    // Proposals whose voting window closed at height - 1. For each:
+    //   1. read the bootstrap key record;
+    //   2. deterministically select the temporary tally committee
+    //      from the bootstrap shareholder set, filtered by current
+    //      eligibility and ranked at voting_end_height;
+    //   3. persist the tally session (idempotent);
+    //   4. if this node is in the committee, produce and broadcast
+    //      its partial decryptions using its already-held bootstrap
+    //      DKG share.
     m_db->for_all_proposal_records(
       [&](const crypto::hash& pid, const proposal_record& rec) -> bool {
         if (rec.status != PROPOSAL_STATUS_ACTIVE) return true;
         if (rec.voting_end_height + 1 != height) return true;
         if (rec.tally_key_epoch == 0) return true;
 
-        dao::dao_tally_session session;
+        dao::dao_tally_key_record key_rec;
         try {
-          if (!m_db->get_dao_tally_session(pid, session)) return true;
+          if (!m_db->get_dao_tally_key(
+                  static_cast<uint32_t>(rec.tally_key_epoch), key_rec))
+            return true;
         } catch (...) { return true; }
 
-        // Find this node's 1-based index within the session committee.
-        uint32_t local_index = 0;
+        const auto committee = dao::select_dao_v2_tally_committee(
+            key_rec, *m_db, m_governance_params.tally_committee_size,
+            rec.voting_end_height);
+
+        const uint32_t threshold =
+            dao::dao_dkg_expected_threshold(
+                static_cast<uint32_t>(committee.members.size()));
+        if (threshold == 0 ||
+            committee.members.size() < threshold) {
+          MWARNING("V2 tally: selected committee below threshold for "
+                   << pid);
+          return true;
+        }
+
+        dao::dao_tally_session session;
+        bool have_session = false;
+        try {
+          have_session = m_db->get_dao_tally_session(pid, session);
+        } catch (...) { have_session = false; }
+
+        if (!have_session) {
+          session = dao::dao_tally_session{};
+          session.version        = 1;
+          session.share_epoch    = static_cast<uint32_t>(rec.tally_key_epoch);
+          session.proposal_id    = pid;
+          if (key_rec.key_id.size() == 32)
+            std::memcpy(session.public_key_id.data,
+                        key_rec.key_id.data(), 32);
+          session.selection_height = rec.voting_end_height;
+          session.vote_end_height  = rec.voting_end_height;
+          session.committee_members = committee.members;
+          session.committee_global_indices = committee.global_indices;
+          session.committee_size = static_cast<uint32_t>(
+              committee.members.size());
+          session.threshold = threshold;
+          session.t         = threshold - 1;
+
+          const char* dom = "VeilRoot-DAO-TALLY-SESSION-COMMITTEE-V1";
+          std::vector<uint8_t> buf;
+          buf.insert(buf.end(), dom, dom + std::strlen(dom));
+          const uint32_t se = session.share_epoch;
+          for (int i = 0; i < 4; ++i)
+            buf.push_back((se >> (8*(3-i))) & 0xff);
+          for (const auto& m : session.committee_members)
+            buf.insert(buf.end(), m.data, m.data + sizeof(m.data));
+          crypto::cn_fast_hash(buf.data(), buf.size(),
+                               session.committee_id_hash);
+
+          try {
+            m_db->add_dao_tally_session(pid, session);
+            MINFO("V2 tally session opened: proposal " << pid
+                  << " committee " << session.committee_size
+                  << " threshold " << session.threshold);
+          } catch (const std::exception& e) {
+            MERROR("Failed to persist tally session: " << e.what());
+            return true;
+          }
+        }
+
+        uint32_t global_index = 0;
         for (size_t i = 0; i < session.committee_members.size(); ++i) {
-          const auto& km = session.committee_members[i];
-          if (std::memcmp(km.data, self_pk.data,
-                          sizeof(self_pk.data)) == 0) {
-            local_index = static_cast<uint32_t>(i) + 1;
+          if (std::memcmp(session.committee_members[i].data,
+                          self_pk.data, sizeof(self_pk.data)) == 0) {
+            if (i < session.committee_global_indices.size())
+              global_index = session.committee_global_indices[i];
             break;
           }
         }
-        if (local_index == 0) return true;
+        if (global_index == 0) return true;
 
         cryptonote::TallyManager tm(*m_db, m_governance_params);
         dao::dao_v2_tally_share share;
-        if (!tm.produce_local_share(pid, local_index, share)) return true;
+        if (!tm.produce_local_share(pid, key_rec, global_index, share))
+          return true;
 
         MINFO("V2 tally: producing share for proposal " << pid
-              << " as session member " << local_index
+              << " global index " << global_index
               << " share_epoch " << session.share_epoch);
         m_dao_v2_tally_broadcast(share);
         return true;

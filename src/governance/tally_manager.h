@@ -39,12 +39,14 @@ public:
         uint64_t current_height);
 
     // Produce this node's own partial decryptions for a proposal from
-    // its locally persisted DKG share. Returns false if this node has
-    // no share for the proposal's epoch. The caller broadcasts the
-    // returned share over the P2P layer.
+    // its locally persisted bootstrap DKG share. `global_member_index`
+    // is this node's 1-based index within the key record's bootstrap
+    // shareholder set. Returns false if this node has no share for
+    // that index. The caller broadcasts the returned share over P2P.
     bool produce_local_share(
         const crypto::hash& proposal_id,
-        uint32_t local_member_index,
+        const dao::dao_tally_key_record& key_rec,
+        uint32_t global_member_index,
         dao::dao_v2_tally_share& share_out);
 
 private:

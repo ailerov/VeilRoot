@@ -58,6 +58,8 @@ bool dao_tally_session::serialize(std::vector<uint8_t>& out) const
                committee_id_hash.data + sizeof(committee_id_hash.data));
     for (const auto& m : committee_members)
         out.insert(out.end(), m.data, m.data + sizeof(m.data));
+    push_u32(out, static_cast<uint32_t>(committee_global_indices.size()));
+    for (uint32_t g : committee_global_indices) push_u32(out, g);
     out.push_back(tally_complete ? 1 : 0);
     return true;
 }
@@ -86,6 +88,17 @@ bool dao_tally_session::deserialize(const std::vector<uint8_t>& in)
         if (off + 32 > in.size()) return false;
         std::memcpy(committee_members[i].data, in.data() + off, 32);
         off += 32;
+    }
+
+    {
+        uint32_t n = 0;
+        if (!pull_u32(in, off, n)) return false;
+        if (n > 64) return false;
+        committee_global_indices.assign(n, 0);
+        for (uint32_t i = 0; i < n; ++i) {
+            if (!pull_u32(in, off, committee_global_indices[i]))
+                return false;
+        }
     }
 
     if (off + 1 > in.size()) return false;
