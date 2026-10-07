@@ -9274,13 +9274,18 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
             key_rec, *m_db, m_governance_params.tally_committee_size,
             rec.voting_end_height);
 
-        const uint32_t threshold =
-            dao::dao_dkg_expected_threshold(
-                static_cast<uint32_t>(committee.members.size()));
+        // The threshold that governs whether decryption is possible is
+        // the BOOTSTRAP DKG threshold. The committee is a temporary
+        // subset of the bootstrap shareholder set; the sharing
+        // polynomial does not change. If the committee is smaller than
+        // the bootstrap threshold, the tally cannot proceed.
+        const uint32_t threshold = key_rec.threshold;
         if (threshold == 0 ||
             committee.members.size() < threshold) {
-          MWARNING("V2 tally: selected committee below threshold for "
-                   << pid);
+          MWARNING("V2 tally: selected committee (" 
+                   << committee.members.size()
+                   << ") smaller than bootstrap threshold ("
+                   << threshold << ") for " << pid);
           return true;
         }
 
@@ -9305,7 +9310,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
           session.committee_size = static_cast<uint32_t>(
               committee.members.size());
           session.threshold = threshold;
-          session.t         = threshold - 1;
+          session.t         = key_rec.t;
 
           const char* dom = "VeilRoot-DAO-TALLY-SESSION-COMMITTEE-V1";
           std::vector<uint8_t> buf;

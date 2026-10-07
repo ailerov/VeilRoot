@@ -115,12 +115,15 @@ bool TallyManager::try_finalize(
     // committee_size) is the temporary session. This is what the
     // frozen certificate builder consumes; its mathematics is
     // unchanged.
+    // The certificate builder consumes a key record. The correct
+    // threshold and t here are the BOOTSTRAP DKG values, because the
+    // shares being combined are shares of the bootstrap polynomial.
+    // Overriding with session.threshold would mis-parameterise the
+    // combine whenever the committee is smaller than the bootstrap
+    // shareholder set.
     dao::dao_tally_key_record cert_key_rec = key_rec;
-    cert_key_rec.threshold      = session.threshold;
-    cert_key_rec.t              = session.t;
-    // V_K_i comes from the bootstrap key record; each partial
-    // decryption is verified against key_rec.V_K_i at the member's
-    // global index.
+    // cert_key_rec.threshold and cert_key_rec.t already hold the
+    // bootstrap values. Leave them.
 
     // Recombine through the existing certificate pipeline, which also
     // re-verifies each partial's ZK proof before use.
