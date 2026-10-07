@@ -305,3 +305,100 @@ TEST_F(DaoBootstrapIntegration, ActivationChainBindsEpochAfterPersistence)
     ASSERT_TRUE(bc.get_db().get_dao_local_share(1, 1, share));
     EXPECT_FALSE(share.empty());
 }
+
+// ------------------------------------------------------------------
+// Threshold combine is invariant to the chosen subset.
+//
+// Run a real 2-of-3 DKG. Then take two distinct 2-of-3 subsets of the
+// bootstrap shareholders and confirm dao_threshold_combine produces
+// the same combined ciphertext from each. This is the property the
+// tally lifecycle depends on: any threshold subset of the bootstrap
+// shareholders can decrypt, and the result is the same.
+// ------------------------------------------------------------------
+TEST(DaoThresholdSubsetInvariance, SameCiphertextFromAnySubset)
+{
+    std::vector<crypto::public_key> committee;
+    for (int i = 0; i < 3; ++i) {
+        crypto::public_key pk;
+        crypto::secret_key sk;
+        crypto::generate_keys(pk, sk);
+        committee.push_back(pk);
+    }
+
+    dao_vss_group vss;
+    ASSERT_TRUE(dao_vss_group_generate(vss,
+        dao_dkg_required_vss_bits(60, 128, 32)));
+
+    // In-process transport; populates test_SK.
+    dkg_inproc_network inet = dkg_make_inproc_network(3, nullptr);
+    std::vector<std::unique_ptr<dkg_transport>> pool;
+    pool.reserve(inet.endpoints.size());
+    for (auto& e : inet.endpoints) pool.push_back(std::move(e));
+    size_t next = 0;
+    dkg_transport_factory factory =
+        [&pool, &next](uint32_t) -> std::unique_ptr<dkg_transport> {
+            if (next >= pool.size()) return nullptr;
+            return std::move(pool[next++]);
+        };
+
+    dkg_config cfg;
+    cfg.committee_size = 3;
+    cfg.threshold      = dao_dkg_expected_threshold(3);
+    cfg.epoch          = 1;
+    cfg.member_ids     = committee;
+    cfg.k              = 60;
+    cfg.target_N_bits  = 128;
+    cfg.security_bits  = 32;
+    cfg.qproof_rounds  = DAO_DKG_QPROOF_ROUNDS_TEST;
+    cfg.max_attempts   = 1;
+    cfg.test_seed      = 0x5645494C52544F33ULL;
+
+    dkg_result out;
+    ASSERT_TRUE(dkg_run_with_transport(cfg, factory, out));
+    ASSERT_TRUE(out.candidate_accepted);
+    ASSERT_EQ(out.test_SK.size(), 3u);
+
+    PaillierPublicKey pk;
+    ASSERT_TRUE(pk.deserialize_modulus(out.record.N));
+
+    BIGNUM* m = BN_new();
+    BN_set_word(m, 4242);
+    BIGNUM* r = BN_new();
+    ASSERT_TRUE(dao_dkg_sample_r(pk, r));
+    std::vector<uint8_t> c;
+    ASSERT_TRUE(pk.encrypt(m, r, c));
+
+    auto partial_for = [&](uint32_t member_index) {
+        BIGNUM* sk = nullptr;
+        const std::string dec(out.test_SK[member_index - 1].begin(),
+                              out.test_SK[member_index - 1].end());
+        BN_dec2bn(&sk, dec.c_str());
+        std::vector<uint8_t> ci;
+        bool ok = dao_threshold_partial_decrypt(pk, c, sk, ci);
+        BN_free(sk);
+        return std::make_pair(ok, ci);
+    };
+
+    std::vector<std::vector<uint32_t>> subsets = {
+        {1, 2},
+        {1, 3},
+    };
+
+    std::vector<std::vector<uint8_t>> combined;
+    for (const auto& subset : subsets) {
+        std::vector<std::vector<uint8_t>> partials;
+        for (uint32_t idx : subset) {
+            auto [ok, ci] = partial_for(idx);
+            ASSERT_TRUE(ok);
+            partials.push_back(std::move(ci));
+        }
+        std::vector<uint8_t> C;
+        ASSERT_TRUE(dao_threshold_combine(pk, subset, partials,
+                                          out.record.threshold, C));
+        combined.push_back(std::move(C));
+    }
+
+    EXPECT_EQ(combined[0], combined[1]);
+
+    BN_free(m); BN_free(r);
+}
