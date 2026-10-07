@@ -506,11 +506,11 @@ bool dao_partial_decryption_verify(const PaillierPublicKey& pk,
 // Public tally-key record
 //
 // This record describes the STABLE public Paillier key epoch and the
-// BOOTSTRAP SHAREHOLDER SET that generated it. It does NOT describe the
-// temporary tally committee. The temporary tally committee is selected
-// at a proposal's voting end and receives fresh shares of the same
-// secret via a Reset operation (see dao_dkg_reset.h and
-// dao_tally_session_cycle.h).
+// BOOTSTRAP SHAREHOLDER SET that generated it. It does NOT describe
+// the temporary tally committee. The temporary tally committee is
+// selected at a proposal's voting end as a subset of this bootstrap
+// shareholder set; its members use the DKG shares they already hold.
+// See dao_tally_session_cycle.h.
 //
 // Field names below retain their historical spelling for wire
 // compatibility. Read them with bootstrap semantics:

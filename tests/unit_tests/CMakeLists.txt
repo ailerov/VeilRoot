@@ -129,10 +129,6 @@ set(unit_tests_sources
   dao_dkg_e2e.cpp
   dao_dkg_distributed.cpp
   dao_dkg_bootstrap.cpp
-  dao_dkg_reset.cpp
-  dao_dkg_reset_integration.cpp
-  dao_dkg_reset_p2p.cpp
-  dao_dkg_reset_transcript.cpp
   dao_wallet_v2.cpp
   dao_bootstrap_integration.cpp
   voting_weight.cpp
@@ -178,6 +174,12 @@ target_compile_definitions(unit_tests PRIVATE VEILROOT_DAO_DKG_TESTING=1)
 target_compile_definitions(obj_cryptonote_core PRIVATE VEILROOT_DAO_DKG_TESTING=1)
 set(VEILROOT_DAO_DKG_TESTING_BUILD 1 CACHE INTERNAL "Enable DKG test-only accessors")
 
+# The Reset cryptographic primitive builds as a separate object
+# library so it is not linked into production binaries. Its unit
+# tests are the only consumers.
+target_sources(unit_tests PRIVATE
+  $<TARGET_OBJECTS:obj_obj_governance_experimental>)
+
 if (NOT MSVC)
   set_property(TARGET unit_tests
     APPEND_STRING
@@ -196,3 +198,44 @@ add_test(
 monero_add_minimal_executable(test_notifier test_notifier.cpp)
 target_link_libraries(test_notifier ${EXTRA_LIBRARIES})
 set_property(TARGET test_notifier PROPERTY FOLDER "tests")
+
+# The Reset module is a cryptographic primitive, not part of the DAO
+# lifecycle. Its tests build as a separate binary so they never run in
+# the DAO unit-test filter alongside the lifecycle tests. They link the
+# experimental object library plus the same core libraries the main
+# unit-test binary uses.
+set(unit_tests_experimental_sources
+  main.cpp
+  dao_dkg_reset.cpp
+  dao_dkg_reset_integration.cpp
+  dao_dkg_reset_p2p.cpp
+  dao_dkg_reset_transcript.cpp)
+
+monero_add_minimal_executable(unit_tests_experimental
+  ${unit_tests_experimental_sources})
+target_link_libraries(unit_tests_experimental
+  PRIVATE
+    obj_governance_experimental
+    ringct
+    cryptonote_protocol
+    cryptonote_core
+    blockchain_db
+    lmdb_lib
+    rpc
+    net
+    serialization
+    wallet
+    p2p
+    version
+    ${Boost_CHRONO_LIBRARY}
+    ${Boost_THREAD_LIBRARY}
+    ${GTEST_LIBRARIES}
+    ${CMAKE_THREAD_LIBS_INIT}
+    ${EXTRA_LIBRARIES}
+    ixwebsocket
+    ${ZMQ_LIB})
+target_compile_definitions(unit_tests_experimental PRIVATE VEILROOT_DAO_DKG_TESTING=1)
+target_include_directories(unit_tests_experimental
+  PRIVATE ${CMAKE_SOURCE_DIR}/src
+          ${CMAKE_SOURCE_DIR}/external/ixwebsocket)
+set_property(TARGET unit_tests_experimental PROPERTY FOLDER "tests")

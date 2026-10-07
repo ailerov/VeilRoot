@@ -71,7 +71,6 @@
 #include "governance/domain_policy.h"
 #include "governance/dao_tally_share.h"
 #include "governance/dao_dkg.h"
-#include "governance/dao_dkg_reset.h"
 #include <array>
 #include <deque>
 #include <mutex>

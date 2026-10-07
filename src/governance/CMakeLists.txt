@@ -28,9 +28,15 @@ set(governance_sources
     dao_consistency.cpp
     dao_tally_key.cpp
     dao_tally_session_cycle.cpp
+    parameter_manager.cpp
+)
+
+# The Reset module is a cryptographic primitive, not part of the
+# production DAO lifecycle. It builds as a separate object library so
+# that its unit tests can link it while the daemon and wallet cannot.
+set(governance_experimental_sources
     dao_dkg_reset.cpp
     dao_dkg_reset_transcript.cpp
-    parameter_manager.cpp
 )
 
 monero_add_library(obj_governance OBJECT ${governance_sources})
@@ -43,4 +49,10 @@ target_include_directories(obj_governance PRIVATE ${CMAKE_SOURCE_DIR}/src)
 # sets before including this file.
 if (VEILROOT_DAO_DKG_TESTING_BUILD)
   target_compile_definitions(obj_obj_governance PRIVATE VEILROOT_DAO_DKG_TESTING=1)
+endif ()
+
+monero_add_library(obj_governance_experimental OBJECT ${governance_experimental_sources})
+target_include_directories(obj_governance_experimental PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if (VEILROOT_DAO_DKG_TESTING_BUILD)
+  target_compile_definitions(obj_obj_governance_experimental PRIVATE VEILROOT_DAO_DKG_TESTING=1)
 endif ()
