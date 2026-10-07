@@ -1314,7 +1314,7 @@ namespace cryptonote
 
   // ---------- VNS ADDITION START ----------
   domain_registration_result process_domain_registration(const transaction& tx, uint64_t height, bool dry_run = false);
-  void rebuild_committee_eligible_list();
+  void rebuild_committee_eligible_list(uint64_t selection_height);
 
   // BEGIN_VNS_DKG
   bool start_dkg_ceremony(const crypto::hash& proposal_id = crypto::null_hash);
@@ -2129,7 +2129,8 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
   // sort by weight descending with a deterministic tie-break on the
   // public key, and return the top `max_committee_size` entries.
   std::vector<std::pair<crypto::public_key, uint64_t>>
-  select_dao_v2_committee(BlockchainDB& db, uint32_t max_committee_size);
+  select_dao_v2_committee(BlockchainDB& db, uint32_t max_committee_size,
+                          uint64_t selection_height);
 
   // Persist a completed DKG result. The caller owns the runner's
   // wait() and passes the captured result plus this node's committee

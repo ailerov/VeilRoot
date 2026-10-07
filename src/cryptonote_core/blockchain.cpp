@@ -2647,7 +2647,7 @@ bool Blockchain::handle_alternative_block(const block& b, const crypto::hash& id
     }
     // ---------- VNS ADDITION END ----------
     m_db->add_alt_block(id, data, cryptonote::block_to_blob(bei.bl));
-    rebuild_committee_eligible_list();
+    rebuild_committee_eligible_list(m_db->height());
     alt_chain.push_back(bei);
 
     // FIXME: is it even possible for a checkpoint to show up not on the main chain?
@@ -6776,7 +6776,7 @@ leave:
       if (blockchain_height > 1)  // skip genesis block (height 1)
           m_hardfork->reorganize_from_chain_height(new_height);
 
-      rebuild_committee_eligible_list();
+      rebuild_committee_eligible_list(new_height);
     }
     catch (const KEY_IMAGE_EXISTS& e)
     {
@@ -6860,8 +6860,12 @@ leave:
       rec.node_pubkey      = elig.node_pubkey;
       rec.amount           = elig.amount;
       rec.unlock_height    = new_height;
-      rec.stake_age_weight = get_stake_age_weight(
-          elig.amount, new_height, new_height);
+      // stake_age_weight is retained for wire/serialization
+      // compatibility but is never read. The whitepaper's ranking is
+      // stake-age weight at the selection height, computed by
+      // dao::compute_stake_age_weight from (amount, unlock_height,
+      // selection_height). Writing 0 here is deliberate.
+      rec.stake_age_weight = 0;
 
       m_db->add_committee_eligible(elig.k_image, rec);
       MINFO("Committee-eligible registered: node " << elig.node_pubkey
@@ -8391,16 +8395,19 @@ namespace {
 
 namespace cryptonote {
 
+// Forward declaration. The definition lives below in namespace dao,
+// next to the DKG and committee selectors that also use it.
+namespace dao {
+uint64_t compute_stake_age_weight(uint64_t amount,
+                                  uint64_t unlock_height,
+                                  uint64_t current_height);
+}
+
   // BEGIN_VNS_STAKE_AGE
 uint64_t Blockchain::get_stake_age_weight(uint64_t amount, uint64_t unlock_height, uint64_t current_height) const
 {
-  if (current_height <= unlock_height)
-    return 0;
-  // 720 blocks per day (120s block time, matches proposal voting_end_height calc)
-  constexpr double BLOCKS_PER_DAY = 720.0;
-  double age_days = (current_height - unlock_height) / BLOCKS_PER_DAY;
-  double weight = amount * std::log2(age_days + 1.0);
-  return static_cast<uint64_t>(weight);
+  return dao::compute_stake_age_weight(amount, unlock_height,
+                                       current_height);
 }
 
 uint64_t Blockchain::get_total_stake_age_weighted_supply(uint64_t height) const
@@ -8416,8 +8423,26 @@ uint64_t Blockchain::get_total_stake_age_weighted_supply(uint64_t height) const
 // BEGIN_VNS_ELIGIBLE
 namespace dao {
 
+// The whitepaper's ranking is stake-age weight evaluated at the
+// moment the tally committee is required, not weight frozen at
+// registration. This free function is the single implementation of
+// the weight formula. Blockchain::get_stake_age_weight forwards here.
+uint64_t compute_stake_age_weight(uint64_t amount,
+                                  uint64_t unlock_height,
+                                  uint64_t current_height)
+{
+  if (current_height <= unlock_height)
+    return 0;
+  constexpr double BLOCKS_PER_DAY = 720.0;
+  const double age_days =
+      (current_height - unlock_height) / BLOCKS_PER_DAY;
+  const double weight = amount * std::log2(age_days + 1.0);
+  return static_cast<uint64_t>(weight);
+}
+
 std::vector<std::pair<crypto::public_key, uint64_t>>
-select_dao_v2_committee(BlockchainDB& db, uint32_t max_committee_size)
+select_dao_v2_committee(BlockchainDB& db, uint32_t max_committee_size,
+                        uint64_t selection_height)
 {
   // for_all_committee_eligible() opens the LMDB per-thread read
   // transaction but does not close it (TXN_POSTFIX_RDONLY is empty).
@@ -8435,7 +8460,8 @@ select_dao_v2_committee(BlockchainDB& db, uint32_t max_committee_size)
 
   std::unordered_map<crypto::public_key, uint64_t> node_weights;
   for (const auto& [ki, rec] : rows)
-    node_weights[rec.node_pubkey] += rec.stake_age_weight;
+    node_weights[rec.node_pubkey] += compute_stake_age_weight(
+        rec.amount, rec.unlock_height, selection_height);
 
   std::vector<std::pair<crypto::public_key, uint64_t>> sorted(
       node_weights.begin(), node_weights.end());
@@ -8458,7 +8484,7 @@ select_dao_v2_committee(BlockchainDB& db, uint32_t max_committee_size)
 // committee is selected as a temporary subset of this shareholder
 // set. The two roles are deliberately distinct.
 std::vector<std::pair<crypto::public_key, uint64_t>>
-select_dao_v2_dkg_shareholders(BlockchainDB& db)
+select_dao_v2_dkg_shareholders(BlockchainDB& db, uint64_t selection_height)
 {
   db_rtxn_guard rtxn_guard(&db);
 
@@ -8472,7 +8498,8 @@ select_dao_v2_dkg_shareholders(BlockchainDB& db)
 
   std::unordered_map<crypto::public_key, uint64_t> node_weights;
   for (const auto& [ki, rec] : rows)
-    node_weights[rec.node_pubkey] += rec.stake_age_weight;
+    node_weights[rec.node_pubkey] += compute_stake_age_weight(
+        rec.amount, rec.unlock_height, selection_height);
 
   std::vector<std::pair<crypto::public_key, uint64_t>> sorted(
       node_weights.begin(), node_weights.end());
@@ -8518,7 +8545,7 @@ bool persist_dao_v2_dkg_result(BlockchainDB& db,
 
 } // namespace dao
 
-void Blockchain::rebuild_committee_eligible_list()
+void Blockchain::rebuild_committee_eligible_list(uint64_t selection_height)
 {
   m_committee_eligible.clear();
 
@@ -8529,7 +8556,7 @@ void Blockchain::rebuild_committee_eligible_list()
     });
 
   m_committee_eligible_sorted = dao::select_dao_v2_committee(
-      *m_db, m_governance_params.tally_committee_size);
+      *m_db, m_governance_params.tally_committee_size, selection_height);
 }
 // END_VNS_ELIGIBLE
 // BEGIN_VNS_DKG
@@ -8730,7 +8757,8 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
     // Select bootstrap shareholders from the currently eligible set.
     // This is the initial share custodian set, not the tally committee.
-    rebuild_committee_eligible_list();
+    const uint64_t selection_height = get_current_blockchain_height();
+    rebuild_committee_eligible_list(selection_height);
     if (m_committee_eligible_sorted.size() <
         dao::DAO_DKG_MIN_COMMITTEE_SIZE)
       return;
@@ -8876,8 +8904,9 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     // DKG share for the key epoch. Selecting only the top-N here was
     // the bug: it turned the bootstrap DKG shareholder set into the
     // first tally committee.
+    const uint64_t selection_height = get_current_blockchain_height();
     const auto shareholders_sorted =
-        dao::select_dao_v2_dkg_shareholders(*m_db);
+        dao::select_dao_v2_dkg_shareholders(*m_db, selection_height);
 
     if (shareholders_sorted.size() < dao::DAO_DKG_MIN_COMMITTEE_SIZE) {
       MWARNING("bootstrap_dao_v2_dkg: not enough eligible shareholders");

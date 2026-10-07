@@ -94,6 +94,10 @@ struct routed_network
 
 constexpr uint64_t FIXED_TEST_CANDIDATE_SEED_3 = 0x5645494C52544F33ULL;
 
+// Install one eligible record. The stored stake_age_weight is unused
+// by the selector; ranking is computed from (amount, unlock_height) at
+// the selection height. The `weight` argument sets `amount` so that
+// relative ordering is preserved regardless of the age factor.
 void install_eligible(BlockchainDB& db,
                       const crypto::public_key& pk,
                       uint64_t weight,
@@ -101,9 +105,9 @@ void install_eligible(BlockchainDB& db,
 {
     committee_eligible_record rec{};
     rec.node_pubkey = pk;
-    rec.amount = 1000000;
+    rec.amount = weight;
     rec.unlock_height = 1;
-    rec.stake_age_weight = weight;
+    rec.stake_age_weight = 0;
 
     crypto::key_image ki{};
     std::memset(ki.data, 0, sizeof(ki.data));
@@ -168,7 +172,7 @@ TEST_F(DaoV2Bootstrap, ThreeEligibleNodesSelectAndComplete2of3DKG)
     // Real selector: same ordered committee from every DB.
     std::vector<crypto::public_key> expected;
     for (size_t i = 0; i < 3; ++i) {
-        auto sel = dao::select_dao_v2_committee(*m_dbs[i], 3);
+        auto sel = dao::select_dao_v2_committee(*m_dbs[i], 3, 1000000ULL);
         ASSERT_EQ(sel.size(), 3u);
         std::vector<crypto::public_key> committee;
         for (const auto& [pk, w] : sel) committee.push_back(pk);
@@ -283,7 +287,7 @@ TEST_F(DaoV2Bootstrap, RepeatedWaitReturnsSameResult)
         install_eligible(*db, m_pub[2], 1000000, 3);
     }
 
-    auto sel = dao::select_dao_v2_committee(*m_dbs[0], 3);
+    auto sel = dao::select_dao_v2_committee(*m_dbs[0], 3, 1000000ULL);
     std::vector<crypto::public_key> committee;
     for (const auto& [pk, w] : sel) committee.push_back(pk);
 
@@ -361,7 +365,7 @@ TEST_F(DaoV2Bootstrap, CommitteeSelectionIsDeterministicOnEqualWeights)
 
     std::vector<std::vector<crypto::public_key>> committees;
     for (auto& db : m_dbs) {
-        auto sel = dao::select_dao_v2_committee(*db, 3);
+        auto sel = dao::select_dao_v2_committee(*db, 3, 1000000ULL);
         ASSERT_EQ(sel.size(), 3u);
         std::vector<crypto::public_key> c;
         for (const auto& [pk, w] : sel) c.push_back(pk);

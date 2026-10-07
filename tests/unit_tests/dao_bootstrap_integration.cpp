@@ -131,9 +131,9 @@ TEST_F(DaoBootstrapIntegration, BootstrapStartsRunnerForThisCommittee)
 
     committee_eligible_record self_rec{};
     self_rec.node_pubkey = m_node_pub;
-    self_rec.amount = 1000000;
+    self_rec.amount = 3000000;
     self_rec.unlock_height = 1;
-    self_rec.stake_age_weight = 3000000;
+    self_rec.stake_age_weight = 0;
 
     crypto::key_image self_ki{};
     std::memset(self_ki.data, 0, sizeof(self_ki.data));
@@ -151,9 +151,9 @@ TEST_F(DaoBootstrapIntegration, BootstrapStartsRunnerForThisCommittee)
 
         committee_eligible_record rec{};
         rec.node_pubkey = dummy;
-        rec.amount = 1000000;
+        rec.amount = 2000000 - i * 100000;
         rec.unlock_height = 1;
-        rec.stake_age_weight = 2000000 - i * 100000;
+        rec.stake_age_weight = 0;
 
         crypto::key_image ki{};
         std::memset(ki.data, 0, sizeof(ki.data));
@@ -164,7 +164,7 @@ TEST_F(DaoBootstrapIntegration, BootstrapStartsRunnerForThisCommittee)
     }
 
     // Selector sees all three.
-    auto sel = dao::select_dao_v2_committee(db, 3);
+    auto sel = dao::select_dao_v2_committee(db, 3, 1000000ULL);
     ASSERT_EQ(sel.size(), 3u);
     EXPECT_EQ(sel[0].first, m_node_pub);
 
