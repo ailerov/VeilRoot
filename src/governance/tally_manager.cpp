@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "governance/tally_manager.h"
+#include "serialization/binary_archive.h"
+#include "serialization/binary_utils.h"
+#include "serialization/variant.h"
+#include "serialization/string.h"
+#include "governance/governance_payload.h"
+#include "cryptonote_basic/cryptonote_format_utils.h"
+#include "cryptonote_basic/tx_extra.h"
 
 #include <cstring>
 #include <unordered_set>
@@ -182,6 +189,111 @@ bool TallyManager::try_finalize(
           << " yes=" << cert.YES_weight
           << " no=" << cert.NO_weight
           << " B=" << cert.B_total);
+    return true;
+}
+
+bool TallyManager::build_tally_result_transaction(
+    const crypto::hash& proposal_id,
+    const std::map<crypto::public_key, dao::dao_v2_tally_share>& shares,
+    uint32_t threshold,
+    transaction& tx_out)
+{
+    // Do not finalize if the outcome already exists as consensus state.
+    {
+        dao::dao_v2_outcome_record existing;
+        if (m_db.get_dao_v2_outcome(proposal_id, existing))
+            return false;
+    }
+
+    proposal_record prop;
+    if (!m_db.get_proposal_record(proposal_id, prop))
+        return false;
+    if (prop.status != PROPOSAL_STATUS_ACTIVE)
+        return false;
+
+    dao::dao_tally_key_record key_rec;
+    if (!m_db.get_dao_tally_key(
+            static_cast<uint32_t>(prop.tally_key_epoch), key_rec))
+        return false;
+
+    if (threshold < key_rec.threshold)
+        return false;
+    if (shares.size() < key_rec.threshold)
+        return false;
+
+    dao_proposal_aggregate agg;
+    if (!m_db.get_dao_proposal_aggregate(proposal_id, agg))
+        return false;
+    if (agg.aggregate_E_W.empty() ||
+        agg.aggregate_E_S.empty() ||
+        agg.aggregate_E_B.empty())
+        return false;
+
+    const crypto::hash agg_hash =
+        dao::dao_aggregate_ciphertext_hash(agg.aggregate_E_W,
+                                           agg.aggregate_E_S,
+                                           agg.aggregate_E_B);
+
+    dao::dao_partial_set W_set, S_set, B_set;
+    for (const auto& kv : shares) {
+        if (W_set.member_indices.size() >= key_rec.threshold) break;
+        const auto& s = kv.second;
+        if (std::memcmp(s.aggregate_ciphertext_hash.data,
+                        agg_hash.data, 32) != 0)
+            continue;
+        W_set.member_indices.push_back(s.member_index);
+        W_set.partials.push_back(s.partial_W);
+        W_set.proofs.push_back(s.proof_W);
+        S_set.member_indices.push_back(s.member_index);
+        S_set.partials.push_back(s.partial_S);
+        S_set.proofs.push_back(s.proof_S);
+        B_set.member_indices.push_back(s.member_index);
+        B_set.partials.push_back(s.partial_B);
+        B_set.proofs.push_back(s.proof_B);
+    }
+    if (W_set.member_indices.size() < key_rec.threshold)
+        return false;
+
+    dao::dao_supply_snapshot snap;
+    if (!m_db.get_dao_supply_snapshot(prop.voting_end_height, snap))
+        return false;
+
+    dao::dao_tally_certificate cert;
+    if (!dao::dao_build_tally_certificate(
+            key_rec, proposal_id, prop.voting_end_height,
+            agg.aggregate_E_W, agg.aggregate_E_S, agg.aggregate_E_B,
+            W_set, S_set, B_set, cert))
+        return false;
+    if (!dao::dao_verify_tally_certificate(
+            key_rec, snap, m_params.voting_quorum_percent,
+            agg.aggregate_E_W, agg.aggregate_E_S, agg.aggregate_E_B, cert))
+        return false;
+
+    // Serialize the certificate and place it in a governance payload.
+    std::vector<uint8_t> cert_blob;
+    if (!cert.serialize(cert_blob))
+        return false;
+
+    governance_payload gp;
+    gp.type = governance_object::tally_result;
+    gp.data = std::move(cert_blob);
+
+    tx_extra_governance_payload txgp;
+    txgp.payload = std::move(gp);
+
+    tx_extra_field extra_field = txgp;
+    const std::string extra_blob =
+        t_serializable_object_to_blob(extra_field);
+
+    tx_out = transaction{};
+    tx_out.version = 2;
+    tx_out.unlock_time = 0;
+    tx_out.vin.clear();
+    tx_out.vout.clear();
+    tx_out.extra.assign(extra_blob.begin(), extra_blob.end());
+    tx_out.rct_signatures = rct::rctSig{};
+    tx_out.rct_signatures.type = rct::RCTTypeNull;
+
     return true;
 }
 

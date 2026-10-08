@@ -20,6 +20,7 @@
 #include "governance/dao_tally.h"
 #include "governance/dao_tally_share.h"
 #include "governance/governance_params.h"
+#include "cryptonote_basic/cryptonote_basic.h"
 
 namespace cryptonote {
 
@@ -37,6 +38,26 @@ public:
         const crypto::hash& proposal_id,
         const std::map<crypto::public_key, dao::dao_v2_tally_share>& shares,
         uint64_t current_height);
+
+    // Build a DAO V2 tally-result transaction from the accumulated
+    // shares. Performs the same cryptographic verification as
+    // try_finalize, then wraps the resulting certificate in an
+    // ordinary consensus transaction. Does NOT write LMDB: the
+    // authoritative governance state transition happens only during
+    // block application, after validate_dao_v2_tally_result_tx() has
+    // accepted the transaction.
+    //
+    // `committee_global_indices` is the deterministic temporary
+    // committee for this proposal at its voting_end_height, in the
+    // same order as the selected members. Its entries are the
+    // bootstrap DKG member indices, which are what the certificate
+    // carries and what the verify path matches against
+    // key_rec.V_K_i[index-1].
+    bool build_tally_result_transaction(
+        const crypto::hash& proposal_id,
+        const std::map<crypto::public_key, dao::dao_v2_tally_share>& shares,
+        uint32_t threshold,
+        transaction& tx_out);
 
     // Produce this node's own partial decryptions for a proposal from
     // its locally persisted bootstrap DKG share. `global_member_index`
