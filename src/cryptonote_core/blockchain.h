@@ -1366,6 +1366,17 @@ namespace cryptonote
       const transaction& tx,
       uint64_t block_height) const;
 
+  // Authoritative state transition for a validated tally-result tx.
+  // Called from the block-application path after m_db->add_block()
+  // succeeds, and directly from tests. Precondition: the transaction
+  // has already passed validate_dao_v2_tally_result_tx() against the
+  // same chain state. Writes dao_v2_outcome, updates the proposal
+  // status, and creates a pending execution if the proposal passed.
+  // Throws on internal inconsistency; returns false on precondition
+  // failure (not a tally-result tx, or unable to parse the payload).
+  bool apply_dao_v2_tally_result(const transaction& tx,
+                                 uint64_t block_height);
+
   // Deterministic temporary tally committee for a proposal at its
   // voting end height. Wraps the free-function selector; returns the
   // ordered members only. Global bootstrap indices are computed
