@@ -5557,15 +5557,35 @@ void Blockchain::start_nostr_fetcher()
         // Do not compete with initial chain synchronization. Require:
         //   (a) at least one block stored, and
         //   (b) block height stable for 60 consecutive seconds.
+        // Interruptible sleep: chunked so that stop_nostr_fetcher()
+        // returns within ~100 ms instead of waiting up to 60 s for a
+        // full sleep_for to expire. No behavioural change to the
+        // fetcher's cadence during normal operation; only teardown is
+        // affected.
+        auto interruptible_sleep =
+            [this](std::chrono::milliseconds total)
+        {
+            constexpr auto chunk = std::chrono::milliseconds(100);
+            auto remaining = total;
+            while (remaining.count() > 0 &&
+                   !m_nostr_fetcher_stop.load(std::memory_order_relaxed))
+            {
+                const auto slice =
+                    remaining < chunk ? remaining : chunk;
+                std::this_thread::sleep_for(slice);
+                remaining -= slice;
+            }
+        };
+
         while (!m_nostr_fetcher_stop && m_db->height() == 0)
-            std::this_thread::sleep_for(std::chrono::seconds(10));
+            interruptible_sleep(std::chrono::seconds(10));
         if (m_nostr_fetcher_stop) return;
 
         {
             uint64_t last_h = m_db->height();
             while (!m_nostr_fetcher_stop)
             {
-                std::this_thread::sleep_for(std::chrono::seconds(60));
+                interruptible_sleep(std::chrono::seconds(60));
                 if (m_nostr_fetcher_stop) return;
                 uint64_t h = m_db->height();
                 if (h == last_h)
