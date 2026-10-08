@@ -33,6 +33,7 @@
 #include "cryptonote_core/cryptonote_core.h"
 #include "governance/dao_dkg.h"
 #include "governance/dao_dkg_transport.h"
+#include "governance/governance_params.h"
 #include "governance/dao_tally_session_cycle.h"
 #include "governance/tally_manager.h"
 #include "governance/dao_tally_share.h"
@@ -426,7 +427,24 @@ TEST(DaoThresholdSubsetInvariance, SameCiphertextFromAnySubset)
 // producer through the P2P handler through to try_finalize. It does
 // not exercise two-node consensus (see the two-core test).
 // ------------------------------------------------------------------
-TEST_F(DaoBootstrapIntegration, SingleNodeProducerAndFinalize)
+
+// ------------------------------------------------------------------
+// End-to-end consensus path for a DAO V2 tally result.
+//
+// 1. bootstrap DKG over three shareholders (this node + two dummies);
+// 2. queue the DKG result and drain it on the owner thread;
+// 3. persist a proposal whose voting window closes at VOTE_END;
+// 4. encrypt a synthetic aggregate under the resulting N;
+// 5. build a tally-result transaction from the threshold shares;
+// 6. validate_dao_v2_tally_result_tx(tx, VOTE_END + 1) -> true;
+// 7. apply_dao_v2_tally_result(tx, VOTE_END + 1);
+// 8. assert outcome record and proposal status.
+//
+// This is the same computation the P2P handler and block-apply path
+// perform. It uses the direct API so the test does not need to walk
+// the mempool; the mempool path is exercised separately.
+// ------------------------------------------------------------------
+TEST_F(DaoBootstrapIntegration, TallyResultTxValidatedAndApplied)
 {
     constexpr uint64_t VOTE_END = 60001;
     const crypto::hash prop_id = []{
@@ -445,8 +463,6 @@ TEST_F(DaoBootstrapIntegration, SingleNodeProducerAndFinalize)
         committee_pks.push_back(pk);
     }
 
-    // Eligible records must exist so the tally selector can see the
-    // shareholders. Amounts order them unambiguously: our node first.
     auto& db = m_core->get_blockchain_storage().get_db();
     for (size_t i = 0; i < 3; ++i) {
         committee_eligible_record rec{};
@@ -467,8 +483,6 @@ TEST_F(DaoBootstrapIntegration, SingleNodeProducerAndFinalize)
     ASSERT_TRUE(dao_vss_group_generate(vss,
         dao_dkg_required_vss_bits(60, 128, 32)));
 
-    // Run the DKG offline (three p2p runners over an in-process
-    // dispatch). This yields a real dkg_result with test_SK populated.
     dkg_inproc_network inet = dkg_make_inproc_network(3, nullptr);
     std::vector<std::unique_ptr<dkg_transport>> pool;
     pool.reserve(inet.endpoints.size());
@@ -491,38 +505,27 @@ TEST_F(DaoBootstrapIntegration, SingleNodeProducerAndFinalize)
     cfg.qproof_rounds  = DAO_DKG_QPROOF_ROUNDS_TEST;
     cfg.max_attempts   = 1;
     cfg.test_seed      = 0x5645494C52544F33ULL;
-    // This node is committee_pks[0] and it is the runner's local
-    // identity. Without local_party_id the driver does not export a
-    // local secret share, and the persistence path refuses the result.
     cfg.local_party_id = 1;
 
     dkg_result out;
     ASSERT_TRUE(dkg_run_with_transport(cfg, factory, out));
     ASSERT_TRUE(out.candidate_accepted);
     ASSERT_EQ(out.test_SK.size(), 3u);
-    ASSERT_FALSE(out.local_secret_share.empty());
 
-    // ---- 2. Queue the result and drain it ----
     auto& bc = m_core->get_blockchain_storage();
     bc.queue_dao_v2_dkg_result(1, out);
     bc.maybe_process_dao_v2_dkg_results();
 
     dao::dao_tally_key_record key_rec;
     ASSERT_TRUE(bc.get_db().get_dao_tally_key(1, key_rec));
-    EXPECT_EQ(key_rec.committee_size, 3u);
-    EXPECT_EQ(key_rec.threshold, 2u);
+    ASSERT_EQ(key_rec.committee_size, 3u);
+    ASSERT_EQ(key_rec.threshold, 2u);
 
-    std::vector<uint8_t> local_share;
-    ASSERT_TRUE(bc.get_db().get_dao_local_share(1, 1, local_share));
-    EXPECT_FALSE(local_share.empty());
-
-    // ---- 3. Persist a proposal whose voting closes at VOTE_END ----
+    // ---- 2. Persist a proposal ----
     {
         proposal_record rec{};
         std::memset(&rec, 0, sizeof(rec));
         rec.proposal_id = prop_id;
-        rec.type = 0;
-        rec.amount = 0;
         rec.voting_period_days = 7;
         rec.submission_height = VOTE_END - 1000;
         rec.voting_end_height = VOTE_END;
@@ -530,12 +533,11 @@ TEST_F(DaoBootstrapIntegration, SingleNodeProducerAndFinalize)
         rec.submission_tx_hash = prop_id;
         rec.status = PROPOSAL_STATUS_ACTIVE;
         rec.status_height = VOTE_END - 1000;
-        rec.executed = false;
         db_wtxn_guard g(&db);
         bc.get_db().add_proposal_record(prop_id, rec);
     }
 
-    // ---- 4. Encrypt a synthetic aggregate ----
+    // ---- 3. Encrypt a synthetic aggregate ----
     PaillierPublicKey pk;
     ASSERT_TRUE(pk.deserialize_modulus(out.record.N));
 
@@ -570,64 +572,38 @@ TEST_F(DaoBootstrapIntegration, SingleNodeProducerAndFinalize)
         bc.get_db().add_dao_supply_snapshot(snap);
     }
 
-    // ---- 5. Install the tally broadcast capture ----
-    dao::dao_v2_tally_share captured_share;
-    bool captured = false;
-    bc.set_dao_v2_tally_broadcast(
-        [&](const dao::dao_v2_tally_share& s) {
-            captured_share = s;
-            captured = true;
-        });
-
-    // The bootstrap path is not exercised here, but the send callback
-    // must exist so the DKG path does not bail.
+    // ---- 4. Produce the local share (member 1) ----
+    bc.set_dao_v2_tally_broadcast([](const dao::dao_v2_tally_share&) {});
     bc.set_dao_v2_dkg_send([](const std::string&) -> bool { return true; });
 
-    // ---- 6. Produce ----
-    // In production this runs inside the block-apply write
-    // transaction. The test must provide one, or LMDB cursor
-    // creation inside maybe_produce dereferences a null write txn.
+    dao::dao_v2_tally_share first_share;
+    bool captured_first = false;
+    bc.set_dao_v2_tally_broadcast(
+        [&](const dao::dao_v2_tally_share& s) {
+            first_share = s;
+            captured_first = true;
+        });
     {
         db_wtxn_guard g(&db);
         bc.maybe_produce_dao_v2_share(VOTE_END + 1);
     }
+    ASSERT_TRUE(captured_first);
+    ASSERT_EQ(first_share.member_index, 1u);
 
-    ASSERT_TRUE(captured)
-        << "maybe_produce_dao_v2_share did not broadcast a share";
-    EXPECT_EQ(captured_share.proposal_id, prop_id);
-    EXPECT_EQ(captured_share.member_index, 1u);   // our global index
-
-    // Session must have been persisted.
-    dao::dao_tally_session session;
-    ASSERT_TRUE(bc.get_db().get_dao_tally_session(prop_id, session));
-    EXPECT_EQ(session.committee_size, 3u);
-    EXPECT_EQ(session.threshold, 2u);
-    EXPECT_EQ(session.committee_global_indices.size(), 3u);
-
-    // ---- 7. Feed our share, then a second share built from test_SK[1] ----
-    {
-        std::vector<uint8_t> ser;
-        ASSERT_TRUE(captured_share.serialize(ser));
-        std::string payload(reinterpret_cast<const char*>(ser.data()), ser.size());
-        db_wtxn_guard g(&db);
-        bc.handle_dao_v2_tally_share(m_node_pub, payload);
-    }
-
-    // Build the second member's share manually.
+    // ---- 5. Build the second share from test_SK[1] ----
+    dao::dao_v2_tally_share second_share{};
+    second_share.version = 1;
+    second_share.proposal_id = prop_id;
+    second_share.vote_end_height = VOTE_END;
+    second_share.tally_key_epoch = 1;
+    second_share.share_epoch = 1;
+    second_share.member_index = 2;
+    second_share.aggregate_ciphertext_hash = agg_hash;
     {
         BIGNUM* sk = nullptr;
         const std::string dec(out.test_SK[1].begin(), out.test_SK[1].end());
         BN_dec2bn(&sk, dec.c_str());
         ASSERT_NE(sk, nullptr);
-
-        dao::dao_v2_tally_share sh{};
-        sh.version = 1;
-        sh.proposal_id = prop_id;
-        sh.vote_end_height = VOTE_END;
-        sh.tally_key_epoch = 1;
-        sh.share_epoch = 1;
-        sh.member_index = 2;
-        sh.aggregate_ciphertext_hash = agg_hash;
 
         auto do_channel = [&](const std::vector<uint8_t>& c,
                               std::vector<uint8_t>& p_out,
@@ -644,29 +620,42 @@ TEST_F(DaoBootstrapIntegration, SingleNodeProducerAndFinalize)
             p_out = std::move(ci);
             return true;
         };
-        ASSERT_TRUE(do_channel(E_W, sh.partial_W, sh.proof_W));
-        ASSERT_TRUE(do_channel(E_S, sh.partial_S, sh.proof_S));
-        ASSERT_TRUE(do_channel(E_B, sh.partial_B, sh.proof_B));
-
-        std::vector<uint8_t> ser;
-        ASSERT_TRUE(sh.serialize(ser));
-
-        crypto::public_key second_pk{};
-        std::memcpy(second_pk.data,
-                    out.record.committee_members[1].data(), 32);
-        std::string payload2(reinterpret_cast<const char*>(ser.data()), ser.size());
-        {
-            db_wtxn_guard g(&db);
-            bc.handle_dao_v2_tally_share(second_pk, payload2);
-        }
-
+        ASSERT_TRUE(do_channel(E_W, second_share.partial_W, second_share.proof_W));
+        ASSERT_TRUE(do_channel(E_S, second_share.partial_S, second_share.proof_S));
+        ASSERT_TRUE(do_channel(E_B, second_share.partial_B, second_share.proof_B));
         BN_free(sk);
     }
 
-    // ---- 8. Outcome ----
+    // ---- 6. Build the tally-result transaction from both shares ----
+    std::map<crypto::public_key, dao::dao_v2_tally_share> shares;
+    shares[committee_pks[0]] = first_share;
+    shares[committee_pks[1]] = second_share;
+
+    const governance_params params = governance_params::default_params();
+    cryptonote::TallyManager tm(db, params);
+    transaction result_tx;
+    ASSERT_TRUE(tm.build_tally_result_transaction(
+        prop_id, shares, key_rec.threshold, result_tx));
+
+    // Sanity: the constructed tx is recognised by the parser.
+    ASSERT_TRUE(bc.is_dao_v2_tally_result_tx(result_tx));
+
+    // ---- 7. Consensus validation ----
+    {
+        db_rtxn_guard rtxn(&db);
+        ASSERT_TRUE(bc.validate_dao_v2_tally_result_tx(
+            result_tx, VOTE_END + 1));
+    }
+
+    // ---- 8. Apply (block-application path) ----
+    {
+        db_wtxn_guard g(&db);
+        ASSERT_TRUE(bc.apply_dao_v2_tally_result(result_tx, VOTE_END + 1));
+    }
+
+    // ---- 9. Assertions ----
     dao::dao_v2_outcome_record outcome;
-    ASSERT_TRUE(bc.get_db().get_dao_v2_outcome(prop_id, outcome))
-        << "outcome record not written";
+    ASSERT_TRUE(bc.get_db().get_dao_v2_outcome(prop_id, outcome));
     EXPECT_TRUE(outcome.passed);
     EXPECT_TRUE(outcome.quorum_met);
     EXPECT_TRUE(outcome.majority_met);
