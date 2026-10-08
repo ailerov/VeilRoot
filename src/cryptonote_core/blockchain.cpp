@@ -8519,12 +8519,6 @@ select_dao_v2_dkg_shareholders(BlockchainDB& db, uint64_t selection_height)
 // ranked by stake-age weight at the selection height. Returns both the
 // ordered members and their 1-based global indices within the
 // bootstrap key record.
-struct dao_tally_committee
-{
-  std::vector<crypto::public_key> members;
-  std::vector<uint32_t>           global_indices;
-};
-
 dao_tally_committee
 select_dao_v2_tally_committee(const dao_tally_key_record& key_rec,
                               BlockchainDB& db,
