@@ -6697,6 +6697,28 @@ leave:
         return_txs_to_pool();
         return false;
       }
+
+      // BEGIN_VNS_DAO_V2_TALLY_RESULT_VALIDATE
+      // A DAO V2 tally-result transaction is not an ordinary user
+      // transaction. Validate it against the committee deterministically
+      // selected at the proposal's voting-end height, and against the
+      // aggregate and supply snapshot already committed in state. This
+      // check runs before m_db->add_block() so that an invalid result
+      // can never enter a block.
+      if (is_dao_v2_tally_result_tx(tx))
+      {
+        if (!validate_dao_v2_tally_result_tx(tx, blockchain_height))
+        {
+          MERROR_VER("Block with id: " << id
+                     << " contains a DAO V2 tally-result transaction (id: "
+                     << tx_id << ") that failed consensus validation.");
+          add_block_as_invalid(bl, id);
+          bvc.m_verifivation_failed = true;
+          return_txs_to_pool();
+          return false;
+        }
+      }
+      // END_VNS_DAO_V2_TALLY_RESULT_VALIDATE
     }
 
     TIME_MEASURE_FINISH(cc);
@@ -6775,6 +6797,82 @@ leave:
       new_height = m_db->add_block(std::make_pair(std::move(bl), std::move(bd)), block_weight, long_term_block_weight, cumulative_difficulty, already_generated_coins, txs, {}, fee_summary);
       if (blockchain_height > 1)  // skip genesis block (height 1)
           m_hardfork->reorganize_from_chain_height(new_height);
+
+      // BEGIN_VNS_DAO_V2_TALLY_RESULT_APPLY
+      // The block has now been durably committed. Any DAO V2
+      // tally-result transaction in it was validated before add_block.
+      // This is the ONLY location that mutates authoritative
+      // governance outcome state for a tally.
+      for (const auto& tx_pair : txs)
+      {
+        const transaction& tx = tx_pair.first;
+
+        if (!is_dao_v2_tally_result_tx(tx))
+          continue;
+
+        std::vector<tx_extra_field> extra_fields;
+        if (!parse_tx_extra(tx.extra, extra_fields))
+          throw std::runtime_error("tally-result tx extra parse failed after validation");
+
+        bool applied = false;
+        for (const auto& field : extra_fields)
+        {
+          if (field.type() != typeid(tx_extra_governance_payload))
+            continue;
+
+          const auto& gpf =
+              boost::get<tx_extra_governance_payload>(field);
+
+          if (gpf.payload.type != governance_object::tally_result)
+            continue;
+
+          dao::dao_tally_certificate cert;
+          if (!cert.deserialize(gpf.payload.data))
+            throw std::runtime_error("tally-result certificate deserialize failed after validation");
+
+          dao::dao_v2_outcome_record out;
+          out.proposal_id               = cert.proposal_id;
+          out.vote_end_height           = cert.vote_end_height;
+          out.tally_key_epoch           = cert.tally_key_epoch;
+          out.aggregate_ciphertext_hash = cert.aggregate_ciphertext_hash;
+          out.yes_weight                = cert.YES_weight;
+          out.no_weight                 = cert.NO_weight;
+          out.participation_coins       = cert.B_total;
+          out.quorum_threshold          = cert.quorum_threshold;
+          out.quorum_met                = cert.quorum_met;
+          out.majority_met              = cert.majority_met;
+          out.passed                    = cert.passed;
+
+          m_db->add_dao_v2_outcome(out);
+
+          proposal_record prop;
+          if (!m_db->get_proposal_record_in_txn(cert.proposal_id, prop))
+            throw std::runtime_error("tally-result proposal lookup failed after validation");
+
+          prop.status = cert.passed ? PROPOSAL_STATUS_PASSED
+                                    : PROPOSAL_STATUS_REJECTED;
+          prop.status_height = new_height;
+          m_db->add_proposal_record(cert.proposal_id, prop);
+
+          if (cert.passed)
+          {
+            const uint64_t delay = 720;
+            m_db->add_pending_execution(
+                prop.voting_end_height + delay,
+                cert.proposal_id);
+          }
+
+          applied = true;
+          MINFO("DAO V2 tally result applied in block " << new_height
+                << " for proposal " << cert.proposal_id
+                << " passed=" << cert.passed);
+          break;
+        }
+
+        if (!applied)
+          throw std::runtime_error("tally-result tx contained no tally_result payload after validation");
+      }
+      // END_VNS_DAO_V2_TALLY_RESULT_APPLY
 
       rebuild_committee_eligible_list(new_height);
     }
