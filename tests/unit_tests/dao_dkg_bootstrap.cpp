@@ -381,3 +381,108 @@ TEST_F(DaoV2Bootstrap, CommitteeSelectionIsDeterministicOnEqualWeights)
     EXPECT_TRUE(std::memcmp(committees[0][1].data, committees[0][2].data,
                             sizeof(committees[0][1].data)) < 0);
 }
+
+// ------------------------------------------------------------------
+// Tally committee selection is deterministic across nodes.
+//
+// Two independent DBs holding the same eligible records must produce
+// the same temporary tally committee for the same proposal's voting
+// end height, with the same global bootstrap-shareholder indices.
+// The 1-based global index is what the share producer and consumer
+// use to look up the DKG share and the V_K_i; if two nodes disagreed
+// on it, a share from one would be rejected by the other.
+// ------------------------------------------------------------------
+TEST_F(DaoV2Bootstrap, TallyCommitteeDeterministicAcrossDbs)
+{
+    // Same three eligible records on both DBs, distinct amounts so
+    // ordering is by weight and not by tie-break.
+    for (size_t i = 0; i < 2; ++i) {
+        install_eligible(*m_dbs[i], m_pub[0], 3000000, 1);
+        install_eligible(*m_dbs[i], m_pub[1], 2000000, 2);
+        install_eligible(*m_dbs[i], m_pub[2], 1000000, 3);
+    }
+
+    // Bootstrap key record: the three nodes are the shareholders, in
+    // the same order the DKG used.
+    dao_tally_key_record key_rec{};
+    key_rec.version = 1;
+    key_rec.committee_size = 3;
+    key_rec.threshold = 2;
+    key_rec.t = 1;
+    for (size_t i = 0; i < 3; ++i) {
+        key_rec.committee_members.push_back(
+            std::vector<uint8_t>(m_pub[i].data,
+                                 m_pub[i].data + sizeof(m_pub[i].data)));
+    }
+
+    const uint64_t selection_height = 1000000ULL;
+
+    auto a = dao::select_dao_v2_tally_committee(
+        key_rec, *m_dbs[0], 3, selection_height);
+    auto b = dao::select_dao_v2_tally_committee(
+        key_rec, *m_dbs[1], 3, selection_height);
+
+    ASSERT_EQ(a.members.size(), 3u);
+    ASSERT_EQ(a.global_indices.size(), 3u);
+
+    // Same members, same global indices, same order.
+    EXPECT_EQ(a.members, b.members);
+    EXPECT_EQ(a.global_indices, b.global_indices);
+
+    // Ordering is by weight descending, and the global indices map
+    // back to key_rec.committee_members.
+    EXPECT_EQ(a.members[0], m_pub[0]);
+    EXPECT_EQ(a.members[1], m_pub[1]);
+    EXPECT_EQ(a.members[2], m_pub[2]);
+    EXPECT_EQ(a.global_indices[0], 1u);
+    EXPECT_EQ(a.global_indices[1], 2u);
+    EXPECT_EQ(a.global_indices[2], 3u);
+}
+
+// ------------------------------------------------------------------
+// An eligible node that is not in the bootstrap key record's
+// committee_members is excluded from the tally committee.
+//
+// Eligibility and DKG-shareholder membership are distinct: a node can
+// be currently eligible yet have no share for the bootstrap key. Such
+// a node must not be selected, because it could not produce a valid
+// partial decryption.
+// ------------------------------------------------------------------
+TEST_F(DaoV2Bootstrap, TallyCommitteeExcludesNonShareholders)
+{
+    // Four eligible records: three shareholders, one outsider.
+    crypto::public_key outsider_pub;
+    crypto::secret_key outsider_sec;
+    crypto::generate_keys(outsider_pub, outsider_sec);
+
+    for (size_t i = 0; i < 2; ++i) {
+        install_eligible(*m_dbs[i], m_pub[0], 4000000, 1);
+        install_eligible(*m_dbs[i], m_pub[1], 3000000, 2);
+        install_eligible(*m_dbs[i], m_pub[2], 2000000, 3);
+        // Outsider has the highest weight, so if the filter were not
+        // applied it would be picked first.
+        install_eligible(*m_dbs[i], outsider_pub, 5000000, 4);
+    }
+
+    dao_tally_key_record key_rec{};
+    key_rec.version = 1;
+    key_rec.committee_size = 3;
+    key_rec.threshold = 2;
+    key_rec.t = 1;
+    for (size_t i = 0; i < 3; ++i) {
+        key_rec.committee_members.push_back(
+            std::vector<uint8_t>(m_pub[i].data,
+                                 m_pub[i].data + sizeof(m_pub[i].data)));
+    }
+
+    auto c = dao::select_dao_v2_tally_committee(
+        key_rec, *m_dbs[0], 3, 1000000ULL);
+
+    ASSERT_EQ(c.members.size(), 3u);
+    for (const auto& pk : c.members)
+        EXPECT_NE(pk, outsider_pub);
+
+    EXPECT_EQ(c.members[0], m_pub[0]);
+    EXPECT_EQ(c.members[1], m_pub[1]);
+    EXPECT_EQ(c.members[2], m_pub[2]);
+}

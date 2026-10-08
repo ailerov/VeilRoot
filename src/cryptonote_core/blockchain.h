@@ -2132,6 +2132,25 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
   select_dao_v2_committee(BlockchainDB& db, uint32_t max_committee_size,
                           uint64_t selection_height);
 
+  // Temporary tally committee for a single proposal, selected from
+  // the bootstrap DKG shareholder set filtered by current eligibility
+  // and ranked by stake-age weight at the selection height.
+  struct dao_tally_committee
+  {
+    std::vector<crypto::public_key> members;
+    std::vector<uint32_t>           global_indices;
+  };
+
+  // `global_indices[i]` is the 1-based index of `members[i]` inside
+  // the bootstrap key record's committee_members. It is the index used
+  // by the share producer and consumer to look up the bootstrap DKG
+  // share and the V_K_i.
+  dao_tally_committee
+  select_dao_v2_tally_committee(const dao::dao_tally_key_record& key_rec,
+                                BlockchainDB& db,
+                                uint32_t max_committee_size,
+                                uint64_t selection_height);
+
   // Persist a completed DKG result. The caller owns the runner's
   // wait() and passes the captured result plus this node's committee
   // index. No DB write occurs on a DKG worker thread.
