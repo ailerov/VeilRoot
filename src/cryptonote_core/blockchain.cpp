@@ -9225,7 +9225,6 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       return;
     }
 
-    // Proposal must exist and its epoch key record must be present.
     proposal_record prop;
     if (!m_db->get_proposal_record(share.proposal_id, prop)) {
       MWARNING("V2 tally share: unknown proposal " << share.proposal_id);
@@ -9235,42 +9234,64 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       MWARNING("V2 tally share: epoch mismatch");
       return;
     }
+    if (share.vote_end_height != prop.voting_end_height) {
+      MWARNING("V2 tally share: vote_end_height mismatch");
+      return;
+    }
 
-    // Session that actually performed the tally.
-    dao::dao_tally_session session;
+    dao::dao_tally_key_record key_rec;
     try {
-      if (!m_db->get_dao_tally_session(share.proposal_id, session)) {
-        MWARNING("V2 tally share: no session for proposal");
+      if (!m_db->get_dao_tally_key(
+              static_cast<uint32_t>(share.tally_key_epoch), key_rec)) {
+        MWARNING("V2 tally share: key record missing");
         return;
       }
     } catch (...) {
-      MWARNING("V2 tally share: session lookup threw");
-      return;
-    }
-    if (share.share_epoch != session.share_epoch) {
-      MWARNING("V2 tally share: share_epoch mismatch");
+      MWARNING("V2 tally share: key record lookup threw");
       return;
     }
 
-    // The sender must be one of the SESSION committee members, and
-    // share.member_index must equal that member's GLOBAL 1-based index
-    // into the bootstrap key record. That is the index the partial
-    // decryption was produced under, and the index the certificate
-    // builder will use to look up V_K_i.
+    // The tally committee is determined from protocol state at
+    // voting_end_height. This is the authoritative source; no session
+    // record is required and no P2P-only state is consulted.
+    const auto selected_members =
+        select_dao_v2_tally_committee(key_rec, prop.voting_end_height);
+
+    if (selected_members.size() < key_rec.threshold) {
+      MWARNING("V2 tally share: selected committee below threshold");
+      return;
+    }
+
+    // Map the sender to its bootstrap global index. Both the identity
+    // check and the share.member_index check use that index. Reject
+    // the sender unless it is one of the selected members.
     uint32_t expected_global_index = 0;
-    for (size_t i = 0; i < session.committee_members.size(); ++i) {
-      const auto& km = session.committee_members[i];
-      if (std::memcmp(km.data, member.data, sizeof(km.data)) == 0) {
-        if (i < session.committee_global_indices.size())
-          expected_global_index = session.committee_global_indices[i];
+    for (size_t i = 0; i < key_rec.committee_members.size(); ++i) {
+      const auto& km = key_rec.committee_members[i];
+      if (km.size() != sizeof(member.data)) continue;
+      if (std::memcmp(km.data(), member.data, sizeof(member.data)) == 0) {
+        expected_global_index = static_cast<uint32_t>(i) + 1;
         break;
       }
     }
     if (expected_global_index == 0) {
-      MWARNING("V2 tally share: sender " << member
-               << " is not in the session committee");
+      MWARNING("V2 tally share: sender not a bootstrap shareholder");
       return;
     }
+
+    bool in_committee = false;
+    for (const auto& pk : selected_members) {
+      if (std::memcmp(pk.data, member.data, sizeof(pk.data)) == 0) {
+        in_committee = true;
+        break;
+      }
+    }
+    if (!in_committee) {
+      MWARNING("V2 tally share: sender " << member
+               << " is not in the selected tally committee");
+      return;
+    }
+
     if (share.member_index != expected_global_index) {
       MWARNING("V2 tally share: member_index mismatch (claimed "
                << share.member_index << ", expected global "
@@ -9278,8 +9299,6 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       return;
     }
 
-    // The share binds to a specific aggregate. If the aggregate has
-    // changed since the share was produced, the share is stale.
     dao_proposal_aggregate agg;
     if (!m_db->get_dao_proposal_aggregate(share.proposal_id, agg)) {
       MWARNING("V2 tally share: aggregate not present");
@@ -9299,7 +9318,6 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       return;
     }
 
-    // Store. Duplicate from the same member is dropped silently.
     const crypto::hash proposal_id = share.proposal_id;
     auto& per_prop = m_dao_v2_tally_shares[proposal_id];
     if (per_prop.count(member) > 0) {
@@ -9311,14 +9329,33 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
           << " from global index " << expected_global_index
           << " (total " << per_prop.size() << ")");
 
-    // Automatic threshold combine + finalize. Governance params come
-    // from the same object the lifecycle uses. current chain height is
-    // this->get_current_blockchain_height().
+    // BEGIN_VNS_DAO_V2_TALLY_RESULT_SUBMIT
+    // Do not mutate authoritative governance state here. If the
+    // threshold is reached, build the tally-result transaction and
+    // hand it to the ordinary mempool. Only block application writes
+    // the authoritative outcome.
+    if (per_prop.size() < key_rec.threshold) return;
+
     cryptonote::TallyManager tm(*m_db, m_governance_params);
-    if (tm.try_finalize(proposal_id, per_prop,
-                        get_current_blockchain_height())) {
-      MINFO("V2 tally: automatic finalize succeeded for " << proposal_id);
+    transaction result_tx;
+    if (!tm.build_tally_result_transaction(
+            proposal_id, per_prop, key_rec.threshold, result_tx)) {
+      MINFO("V2 tally: threshold reached but result tx not built "
+            "(already finalized or not eligible) for " << proposal_id);
+      return;
     }
+
+    tx_verification_context tvc{};
+    const uint8_t hf_version = get_current_hard_fork_version();
+    if (!m_tx_pool.add_tx(result_tx, tvc,
+                          relay_method::local, true,
+                          hf_version, hf_version)) {
+      MWARNING("V2 tally: result tx rejected by mempool for "
+               << proposal_id);
+      return;
+    }
+    MINFO("V2 tally: result tx submitted to mempool for " << proposal_id);
+    // END_VNS_DAO_V2_TALLY_RESULT_SUBMIT
   }
 
   // ------------------------------------------------------------------

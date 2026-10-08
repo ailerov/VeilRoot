@@ -34,11 +34,6 @@ public:
     //
     // Returns true if the proposal is now finalized (either by this
     // call or previously).
-    bool try_finalize(
-        const crypto::hash& proposal_id,
-        const std::map<crypto::public_key, dao::dao_v2_tally_share>& shares,
-        uint64_t current_height);
-
     // Build a DAO V2 tally-result transaction from the accumulated
     // shares. Performs the same cryptographic verification as
     // try_finalize, then wraps the resulting certificate in an
