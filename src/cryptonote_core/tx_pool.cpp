@@ -185,6 +185,9 @@ namespace cryptonote
     bool is_vote = false;
     bool is_eligible = false;
     bool is_dao_exec = false;
+    // BEGIN_VNS_MEMPOOL_TALLY_RESULT_SCOPE
+    bool is_dao_tally_result = false;
+    // END_VNS_MEMPOOL_TALLY_RESULT_SCOPE
     // END_VNS_MEMPOOL_VOTE_SCOPE
 
     uint64_t fee;
@@ -203,7 +206,13 @@ namespace cryptonote
       bool is_proposal = m_blockchain.is_non_consuming_tx(tx);
       // END_VNS_NON_CONSUMING_TX
 
-      fee_good = kept_by_block || is_vote || is_eligible || is_proposal || is_dao_exec || m_blockchain.check_fee(tx_weight, fee);
+      // BEGIN_VNS_MEMPOOL_TALLY_RESULT_FEE
+      // A DAO V2 tally-result transaction is a protocol-generated
+      // zero-fee transaction, like a parameter-execution transaction.
+      is_dao_tally_result = m_blockchain.is_dao_v2_tally_result_tx(tx);
+      // END_VNS_MEMPOOL_TALLY_RESULT_FEE
+
+      fee_good = kept_by_block || is_vote || is_eligible || is_proposal || is_dao_exec || is_dao_tally_result || m_blockchain.check_fee(tx_weight, fee);
     }
     catch(...) {}
     if (!fee_good) // if fee calculation failed or fee in relayed tx is too low...
@@ -277,7 +286,19 @@ namespace cryptonote
     // END_VNS_MEMPOOL_VOTE_PERIOD_CHECK
 
     size_t tx_extra_size = tx.extra.size();
-    if (!kept_by_block && tx_extra_size > MAX_TX_EXTRA_SIZE)
+    // BEGIN_VNS_MEMPOOL_TALLY_RESULT_EXTRA_LIMIT
+    // A DAO V2 tally-result transaction carries a threshold tally
+    // certificate: three partial sets, each with 512-byte partials and
+    // ZK proofs. That cannot fit inside MAX_TX_EXTRA_SIZE. The
+    // exception applies only to a transaction that is recognised as a
+    // tally-result transaction by is_dao_v2_tally_result_tx(), and such
+    // a transaction must still pass the full consensus validator
+    // before it can enter a block.
+    const bool is_tally_result_extra =
+        m_blockchain.is_dao_v2_tally_result_tx(tx);
+    if (!kept_by_block &&
+        tx_extra_size > MAX_TX_EXTRA_SIZE &&
+        !is_tally_result_extra)
     {
       LOG_PRINT_L1("transaction tx-extra is too big: " << tx_extra_size << " bytes, the limit is: " << MAX_TX_EXTRA_SIZE);
       tvc.m_verifivation_failed = true;
@@ -285,6 +306,7 @@ namespace cryptonote
       tvc.m_no_drop_offense = true;
       return false;
     }
+    // END_VNS_MEMPOOL_TALLY_RESULT_EXTRA_LIMIT
 
     if (!kept_by_block && tx.unlock_time)
     {
