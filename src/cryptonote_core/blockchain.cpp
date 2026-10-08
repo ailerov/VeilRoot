@@ -9351,6 +9351,183 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
         return true;
       });
   }
+  // ------------------------------------------------------------------
+  // DAO V2 tally-result transaction
+  //
+  // The tally certificate produced by the committee is carried in an
+  // ordinary transaction and becomes consensus state only when that
+  // transaction is applied in a block. Nothing in the P2P path is
+  // authoritative.
+  // ------------------------------------------------------------------
+  bool Blockchain::is_dao_v2_tally_result_tx(const transaction& tx) const
+  {
+    if (!tx.vin.empty() || !tx.vout.empty())
+      return false;
+
+    if (tx.rct_signatures.type != rct::RCTTypeNull)
+      return false;
+
+    std::vector<tx_extra_field> fields;
+    if (!parse_tx_extra(tx.extra, fields))
+      return false;
+
+    size_t tally_count = 0;
+
+    for (const auto& field : fields)
+    {
+      if (field.type() != typeid(tx_extra_governance_payload))
+        continue;
+
+      const auto& gp =
+          boost::get<tx_extra_governance_payload>(field);
+
+      if (gp.payload.type == governance_object::tally_result)
+        ++tally_count;
+    }
+
+    return tally_count == 1;
+  }
+
+  std::vector<crypto::public_key>
+  Blockchain::select_dao_v2_tally_committee(
+      const dao::dao_tally_key_record& key_rec,
+      uint64_t selection_height) const
+  {
+    const auto result = dao::select_dao_v2_tally_committee(
+        key_rec, *m_db, key_rec.committee_size, selection_height);
+    return result.members;
+  }
+
+  bool Blockchain::validate_dao_v2_tally_result_tx(
+      const transaction& tx,
+      uint64_t block_height) const
+  {
+    if (!is_dao_v2_tally_result_tx(tx))
+      return false;
+
+    governance_payload gp;
+    bool found = false;
+
+    std::vector<tx_extra_field> fields;
+    if (!parse_tx_extra(tx.extra, fields))
+      return false;
+
+    for (const auto& field : fields)
+    {
+      if (field.type() != typeid(tx_extra_governance_payload))
+        continue;
+
+      const auto& gpf =
+          boost::get<tx_extra_governance_payload>(field);
+
+      if (gpf.payload.type != governance_object::tally_result)
+        continue;
+
+      if (found)
+        return false;
+
+      gp = gpf.payload;
+      found = true;
+    }
+
+    if (!found)
+      return false;
+
+    dao::dao_tally_certificate cert;
+    if (!cert.deserialize(gp.data))
+      return false;
+
+    proposal_record prop;
+    if (!m_db->get_proposal_record(cert.proposal_id, prop))
+      return false;
+
+    if (prop.status != PROPOSAL_STATUS_ACTIVE)
+      return false;
+
+    if (cert.tally_key_epoch != prop.tally_key_epoch)
+      return false;
+
+    if (cert.vote_end_height != prop.voting_end_height)
+      return false;
+
+    if (block_height != cert.vote_end_height + 1)
+      return false;
+
+    dao::dao_tally_key_record key_rec;
+    if (!m_db->get_dao_tally_key(
+            static_cast<uint32_t>(cert.tally_key_epoch),
+            key_rec))
+      return false;
+
+    dao_proposal_aggregate agg;
+    if (!m_db->get_dao_proposal_aggregate(cert.proposal_id, agg))
+      return false;
+
+    if (agg.aggregate_E_W.empty() ||
+        agg.aggregate_E_S.empty() ||
+        agg.aggregate_E_B.empty())
+      return false;
+
+    dao::dao_supply_snapshot snap;
+    if (!m_db->get_dao_supply_snapshot(cert.vote_end_height, snap))
+      return false;
+
+    const auto selected_members =
+        select_dao_v2_tally_committee(key_rec, cert.vote_end_height);
+
+    if (selected_members.size() < key_rec.threshold)
+      return false;
+
+    auto selected_member = [&](uint32_t index) -> bool
+    {
+      if (index < 1 ||
+          index > key_rec.committee_members.size())
+        return false;
+
+      const auto& member = key_rec.committee_members[index - 1];
+      if (member.size() != sizeof(crypto::public_key::data))
+        return false;
+
+      crypto::public_key pk{};
+      std::memcpy(pk.data, member.data(), sizeof(pk.data));
+
+      for (const auto& sel : selected_members)
+      {
+        if (std::memcmp(sel.data, pk.data, sizeof(pk.data)) == 0)
+          return true;
+      }
+      return false;
+    };
+
+    auto check_selected =
+        [&](const dao::dao_partial_set& set) -> bool
+    {
+      for (uint32_t index : set.member_indices)
+      {
+        if (!selected_member(index))
+          return false;
+      }
+      return true;
+    };
+
+    if (!check_selected(cert.W) ||
+        !check_selected(cert.S) ||
+        !check_selected(cert.B))
+      return false;
+
+    if (!dao::dao_verify_tally_certificate(
+            key_rec,
+            snap,
+            m_governance_params.voting_quorum_percent,
+            agg.aggregate_E_W,
+            agg.aggregate_E_S,
+            agg.aggregate_E_B,
+            cert))
+      return false;
+
+    return true;
+  }
+
   // END_VNS_DAO_V2_TALLY_SHARE
 
   // BEGIN_VNS_DECRYPTION_METHODS

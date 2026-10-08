@@ -1355,6 +1355,26 @@ namespace cryptonote
   // any.
   void handle_dao_v2_dkg_msg(const crypto::public_key& member,
                              const std::string& payload);
+  // Recognise a DAO V2 tally-result transaction: zero vin, zero vout,
+  // RCTTypeNull, exactly one governance payload of type tally_result.
+  bool is_dao_v2_tally_result_tx(const transaction& tx) const;
+
+  // Pure validation. Never writes LMDB. Called from the block
+  // validation stage before m_db->add_block(). The authoritative
+  // governance state transition happens after add_block().
+  bool validate_dao_v2_tally_result_tx(
+      const transaction& tx,
+      uint64_t block_height) const;
+
+  // Deterministic temporary tally committee for a proposal at its
+  // voting end height. Wraps the free-function selector; returns the
+  // ordered members only. Global bootstrap indices are computed
+  // separately by the caller.
+  std::vector<crypto::public_key>
+  select_dao_v2_tally_committee(
+      const dao::dao_tally_key_record& key_rec,
+      uint64_t selection_height) const;
+
   // Bootstrap entry point. Selects the current committee (top-N
   // eligible nodes by stake-age weight), derives the epoch VSS group
   // deterministically, spawns the runner, and starts a watcher that

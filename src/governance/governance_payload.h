@@ -14,7 +14,8 @@ enum class governance_object : uint8_t
     proposal = 0,
     vote = 1,        // frozen V1 / historical
     execution = 2,
-    vote_v2 = 3      // DAO V2 vote, carries vote_proof_v2 in data
+    vote_v2 = 3,     // DAO V2 vote, carries vote_proof_v2 in data
+    tally_result = 4 // DAO V2 tally certificate (consensus object)
 };
 
 struct governance_payload
