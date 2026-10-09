@@ -13,8 +13,12 @@
 // DKG key record, no copied governance state, reconstructs the same
 // outcome by replaying the chain.
 //
-// Stage 1 (this file, first commit): prove the two-core fixture
-// initialises cleanly and both nodes agree on the genesis block.
+// The end-to-end activation replay test builds a DKG activation
+// transaction on Node A, feeds the containing block to a freshly
+// initialised Node B, and asserts that B reconstructs the key record
+// and the active epoch from chain state alone. It then replays the
+// tally-result block on B and asserts both nodes carry identical
+// outcomes, and that no block contains a private share.
 
 #include <boost/filesystem.hpp>
 #include <boost/program_options.hpp>
@@ -309,54 +313,23 @@ TEST(DaoV2Replay, NodeBReceivesBlockOneFromNodeA)
 // record is local-only state today, so a syncing node cannot validate
 // any tally result.
 // ------------------------------------------------------------------
-TEST(DaoV2Replay, NodeBRejectsTallyResultBlockWithoutKeyRecord)
+TEST(DaoV2Replay, NodeBReconstructsKeyRecordFromActivationBlock)
 {
     using namespace cryptonote;
     using namespace cryptonote::dao;
 
     boost::filesystem::path base =
         boost::filesystem::temp_directory_path() /
-        boost::filesystem::unique_path("vr_replay_tr_%%%%-%%%%");
+        boost::filesystem::unique_path("vr_replay_act_%%%%-%%%%");
 
     ReplayNode a;
     ReplayNode b;
     ASSERT_TRUE(a.init((base / "a").string()));
     ASSERT_TRUE(b.init((base / "b").string()));
 
-    // Advance both chains by a few empty blocks first so that the
-    // final tally-result block can be placed at vote_end_height + 1,
-    // which is the height the validator requires.
-    account_base miner_acc;
-    miner_acc.generate();
-    for (int i = 0; i < 3; ++i) {
-        const uint64_t h = a.core->get_current_blockchain_height();
-        block empty;
-        ASSERT_TRUE(construct_block_here(a, miner_acc, h, {}, empty));
-        cryptonote::blobdata bb = cryptonote::block_to_blob(empty);
-        {
-            block_verification_context bvc_a{};
-            pool_supplement extra_a{};
-            ASSERT_TRUE(a.core->handle_single_incoming_block(
-                bb, &empty, bvc_a, extra_a, false));
-        }
-        {
-            block_verification_context bvc_b{};
-            pool_supplement extra_b{};
-            ASSERT_TRUE(b.core->handle_single_incoming_block(
-                bb, &empty, bvc_b, extra_b, false));
-        }
-    }
-
-    const uint64_t tally_height = a.core->get_current_blockchain_height();
-    const uint64_t VOTE_END     = tally_height - 1;
-
-    const crypto::hash prop_id = []{
-        crypto::hash h{};
-        std::memset(h.data, 0xDD, 32);
-        return h;
-    }();
-
-    // Deterministic committee identities.
+    // Three committee members, sorted by public key ascending so that
+    // select_dao_v2_dkg_shareholders (weight DESC, pubkey ASC) returns
+    // them in the same order we hand to the DKG.
     std::vector<crypto::public_key> committee_pks;
     std::vector<crypto::secret_key> committee_sks;
     for (int i = 0; i < 3; ++i) {
@@ -365,19 +338,50 @@ TEST(DaoV2Replay, NodeBRejectsTallyResultBlockWithoutKeyRecord)
         committee_pks.push_back(pk);
         committee_sks.push_back(sk);
     }
-    // Node A uses committee_pks[0] as its node key so it is member 1.
+    {
+        std::vector<size_t> idx = {0, 1, 2};
+        std::sort(idx.begin(), idx.end(), [&](size_t x, size_t y) {
+            return std::memcmp(committee_pks[x].data,
+                               committee_pks[y].data, 32) < 0;
+        });
+        std::vector<crypto::public_key> pk2;
+        std::vector<crypto::secret_key> sk2;
+        for (auto i : idx) {
+            pk2.push_back(committee_pks[i]);
+            sk2.push_back(committee_sks[i]);
+        }
+        committee_pks = std::move(pk2);
+        committee_sks = std::move(sk2);
+    }
     a.core->set_node_key(committee_sks[0]);
     b.core->set_node_key(committee_sks[1]);
 
     auto& adb = a.core->get_blockchain_storage().get_db();
     auto& bdb = b.core->get_blockchain_storage().get_db();
 
-    // Install identical eligible records on BOTH nodes.
-    for (auto& db_ptr : { &adb, &bdb }) {
+    // Advance both chains identically by a few empty blocks so the
+    // activation block is not the first non-genesis block.
+    account_base miner_acc;
+    miner_acc.generate();
+    for (int i = 0; i < 3; ++i) {
+        const uint64_t h = a.core->get_current_blockchain_height();
+        block empty;
+        ASSERT_TRUE(construct_block_here(a, miner_acc, h, {}, empty));
+        cryptonote::blobdata bb = cryptonote::block_to_blob(empty);
+        { block_verification_context bvc{}; pool_supplement e{};
+          ASSERT_TRUE(a.core->handle_single_incoming_block(
+              bb, &empty, bvc, e, false)); }
+        { block_verification_context bvc{}; pool_supplement e{};
+          ASSERT_TRUE(b.core->handle_single_incoming_block(
+              bb, &empty, bvc, e, false)); }
+    }
+
+    // Install equal-weight eligible records on both nodes.
+    for (auto* db_ptr : { &adb, &bdb }) {
         for (size_t i = 0; i < 3; ++i) {
             committee_eligible_record rec{};
             rec.node_pubkey = committee_pks[i];
-            rec.amount = 3000000 - i * 1000000;
+            rec.amount = 3000000;
             rec.unlock_height = 1;
             rec.stake_age_weight = 0;
             crypto::key_image ki{};
@@ -388,7 +392,8 @@ TEST(DaoV2Replay, NodeBRejectsTallyResultBlockWithoutKeyRecord)
         }
     }
 
-    // Run DKG offline once. Only Node A installs the resulting record.
+    // In-process DKG. Only Node A persists the result (local share),
+    // which no longer installs the public key record.
     dao_vss_group vss;
     ASSERT_TRUE(dao_vss_group_generate(vss,
         dao_dkg_required_vss_bits(60, 128, 32)));
@@ -422,19 +427,121 @@ TEST(DaoV2Replay, NodeBRejectsTallyResultBlockWithoutKeyRecord)
     a.core->get_blockchain_storage().queue_dao_v2_dkg_result(1, dkg_out);
     a.core->get_blockchain_storage().maybe_process_dao_v2_dkg_results();
 
-    // Node A installs the key record locally (single-node fixture).
-    // Node B is deliberately left without one so the pre-activation
-    // rejection assertion continues to hold.
-    a.core->get_blockchain_storage().install_dao_tally_key_for_test(
-        dkg_out.record);
-
-    dao::dao_tally_key_record key_rec;
-    ASSERT_TRUE(adb.get_dao_tally_key(1, key_rec));
-    // Node B has NO key record.
+    // Neither node has the key record yet: persistence writes only the
+    // local share. Both records must still be absent.
+    dao::dao_tally_key_record key_rec_a;
     dao::dao_tally_key_record key_rec_b;
+    EXPECT_FALSE(adb.get_dao_tally_key(1, key_rec_a));
     EXPECT_FALSE(bdb.get_dao_tally_key(1, key_rec_b));
 
-    // Install identical proposal + aggregate + supply on BOTH nodes.
+    // Build the activation certificate. Sign with members 1 and 2
+    // (threshold = 2 of 3).
+    const uint64_t act_height = a.core->get_current_blockchain_height();
+    const uint64_t selection_height = act_height - 1;
+
+    const crypto::hash genesis_hash =
+        a.core->get_blockchain_storage().get_db()
+            .get_block_hash_from_height(0);
+    ASSERT_NE(genesis_hash, crypto::null_hash);
+
+    const crypto::hash digest = dao::dao_dkg_activation_digest(
+        genesis_hash, selection_height, dkg_out.record);
+    ASSERT_NE(digest, crypto::null_hash);
+
+    dao::dao_dkg_key_activation act;
+    act.version          = 1;
+    act.selection_height = selection_height;
+    act.record           = dkg_out.record;
+    for (uint32_t idx : { 1u, 2u }) {
+        crypto::signature sig;
+        crypto::generate_signature(digest,
+                                    committee_pks[idx - 1],
+                                    committee_sks[idx - 1], sig);
+        dao::dao_dkg_key_attestation att;
+        att.member_index = idx;
+        att.signature.resize(sizeof(crypto::signature));
+        std::memcpy(att.signature.data(), &sig,
+                    sizeof(crypto::signature));
+        act.attestations.push_back(att);
+    }
+
+    // Build the activation transaction by direct field assignment.
+    std::vector<uint8_t> act_blob;
+    ASSERT_TRUE(act.serialize(act_blob));
+
+    governance_payload gp;
+    gp.type = governance_object::dkg_key_activation;
+    gp.data = std::move(act_blob);
+
+    tx_extra_governance_payload txgp;
+    txgp.payload = std::move(gp);
+    tx_extra_field extra_field = txgp;
+    const std::string extra_blob =
+        t_serializable_object_to_blob(extra_field);
+
+    transaction act_tx{};
+    act_tx.version = 2;
+    act_tx.unlock_time = 0;
+    act_tx.extra.assign(extra_blob.begin(), extra_blob.end());
+    act_tx.rct_signatures = rct::rctSig{};
+    act_tx.rct_signatures.type = rct::RCTTypeNull;
+
+    // Build and feed the activation block to both nodes.
+    std::vector<transaction> extra_txs{ act_tx };
+    block blk_act;
+    ASSERT_TRUE(construct_block_here(a, miner_acc, act_height,
+                                      extra_txs, blk_act));
+    cryptonote::blobdata blk_act_blob = cryptonote::block_to_blob(blk_act);
+
+    const crypto::hash act_txid = get_transaction_hash(act_tx);
+    for (ReplayNode* n : { &a, &b }) {
+        block_verification_context bvc{};
+        pool_supplement e{};
+        e.txs_by_txid.emplace(
+            act_txid,
+            std::make_pair(act_tx, tx_to_blob(act_tx)));
+        ASSERT_TRUE(n->core->handle_single_incoming_block(
+            blk_act_blob, &blk_act, bvc, e, false));
+        EXPECT_FALSE(bvc.m_verifivation_failed);
+    }
+
+    // Both nodes now reconstruct the key record and the active epoch
+    // by replaying the activation block alone.
+    ASSERT_TRUE(adb.get_dao_tally_key(1, key_rec_a));
+    ASSERT_TRUE(bdb.get_dao_tally_key(1, key_rec_b));
+    EXPECT_EQ(key_rec_a.key_id, key_rec_b.key_id);
+    EXPECT_EQ(key_rec_a.committee_size, key_rec_b.committee_size);
+    EXPECT_EQ(key_rec_a.threshold, key_rec_b.threshold);
+    {
+        uint32_t e_a = 0, e_b = 0;
+        EXPECT_TRUE(adb.get_current_dao_tally_key_epoch(e_a));
+        EXPECT_TRUE(bdb.get_current_dao_tally_key_epoch(e_b));
+        EXPECT_EQ(e_a, 1u);
+        EXPECT_EQ(e_b, 1u);
+    }
+
+    // No block on disk contains the private share.
+    {
+        const std::vector<uint8_t>& sk = dkg_out.local_secret_share;
+        ASSERT_FALSE(sk.empty());
+        const std::string needle(sk.begin(), sk.end());
+        EXPECT_EQ(blk_act_blob.find(needle), std::string::npos);
+    }
+
+    // --------------------------------------------------------------
+    // Replay the tally-result block on the freshly replayed key
+    // record. Both nodes must derive the same outcome from chain
+    // state alone.
+    // --------------------------------------------------------------
+    const uint64_t tally_height = a.core->get_current_blockchain_height();
+    const uint64_t VOTE_END     = tally_height - 1;
+
+    const crypto::hash prop_id = []{
+        crypto::hash h{};
+        std::memset(h.data, 0xEE, 32);
+        return h;
+    }();
+
     PaillierPublicKey pk;
     ASSERT_TRUE(pk.deserialize_modulus(dkg_out.record.N));
     BIGNUM* W = BN_new(); BN_set_word(W, 1000);
@@ -450,7 +557,7 @@ TEST(DaoV2Replay, NodeBRejectsTallyResultBlockWithoutKeyRecord)
     const crypto::hash agg_hash =
         dao::dao_aggregate_ciphertext_hash(E_W, E_S, E_B);
 
-    for (auto& db_ptr : { &adb, &bdb }) {
+    for (auto* db_ptr : { &adb, &bdb }) {
         db_wtxn_guard g(db_ptr);
 
         proposal_record rec{};
@@ -481,7 +588,8 @@ TEST(DaoV2Replay, NodeBRejectsTallyResultBlockWithoutKeyRecord)
         db_ptr->add_dao_supply_snapshot(snap);
     }
 
-    // ---- Node A produces and validates a tally-result tx ----
+    // Produce share 1 with Node A (member 1) and share 2 directly
+    // using the test oracle for member 2.
     a.core->get_blockchain_storage().set_dao_v2_dkg_send(
         [](const std::string&) -> bool { return true; });
     dao::dao_v2_tally_share first_share;
@@ -492,11 +600,11 @@ TEST(DaoV2Replay, NodeBRejectsTallyResultBlockWithoutKeyRecord)
         });
     {
         db_wtxn_guard g(&adb);
-        a.core->get_blockchain_storage().maybe_produce_dao_v2_share(VOTE_END + 1);
+        a.core->get_blockchain_storage().maybe_produce_dao_v2_share(
+            VOTE_END + 1);
     }
     ASSERT_TRUE(captured_first);
 
-    // Second share from committee_sks[1] (member 2's secret).
     dao::dao_v2_tally_share second_share{};
     second_share.version = 1;
     second_share.proposal_id = prop_id;
@@ -506,21 +614,18 @@ TEST(DaoV2Replay, NodeBRejectsTallyResultBlockWithoutKeyRecord)
     second_share.member_index = 2;
     second_share.aggregate_ciphertext_hash = agg_hash;
     {
-        BIGNUM* sk = BN_bin2bn(
-            reinterpret_cast<const unsigned char*>(committee_sks[1].data),
-            sizeof(committee_sks[1].data), nullptr);
-        // We actually need the DKG share, not the raw secret. Use the
-        // test oracle from dkg_out.
-        BN_free(sk);
         BIGNUM* dkg_sk = nullptr;
-        const std::string dec(dkg_out.test_SK[1].begin(), dkg_out.test_SK[1].end());
+        const std::string dec(dkg_out.test_SK[1].begin(),
+                              dkg_out.test_SK[1].end());
         BN_dec2bn(&dkg_sk, dec.c_str());
         ASSERT_NE(dkg_sk, nullptr);
         auto do_channel = [&](const std::vector<uint8_t>& c,
                               std::vector<uint8_t>& po,
-                              dao::dao_partial_decryption_proof& proof) -> bool {
+                              dao::dao_partial_decryption_proof& proof)
+                              -> bool {
             std::vector<uint8_t> ci;
-            if (!dao::dao_threshold_partial_decrypt(pk, c, dkg_sk, ci)) return false;
+            if (!dao::dao_threshold_partial_decrypt(pk, c, dkg_sk, ci))
+                return false;
             BIGNUM* r = BN_new();
             if (!dao::dao_dkg_sample_r(pk, r)) { BN_free(r); return false; }
             const bool ok = dao::dao_partial_decryption_prove(
@@ -528,11 +633,15 @@ TEST(DaoV2Replay, NodeBRejectsTallyResultBlockWithoutKeyRecord)
                 c, ci, dkg_sk, r, proof);
             BN_free(r);
             if (!ok) return false;
-            po = std::move(ci); return true;
+            po = std::move(ci);
+            return true;
         };
-        ASSERT_TRUE(do_channel(E_W, second_share.partial_W, second_share.proof_W));
-        ASSERT_TRUE(do_channel(E_S, second_share.partial_S, second_share.proof_S));
-        ASSERT_TRUE(do_channel(E_B, second_share.partial_B, second_share.proof_B));
+        ASSERT_TRUE(do_channel(E_W, second_share.partial_W,
+                                second_share.proof_W));
+        ASSERT_TRUE(do_channel(E_S, second_share.partial_S,
+                                second_share.proof_S));
+        ASSERT_TRUE(do_channel(E_B, second_share.partial_B,
+                                second_share.proof_B));
         BN_free(dkg_sk);
     }
 
@@ -544,49 +653,32 @@ TEST(DaoV2Replay, NodeBRejectsTallyResultBlockWithoutKeyRecord)
     cryptonote::TallyManager tm(adb, params);
     transaction result_tx;
     ASSERT_TRUE(tm.build_tally_result_transaction(
-        prop_id, shares, key_rec.threshold, result_tx));
+        prop_id, shares, key_rec_a.threshold, result_tx));
 
-    // ---- Build the tally-result block on Node A: coinbase + tx ----
-    std::vector<transaction> extra_txs{ result_tx };
-    block blk2;
-    ASSERT_TRUE(construct_block_here(a, miner_acc, tally_height, extra_txs, blk2));
+    std::vector<transaction> tally_txs{ result_tx };
+    block blk_tally;
+    ASSERT_TRUE(construct_block_here(a, miner_acc, tally_height,
+                                      tally_txs, blk_tally));
+    cryptonote::blobdata blk_tally_blob =
+        cryptonote::block_to_blob(blk_tally);
 
-    cryptonote::blobdata blk2_blob = cryptonote::block_to_blob(blk2);
-
-    // ---- Node A accepts ----
-    {
-        block_verification_context bvc_a{};
-        pool_supplement extra_a{};
-        extra_a.txs_by_txid.emplace(
-            cryptonote::get_transaction_hash(result_tx),
-            std::make_pair(result_tx, cryptonote::tx_to_blob(result_tx)));
-        ASSERT_TRUE(a.core->handle_single_incoming_block(
-            blk2_blob, &blk2, bvc_a, extra_a, false));
-        EXPECT_FALSE(bvc_a.m_verifivation_failed);
-
-        // A's outcome was written by the block-application path.
-        dao::dao_v2_outcome_record out_a;
-        EXPECT_TRUE(adb.get_dao_v2_outcome(prop_id, out_a));
+    const crypto::hash result_txid = get_transaction_hash(result_tx);
+    for (ReplayNode* n : { &a, &b }) {
+        block_verification_context bvc{};
+        pool_supplement e{};
+        e.txs_by_txid.emplace(
+            result_txid,
+            std::make_pair(result_tx, tx_to_blob(result_tx)));
+        ASSERT_TRUE(n->core->handle_single_incoming_block(
+            blk_tally_blob, &blk_tally, bvc, e, false));
+        EXPECT_FALSE(bvc.m_verifivation_failed);
     }
 
-    // ---- Node B rejects ----
-    {
-        block_verification_context bvc_b{};
-        pool_supplement extra_b{};
-        extra_b.txs_by_txid.emplace(
-            cryptonote::get_transaction_hash(result_tx),
-            std::make_pair(result_tx, cryptonote::tx_to_blob(result_tx)));
-        b.core->handle_single_incoming_block(
-            blk2_blob, &blk2, bvc_b, extra_b, false);
-
-        // Expected to be rejected. The diagnostic in the validator
-        // names the reason on stderr.
-        EXPECT_TRUE(bvc_b.m_verifivation_failed);
-
-        // B has no outcome.
-        dao::dao_v2_outcome_record out_b;
-        EXPECT_FALSE(bdb.get_dao_v2_outcome(prop_id, out_b));
-    }
+    // Both nodes carry identical outcomes.
+    dao::dao_v2_outcome_record out_a, out_b;
+    ASSERT_TRUE(adb.get_dao_v2_outcome(prop_id, out_a));
+    ASSERT_TRUE(bdb.get_dao_v2_outcome(prop_id, out_b));
+    EXPECT_EQ(out_a.passed, out_b.passed);
 
     BN_free(W); BN_free(S); BN_free(B);
     BN_free(r1); BN_free(r2); BN_free(r3);
