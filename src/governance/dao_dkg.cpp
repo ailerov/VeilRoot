@@ -1660,6 +1660,132 @@ bool dao_tally_key_record::deserialize(const std::vector<uint8_t>& in)
     return true;
 }
 
+// ====================================================================
+// Activation digest
+// ====================================================================
+
+crypto::hash dao_dkg_activation_digest(
+    const crypto::hash& genesis_block_hash,
+    uint64_t selection_height,
+    const dao_tally_key_record& record)
+{
+    std::vector<uint8_t> body;
+    const char* dom = "VeilRoot-DAO-DKG-KEY-ACTIVATION-V1";
+    body.insert(body.end(), dom, dom + std::strlen(dom));
+    body.insert(body.end(), genesis_block_hash.data,
+                genesis_block_hash.data + sizeof(genesis_block_hash.data));
+    for (int i = 0; i < 8; ++i)
+        body.push_back((selection_height >> (8 * i)) & 0xff);
+
+    std::vector<uint8_t> rec_blob;
+    if (!record.serialize(rec_blob))
+        return crypto::null_hash;
+    body.insert(body.end(), rec_blob.begin(), rec_blob.end());
+
+    crypto::hash h{};
+    crypto::cn_fast_hash(body.data(), body.size(), h);
+    return h;
+}
+
+// ====================================================================
+// dao_dkg_key_attestation
+// ====================================================================
+
+bool dao_dkg_key_attestation::serialize(std::vector<uint8_t>& out) const
+{
+    if (signature.size() != sizeof(crypto::signature)) return false;
+    out.clear();
+    push_u32(out, member_index);
+    push_bytes(out, signature);
+    return true;
+}
+
+bool dao_dkg_key_attestation::deserialize(const std::vector<uint8_t>& in)
+{
+    size_t off = 0;
+    uint32_t mi = 0;
+    if (!pull_u32(in, off, mi)) return false;
+    if (!pull_bytes(in, off, signature)) return false;
+    if (signature.size() != sizeof(crypto::signature)) return false;
+    if (off != in.size()) return false;
+    member_index = mi;
+    return true;
+}
+
+// ====================================================================
+// dao_dkg_key_activation
+// ====================================================================
+
+bool dao_dkg_key_activation::serialize(std::vector<uint8_t>& out) const
+{
+    out.clear();
+
+    if (version != 1) return false;
+    if (attestations.size() > 64) return false;
+
+    // Validate attestation ordering before writing.
+    uint32_t prev = 0;
+    for (const auto& a : attestations) {
+        if (a.member_index == 0) return false;
+        if (a.member_index <= prev) return false;   // strictly ascending
+        if (a.signature.size() != sizeof(crypto::signature)) return false;
+        prev = a.member_index;
+    }
+
+    std::vector<uint8_t> rec_blob;
+    if (!record.serialize(rec_blob)) return false;
+
+    push_u32(out, version);
+    push_u64(out, selection_height);
+    push_bytes(out, rec_blob);
+
+    push_u32(out, static_cast<uint32_t>(attestations.size()));
+    for (const auto& a : attestations) {
+        push_u32(out, a.member_index);
+        push_bytes(out, a.signature);
+    }
+    return true;
+}
+
+bool dao_dkg_key_activation::deserialize(const std::vector<uint8_t>& in)
+{
+    size_t off = 0;
+    uint32_t v = 0;
+    if (!pull_u32(in, off, v)) return false;
+    if (v != 1) return false;
+    if (!pull_u64(in, off, selection_height)) return false;
+
+    std::vector<uint8_t> rec_blob;
+    if (!pull_bytes(in, off, rec_blob)) return false;
+    if (!record.deserialize(rec_blob)) return false;
+
+    uint32_t n = 0;
+    if (!pull_u32(in, off, n)) return false;
+    if (n > 64) return false;
+
+    attestations.clear();
+    attestations.reserve(n);
+
+    uint32_t prev = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        dao_dkg_key_attestation a;
+        uint32_t mi = 0;
+        if (!pull_u32(in, off, mi)) return false;
+        if (mi == 0) return false;
+        if (mi <= prev) return false;   // strictly ascending, unique
+        if (mi > record.committee_size) return false;
+        if (!pull_bytes(in, off, a.signature)) return false;
+        if (a.signature.size() != sizeof(crypto::signature)) return false;
+        a.member_index = mi;
+        prev = mi;
+        attestations.push_back(std::move(a));
+    }
+
+    if (off != in.size()) return false;
+    version = v;
+    return true;
+}
+
 bool dkg_result::to_record(std::vector<uint8_t>& out) const
 {
     if (!ok) return false;

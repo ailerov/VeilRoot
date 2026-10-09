@@ -9723,6 +9723,256 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
   }
 #endif
 
+  bool Blockchain::is_dao_v2_dkg_activation_tx(const transaction& tx) const
+  {
+    if (!tx.vin.empty() || !tx.vout.empty())
+      return false;
+
+    if (tx.rct_signatures.type != rct::RCTTypeNull)
+      return false;
+
+    std::vector<tx_extra_field> fields;
+    if (!parse_tx_extra(tx.extra, fields))
+      return false;
+
+    size_t count = 0;
+    for (const auto& field : fields)
+    {
+      if (field.type() != typeid(tx_extra_governance_payload))
+        continue;
+      const auto& gp =
+          boost::get<tx_extra_governance_payload>(field);
+      if (gp.payload.type == governance_object::dkg_key_activation)
+        ++count;
+    }
+    return count == 1;
+  }
+
+  bool Blockchain::validate_dao_v2_dkg_activation_tx(
+      const transaction& tx,
+      uint64_t block_height) const
+  {
+    if (!is_dao_v2_dkg_activation_tx(tx))
+      return false;
+
+    // Extract the activation payload.
+    governance_payload gp;
+    bool found = false;
+    std::vector<tx_extra_field> fields;
+    if (!parse_tx_extra(tx.extra, fields))
+      return false;
+    for (const auto& field : fields) {
+      if (field.type() != typeid(tx_extra_governance_payload))
+        continue;
+      const auto& gpf = boost::get<tx_extra_governance_payload>(field);
+      if (gpf.payload.type != governance_object::dkg_key_activation)
+        continue;
+      if (found) return false;
+      gp = gpf.payload;
+      found = true;
+    }
+    if (!found) return false;
+
+    dao::dao_dkg_key_activation act;
+    if (!act.deserialize(gp.data))
+      return false;
+
+    // 1. version
+    if (act.version != 1)
+      return false;
+
+    // 2. selection_height strictly before the containing block.
+    if (act.selection_height >= block_height)
+      return false;
+
+    const dao::dao_tally_key_record& rec = act.record;
+
+    // 3. epoch check: rec.epoch must be the next allowed epoch.
+    {
+      uint32_t current = 0;
+      bool have_current = false;
+      try {
+        have_current = m_db->get_current_dao_tally_key_epoch(current);
+      } catch (...) { have_current = false; }
+
+      uint32_t expected = 1;
+      if (have_current) {
+        if (current == UINT32_MAX) return false;
+        expected = current + 1;
+      }
+      if (rec.epoch != expected) {
+        MERROR("dkg-activation: epoch " << rec.epoch
+               << " not the next expected " << expected);
+        return false;
+      }
+      // If the same epoch is already installed, reject.
+      dao::dao_tally_key_record existing;
+      try {
+        if (m_db->get_dao_tally_key(rec.epoch, existing)) {
+          MERROR("dkg-activation: epoch already installed");
+          return false;
+        }
+      } catch (...) {}
+    }
+
+    // 4. Fixed-width field lengths.
+    if (rec.version != 1) return false;
+    if (rec.committee_size < dao::DAO_DKG_MIN_COMMITTEE_SIZE) return false;
+    if (rec.committee_size > dao::DAO_DKG_MAX_COMMITTEE_SIZE) return false;
+    if (rec.committee_members.size() != rec.committee_size) return false;
+    if (rec.V_K_i.size() != rec.committee_size) return false;
+    if (rec.threshold != dao::dao_dkg_expected_threshold(rec.committee_size))
+      return false;
+    if (rec.t != rec.threshold - 1) return false;
+    if (rec.committee_id_hash.size() != 32) return false;
+    if (rec.delta.size() != 32) return false;
+    if (rec.N.size() != dao::PAILLIER_MODULUS_BYTES) return false;
+    if (rec.G.size() != dao::PAILLIER_MODULUS_BYTES) return false;
+    if (rec.theta.size() != dao::PAILLIER_MODULUS_BYTES) return false;
+    if (rec.V.size() != dao::PAILLIER_CT_BYTES) return false;
+    if (rec.key_id.size() != 32) return false;
+    if (rec.dkg_transcript_hash.size() != 32) return false;
+    for (const auto& m : rec.committee_members)
+      if (m.size() != sizeof(crypto::public_key::data)) return false;
+    for (const auto& vk : rec.V_K_i)
+      if (vk.size() != dao::PAILLIER_CT_BYTES) return false;
+
+    // 5. committee_id_hash recomputation.
+    {
+      std::vector<uint8_t> buf;
+      const char* dom = "VeilRoot-DAO-DKG-COMMITTEE-V1";
+      buf.insert(buf.end(), dom, dom + std::strlen(dom));
+      for (int i = 0; i < 4; ++i)
+        buf.push_back((rec.epoch >> (8 * i)) & 0xff);
+      for (const auto& pk : rec.committee_members)
+        buf.insert(buf.end(), pk.begin(), pk.end());
+      uint8_t want[32] = {};
+      SHA256(buf.data(), buf.size(), want);
+      if (std::memcmp(want, rec.committee_id_hash.data(), 32) != 0) {
+        MERROR("dkg-activation: committee_id_hash mismatch");
+        return false;
+      }
+    }
+
+    // 6. key_id recomputation.
+    {
+      dao::dao_tally_key_record tmp = rec;
+      tmp.key_id.assign(32, 0);
+      std::vector<uint8_t> blob;
+      if (!tmp.serialize(blob)) return false;
+      uint8_t want[32] = {};
+      SHA256(blob.data(), blob.size(), want);
+      if (std::memcmp(want, rec.key_id.data(), 32) != 0) {
+        MERROR("dkg-activation: key_id mismatch");
+        return false;
+      }
+    }
+
+    // 7. Bootstrap shareholder selection at selection_height must
+    //    exactly reproduce the ordered committee member list.
+    {
+      auto selected =
+          dao::select_dao_v2_dkg_shareholders(*m_db, act.selection_height);
+      // Trim to at most committee_size.
+      if (selected.size() < rec.committee_size) {
+        MERROR("dkg-activation: fewer eligible shareholders than record");
+        return false;
+      }
+      selected.resize(rec.committee_size);
+      for (size_t i = 0; i < rec.committee_size; ++i) {
+        if (std::memcmp(selected[i].first.data,
+                        rec.committee_members[i].data(),
+                        sizeof(crypto::public_key::data)) != 0) {
+          MERROR("dkg-activation: committee_members do not match "
+                 "historical selection at height " << act.selection_height);
+          return false;
+        }
+      }
+    }
+
+    // 8 & 9. Attestation signature verification.
+    {
+      crypto::hash genesis_hash;
+      try {
+        genesis_hash = m_db->get_block_hash_from_height(0);
+      } catch (...) {
+        MERROR("dkg-activation: genesis hash unavailable");
+        return false;
+      }
+      if (genesis_hash == crypto::null_hash) return false;
+
+      const crypto::hash digest = dao::dao_dkg_activation_digest(
+          genesis_hash, act.selection_height, rec);
+      if (digest == crypto::null_hash) return false;
+
+      size_t valid = 0;
+      for (const auto& att : act.attestations) {
+        if (att.member_index < 1 ||
+            att.member_index > rec.committee_members.size())
+          return false;
+        if (att.signature.size() != sizeof(crypto::signature))
+          return false;
+        crypto::public_key pk{};
+        std::memcpy(pk.data,
+                    rec.committee_members[att.member_index - 1].data(),
+                    sizeof(pk.data));
+        crypto::signature sig;
+        std::memcpy(&sig, att.signature.data(), sizeof(sig));
+        if (!crypto::check_signature(digest, pk, sig)) {
+          MERROR("dkg-activation: bad signature from member "
+                 << att.member_index);
+          return false;
+        }
+        ++valid;
+      }
+      if (valid < rec.threshold) {
+        MERROR("dkg-activation: only " << valid
+               << " valid attestations, need " << rec.threshold);
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  bool Blockchain::apply_dao_v2_dkg_activation(
+      const transaction& tx, uint64_t block_height)
+  {
+    if (!is_dao_v2_dkg_activation_tx(tx))
+      return false;
+
+    std::vector<tx_extra_field> fields;
+    if (!parse_tx_extra(tx.extra, fields))
+      return false;
+
+    for (const auto& field : fields)
+    {
+      if (field.type() != typeid(tx_extra_governance_payload))
+        continue;
+      const auto& gpf = boost::get<tx_extra_governance_payload>(field);
+      if (gpf.payload.type != governance_object::dkg_key_activation)
+        continue;
+
+      dao::dao_dkg_key_activation act;
+      if (!act.deserialize(gpf.payload.data))
+        return false;
+
+      dao::dao_tally_key_record rec = act.record;
+      rec.activation_height = block_height;
+
+      // Install the public key record. This is the only place the
+      // authoritative key record is written.
+      m_db->add_dao_tally_key(rec.epoch, rec);
+      m_db->set_current_dao_tally_key_epoch(rec.epoch);
+
+      MINFO("DKG key activation applied at height " << block_height
+            << " epoch " << rec.epoch
+            << " committee " << rec.committee_size);
+      return true;
+    }
+    return false;
+  }
+
   bool Blockchain::apply_dao_v2_tally_result(
       const transaction& tx, uint64_t block_height)
   {

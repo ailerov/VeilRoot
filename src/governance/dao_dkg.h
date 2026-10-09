@@ -567,6 +567,53 @@ struct dao_tally_key_record
 };
 
 // ====================================================================
+// DKG key-activation consensus object
+//
+// The public Paillier key record produced by the bootstrap DKG is
+// published to the chain as a dedicated zero-input, zero-output
+// governance transaction. The transaction carries threshold
+// attestations: at least `record.threshold` distinct bootstrap
+// shareholders sign the canonical activation digest, using their node
+// identity keys. That makes the record reconstructable during chain
+// replay without disclosing any private DKG share.
+//
+// The activation digest binds:
+//   "VeilRoot-DAO-DKG-KEY-ACTIVATION-V1"
+//   genesis_block_hash
+//   selection_height
+//   canonical_serialized_dao_tally_key_record
+// ====================================================================
+
+struct dao_dkg_key_attestation
+{
+    uint32_t             member_index = 0;   // 1-based, in record's set
+    std::vector<uint8_t> signature;          // sizeof(crypto::signature)
+
+    bool serialize(std::vector<uint8_t>& out) const;
+    bool deserialize(const std::vector<uint8_t>& in);
+};
+
+struct dao_dkg_key_activation
+{
+    uint32_t                    version          = 1;
+    uint64_t                    selection_height = 0;
+    dao_tally_key_record        record;
+    std::vector<dao_dkg_key_attestation> attestations;
+
+    bool serialize(std::vector<uint8_t>& out) const;
+    bool deserialize(const std::vector<uint8_t>& in);
+};
+
+// Canonical activation digest. Binds the public record to the chain
+// it was produced on and to the height at which the bootstrap
+// shareholders were selected. Used both for the attestation the
+// shareholders sign and for verification during chain replay.
+crypto::hash dao_dkg_activation_digest(
+    const crypto::hash& genesis_block_hash,
+    uint64_t selection_height,
+    const dao_tally_key_record& record);
+
+// ====================================================================
 // Party and driver
 // ====================================================================
 

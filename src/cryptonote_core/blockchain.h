@@ -1359,6 +1359,23 @@ namespace cryptonote
   // RCTTypeNull, exactly one governance payload of type tally_result.
   bool is_dao_v2_tally_result_tx(const transaction& tx) const;
 
+  // DKG key-activation transaction: zero vin, zero vout, RCTTypeNull,
+  // exactly one governance payload of type dkg_key_activation.
+  bool is_dao_v2_dkg_activation_tx(const transaction& tx) const;
+
+  // Consensus validator for a DKG key-activation transaction. Pure
+  // validation; never mutates state. Runs before m_db->add_block().
+  bool validate_dao_v2_dkg_activation_tx(
+      const transaction& tx,
+      uint64_t block_height) const;
+
+  // Apply a validated DKG key-activation transaction. Called from the
+  // block-application path after m_db->add_block() succeeds. Installs
+  // the public key record and advances the active key epoch. Throws
+  // on internal inconsistency; returns false on precondition failure.
+  bool apply_dao_v2_dkg_activation(const transaction& tx,
+                                   uint64_t block_height);
+
   // Pure validation. Never writes LMDB. Called from the block
   // validation stage before m_db->add_block(). The authoritative
   // governance state transition happens after add_block().
