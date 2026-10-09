@@ -229,6 +229,15 @@ TEST_F(DaoV2Bootstrap, ThreeEligibleNodesSelectAndComplete2of3DKG)
             *m_dbs[i], 1, results[i], i + 1));
     }
 
+    // The public key record is no longer installed by
+    // persist_dao_v2_dkg_result (which now writes only the local
+    // share). Install it explicitly here, as an activation transaction
+    // would during block application.
+    for (uint32_t i = 0; i < 3; ++i) {
+        db_wtxn_guard wtxn(m_dbs[i].get());
+        m_dbs[i]->add_dao_tally_key(1, results[i].record);
+    }
+
     // Compare public key records across DBs.
     std::vector<dao_tally_key_record> recs(3);
     for (uint32_t i = 0; i < 3; ++i)

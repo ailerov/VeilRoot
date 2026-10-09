@@ -301,6 +301,11 @@ TEST_F(DaoBootstrapIntegration, ActivationChainBindsEpochAfterPersistence)
     bc.queue_dao_v2_dkg_result(1, completed);
     bc.maybe_process_dao_v2_dkg_results();
 
+    // Key record installed. In production this happens via a
+    // DKG key-activation transaction during block application; this
+    // fixture exercises the tally path and installs directly.
+    bc.install_dao_tally_key_for_test(completed.record);
+
     // Key record persisted.
     dao::dao_tally_key_record rec;
     ASSERT_TRUE(bc.get_db().get_dao_tally_key(1, rec));
@@ -520,6 +525,9 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxValidatedAndApplied)
     auto& bc = m_core->get_blockchain_storage();
     bc.queue_dao_v2_dkg_result(1, out);
     bc.maybe_process_dao_v2_dkg_results();
+
+    // Install the key record. See note at the top of this file.
+    bc.install_dao_tally_key_for_test(out.record);
 
     dao::dao_tally_key_record key_rec;
     ASSERT_TRUE(bc.get_db().get_dao_tally_key(1, key_rec));
@@ -757,6 +765,9 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxRolledBackByReorg)
     auto& bc = m_core->get_blockchain_storage();
     bc.queue_dao_v2_dkg_result(1, out);
     bc.maybe_process_dao_v2_dkg_results();
+
+    // Install the key record. See note at the top of this file.
+    bc.install_dao_tally_key_for_test(out.record);
 
     dao::dao_tally_key_record key_rec;
     ASSERT_TRUE(bc.get_db().get_dao_tally_key(1, key_rec));
@@ -1066,6 +1077,9 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxRejectionBoundaries)
     bc.queue_dao_v2_dkg_result(1, out);
     bc.maybe_process_dao_v2_dkg_results();
 
+    // Install the key record. See note at the top of this file.
+    bc.install_dao_tally_key_for_test(out.record);
+
     dao::dao_tally_key_record key_rec;
     ASSERT_TRUE(bc.get_db().get_dao_tally_key(1, key_rec));
 
@@ -1349,6 +1363,9 @@ TEST_F(DaoBootstrapIntegration, TallyResultReconstructableFromChainState)
     bc.queue_dao_v2_dkg_result(1, out);
     bc.maybe_process_dao_v2_dkg_results();
 
+    // Install the key record. See note at the top of this file.
+    bc.install_dao_tally_key_for_test(out.record);
+
     dao::dao_tally_key_record key_rec;
     ASSERT_TRUE(bc.get_db().get_dao_tally_key(1, key_rec));
 
@@ -1564,6 +1581,9 @@ TEST_F(DaoBootstrapIntegration, BootstrapSharePersistsAfterTally)
     auto& bc = m_core->get_blockchain_storage();
     bc.queue_dao_v2_dkg_result(1, out);
     bc.maybe_process_dao_v2_dkg_results();
+
+    // Install the key record. See note at the top of this file.
+    bc.install_dao_tally_key_for_test(out.record);
 
     // Snapshot the bootstrap share for member 1.
     std::vector<uint8_t> share_before;
@@ -1783,6 +1803,9 @@ TEST_F(DaoBootstrapIntegration, NonSelectedShareholderRejected)
     auto& bc = m_core->get_blockchain_storage();
     bc.queue_dao_v2_dkg_result(1, out);
     bc.maybe_process_dao_v2_dkg_results();
+
+    // Install the key record. See note at the top of this file.
+    bc.install_dao_tally_key_for_test(out.record);
 
     dao::dao_tally_key_record key_rec;
     ASSERT_TRUE(bc.get_db().get_dao_tally_key(1, key_rec));

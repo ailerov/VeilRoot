@@ -422,6 +422,12 @@ TEST(DaoV2Replay, NodeBRejectsTallyResultBlockWithoutKeyRecord)
     a.core->get_blockchain_storage().queue_dao_v2_dkg_result(1, dkg_out);
     a.core->get_blockchain_storage().maybe_process_dao_v2_dkg_results();
 
+    // Node A installs the key record locally (single-node fixture).
+    // Node B is deliberately left without one so the pre-activation
+    // rejection assertion continues to hold.
+    a.core->get_blockchain_storage().install_dao_tally_key_for_test(
+        dkg_out.record);
+
     dao::dao_tally_key_record key_rec;
     ASSERT_TRUE(adb.get_dao_tally_key(1, key_rec));
     // Node B has NO key record.
