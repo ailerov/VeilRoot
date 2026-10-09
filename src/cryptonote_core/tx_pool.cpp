@@ -188,6 +188,9 @@ namespace cryptonote
     // BEGIN_VNS_MEMPOOL_TALLY_RESULT_SCOPE
     bool is_dao_tally_result = false;
     // END_VNS_MEMPOOL_TALLY_RESULT_SCOPE
+    // BEGIN_VNS_MEMPOOL_DKG_ACTIVATION_SCOPE
+    bool is_dao_dkg_activation = false;
+    // END_VNS_MEMPOOL_DKG_ACTIVATION_SCOPE
     // END_VNS_MEMPOOL_VOTE_SCOPE
 
     uint64_t fee;
@@ -212,7 +215,13 @@ namespace cryptonote
       is_dao_tally_result = m_blockchain.is_dao_v2_tally_result_tx(tx);
       // END_VNS_MEMPOOL_TALLY_RESULT_FEE
 
-      fee_good = kept_by_block || is_vote || is_eligible || is_proposal || is_dao_exec || is_dao_tally_result || m_blockchain.check_fee(tx_weight, fee);
+      // BEGIN_VNS_MEMPOOL_DKG_ACTIVATION_FEE
+      // A DAO V2 DKG key-activation transaction is likewise
+      // protocol-generated and carries no fee.
+      is_dao_dkg_activation = m_blockchain.is_dao_v2_dkg_activation_tx(tx);
+      // END_VNS_MEMPOOL_DKG_ACTIVATION_FEE
+
+      fee_good = kept_by_block || is_vote || is_eligible || is_proposal || is_dao_exec || is_dao_tally_result || is_dao_dkg_activation || m_blockchain.check_fee(tx_weight, fee);
     }
     catch(...) {}
     if (!fee_good) // if fee calculation failed or fee in relayed tx is too low...
@@ -296,9 +305,12 @@ namespace cryptonote
     // before it can enter a block.
     const bool is_tally_result_extra =
         m_blockchain.is_dao_v2_tally_result_tx(tx);
+    const bool is_dkg_activation_extra =
+        m_blockchain.is_dao_v2_dkg_activation_tx(tx);
     if (!kept_by_block &&
         tx_extra_size > MAX_TX_EXTRA_SIZE &&
-        !is_tally_result_extra)
+        !is_tally_result_extra &&
+        !is_dkg_activation_extra)
     {
       LOG_PRINT_L1("transaction tx-extra is too big: " << tx_extra_size << " bytes, the limit is: " << MAX_TX_EXTRA_SIZE);
       tvc.m_verifivation_failed = true;
