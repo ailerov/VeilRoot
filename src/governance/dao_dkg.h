@@ -647,6 +647,7 @@ struct dkg_result
     bool                 ok                       = false;
     bool                 candidate_accepted       = false;
     uint32_t             epoch                    = 0;
+    uint64_t             selection_height         = 0;
     std::vector<uint8_t> N;
     std::vector<uint8_t> theta;
     std::vector<uint8_t> V;

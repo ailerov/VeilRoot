@@ -8901,6 +8901,16 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       }
     }
 
+    // BEGIN_VNS_DAO_V2_KEY_READY_ROUTE
+    // Attestation exchange happens after the DKG ceremony has
+    // completed; the runner may already be gone. Route by message
+    // type before consulting the runner table.
+    if (m.hdr.type == dao::dkg_msg_type::key_record_ready) {
+      handle_dao_v2_key_record_ready(member, m);
+      return;
+    }
+    // END_VNS_DAO_V2_KEY_READY_ROUTE
+
     auto it = m_dao_v2_dkg_runners.find(m.hdr.epoch);
     if (it == m_dao_v2_dkg_runners.end()) {
       // No ceremony running for this epoch. Silent: peers may be
@@ -8936,6 +8946,167 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
     it->second->on_message(m);
   }
+
+  // BEGIN_VNS_DAO_V2_KEY_READY_IMPL
+  void Blockchain::handle_dao_v2_key_record_ready(
+      const crypto::public_key& member, const dao::dkg_msg& m)
+  {
+    dao::dao_dkg_key_activation act;
+    if (!act.deserialize(m.bytes_a)) {
+      MWARNING("key_ready: deserialize failed");
+      return;
+    }
+    if (act.version != 1) return;
+    if (act.attestations.size() != 1) return;
+
+    const uint32_t epoch = m.hdr.epoch;
+
+    dao::dao_tally_key_record local_rec;
+    uint64_t local_sel_h = 0;
+    {
+      std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
+      auto it = m_dao_v2_local_records.find(epoch);
+      if (it == m_dao_v2_local_records.end()) {
+        // We did not participate in this epoch's DKG. Silent.
+        return;
+      }
+      local_rec   = it->second;
+      local_sel_h = m_dao_v2_local_selection_height[epoch];
+    }
+
+    if (act.selection_height != local_sel_h) {
+      MWARNING("key_ready: selection_height mismatch");
+      return;
+    }
+
+    // Candidate record must be byte-identical to the local record.
+    {
+      std::vector<uint8_t> a, b;
+      if (!act.record.serialize(a)) return;
+      if (!local_rec.serialize(b)) return;
+      if (a != b) {
+        MWARNING("key_ready: record mismatch");
+        return;
+      }
+    }
+
+    const dao::dao_dkg_key_attestation& att = act.attestations[0];
+    if (att.member_index < 1 ||
+        att.member_index > act.record.committee_members.size())
+      return;
+    if (att.signature.size() != sizeof(crypto::signature)) return;
+    if (m.hdr.sender_id != att.member_index) {
+      MWARNING("key_ready: sender_id does not match member_index");
+      return;
+    }
+
+    const auto& claimed_pk =
+        act.record.committee_members[att.member_index - 1];
+    if (claimed_pk.size() != sizeof(member.data)) return;
+    if (std::memcmp(claimed_pk.data(), member.data,
+                    sizeof(member.data)) != 0) {
+      MWARNING("key_ready: sender does not match claimed index");
+      return;
+    }
+
+    crypto::hash genesis_hash;
+    try {
+      genesis_hash = m_db->get_block_hash_from_height(0);
+    } catch (...) { return; }
+    if (genesis_hash == crypto::null_hash) return;
+
+    const crypto::hash digest = dao::dao_dkg_activation_digest(
+        genesis_hash, act.selection_height, act.record);
+
+    crypto::public_key signer_pk{};
+    std::memcpy(signer_pk.data, claimed_pk.data(), sizeof(signer_pk.data));
+
+    crypto::signature sig;
+    std::memcpy(&sig, att.signature.data(), sizeof(sig));
+    if (!crypto::check_signature(digest, signer_pk, sig)) {
+      MWARNING("key_ready: bad signature from index "
+               << att.member_index);
+      return;
+    }
+
+    dao::dao_dkg_key_activation full;
+    bool ready_to_submit = false;
+    {
+      std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
+      auto& accum = m_dao_v2_key_ready_attestations[epoch];
+      if (accum.count(att.member_index) == 0) {
+        accum[att.member_index] = att;
+      } else {
+        // Duplicate from same member. Still verify nothing new, but do
+        // not double-count.
+      }
+      if (m_dao_v2_key_ready_submitted.count(epoch) > 0) return;
+      if (accum.size() < act.record.threshold) return;
+
+      full.version          = 1;
+      full.selection_height = act.selection_height;
+      full.record           = act.record;
+      // std::map iterates in ascending member_index order, which the
+      // serializer requires.
+      for (const auto& kv : accum)
+        full.attestations.push_back(kv.second);
+
+      m_dao_v2_key_ready_submitted[epoch] = true;
+      ready_to_submit = true;
+    }
+    if (!ready_to_submit) return;
+
+    transaction tx;
+    if (!build_dao_v2_dkg_activation_tx(epoch, std::move(full), tx)) {
+      MWARNING("key_ready: activation tx build failed for epoch " << epoch);
+      std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
+      m_dao_v2_key_ready_submitted.erase(epoch);
+      return;
+    }
+
+    tx_verification_context tvc{};
+    const uint8_t hf_version = get_current_hard_fork_version();
+    if (!m_tx_pool.add_tx(tx, tvc, relay_method::local, true,
+                          hf_version, hf_version)) {
+      MWARNING("key_ready: mempool rejected activation tx for epoch "
+               << epoch);
+      std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
+      m_dao_v2_key_ready_submitted.erase(epoch);
+      return;
+    }
+    MINFO("key_ready: activation tx submitted for epoch " << epoch);
+  }
+
+  bool Blockchain::build_dao_v2_dkg_activation_tx(
+      uint32_t /*epoch*/,
+      dao::dao_dkg_key_activation act,
+      transaction& tx_out)
+  {
+    std::vector<uint8_t> blob;
+    if (!act.serialize(blob)) return false;
+
+    governance_payload gp;
+    gp.type = governance_object::dkg_key_activation;
+    gp.data = std::move(blob);
+
+    tx_extra_governance_payload txgp;
+    txgp.payload = std::move(gp);
+
+    tx_extra_field extra_field = txgp;
+    const std::string extra_blob =
+        t_serializable_object_to_blob(extra_field);
+
+    tx_out = transaction{};
+    tx_out.version = 2;
+    tx_out.unlock_time = 0;
+    tx_out.vin.clear();
+    tx_out.vout.clear();
+    tx_out.extra.assign(extra_blob.begin(), extra_blob.end());
+    tx_out.rct_signatures = rct::rctSig{};
+    tx_out.rct_signatures.type = rct::RCTTypeNull;
+    return true;
+  }
+  // END_VNS_DAO_V2_KEY_READY_IMPL
 
   void Blockchain::maybe_bootstrap_dao_v2_dkg()
   {
@@ -9092,6 +9263,79 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
       MINFO("DAO V2 DKG epoch " << item.epoch
             << ": local share persisted (key record pending activation)");
+
+      // BEGIN_VNS_DAO_V2_KEY_READY_EMIT
+      // Cache the record, sign the canonical activation digest with
+      // this node's private key, register our own attestation, and
+      // broadcast it. Other shareholders do the same; whichever node
+      // accumulates record.threshold distinct attestations builds and
+      // submits the activation transaction.
+      {
+        crypto::public_key self_pk{};
+        if (!crypto::secret_key_to_public_key(m_node_privkey, self_pk)) {
+          MWARNING("DAO V2 DKG epoch " << item.epoch
+                   << ": cannot derive node pubkey for attestation");
+          continue;
+        }
+
+        crypto::hash genesis_hash;
+        try {
+          genesis_hash = m_db->get_block_hash_from_height(0);
+        } catch (...) {
+          MWARNING("DAO V2 DKG epoch " << item.epoch
+                   << ": genesis hash unavailable");
+          continue;
+        }
+        if (genesis_hash == crypto::null_hash) continue;
+
+        const crypto::hash digest = dao::dao_dkg_activation_digest(
+            genesis_hash, item.result.selection_height,
+            item.result.record);
+        if (digest == crypto::null_hash) continue;
+
+        crypto::signature sig;
+        crypto::generate_signature(digest, self_pk,
+                                    m_node_privkey, sig);
+
+        dao::dao_dkg_key_attestation att;
+        att.member_index = local_id;
+        att.signature.resize(sizeof(crypto::signature));
+        std::memcpy(att.signature.data(), &sig,
+                    sizeof(crypto::signature));
+
+        dao::dao_dkg_key_activation act;
+        act.version          = 1;
+        act.selection_height = item.result.selection_height;
+        act.record           = item.result.record;
+        act.attestations.push_back(att);
+
+        {
+          std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
+          m_dao_v2_local_records[item.epoch] = item.result.record;
+          m_dao_v2_local_selection_height[item.epoch] =
+              item.result.selection_height;
+          m_dao_v2_key_ready_attestations[item.epoch][local_id] = att;
+        }
+
+        if (m_dao_v2_dkg_send) {
+          dao::dkg_msg m;
+          m.hdr.epoch        = item.epoch;
+          m.hdr.type         = dao::dkg_msg_type::key_record_ready;
+          m.hdr.sender_id    = local_id;
+          m.hdr.recipient_id = 0;
+          if (!act.serialize(m.bytes_a)) {
+            MWARNING("DAO V2 DKG epoch " << item.epoch
+                     << ": activation serialize failed");
+          } else {
+            std::vector<uint8_t> wire;
+            if (m.serialize(wire)) {
+              std::string payload(wire.begin(), wire.end());
+              (void)m_dao_v2_dkg_send(payload);
+            }
+          }
+        }
+      }
+      // END_VNS_DAO_V2_KEY_READY_EMIT
     }
     return true;
   }
@@ -9165,7 +9409,8 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     // Watcher: waits for the runner to finish, then persists the
     // outcome. Runs on its own thread so the caller is not blocked.
     auto* self = this;
-    m_dao_v2_dkg_watchers.emplace(epoch, std::thread([self, epoch]() {
+    m_dao_v2_dkg_watchers.emplace(epoch, std::thread(
+        [self, epoch, selection_height]() {
       auto it = self->m_dao_v2_dkg_runners.find(epoch);
       if (it == self->m_dao_v2_dkg_runners.end()) return;
       dao::dkg_result res;
@@ -9173,6 +9418,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
         MWARNING("DAO V2 DKG epoch " << epoch << ": ceremony failed");
         return;
       }
+      res.selection_height = selection_height;
       self->queue_dao_v2_dkg_result(epoch, std::move(res));
     }));
 

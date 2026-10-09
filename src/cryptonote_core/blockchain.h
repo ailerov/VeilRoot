@@ -1355,6 +1355,25 @@ namespace cryptonote
   // any.
   void handle_dao_v2_dkg_msg(const crypto::public_key& member,
                              const std::string& payload);
+
+  // Post-DKG attestation. Validates the sender maps to the claimed
+  // member_index in the record, verifies the signature against the
+  // canonical activation digest, accumulates distinct attestations,
+  // and once the record threshold is reached builds and submits a
+  // dkg_key_activation transaction to the mempool. Never writes
+  // consensus state.
+  void handle_dao_v2_key_record_ready(
+      const crypto::public_key& member,
+      const dao::dkg_msg& m);
+
+  // Builds a dkg_key_activation transaction by direct field
+  // assignment. Does not route through construct_tx_with_tx_key, which
+  // enforces MAX_TX_EXTRA_SIZE.
+  bool build_dao_v2_dkg_activation_tx(
+      uint32_t epoch,
+      dao::dao_dkg_key_activation act,
+      transaction& tx_out);
+
   // Recognise a DAO V2 tally-result transaction: zero vin, zero vout,
   // RCTTypeNull, exactly one governance payload of type tally_result.
   bool is_dao_v2_tally_result_tx(const transaction& tx) const;
@@ -1761,6 +1780,24 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     mutable std::mutex m_dao_v2_dkg_result_mutex;
     std::deque<pending_dao_v2_dkg_result>
         m_pending_dao_v2_dkg_results;
+
+    // BEGIN_VNS_DAO_V2_KEY_READY
+    // Post-DKG attestation exchange. Each participating node signs
+    // the canonical activation digest for its locally-completed DKG
+    // record and broadcasts the attestation over the DKG transport
+    // (dkg_msg_type::key_record_ready). Accumulation is bounded to
+    // epochs for which this node holds a local DKG record.
+    std::map<uint32_t, dao::dao_tally_key_record>
+        m_dao_v2_local_records;
+    std::map<uint32_t, uint64_t>
+        m_dao_v2_local_selection_height;
+    std::map<uint32_t,
+             std::map<uint32_t, dao::dao_dkg_key_attestation>>
+        m_dao_v2_key_ready_attestations;
+    std::map<uint32_t, bool>
+        m_dao_v2_key_ready_submitted;
+    mutable std::mutex m_dao_v2_key_ready_mutex;
+    // END_VNS_DAO_V2_KEY_READY
     // END_VNS_DAO_V2_DKG
     // END_VNS_DECRYPTION_STATE
 
