@@ -9788,8 +9788,17 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
   void Blockchain::install_dao_tally_key_for_test(
       const dao::dao_tally_key_record& record)
   {
-    m_db->add_dao_tally_key(record.epoch, record);
-    m_db->set_current_dao_tally_key_epoch(record.epoch);
+    // The DB layer expects an active write transaction. The block
+    // apply path opens one; a direct test call must do the same.
+    m_db->block_wtxn_start();
+    try {
+      m_db->add_dao_tally_key(record.epoch, record);
+      m_db->set_current_dao_tally_key_epoch(record.epoch);
+    } catch (...) {
+      try { m_db->block_wtxn_abort(); } catch (...) {}
+      throw;
+    }
+    m_db->block_wtxn_stop();
   }
 #endif
 
