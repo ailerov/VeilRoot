@@ -176,6 +176,7 @@ public:
   virtual bool get_dao_tally_key(uint32_t, dao::dao_tally_key_record&) const override { return false; }
   virtual bool get_current_dao_tally_key_epoch(uint32_t&) const override { return false; }
   virtual void set_current_dao_tally_key_epoch(uint32_t) override {}
+  virtual void remove_dao_tally_key(uint32_t) override {}
 
   virtual void add_dao_vote_record_v2(const crypto::hash&, const dao_vote_record_v2&) override {}
   virtual bool get_dao_vote_record_v2(const crypto::hash&, dao_vote_record_v2&) const override { return false; }

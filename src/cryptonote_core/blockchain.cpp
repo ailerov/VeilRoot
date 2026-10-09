@@ -1031,6 +1031,66 @@ block Blockchain::pop_block_from_blockchain()
   }
   // END_VNS_COMMITTEE_ROLLBACK
 
+  // BEGIN_VNS_DAO_V2_DKG_ACTIVATION_ROLLBACK
+  // A DKG key activation is consensus state only for as long as the
+  // transaction that carried it is in a block. When a block containing
+  // a dkg_key_activation transaction is popped, remove the key record
+  // introduced by that transaction and restore the prior active epoch
+  // from the remaining canonical activations.
+  for (const transaction& tx : popped_txs)
+  {
+    if (!is_dao_v2_dkg_activation_tx(tx))
+      continue;
+
+    std::vector<tx_extra_field> extra_fields;
+    if (!parse_tx_extra(tx.extra, extra_fields))
+      continue;
+
+    for (const auto& field : extra_fields)
+    {
+      if (field.type() != typeid(tx_extra_governance_payload))
+        continue;
+      const auto& gpf = boost::get<tx_extra_governance_payload>(field);
+      if (gpf.payload.type != governance_object::dkg_key_activation)
+        continue;
+
+      dao::dao_dkg_key_activation act;
+      if (!act.deserialize(gpf.payload.data))
+        break;
+
+      const uint32_t popped_epoch = act.record.epoch;
+
+      // Remove the key record for this epoch.
+      try {
+        m_db->remove_dao_tally_key(popped_epoch);
+      } catch (...) {
+        // Key record not present; not an error.
+      }
+
+      // Restore active epoch to the highest epoch below the removed
+      // one that is still present.
+      uint32_t new_current = 0;
+      bool found_lower = false;
+      for (uint32_t e = 1; e < popped_epoch; ++e) {
+        dao::dao_tally_key_record r;
+        try {
+          if (m_db->get_dao_tally_key(e, r)) {
+            new_current = e;
+            found_lower = true;
+          }
+        } catch (...) {}
+      }
+      try {
+        m_db->set_current_dao_tally_key_epoch(
+            found_lower ? new_current : 0);
+      } catch (...) {}
+
+      MINFO("Rolled back DKG key activation for epoch " << popped_epoch);
+      break;
+    }
+  }
+  // END_VNS_DAO_V2_DKG_ACTIVATION_ROLLBACK
+
   // BEGIN_VNS_DAO_V2_TALLY_RESULT_ROLLBACK
   // A DAO V2 tally result is consensus state only for as long as the
   // transaction that carried it is in a block. When a block containing
@@ -6867,16 +6927,26 @@ leave:
 
       // BEGIN_VNS_DAO_V2_TALLY_RESULT_APPLY
       // The block has now been durably committed. Any DAO V2
-      // tally-result transaction in it was validated before add_block.
-      // This is the ONLY location that mutates authoritative
-      // governance outcome state for a tally.
+      // tally-result or DKG key-activation transaction in it was
+      // validated before add_block. This is the ONLY location that
+      // mutates authoritative governance state.
       for (const auto& tx_pair : txs)
       {
         const transaction& tx = tx_pair.first;
-        if (!is_dao_v2_tally_result_tx(tx))
+
+        if (is_dao_v2_dkg_activation_tx(tx))
+        {
+          if (!apply_dao_v2_dkg_activation(tx, new_height))
+            throw std::runtime_error("dkg activation apply failed after validation");
           continue;
-        if (!apply_dao_v2_tally_result(tx, new_height))
-          throw std::runtime_error("tally-result tx apply failed after validation");
+        }
+
+        if (is_dao_v2_tally_result_tx(tx))
+        {
+          if (!apply_dao_v2_tally_result(tx, new_height))
+            throw std::runtime_error("tally-result tx apply failed after validation");
+          continue;
+        }
       }
       // END_VNS_DAO_V2_TALLY_RESULT_APPLY
 
@@ -9713,6 +9783,13 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
   void Blockchain::clear_dao_v2_tally_shares_for_test()
   {
     m_dao_v2_tally_shares.clear();
+  }
+
+  void Blockchain::install_dao_tally_key_for_test(
+      const dao::dao_tally_key_record& record)
+  {
+    m_db->add_dao_tally_key(record.epoch, record);
+    m_db->set_current_dao_tally_key_epoch(record.epoch);
   }
 #endif
 

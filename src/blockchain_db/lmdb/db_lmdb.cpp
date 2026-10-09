@@ -3398,6 +3398,20 @@ void BlockchainLMDB::set_current_dao_tally_key_epoch(uint32_t epoch)
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to set current tally key epoch: ", result).c_str()));
 }
+void BlockchainLMDB::remove_dao_tally_key(uint32_t epoch)
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+  lmdb_cursor_guard cur(m_write_txn->m_txn, m_tally_keys);
+  unsigned char kbuf[4];
+  encode_epoch_be(epoch, kbuf);
+  MDB_val k = { sizeof(kbuf), kbuf };
+  int result = mdb_cursor_get(cur.get(), &k, NULL, MDB_SET);
+  if (result == MDB_SUCCESS)
+    mdb_cursor_del(cur.get(), 0);
+  else if (result != MDB_NOTFOUND)
+    throw0(DB_ERROR(lmdb_error("Failed to remove dao tally key: ", result).c_str()));
+}
 // END_VNS_TALLY_KEYS
 
 // BEGIN_VNS_DAO_V2_VOTES

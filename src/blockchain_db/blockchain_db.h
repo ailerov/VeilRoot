@@ -2180,6 +2180,7 @@ public:
     virtual bool get_dao_tally_key(uint32_t epoch, dao::dao_tally_key_record& record) const = 0;
     virtual bool get_current_dao_tally_key_epoch(uint32_t& epoch) const = 0;
     virtual void set_current_dao_tally_key_epoch(uint32_t epoch) = 0;
+    virtual void remove_dao_tally_key(uint32_t epoch) = 0;
     // ---------- VNS DAO TALLY KEYS END ----------
 
     // ---------- VNS DAO V2 VOTES START ----------
