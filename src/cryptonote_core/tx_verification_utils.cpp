@@ -188,26 +188,31 @@ static bool ver_non_input_consensus_templated(TxForwardIt tx_begin, TxForwardIt 
     // END_VNS_NON_CONSUMING_TX
 
     // BEGIN_VNS_PARAMETER_EXECUTION_NON_INPUT_BYPASS
+    // Zero-input, zero-output governance transactions. The existing
+    // case is governance_object::execution; DAO V2 tally-result
+    // transactions have the same shape and are validated by
+    // Blockchain::validate_dao_v2_tally_result_tx before add_block.
     if (tx_begin != tx_end && tx_begin->vin.empty() && tx_begin->vout.empty())
     {
-        bool has_parameter_execution_extra = false;
+        bool has_zero_io_governance_extra = false;
         std::vector<tx_extra_field> extra_fields;
         if (parse_tx_extra(tx_begin->extra, extra_fields))
         {
             for (const auto& field : extra_fields)
             {
-                if (field.type() == typeid(tx_extra_governance_payload))
+                if (field.type() != typeid(tx_extra_governance_payload))
+                    continue;
+                const auto& gp_field =
+                    boost::get<tx_extra_governance_payload>(field);
+                if (gp_field.payload.type == governance_object::execution ||
+                    gp_field.payload.type == governance_object::tally_result)
                 {
-                    const auto& gp_field = boost::get<tx_extra_governance_payload>(field);
-                    if (gp_field.payload.type == governance_object::execution)
-                    {
-                        has_parameter_execution_extra = true;
-                        break;
-                    }
+                    has_zero_io_governance_extra = true;
+                    break;
                 }
             }
         }
-        if (has_parameter_execution_extra)
+        if (has_zero_io_governance_extra)
             return true;
     }
     // END_VNS_PARAMETER_EXECUTION_NON_INPUT_BYPASS

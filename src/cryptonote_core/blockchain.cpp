@@ -9599,45 +9599,68 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       return false;
 
     proposal_record prop;
-    if (!m_db->get_proposal_record(cert.proposal_id, prop))
+    if (!m_db->get_proposal_record(cert.proposal_id, prop)) {
+      MERROR("tally-result: proposal record missing");
       return false;
+    }
 
-    if (prop.status != PROPOSAL_STATUS_ACTIVE)
+    if (prop.status != PROPOSAL_STATUS_ACTIVE) {
+      MERROR("tally-result: proposal status not ACTIVE");
       return false;
+    }
 
-    if (cert.tally_key_epoch != prop.tally_key_epoch)
+    if (cert.tally_key_epoch != prop.tally_key_epoch) {
+      MERROR("tally-result: epoch mismatch");
       return false;
+    }
 
-    if (cert.vote_end_height != prop.voting_end_height)
+    if (cert.vote_end_height != prop.voting_end_height) {
+      MERROR("tally-result: vote_end_height mismatch");
       return false;
+    }
 
-    if (block_height != cert.vote_end_height + 1)
+    if (block_height != cert.vote_end_height + 1) {
+      MERROR("tally-result: wrong block height " << block_height
+             << " vs " << (cert.vote_end_height + 1));
       return false;
+    }
 
     dao::dao_tally_key_record key_rec;
     if (!m_db->get_dao_tally_key(
             static_cast<uint32_t>(cert.tally_key_epoch),
-            key_rec))
+            key_rec)) {
+      MERROR("tally-result: key record missing for epoch "
+             << cert.tally_key_epoch);
       return false;
+    }
 
     dao_proposal_aggregate agg;
-    if (!m_db->get_dao_proposal_aggregate(cert.proposal_id, agg))
+    if (!m_db->get_dao_proposal_aggregate(cert.proposal_id, agg)) {
+      MERROR("tally-result: aggregate record missing");
       return false;
+    }
 
     if (agg.aggregate_E_W.empty() ||
         agg.aggregate_E_S.empty() ||
-        agg.aggregate_E_B.empty())
+        agg.aggregate_E_B.empty()) {
+      MERROR("tally-result: aggregate ciphertexts empty");
       return false;
+    }
 
     dao::dao_supply_snapshot snap;
-    if (!m_db->get_dao_supply_snapshot(cert.vote_end_height, snap))
+    if (!m_db->get_dao_supply_snapshot(cert.vote_end_height, snap)) {
+      MERROR("tally-result: supply snapshot missing at "
+             << cert.vote_end_height);
       return false;
+    }
 
     const auto selected_members =
         select_dao_v2_tally_committee(key_rec, cert.vote_end_height);
 
-    if (selected_members.size() < key_rec.threshold)
+    if (selected_members.size() < key_rec.threshold) {
+      MERROR("tally-result: selected committee below threshold");
       return false;
+    }
 
     auto selected_member = [&](uint32_t index) -> bool
     {
@@ -9673,8 +9696,10 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
     if (!check_selected(cert.W) ||
         !check_selected(cert.S) ||
-        !check_selected(cert.B))
+        !check_selected(cert.B)) {
+      MERROR("tally-result: partial set contains a non-selected shareholder");
       return false;
+    }
 
     if (!dao::dao_verify_tally_certificate(
             key_rec,
@@ -9683,8 +9708,10 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
             agg.aggregate_E_W,
             agg.aggregate_E_S,
             agg.aggregate_E_B,
-            cert))
+            cert)) {
+      MERROR("tally-result: cryptographic verification failed");
       return false;
+    }
 
     return true;
   }
