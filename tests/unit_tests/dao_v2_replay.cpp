@@ -23,6 +23,14 @@
 
 #include "cryptonote_core/cryptonote_core.h"
 #include "cryptonote_basic/cryptonote_basic.h"
+#include "cryptonote_basic/cryptonote_basic_impl.h"
+#include "cryptonote_basic/cryptonote_format_utils.h"
+#include "cryptonote_basic/miner.h"
+#include "cryptonote_config.h"
+#include <iostream>
+#include <ctime>
+#include "crypto/crypto.h"
+#include "common/varint.h"
 
 namespace po = boost::program_options;
 using namespace cryptonote;
@@ -106,6 +114,148 @@ TEST(DaoV2Replay, TwoCoresShareGenesis)
         tip_b = b.core->get_blockchain_storage().get_block_id_by_height(0);
     }
     EXPECT_EQ(tip_a, tip_b);
+
+    boost::filesystem::remove_all(base);
+}
+
+namespace {
+
+// Build a minimal valid block on top of the given chain on `node`.
+//
+// The block contains only the coinbase transaction and no tx_hashes.
+// A later step adds the tally-result transaction. Difficulty is 1
+// because the fixture runs in --regtest mode.
+bool construct_block_here(
+    ReplayNode& node,
+    const account_base& miner_acc,
+    uint64_t height,
+    block& out)
+{
+    std::cerr << "[cbh] enter height=" << height << "\n";
+
+    auto& bc_storage = node.core->get_blockchain_storage();
+    auto& db         = bc_storage.get_db();
+
+    const uint8_t hf_version = bc_storage.get_current_hard_fork_version();
+
+    block blk{};
+    blk.major_version = hf_version;
+    blk.minor_version = hf_version;
+    blk.nonce = 0;
+
+    crypto::hash prev_id = crypto::null_hash;
+    uint64_t last_ts = 0;
+    uint64_t already_generated = 0;
+
+    if (height > 0)
+    {
+        prev_id = bc_storage.get_block_id_by_height(height - 1);
+        if (prev_id == crypto::null_hash)
+        {
+            std::cerr << "[cbh] prev_id null at " << (height - 1) << "\n";
+            return false;
+        }
+
+        try {
+            const block prev = db.get_block_from_height(height - 1);
+            last_ts = prev.timestamp;
+        } catch (const std::exception& e) {
+            std::cerr << "[cbh] get_block_from_height threw: "
+                      << e.what() << "\n";
+            return false;
+        }
+        try {
+            already_generated = db.get_block_already_generated_coins(height - 1);
+        } catch (...) {
+            already_generated = 0;
+        }
+    }
+
+    blk.prev_id = prev_id;
+    blk.timestamp = std::max<uint64_t>(last_ts + 1,
+                                       static_cast<uint64_t>(time(nullptr)));
+
+    uint64_t reward = 0;
+    if (!get_block_reward(0, 0, already_generated, reward, blk.major_version))
+    {
+        std::cerr << "[cbh] get_block_reward false\n";
+        return false;
+    }
+    std::cerr << "[cbh] reward=" << reward << "\n";
+
+    transaction miner_tx;
+    // max_outs must be at least 2 because the treasury split in
+    // construct_miner_tx creates a miner output plus a treasury
+    // output. Passing 1 fails the out_amounts.size() <= max_outs
+    // check even for the smallest reward.
+    if (!construct_miner_tx(
+            height, 0, already_generated, 0, 0,
+            miner_acc.get_keys().m_account_address,
+            miner_tx, {}, 999, blk.major_version, {}, 18))
+    {
+        std::cerr << "[cbh] construct_miner_tx false\n";
+        return false;
+    }
+
+    blk.miner_tx = miner_tx;
+    blk.tx_hashes.clear();
+
+    auto gbh = [&bc_storage](
+        const block& b,
+        uint64_t h,
+        const crypto::hash* seed,
+        unsigned int miners,
+        crypto::hash& hash_out) -> bool
+    {
+        return get_block_longhash(
+            &bc_storage, b, hash_out, h, seed, static_cast<int>(miners));
+    };
+
+    const difficulty_type diff = 1;
+    if (!miner::find_nonce_for_given_block(gbh, blk, diff, height, nullptr))
+    {
+        std::cerr << "[cbh] find_nonce false\n";
+        return false;
+    }
+    std::cerr << "[cbh] ok nonce=" << blk.nonce << "\n";
+
+    out = blk;
+    return true;
+}
+
+} // namespace
+
+TEST(DaoV2Replay, NodeBReceivesBlockOneFromNodeA)
+{
+    boost::filesystem::path base =
+        boost::filesystem::temp_directory_path() /
+        boost::filesystem::unique_path("vr_replay_%%%%-%%%%");
+
+    ReplayNode a;
+    ReplayNode b;
+
+    ASSERT_TRUE(a.init((base / "a").string()));
+    ASSERT_TRUE(b.init((base / "b").string()));
+
+    account_base miner_acc;
+    miner_acc.generate();
+
+    const uint64_t a_start = a.core->get_current_blockchain_height();
+    std::cerr << "[replay] a_start=" << a_start
+              << " hf_version=" << (int)a.core->get_blockchain_storage().get_current_hard_fork_version()
+              << "\n";
+
+    block blk;
+    ASSERT_TRUE(construct_block_here(a, miner_acc, a_start, blk));
+
+    block_verification_context bvc{};
+    pool_supplement extra_txs{};
+    cryptonote::blobdata blk_blob = cryptonote::block_to_blob(blk);
+    ASSERT_TRUE(a.core->handle_single_incoming_block(
+        blk_blob, &blk, bvc, extra_txs, /*update_miner_blocktemplate*/ false));
+    ASSERT_FALSE(bvc.m_verifivation_failed);
+
+    ASSERT_EQ(a.core->get_current_blockchain_height(), a_start + 1);
 
     boost::filesystem::remove_all(base);
 }
