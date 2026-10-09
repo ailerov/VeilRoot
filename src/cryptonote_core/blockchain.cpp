@@ -8653,6 +8653,10 @@ select_dao_v2_tally_committee(const dao_tally_key_record& key_rec,
   return out;
 }
 
+// Persist only this node's own private share, bound to the record's
+// key_id. The public key record is NOT persisted here: it becomes
+// canonical state only when a DKG key-activation transaction is
+// applied to a block. See apply_dao_v2_dkg_activation.
 bool persist_dao_v2_dkg_result(BlockchainDB& db,
                                uint32_t epoch,
                                const dkg_result& res,
@@ -8664,21 +8668,23 @@ bool persist_dao_v2_dkg_result(BlockchainDB& db,
   // inside an active db_wtxn_guard on the blockchain-state owner
   // thread.
   if (local_id >= 1 && !res.local_secret_share.empty()) {
+    const std::vector<uint8_t> packed = dao::dao_pack_local_share(
+        res.record.key_id, res.local_secret_share);
+    if (packed.empty()) {
+      MERROR("persist_dao_v2_dkg_result: failed to envelope local share");
+      return false;
+    }
     try {
-      db.add_dao_local_share(epoch, local_id, res.local_secret_share);
+      db.add_dao_local_share(epoch, local_id, packed);
     } catch (const std::exception& e) {
       MERROR("persist_dao_v2_dkg_result: local share persist failed: "
              << e.what());
+      return false;
     }
   }
 
-  try {
-    db.add_dao_tally_key(epoch, res.record);
-  } catch (const std::exception& e) {
-    MERROR("persist_dao_v2_dkg_result: tally key persist failed: "
-           << e.what());
-    return false;
-  }
+  // The public key record is not installed here. It is installed by
+  // the DKG key-activation transaction during block application.
   return true;
 }
 
@@ -9002,22 +9008,9 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
         continue;
       }
 
-      // Activate the epoch so subsequent proposals bind to it.
-      // Only advance forward: an out-of-order drain of an older
-      // epoch must not roll the current epoch back.
-      {
-        uint32_t current_epoch = 0;
-        const bool have_current =
-            m_db->get_current_dao_tally_key_epoch(current_epoch);
-        if (!have_current || item.epoch > current_epoch) {
-          try {
-            m_db->set_current_dao_tally_key_epoch(item.epoch);
-          } catch (const std::exception& e) {
-            MWARNING("DAO V2 DKG epoch " << item.epoch
-                     << ": failed to activate epoch: " << e.what());
-          }
-        }
-      }
+      // The public key record is NOT installed here and the current
+      // epoch is NOT advanced here. Both are set only by a
+      // DKG key-activation transaction during block application.
 
       try {
         m_db->block_wtxn_stop();
@@ -9028,7 +9021,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       }
 
       MINFO("DAO V2 DKG epoch " << item.epoch
-            << ": key record persisted and activated");
+            << ": local share persisted (key record pending activation)");
     }
     return true;
   }

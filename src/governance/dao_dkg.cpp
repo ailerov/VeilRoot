@@ -1661,6 +1661,38 @@ bool dao_tally_key_record::deserialize(const std::vector<uint8_t>& in)
 }
 
 // ====================================================================
+// Local share envelope
+// ====================================================================
+
+std::vector<uint8_t> dao_pack_local_share(
+    const std::vector<uint8_t>& key_id,
+    const std::vector<uint8_t>& raw_share)
+{
+    if (key_id.size() != 32) return {};
+    if (raw_share.empty()) return {};
+    std::vector<uint8_t> out;
+    out.reserve(1 + 32 + raw_share.size());
+    out.push_back(DAO_LOCAL_SHARE_ENVELOPE_VERSION);
+    out.insert(out.end(), key_id.begin(), key_id.end());
+    out.insert(out.end(), raw_share.begin(), raw_share.end());
+    return out;
+}
+
+bool dao_unpack_local_share(
+    const std::vector<uint8_t>& packed,
+    const std::vector<uint8_t>& expected_key_id,
+    std::vector<uint8_t>& raw_out)
+{
+    if (expected_key_id.size() != 32) return false;
+    if (packed.size() < 1 + 32) return false;
+    if (packed[0] != DAO_LOCAL_SHARE_ENVELOPE_VERSION) return false;
+    if (std::memcmp(packed.data() + 1, expected_key_id.data(), 32) != 0)
+        return false;
+    raw_out.assign(packed.begin() + 1 + 32, packed.end());
+    return !raw_out.empty();
+}
+
+// ====================================================================
 // Activation digest
 // ====================================================================
 

@@ -613,6 +613,24 @@ crypto::hash dao_dkg_activation_digest(
     uint64_t selection_height,
     const dao_tally_key_record& record);
 
+// Local share envelope. The share is stored together with the
+// key_id of the record it belongs to, so a share for an epoch-1
+// record cannot be used against a later epoch-1 record produced by a
+// different DKG. A share must never be consumed without the caller
+// supplying the exact key_id it is expected to belong to.
+//
+// Layout: version(1) || key_id(32) || raw_share_bytes
+constexpr uint8_t DAO_LOCAL_SHARE_ENVELOPE_VERSION = 1;
+
+std::vector<uint8_t> dao_pack_local_share(
+    const std::vector<uint8_t>& key_id,
+    const std::vector<uint8_t>& raw_share);
+
+bool dao_unpack_local_share(
+    const std::vector<uint8_t>& packed,
+    const std::vector<uint8_t>& expected_key_id,
+    std::vector<uint8_t>& raw_out);
+
 // ====================================================================
 // Party and driver
 // ====================================================================

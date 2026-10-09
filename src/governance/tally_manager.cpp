@@ -167,11 +167,17 @@ bool TallyManager::produce_local_share(
     // Local bootstrap DKG share for this member's global index. The
     // same share is used for every tally this node is selected for;
     // there is no per-proposal share transfer.
-    std::vector<uint8_t> sk_blob;
+    std::vector<uint8_t> packed_blob;
     if (!m_db.get_dao_local_share(
             static_cast<uint32_t>(prop.tally_key_epoch),
-            global_member_index, sk_blob))
+            global_member_index, packed_blob))
         return false;
+    std::vector<uint8_t> sk_blob;
+    if (!dao::dao_unpack_local_share(packed_blob, key_rec.key_id, sk_blob)) {
+        MERROR("V2 tally: local share does not match key_id for epoch "
+               << prop.tally_key_epoch);
+        return false;
+    }
     BIGNUM* sk = bn_from_signed_share(sk_blob);
     if (!sk) return false;
 
