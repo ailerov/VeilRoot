@@ -9405,9 +9405,29 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
             return true;
         } catch (...) { return true; }
 
-        const auto committee = dao::select_dao_v2_tally_committee(
-            key_rec, *m_db, m_governance_params.tally_committee_size,
-            rec.voting_end_height);
+        // Use the same committee selector as the consensus
+        // validator. Both paths must compute the identical member set
+        // and the identical global indices, or a certificate built
+        // here will be refused by every other node.
+        const auto selected_members =
+            select_dao_v2_tally_committee(key_rec, rec.voting_end_height);
+
+        dao::dao_tally_committee committee;
+        committee.members = selected_members;
+        committee.global_indices.reserve(selected_members.size());
+        for (const auto& pk : selected_members) {
+          uint32_t gidx = 0;
+          for (size_t i = 0;
+               i < key_rec.committee_members.size(); ++i) {
+            const auto& km = key_rec.committee_members[i];
+            if (km.size() != sizeof(pk.data)) continue;
+            if (std::memcmp(km.data(), pk.data, sizeof(pk.data)) == 0) {
+              gidx = static_cast<uint32_t>(i) + 1;
+              break;
+            }
+          }
+          committee.global_indices.push_back(gidx);
+        }
 
         // The threshold that governs whether decryption is possible is
         // the BOOTSTRAP DKG threshold. The committee is a temporary
