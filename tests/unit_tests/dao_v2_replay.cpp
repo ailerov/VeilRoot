@@ -257,5 +257,25 @@ TEST(DaoV2Replay, NodeBReceivesBlockOneFromNodeA)
 
     ASSERT_EQ(a.core->get_current_blockchain_height(), a_start + 1);
 
+    // Same block delivered to Node B through the normal incoming-block
+    // path.
+    {
+        block_verification_context bvc_b{};
+        pool_supplement extra_txs_b{};
+        ASSERT_TRUE(b.core->handle_single_incoming_block(
+            blk_blob, &blk, bvc_b, extra_txs_b,
+            /*update_miner_blocktemplate*/ false));
+        ASSERT_FALSE(bvc_b.m_verifivation_failed);
+    }
+
+    ASSERT_EQ(b.core->get_current_blockchain_height(), a_start + 1);
+
+    // Same tip hash on both nodes.
+    crypto::hash tip_a =
+        a.core->get_blockchain_storage().get_block_id_by_height(a_start);
+    crypto::hash tip_b =
+        b.core->get_blockchain_storage().get_block_id_by_height(a_start);
+    EXPECT_EQ(tip_a, tip_b);
+
     boost::filesystem::remove_all(base);
 }
