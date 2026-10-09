@@ -130,6 +130,7 @@ set(unit_tests_sources
   dao_dkg_bootstrap.cpp
   dao_wallet_v2.cpp
   dao_bootstrap_integration.cpp
+  dao_v2_replay.cpp
   voting_weight.cpp
   vns_transfer.cpp)
 
