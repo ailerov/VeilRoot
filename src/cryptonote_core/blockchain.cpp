@@ -1031,21 +1031,68 @@ block Blockchain::pop_block_from_blockchain()
   }
   // END_VNS_COMMITTEE_ROLLBACK
 
-  // BEGIN_VNS_PROPOSAL_OUTCOME_ROLLBACK
-  // Remove proposal outcomes that were finalised in the popped block.
-  // Outcomes are set when voting ends, so any proposal whose voting_end_height
-  // equals the popped block's height must have its outcome removed.
+  // BEGIN_VNS_DAO_V2_TALLY_RESULT_ROLLBACK
+  // A DAO V2 tally result is consensus state only for as long as the
+  // transaction that carried it is in a block. When a block containing
+  // a tally-result transaction is popped, remove the outcome record,
+  // restore the proposal to ACTIVE, and remove any pending execution
+  // created by that result.
+  //
+  // Rollback ownership is the popped transaction, not
+  // voting_end_height. The result may have been included in any block
+  // at or after voting_end_height + 1; the only reliable identifier of
+  // which proposal's outcome this block established is the certificate
+  // payload itself.
+  for (const transaction& tx : popped_txs)
   {
-    uint64_t popped_height = m_db->height() + 1;   // height before pop was height()+1
-    m_db->for_all_proposal_records(
-        [&](const crypto::hash& pid, const proposal_record& rec)
-        {
-          if (rec.voting_end_height == popped_height)
-            m_db->remove_proposal_outcome(pid);
-          return true;
-        });
+    if (!is_dao_v2_tally_result_tx(tx))
+      continue;
+
+    std::vector<tx_extra_field> extra_fields;
+    if (!parse_tx_extra(tx.extra, extra_fields))
+      continue;
+
+    for (const auto& field : extra_fields)
+    {
+      if (field.type() != typeid(tx_extra_governance_payload))
+        continue;
+
+      const auto& gpf =
+          boost::get<tx_extra_governance_payload>(field);
+
+      if (gpf.payload.type != governance_object::tally_result)
+        continue;
+
+      dao::dao_tally_certificate cert;
+      if (!cert.deserialize(gpf.payload.data))
+        break;
+
+      m_db->remove_dao_v2_outcome(cert.proposal_id);
+
+      proposal_record prop;
+      if (m_db->get_proposal_record(cert.proposal_id, prop))
+      {
+        prop.status = PROPOSAL_STATUS_ACTIVE;
+        prop.status_height = cert.vote_end_height;
+        m_db->add_proposal_record(cert.proposal_id, prop);
+
+        // Remove the pending execution the applied result created.
+        // The delay used by apply_dao_v2_tally_result is 720.
+        const uint64_t delay = 720;
+        try {
+          m_db->remove_pending_execution(
+              prop.voting_end_height + delay, cert.proposal_id);
+        } catch (...) {
+          // Nothing pending; that is not an error.
+        }
+      }
+
+      MINFO("Rolled back DAO V2 tally result for proposal "
+            << cert.proposal_id);
+      break;
+    }
   }
-  // END_VNS_PROPOSAL_OUTCOME_ROLLBACK
+  // END_VNS_DAO_V2_TALLY_RESULT_ROLLBACK
 
   // make sure the hard fork object updates its current version
   m_hardfork->on_block_popped(1);
