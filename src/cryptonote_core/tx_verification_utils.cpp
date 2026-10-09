@@ -205,7 +205,8 @@ static bool ver_non_input_consensus_templated(TxForwardIt tx_begin, TxForwardIt 
                 const auto& gp_field =
                     boost::get<tx_extra_governance_payload>(field);
                 if (gp_field.payload.type == governance_object::execution ||
-                    gp_field.payload.type == governance_object::tally_result)
+                    gp_field.payload.type == governance_object::tally_result ||
+                    gp_field.payload.type == governance_object::dkg_key_activation)
                 {
                     has_zero_io_governance_extra = true;
                     break;
