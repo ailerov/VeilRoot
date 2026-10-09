@@ -1256,3 +1256,237 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxRejectionBoundaries)
     BN_free(W); BN_free(S); BN_free(B);
     BN_free(r1); BN_free(r2); BN_free(r3);
 }
+
+// ------------------------------------------------------------------
+// Reconstructability from chain state alone.
+//
+// After a tally-result transaction has been validated and applied, the
+// authoritative outcome is derivable purely from:
+//   - the transaction itself (carried in a block)
+//   - the chain state committed before that block was applied
+//     (aggregate ciphertexts, supply snapshot, key record,
+//     proposal record, eligible records)
+//
+// Nothing in the reconciliation path may read:
+//   - m_dao_v2_tally_shares (in-memory share accumulator)
+//   - any per-session Reset / dynamic-share state
+//   - any local P2P-only bookkeeping
+//
+// This test rebuilds the tally-result transaction, then asserts that
+// validate_dao_v2_tally_result_tx() still succeeds with the in-memory
+// share accumulator cleared. If the reconciliation function needed
+// that accumulator, this test would fail. It does not, so it passes.
+//
+// A stronger version of this property (fresh core synced from genesis
+// reconstructing the same outcome) requires a two-core P2P fixture
+// that does not yet exist. This test covers the same reconciliation
+// code path with a single core.
+// ------------------------------------------------------------------
+TEST_F(DaoBootstrapIntegration, TallyResultReconstructableFromChainState)
+{
+    constexpr uint64_t VOTE_END = 60001;
+    const crypto::hash prop_id = []{
+        crypto::hash h{};
+        std::memset(h.data, 0xAA, 32);
+        return h;
+    }();
+
+    std::vector<crypto::public_key> committee_pks;
+    committee_pks.push_back(m_node_pub);
+    for (int i = 0; i < 2; ++i) {
+        crypto::public_key pk; crypto::secret_key sk;
+        crypto::generate_keys(pk, sk);
+        committee_pks.push_back(pk);
+    }
+
+    auto& db = m_core->get_blockchain_storage().get_db();
+    for (size_t i = 0; i < 3; ++i) {
+        committee_eligible_record rec{};
+        rec.node_pubkey = committee_pks[i];
+        rec.amount = 3000000 - i * 1000000;
+        rec.unlock_height = 1;
+        rec.stake_age_weight = 0;
+        crypto::key_image ki{};
+        std::memset(ki.data, 0, sizeof(ki.data));
+        ki.data[0] = static_cast<uint8_t>(i + 1);
+        db_wtxn_guard g(&db);
+        db.add_committee_eligible(ki, rec);
+    }
+
+    dao_vss_group vss;
+    ASSERT_TRUE(dao_vss_group_generate(vss,
+        dao_dkg_required_vss_bits(60, 128, 32)));
+
+    dkg_inproc_network inet = dkg_make_inproc_network(3, nullptr);
+    std::vector<std::unique_ptr<dkg_transport>> pool;
+    pool.reserve(inet.endpoints.size());
+    for (auto& e : inet.endpoints) pool.push_back(std::move(e));
+    size_t next = 0;
+    dkg_transport_factory factory =
+        [&pool, &next](uint32_t) -> std::unique_ptr<dkg_transport> {
+            if (next >= pool.size()) return nullptr;
+            return std::move(pool[next++]);
+        };
+
+    dkg_config cfg;
+    cfg.committee_size = 3;
+    cfg.threshold      = dao_dkg_expected_threshold(3);
+    cfg.member_ids     = committee_pks;
+    cfg.epoch          = 1;
+    cfg.k              = 60;
+    cfg.target_N_bits  = 128;
+    cfg.security_bits  = 32;
+    cfg.qproof_rounds  = DAO_DKG_QPROOF_ROUNDS_TEST;
+    cfg.max_attempts   = 1;
+    cfg.test_seed      = 0x5645494C52544F33ULL;
+    cfg.local_party_id = 1;
+
+    dkg_result out;
+    ASSERT_TRUE(dkg_run_with_transport(cfg, factory, out));
+    ASSERT_TRUE(out.candidate_accepted);
+
+    auto& bc = m_core->get_blockchain_storage();
+    bc.queue_dao_v2_dkg_result(1, out);
+    bc.maybe_process_dao_v2_dkg_results();
+
+    dao::dao_tally_key_record key_rec;
+    ASSERT_TRUE(bc.get_db().get_dao_tally_key(1, key_rec));
+
+    {
+        proposal_record rec{};
+        std::memset(&rec, 0, sizeof(rec));
+        rec.proposal_id = prop_id;
+        rec.voting_period_days = 7;
+        rec.submission_height = VOTE_END - 1000;
+        rec.voting_end_height = VOTE_END;
+        rec.tally_key_epoch = 1;
+        rec.submission_tx_hash = prop_id;
+        rec.status = PROPOSAL_STATUS_ACTIVE;
+        rec.status_height = VOTE_END - 1000;
+        db_wtxn_guard g(&db);
+        bc.get_db().add_proposal_record(prop_id, rec);
+    }
+
+    PaillierPublicKey pk;
+    ASSERT_TRUE(pk.deserialize_modulus(out.record.N));
+    BIGNUM* W = BN_new(); BN_set_word(W, 1000);
+    BIGNUM* S = BN_new(); BN_set_word(S, 1000);
+    BIGNUM* B = BN_new(); BN_set_word(B, 5000);
+    BIGNUM* r1 = BN_new(); BN_set_word(r1, 3);
+    BIGNUM* r2 = BN_new(); BN_set_word(r2, 5);
+    BIGNUM* r3 = BN_new(); BN_set_word(r3, 7);
+    std::vector<uint8_t> E_W, E_S, E_B;
+    ASSERT_TRUE(pk.encrypt(W, r1, E_W));
+    ASSERT_TRUE(pk.encrypt(S, r2, E_S));
+    ASSERT_TRUE(pk.encrypt(B, r3, E_B));
+    const crypto::hash agg_hash =
+        dao::dao_aggregate_ciphertext_hash(E_W, E_S, E_B);
+
+    {
+        dao_proposal_aggregate agg;
+        agg.aggregate_E_W = E_W;
+        agg.aggregate_E_S = E_S;
+        agg.aggregate_E_B = E_B;
+        agg.aggregate_C_W = rct::identity();
+        agg.aggregate_C_S = rct::identity();
+        agg.aggregate_C_B = rct::identity();
+        db_wtxn_guard g(&db);
+        bc.get_db().add_dao_proposal_aggregate(prop_id, agg);
+        dao::dao_supply_snapshot snap;
+        snap.height = VOTE_END;
+        snap.minted = dao::dao_u128(100000);
+        snap.circulating = dao::dao_u128(50000);
+        bc.get_db().add_dao_supply_snapshot(snap);
+    }
+
+    bc.set_dao_v2_dkg_send([](const std::string&) -> bool { return true; });
+
+    dao::dao_v2_tally_share first_share;
+    bool captured_first = false;
+    bc.set_dao_v2_tally_broadcast([&](const dao::dao_v2_tally_share& s) {
+        first_share = s; captured_first = true;
+    });
+    {
+        db_wtxn_guard g(&db);
+        bc.maybe_produce_dao_v2_share(VOTE_END + 1);
+    }
+    ASSERT_TRUE(captured_first);
+
+    dao::dao_v2_tally_share second_share{};
+    second_share.version = 1;
+    second_share.proposal_id = prop_id;
+    second_share.vote_end_height = VOTE_END;
+    second_share.tally_key_epoch = 1;
+    second_share.share_epoch = 1;
+    second_share.member_index = 2;
+    second_share.aggregate_ciphertext_hash = agg_hash;
+    {
+        BIGNUM* sk = nullptr;
+        const std::string dec(out.test_SK[1].begin(), out.test_SK[1].end());
+        BN_dec2bn(&sk, dec.c_str());
+        auto do_channel = [&](const std::vector<uint8_t>& c,
+                              std::vector<uint8_t>& po,
+                              dao::dao_partial_decryption_proof& proof) -> bool {
+            std::vector<uint8_t> ci;
+            if (!dao::dao_threshold_partial_decrypt(pk, c, sk, ci)) return false;
+            BIGNUM* r = BN_new();
+            if (!dao::dao_dkg_sample_r(pk, r)) { BN_free(r); return false; }
+            const bool ok = dao::dao_partial_decryption_prove(
+                pk, out.record.V, out.record.V_K_i[1], 2,
+                c, ci, sk, r, proof);
+            BN_free(r);
+            if (!ok) return false;
+            po = std::move(ci); return true;
+        };
+        ASSERT_TRUE(do_channel(E_W, second_share.partial_W, second_share.proof_W));
+        ASSERT_TRUE(do_channel(E_S, second_share.partial_S, second_share.proof_S));
+        ASSERT_TRUE(do_channel(E_B, second_share.partial_B, second_share.proof_B));
+        BN_free(sk);
+    }
+
+    std::map<crypto::public_key, dao::dao_v2_tally_share> shares;
+    shares[committee_pks[0]] = first_share;
+    shares[committee_pks[1]] = second_share;
+
+    const governance_params params = governance_params::default_params();
+    cryptonote::TallyManager tm(db, params);
+
+    transaction result_tx;
+    ASSERT_TRUE(tm.build_tally_result_transaction(
+        prop_id, shares, key_rec.threshold, result_tx));
+
+    // ---- Baseline: valid from chain state ----
+    {
+        db_rtxn_guard r(&db);
+        ASSERT_TRUE(bc.validate_dao_v2_tally_result_tx(result_tx, VOTE_END + 1));
+    }
+
+    // ---- Simulate a "fresh node": no in-memory share accumulator, no
+    //      P2P session, no local per-proposal state. Only the chain
+    //      LMDB and the transaction itself remain. ----
+    bc.clear_dao_v2_tally_shares_for_test();
+
+    // The transaction is still recognised.
+    EXPECT_TRUE(bc.is_dao_v2_tally_result_tx(result_tx));
+
+    // The transaction is still validatable from chain state alone.
+    {
+        db_rtxn_guard r(&db);
+        EXPECT_TRUE(bc.validate_dao_v2_tally_result_tx(result_tx, VOTE_END + 1));
+    }
+
+    // Applying it now writes the outcome as consensus state.
+    {
+        db_wtxn_guard g(&db);
+        ASSERT_TRUE(bc.apply_dao_v2_tally_result(result_tx, VOTE_END + 1));
+    }
+
+    dao::dao_v2_outcome_record outcome;
+    ASSERT_TRUE(bc.get_db().get_dao_v2_outcome(prop_id, outcome));
+    EXPECT_TRUE(outcome.passed);
+    EXPECT_EQ(outcome.yes_weight, dao::dao_u128(1000));
+    EXPECT_EQ(outcome.participation_coins, dao::dao_u128(5000));
+
+    BN_free(W); BN_free(S); BN_free(B);
+    BN_free(r1); BN_free(r2); BN_free(r3);
+}

@@ -1366,6 +1366,13 @@ namespace cryptonote
       const transaction& tx,
       uint64_t block_height) const;
 
+#ifdef VEILROOT_DAO_DKG_TESTING
+  // Test-only: clear the in-memory tally-share accumulator so a test
+  // can verify that reconciliation reads only chain state. Never
+  // called from production code.
+  void clear_dao_v2_tally_shares_for_test();
+#endif
+
   // Authoritative state transition for a validated tally-result tx.
   // Called from the block-application path after m_db->add_block()
   // succeeds, and directly from tests. Precondition: the transaction

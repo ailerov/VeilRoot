@@ -9669,6 +9669,13 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     return true;
   }
 
+#ifdef VEILROOT_DAO_DKG_TESTING
+  void Blockchain::clear_dao_v2_tally_shares_for_test()
+  {
+    m_dao_v2_tally_shares.clear();
+  }
+#endif
+
   bool Blockchain::apply_dao_v2_tally_result(
       const transaction& tx, uint64_t block_height)
   {
