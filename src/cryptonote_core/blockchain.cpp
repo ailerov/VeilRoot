@@ -9695,6 +9695,15 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       if (!cert.deserialize(gpf.payload.data))
         return false;
 
+      // Idempotence guard: if the outcome already exists, this
+      // transaction's effect is already in state. Do not throw from
+      // the block-apply path; return false and let the caller decide.
+      {
+        dao::dao_v2_outcome_record existing;
+        if (m_db->get_dao_v2_outcome(cert.proposal_id, existing))
+          return false;
+      }
+
       dao::dao_v2_outcome_record out;
       out.proposal_id               = cert.proposal_id;
       out.vote_end_height           = cert.vote_end_height;
