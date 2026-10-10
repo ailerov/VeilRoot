@@ -144,7 +144,7 @@ TEST_F(DaoBootstrapIntegration, BootstrapStartsRunnerForThisCommittee)
     committee_eligible_record self_rec{};
     self_rec.node_pubkey = m_node_pub;
     self_rec.amount = 3000000;
-    self_rec.unlock_height = 1;
+    self_rec.unlock_height = 0;
     self_rec.stake_age_weight = 0;
 
     crypto::key_image self_ki{};
@@ -164,7 +164,7 @@ TEST_F(DaoBootstrapIntegration, BootstrapStartsRunnerForThisCommittee)
         committee_eligible_record rec{};
         rec.node_pubkey = dummy;
         rec.amount = 2000000 - i * 100000;
-        rec.unlock_height = 1;
+        rec.unlock_height = 0;
         rec.stake_age_weight = 0;
 
         crypto::key_image ki{};
@@ -1210,9 +1210,12 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxRejectionBoundaries)
         EXPECT_FALSE(bc.validate_dao_v2_tally_result_tx(tx, VOTE_END + 1));
     }
 
-    // ---- Case 3: wrong block height ----
-    EXPECT_FALSE(bc.validate_dao_v2_tally_result_tx(valid_tx, VOTE_END + 2));
+    // ---- Case 3: block height vs voting end ----
+    // Voting must have ended, but the result may be mined later than
+    // vote_end_height + 1.
     EXPECT_FALSE(bc.validate_dao_v2_tally_result_tx(valid_tx, VOTE_END));
+    EXPECT_TRUE (bc.validate_dao_v2_tally_result_tx(valid_tx, VOTE_END + 1));
+    EXPECT_TRUE (bc.validate_dao_v2_tally_result_tx(valid_tx, VOTE_END + 2));
 
     // ---- Case 4: wrong tally_key_epoch ----
     {

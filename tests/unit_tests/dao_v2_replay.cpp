@@ -486,6 +486,67 @@ TEST(DaoV2Replay, NodeBReconstructsKeyRecordFromActivationBlock)
     act_tx.rct_signatures = rct::rctSig{};
     act_tx.rct_signatures.type = rct::RCTTypeNull;
 
+    // --------------------------------------------------------------
+    // Mempool admission path. This exercises the fee bypass, the
+    // MAX_TX_EXTRA_SIZE exception, the zero-input relay exception and
+    // the full activation-certificate validator that the direct
+    // block-supplement path bypasses.
+    // --------------------------------------------------------------
+    {
+        const cryptonote::blobdata act_blob = tx_to_blob(act_tx);
+        tx_verification_context tvc{};
+        ASSERT_TRUE(a.core->handle_incoming_tx(
+            act_blob, tvc, relay_method::local, false));
+        EXPECT_FALSE(tvc.m_verifivation_failed);
+
+        std::vector<crypto::hash> pool_hashes;
+        a.core->get_pool_transaction_hashes(pool_hashes);
+        const crypto::hash act_txid_pool = get_transaction_hash(act_tx);
+        EXPECT_NE(std::find(pool_hashes.begin(), pool_hashes.end(),
+                            act_txid_pool),
+                  pool_hashes.end());
+    }
+
+    // Corrupt one attestation signature and assert mempool rejection.
+    {
+        dao::dao_dkg_key_activation bad = act;
+        ASSERT_FALSE(bad.attestations.empty());
+        ASSERT_FALSE(bad.attestations[0].signature.empty());
+        bad.attestations[0].signature[0] ^= 0xFF;
+
+        std::vector<uint8_t> bad_blob;
+        ASSERT_TRUE(bad.serialize(bad_blob));
+
+        governance_payload gp2;
+        gp2.type = governance_object::dkg_key_activation;
+        gp2.data = std::move(bad_blob);
+        tx_extra_governance_payload txgp2;
+        txgp2.payload = std::move(gp2);
+        tx_extra_field extra2 = txgp2;
+        const std::string extra2_blob =
+            t_serializable_object_to_blob(extra2);
+
+        transaction bad_tx{};
+        bad_tx.version = 2;
+        bad_tx.unlock_time = 0;
+        bad_tx.extra.assign(extra2_blob.begin(), extra2_blob.end());
+        bad_tx.rct_signatures = rct::rctSig{};
+        bad_tx.rct_signatures.type = rct::RCTTypeNull;
+
+        const cryptonote::blobdata bad_tx_blob = tx_to_blob(bad_tx);
+        tx_verification_context tvc_bad{};
+        EXPECT_FALSE(a.core->handle_incoming_tx(
+            bad_tx_blob, tvc_bad, relay_method::local, false));
+        EXPECT_TRUE(tvc_bad.m_verifivation_failed);
+
+        std::vector<crypto::hash> pool_hashes;
+        a.core->get_pool_transaction_hashes(pool_hashes);
+        const crypto::hash bad_txid = get_transaction_hash(bad_tx);
+        EXPECT_EQ(std::find(pool_hashes.begin(), pool_hashes.end(),
+                            bad_txid),
+                  pool_hashes.end());
+    }
+
     // Build and feed the activation block to both nodes.
     std::vector<transaction> extra_txs{ act_tx };
     block blk_act;
