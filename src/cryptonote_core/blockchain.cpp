@@ -6825,27 +6825,6 @@ leave:
         return false;
       }
 
-      // BEGIN_VNS_DAO_V2_TALLY_RESULT_VALIDATE
-      // A DAO V2 tally-result transaction is not an ordinary user
-      // transaction. Validate it against the committee deterministically
-      // selected at the proposal's voting-end height, and against the
-      // aggregate and supply snapshot already committed in state. This
-      // check runs before m_db->add_block() so that an invalid result
-      // can never enter a block.
-      if (is_dao_v2_tally_result_tx(tx))
-      {
-        if (!validate_dao_v2_tally_result_tx(tx, blockchain_height))
-        {
-          MERROR_VER("Block with id: " << id
-                     << " contains a DAO V2 tally-result transaction (id: "
-                     << tx_id << ") that failed consensus validation.");
-          add_block_as_invalid(bl, id);
-          bvc.m_verifivation_failed = true;
-          return_txs_to_pool();
-          return false;
-        }
-      }
-      // END_VNS_DAO_V2_TALLY_RESULT_VALIDATE
     }
 
     TIME_MEASURE_FINISH(cc);
@@ -6864,6 +6843,108 @@ leave:
     }
     cumulative_block_weight = m_blocks_hash_check[blockchain_height].second;
   }
+
+  // BEGIN_VNS_DAO_V2_UNCONDITIONAL_VALIDATE
+  // Unconditional pre-commit validation of DAO V2 protocol
+  // transactions. Runs on every block, including the fast-check path.
+  // The DAO validators are pure and read only committed state, so
+  // moving them here is safe and ensures they cannot be skipped.
+  auto extract_dao_payload =
+      [](const transaction& tx,
+         governance_object wanted,
+         std::vector<uint8_t>& data) -> bool
+  {
+    std::vector<tx_extra_field> fields;
+    if (!parse_tx_extra(tx.extra, fields))
+      return false;
+
+    bool found = false;
+    for (const auto& field : fields)
+    {
+      if (field.type() != typeid(tx_extra_governance_payload))
+        continue;
+
+      const auto& gp =
+          boost::get<tx_extra_governance_payload>(field).payload;
+
+      if (gp.type != wanted)
+        continue;
+
+      if (found)
+        return false;
+
+      data = gp.data;
+      found = true;
+    }
+
+    return found;
+  };
+
+  {
+    std::set<uint32_t> activation_epochs_in_block;
+    std::set<std::string> tally_proposals_in_block;
+
+    for (const auto& tx_pair : txs)
+    {
+      const transaction& tx = tx_pair.first;
+
+      if (is_dao_v2_dkg_activation_tx(tx))
+      {
+        std::vector<uint8_t> blob;
+        dao::dao_dkg_key_activation activation;
+
+        if (!extract_dao_payload(
+                tx, governance_object::dkg_key_activation, blob) ||
+            !activation.deserialize(blob) ||
+            !activation_epochs_in_block.insert(
+                activation.record.epoch).second ||
+            !validate_dao_v2_dkg_activation_tx(
+                tx, blockchain_height))
+        {
+          MERROR_VER(
+              "DAO V2 DKG activation failed block consensus validation");
+          add_block_as_invalid(bl, id);
+          bvc.m_verifivation_failed = true;
+          return_txs_to_pool();
+          return false;
+        }
+      }
+
+      if (is_dao_v2_tally_result_tx(tx))
+      {
+        std::vector<uint8_t> blob;
+        dao::dao_tally_certificate cert;
+
+        if (!extract_dao_payload(
+                tx, governance_object::tally_result, blob) ||
+            !cert.deserialize(blob))
+        {
+          MERROR_VER("Malformed DAO V2 tally-result transaction");
+          add_block_as_invalid(bl, id);
+          bvc.m_verifivation_failed = true;
+          return_txs_to_pool();
+          return false;
+        }
+
+        const std::string proposal_key =
+            pod_to_hex(cert.proposal_id);
+
+        if (!tally_proposals_in_block.insert(
+                proposal_key).second ||
+            !validate_dao_v2_tally_result_tx(
+                tx, blockchain_height))
+        {
+          MERROR_VER(
+              "DAO V2 tally result failed block consensus validation");
+          add_block_as_invalid(bl, id);
+          bvc.m_verifivation_failed = true;
+          return_txs_to_pool();
+          return false;
+        }
+      }
+    }
+  }
+  // END_VNS_DAO_V2_UNCONDITIONAL_VALIDATE
 
     // ---------- VNS ADDITION START ----------
     // Process domain registrations in this block and reject block if any fails
@@ -8664,8 +8745,11 @@ select_dao_v2_dkg_shareholders(BlockchainDB& db, uint64_t selection_height)
 
   std::unordered_map<crypto::key_image, committee_eligible_record> rows;
   db.for_all_committee_eligible(
-      [&rows](const crypto::key_image& ki,
-              const committee_eligible_record& rec) {
+      [&rows, selection_height](
+          const crypto::key_image& ki,
+          const committee_eligible_record& rec) {
+        if (rec.unlock_height > selection_height)
+          return true;
         rows[ki] = rec;
         return true;
       });
@@ -9029,53 +9113,75 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       return;
     }
 
-    dao::dao_dkg_key_activation full;
-    bool ready_to_submit = false;
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
       auto& accum = m_dao_v2_key_ready_attestations[epoch];
-      if (accum.count(att.member_index) == 0) {
+      if (accum.count(att.member_index) == 0)
         accum[att.member_index] = att;
-      } else {
-        // Duplicate from same member. Still verify nothing new, but do
-        // not double-count.
-      }
-      if (m_dao_v2_key_ready_submitted.count(epoch) > 0) return;
-      if (accum.size() < act.record.threshold) return;
+    }
+
+    (void)try_submit_pending_dao_v2_key_activation(epoch);
+  }
+
+  // BEGIN_VNS_DAO_V2_KEY_READY_SUBMIT_HELPER
+  bool Blockchain::try_submit_pending_dao_v2_key_activation(
+      uint32_t epoch)
+  {
+    dao::dao_dkg_key_activation full;
+    {
+      std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
+      auto rec_it = m_dao_v2_local_records.find(epoch);
+      if (rec_it == m_dao_v2_local_records.end()) return false;
+      if (m_dao_v2_key_ready_submitted.count(epoch) > 0) return false;
+
+      auto acc_it = m_dao_v2_key_ready_attestations.find(epoch);
+      if (acc_it == m_dao_v2_key_ready_attestations.end()) return false;
+      if (acc_it->second.size() < rec_it->second.threshold) return false;
 
       full.version          = 1;
-      full.selection_height = act.selection_height;
-      full.record           = act.record;
+      full.selection_height = m_dao_v2_local_selection_height[epoch];
+      full.record           = rec_it->second;
       // std::map iterates in ascending member_index order, which the
       // serializer requires.
-      for (const auto& kv : accum)
+      for (const auto& kv : acc_it->second)
         full.attestations.push_back(kv.second);
 
       m_dao_v2_key_ready_submitted[epoch] = true;
-      ready_to_submit = true;
     }
-    if (!ready_to_submit) return;
+
+    // Already canonical: another node's activation block landed.
+    {
+      dao::dao_tally_key_record existing;
+      try {
+        if (m_db->get_dao_tally_key(epoch, existing)) {
+          std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
+          m_dao_v2_key_ready_attestations.erase(epoch);
+          return true;
+        }
+      } catch (...) {}
+    }
 
     transaction tx;
     if (!build_dao_v2_dkg_activation_tx(epoch, std::move(full), tx)) {
-      MWARNING("key_ready: activation tx build failed for epoch " << epoch);
       std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
       m_dao_v2_key_ready_submitted.erase(epoch);
-      return;
+      return false;
     }
 
     tx_verification_context tvc{};
     const uint8_t hf_version = get_current_hard_fork_version();
     if (!m_tx_pool.add_tx(tx, tvc, relay_method::local, true,
                           hf_version, hf_version)) {
-      MWARNING("key_ready: mempool rejected activation tx for epoch "
-               << epoch);
       std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
       m_dao_v2_key_ready_submitted.erase(epoch);
-      return;
+      MWARNING("key_ready: mempool rejected activation tx for epoch "
+               << epoch);
+      return false;
     }
     MINFO("key_ready: activation tx submitted for epoch " << epoch);
+    return true;
   }
+  // END_VNS_DAO_V2_KEY_READY_SUBMIT_HELPER
 
   bool Blockchain::build_dao_v2_dkg_activation_tx(
       uint32_t /*epoch*/,
@@ -9143,7 +9249,11 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
     // Select bootstrap shareholders from the currently eligible set.
     // This is the initial share custodian set, not the tally committee.
-    const uint64_t selection_height = get_current_blockchain_height();
+    // get_current_blockchain_height() returns the DB height (count),
+    // not the height index of the last committed block.
+    const uint64_t chain_height = get_current_blockchain_height();
+    if (chain_height == 0) return;
+    const uint64_t selection_height = chain_height - 1;
     rebuild_committee_eligible_list(selection_height);
     if (m_committee_eligible_sorted.size() <
         dao::DAO_DKG_MIN_COMMITTEE_SIZE)
@@ -9337,6 +9447,18 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       }
       // END_VNS_DAO_V2_KEY_READY_EMIT
     }
+
+    // Retry any pending activation submissions on this owner cycle.
+    {
+      std::vector<uint32_t> epochs;
+      {
+        std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
+        for (const auto& kv : m_dao_v2_local_records)
+          epochs.push_back(kv.first);
+      }
+      for (uint32_t e : epochs)
+        (void)try_submit_pending_dao_v2_key_activation(e);
+    }
     return true;
   }
 
@@ -9350,7 +9472,9 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     // DKG share for the key epoch. Selecting only the top-N here was
     // the bug: it turned the bootstrap DKG shareholder set into the
     // first tally committee.
-    const uint64_t selection_height = get_current_blockchain_height();
+    const uint64_t chain_height = get_current_blockchain_height();
+    if (chain_height == 0) return false;
+    const uint64_t selection_height = chain_height - 1;
     const auto shareholders_sorted =
         dao::select_dao_v2_dkg_shareholders(*m_db, selection_height);
 
@@ -9928,9 +10052,8 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       return false;
     }
 
-    if (block_height != cert.vote_end_height + 1) {
-      MERROR("tally-result: wrong block height " << block_height
-             << " vs " << (cert.vote_end_height + 1));
+    if (block_height <= cert.vote_end_height) {
+      MERROR("tally-result: result included before voting ended");
       return false;
     }
 

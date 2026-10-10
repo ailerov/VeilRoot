@@ -403,6 +403,34 @@ namespace cryptonote
       }
     }else
     {
+      // BEGIN_VNS_DAO_V2_MEMPOOL_VALIDATE
+      // A DAO V2 activation or tally-result transaction that reaches
+      // the mempool must pass the same consensus validator that the
+      // block-apply path runs. Mempool acceptance is not a substitute
+      // for block validation: chain state can change between now and
+      // inclusion.
+      const uint64_t candidate_height =
+          m_blockchain.get_current_blockchain_height();
+
+      if (is_dao_dkg_activation &&
+          !m_blockchain.validate_dao_v2_dkg_activation_tx(
+              tx, candidate_height))
+      {
+        tvc.m_verifivation_failed = true;
+        tvc.m_no_drop_offense = true;
+        return false;
+      }
+
+      if (is_dao_tally_result &&
+          !m_blockchain.validate_dao_v2_tally_result_tx(
+              tx, candidate_height))
+      {
+        tvc.m_verifivation_failed = true;
+        tvc.m_no_drop_offense = true;
+        return false;
+      }
+      // END_VNS_DAO_V2_MEMPOOL_VALIDATE
+
       try
       {
         if (kept_by_block)
@@ -427,7 +455,14 @@ namespace cryptonote
           // Non‑consuming transactions must be relayed via block so they
           // are included by the miner. Standard relay logic assigns
           // relay_method::none to zero‑fee txs, which blocks mining.
-          if (tx.vin.empty() || (tx.vin[0].type() != typeid(cryptonote::txin_vns_vote) && tx.vin[0].type() != typeid(cryptonote::txin_vns_eligible) && tx.vin[0].type() != typeid(cryptonote::txin_treasury)))
+          const bool is_dao_protocol_tx =
+              is_dao_tally_result || is_dao_dkg_activation;
+
+          if ((tx.vin.empty() && !is_dao_protocol_tx) ||
+              (!tx.vin.empty() &&
+               tx.vin[0].type() != typeid(cryptonote::txin_vns_vote) &&
+               tx.vin[0].type() != typeid(cryptonote::txin_vns_eligible) &&
+               tx.vin[0].type() != typeid(cryptonote::txin_treasury)))
             meta.set_relay_method(relay_method::none);
           else
             meta.set_relay_method(relay_method::fluff);
@@ -482,7 +517,15 @@ namespace cryptonote
       m_txpool_weight += tx_weight;
 
     static_assert(unsigned(relay_method::none) == 0, "expected relay_method::none value to be zero");
-    if ((meta.fee > 0 || std::any_of(tx.vin.begin(), tx.vin.end(), [](const auto& in){ return in.type() == typeid(cryptonote::txin_vns_vote); })) && tx_relay != relay_method::forward)
+    if ((meta.fee > 0 ||
+         is_dao_tally_result ||
+         is_dao_dkg_activation ||
+         std::any_of(tx.vin.begin(), tx.vin.end(),
+             [](const auto& in)
+             {
+                 return in.type() == typeid(cryptonote::txin_vns_vote);
+             })) &&
+        tx_relay != relay_method::forward)
       tvc.m_relay = tx_relay;
 
     ++m_cookie;

@@ -1374,6 +1374,12 @@ namespace cryptonote
       dao::dao_dkg_key_activation act,
       transaction& tx_out);
 
+  // Rebuild the canonical activation transaction for an epoch from
+  // cached record + verified attestations and submit it to the
+  // mempool. Retains attestations on failure so the blockchain-owner
+  // maintenance path can retry. Never installs the key locally.
+  bool try_submit_pending_dao_v2_key_activation(uint32_t epoch);
+
   // Recognise a DAO V2 tally-result transaction: zero vin, zero vout,
   // RCTTypeNull, exactly one governance payload of type tally_result.
   bool is_dao_v2_tally_result_tx(const transaction& tx) const;
