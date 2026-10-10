@@ -9868,14 +9868,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
         // polynomial does not change. If the committee is smaller than
         // the bootstrap threshold, the tally cannot proceed.
         const uint32_t threshold = key_rec.threshold;
-        if (threshold == 0 ||
-            committee.members.size() < threshold) {
-          MWARNING("V2 tally: selected committee (" 
-                   << committee.members.size()
-                   << ") smaller than bootstrap threshold ("
-                   << threshold << ") for " << pid);
-          return true;
-        }
+        if (threshold == 0) return true;
 
         dao::dao_tally_session session;
         bool have_session = false;
@@ -9922,12 +9915,16 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
           }
         }
 
+        // Look up this node's ORIGINAL DKG shareholder index directly
+        // against the activated key record. The validation committee is
+        // irrelevant to whether this node can produce a share.
         uint32_t global_index = 0;
-        for (size_t i = 0; i < session.committee_members.size(); ++i) {
-          if (std::memcmp(session.committee_members[i].data,
-                          self_pk.data, sizeof(self_pk.data)) == 0) {
-            if (i < session.committee_global_indices.size())
-              global_index = session.committee_global_indices[i];
+        for (size_t i = 0; i < key_rec.committee_members.size(); ++i) {
+          const auto& km = key_rec.committee_members[i];
+          if (km.size() != sizeof(self_pk.data)) continue;
+          if (std::memcmp(km.data(), self_pk.data,
+                          sizeof(self_pk.data)) == 0) {
+            global_index = static_cast<uint32_t>(i) + 1;
             break;
           }
         }
@@ -10086,53 +10083,12 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       return false;
     }
 
-    const auto selected_members =
-        select_dao_v2_tally_committee(key_rec, cert.vote_end_height);
-
-    if (selected_members.size() < key_rec.threshold) {
-      MERROR("tally-result: selected committee below threshold");
-      return false;
-    }
-
-    auto selected_member = [&](uint32_t index) -> bool
-    {
-      if (index < 1 ||
-          index > key_rec.committee_members.size())
-        return false;
-
-      const auto& member = key_rec.committee_members[index - 1];
-      if (member.size() != sizeof(crypto::public_key::data))
-        return false;
-
-      crypto::public_key pk{};
-      std::memcpy(pk.data, member.data(), sizeof(pk.data));
-
-      for (const auto& sel : selected_members)
-      {
-        if (std::memcmp(sel.data, pk.data, sizeof(pk.data)) == 0)
-          return true;
-      }
-      return false;
-    };
-
-    auto check_selected =
-        [&](const dao::dao_partial_set& set) -> bool
-    {
-      for (uint32_t index : set.member_indices)
-      {
-        if (!selected_member(index))
-          return false;
-      }
-      return true;
-    };
-
-    if (!check_selected(cert.W) ||
-        !check_selected(cert.S) ||
-        !check_selected(cert.B)) {
-      MERROR("tally-result: partial set contains a non-selected shareholder");
-      return false;
-    }
-
+    // The dynamically selected validation committee is not required to
+    // overlap the original DKG shareholder set. dao_verify_tally_certificate
+    // is authoritative: it checks the DKG shareholder indices in the
+    // certificate, the partial-decryption proofs, the threshold, the
+    // aggregate and the recovered outcome. A validator does not need a
+    // secret share to verify those.
     if (!dao::dao_verify_tally_certificate(
             key_rec,
             snap,
