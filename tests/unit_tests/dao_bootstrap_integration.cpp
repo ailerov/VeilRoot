@@ -1737,7 +1737,7 @@ TEST_F(DaoBootstrapIntegration, BootstrapSharePersistsAfterTally)
 // member 3 is a legitimate bootstrap DKG shareholder — must be
 // rejected before cryptographic verification runs.
 // ------------------------------------------------------------------
-TEST_F(DaoBootstrapIntegration, NonSelectedShareholderRejected)
+TEST_F(DaoBootstrapIntegration, OutOfCommitteeShareholderShareAccepted)
 {
     constexpr uint64_t VOTE_END = 60001;
     const crypto::hash prop_id = []{
@@ -1919,8 +1919,12 @@ TEST_F(DaoBootstrapIntegration, NonSelectedShareholderRejected)
         BN_free(sk);
     }
 
-    // A certificate built from {1, 3} — where 3 is valid bootstrap
-    // but excluded — must be rejected by validate_dao_v2_tally_result_tx.
+    // A certificate built from {1, 3} is valid. Member 3 is an
+    // original DKG shareholder even though it is not in the currently
+    // selected validation committee. Partial-decryption shares may
+    // come from any original shareholder; the validation committee is
+    // only the set of currently eligible nodes that participate in
+    // verifying and broadcasting. The certificate must be accepted.
     std::map<crypto::public_key, dao::dao_v2_tally_share> shares;
     shares[committee_pks[0]] = first_share;
     shares[committee_pks[2]] = third_share;
@@ -1929,17 +1933,11 @@ TEST_F(DaoBootstrapIntegration, NonSelectedShareholderRejected)
     cryptonote::TallyManager tm(db, params);
 
     transaction result_tx;
-    // build_tally_result_transaction runs the full crypto verifier, so
-    // it may already refuse this certificate — both outcomes are
-    // acceptable for the test. If it builds, the consensus validator
-    // must reject; if it refuses, the exclusion is enforced even
-    // earlier.
-    if (tm.build_tally_result_transaction(
-            prop_id, shares, key_rec.threshold, result_tx)) {
-        db_rtxn_guard r(&db);
-        EXPECT_FALSE(bc.validate_dao_v2_tally_result_tx(
-            result_tx, VOTE_END + 1));
-    }
+    ASSERT_TRUE(tm.build_tally_result_transaction(
+        prop_id, shares, key_rec.threshold, result_tx));
+    db_rtxn_guard r(&db);
+    EXPECT_TRUE(bc.validate_dao_v2_tally_result_tx(
+        result_tx, VOTE_END + 1));
 
     BN_free(W); BN_free(S); BN_free(B);
     BN_free(r1); BN_free(r2); BN_free(r3);
