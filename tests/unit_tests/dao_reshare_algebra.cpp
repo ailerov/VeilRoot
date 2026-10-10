@@ -34,8 +34,10 @@
 
 #include <openssl/bn.h>
 
+#include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -234,5 +236,214 @@ TEST(DaoReshareAlgebra, SharesRedistributeWithoutChangingSecret)
     EXPECT_EQ(BN_cmp(f0.get(), f0pp.get()), 0)
         << "different subset yields a different f(0)";
 
+    BN_CTX_free(ctx);
+}
+
+// ---------------------------------------------------------------------
+// Real resharing uses NEW member indices (all distinct from the old
+// committee) and the new share polynomial must have the degree required
+// by the new threshold. This test builds new shares at indices 4, 5, 6
+// from two old contributors (indices 1, 2) and verifies every 2-of-3
+// subset of the new set reconstructs the same f(0).
+// ---------------------------------------------------------------------
+TEST(DaoReshareAlgebra, NewIndicesPreserveSecret)
+{
+    dkg_result out;
+    ASSERT_TRUE(run_dkg_3(out));
+    ASSERT_TRUE(out.candidate_accepted);
+
+    std::vector<BN_ptr> old_shares;
+    for (int i = 0; i < 3; ++i) {
+        old_shares.push_back(bn_from_dec(
+            std::string(out.test_SK[i].begin(), out.test_SK[i].end())));
+        ASSERT_NE(old_shares[i], nullptr);
+    }
+
+    BN_CTX* ctx = BN_CTX_new();
+    ASSERT_NE(ctx, nullptr);
+
+    const std::vector<uint32_t> S = {1, 2};
+    BN_ptr mu1(BN_new()), mu2(BN_new());
+    ASSERT_TRUE(dao_dkg_lagrange_mu(S, 1, mu1.get()));
+    ASSERT_TRUE(dao_dkg_lagrange_mu(S, 2, mu2.get()));
+
+    BN_ptr t1(BN_new()), t2(BN_new()), base(BN_new());
+    BN_mul(t1.get(), mu1.get(), old_shares[0].get(), ctx);
+    BN_mul(t2.get(), mu2.get(), old_shares[1].get(), ctx);
+    BN_add(base.get(), t1.get(), t2.get());   // = Delta * f(0)
+
+    BN_ptr f0(BN_new()), rem0(BN_new());
+    BN_div(f0.get(), rem0.get(), base.get(), dao_dkg_delta(), ctx);
+    ASSERT_TRUE(BN_is_zero(rem0.get()));
+
+    BN_ptr c1(BN_new()), c2(BN_new());
+    BN_set_word(c1.get(), 13);
+    BN_set_word(c2.get(), 29);
+
+    auto new_share = [&](uint32_t j) -> BN_ptr
+    {
+        BN_ptr jj(BN_new());
+        BN_set_word(jj.get(), j);
+        BN_ptr s1j(BN_new()), s2j(BN_new());
+        BN_mul(s1j.get(), c1.get(), jj.get(), ctx);
+        BN_mul(s2j.get(), c2.get(), jj.get(), ctx);
+        BN_ptr rj(BN_new());
+        BN_add(rj.get(), s1j.get(), s2j.get());
+        BN_ptr drj(BN_new());
+        BN_mul(drj.get(), dao_dkg_delta(), rj.get(), ctx);
+        BN_ptr num(BN_new());
+        BN_add(num.get(), base.get(), drj.get());
+        BN_ptr q(BN_new()), rr(BN_new());
+        if (!BN_div(q.get(), rr.get(), num.get(), dao_dkg_delta(), ctx))
+            return BN_ptr();
+        if (!BN_is_zero(rr.get()))
+            return BN_ptr();
+        return q;
+    };
+
+    BN_ptr sp4 = new_share(4);
+    BN_ptr sp5 = new_share(5);
+    BN_ptr sp6 = new_share(6);
+    ASSERT_NE(sp4, nullptr);
+    ASSERT_NE(sp5, nullptr);
+    ASSERT_NE(sp6, nullptr);
+
+    std::map<uint32_t, BIGNUM*> share_map = {
+        {4, sp4.get()}, {5, sp5.get()}, {6, sp6.get()}
+    };
+
+    for (auto [a, b] : { std::pair<uint32_t,uint32_t>{4,5},
+                          std::pair<uint32_t,uint32_t>{4,6},
+                          std::pair<uint32_t,uint32_t>{5,6} })
+    {
+        std::vector<uint32_t> sub = {a, b};
+        BN_ptr mua(BN_new()), mub(BN_new());
+        ASSERT_TRUE(dao_dkg_lagrange_mu(sub, a, mua.get()));
+        ASSERT_TRUE(dao_dkg_lagrange_mu(sub, b, mub.get()));
+
+        BN_ptr ta(BN_new()), tb(BN_new()), ss(BN_new());
+        BN_mul(ta.get(), mua.get(), share_map[a], ctx);
+        BN_mul(tb.get(), mub.get(), share_map[b], ctx);
+        BN_add(ss.get(), ta.get(), tb.get());
+
+        BN_ptr f0p(BN_new()), rr(BN_new());
+        BN_div(f0p.get(), rr.get(), ss.get(), dao_dkg_delta(), ctx);
+        ASSERT_TRUE(BN_is_zero(rr.get()))
+            << "subset {" << a << "," << b << "} not exactly divisible";
+        EXPECT_EQ(BN_cmp(f0.get(), f0p.get()), 0)
+            << "subset {" << a << "," << b << "} recovered a different f(0)";
+    }
+
+    BN_CTX_free(ctx);
+}
+
+// ---------------------------------------------------------------------
+// Partial decryption round trip. Encrypt a value, produce partial
+// decryptions with old shares at old indices, combine; do the same with
+// new shares at new indices, combine. The combined ciphertexts must be
+// byte-identical because both are c^(4 * Delta^2 * f(0)) for the same
+// c and the same f(0).
+// ---------------------------------------------------------------------
+TEST(DaoReshareAlgebra, PartialDecryptionMatchesBeforeAndAfterReshare)
+{
+    using namespace cryptonote;
+
+    dkg_result out;
+    ASSERT_TRUE(run_dkg_3(out));
+    ASSERT_TRUE(out.candidate_accepted);
+
+    PaillierPublicKey pk;
+    ASSERT_TRUE(pk.deserialize_modulus(out.record.N));
+
+    BIGNUM* m = BN_new();
+    BIGNUM* r = BN_new();
+    ASSERT_NE(m, nullptr);
+    ASSERT_NE(r, nullptr);
+    BN_set_word(m, 12345);
+    BN_set_word(r, 67890);
+
+    std::vector<uint8_t> c;
+    ASSERT_TRUE(pk.encrypt(m, r, c));
+
+    std::vector<BN_ptr> old_shares;
+    for (int i = 0; i < 3; ++i) {
+        old_shares.push_back(bn_from_dec(
+            std::string(out.test_SK[i].begin(), out.test_SK[i].end())));
+        ASSERT_NE(old_shares[i], nullptr);
+    }
+
+    // Old path: partials with shares 1, 2; combine on subset {1, 2}.
+    std::vector<std::vector<uint8_t>> old_partials;
+    for (uint32_t i : {1u, 2u}) {
+        std::vector<uint8_t> pi;
+        ASSERT_TRUE(dao_threshold_partial_decrypt(
+            pk, c, old_shares[i - 1].get(), pi));
+        old_partials.push_back(std::move(pi));
+    }
+    std::vector<uint8_t> C_old;
+    ASSERT_TRUE(dao_threshold_combine(pk, {1u, 2u}, old_partials, 2, C_old));
+
+    // New path: redistribute to indices 4, 5, 6; combine on {4, 5}.
+    BN_CTX* ctx = BN_CTX_new();
+    ASSERT_NE(ctx, nullptr);
+
+    BN_ptr mu1(BN_new()), mu2(BN_new());
+    ASSERT_TRUE(dao_dkg_lagrange_mu({1u, 2u}, 1, mu1.get()));
+    ASSERT_TRUE(dao_dkg_lagrange_mu({1u, 2u}, 2, mu2.get()));
+
+    BN_ptr t1(BN_new()), t2(BN_new()), base(BN_new());
+    BN_mul(t1.get(), mu1.get(), old_shares[0].get(), ctx);
+    BN_mul(t2.get(), mu2.get(), old_shares[1].get(), ctx);
+    BN_add(base.get(), t1.get(), t2.get());
+
+    BN_ptr c1(BN_new()), c2(BN_new());
+    BN_set_word(c1.get(), 3);
+    BN_set_word(c2.get(), 5);
+
+    auto new_share = [&](uint32_t j) -> BN_ptr
+    {
+        BN_ptr jj(BN_new());
+        BN_set_word(jj.get(), j);
+        BN_ptr s1j(BN_new()), s2j(BN_new());
+        BN_mul(s1j.get(), c1.get(), jj.get(), ctx);
+        BN_mul(s2j.get(), c2.get(), jj.get(), ctx);
+        BN_ptr rj(BN_new());
+        BN_add(rj.get(), s1j.get(), s2j.get());
+        BN_ptr drj(BN_new());
+        BN_mul(drj.get(), dao_dkg_delta(), rj.get(), ctx);
+        BN_ptr num(BN_new());
+        BN_add(num.get(), base.get(), drj.get());
+        BN_ptr q(BN_new()), rr(BN_new());
+        if (!BN_div(q.get(), rr.get(), num.get(), dao_dkg_delta(), ctx))
+            return BN_ptr();
+        if (!BN_is_zero(rr.get()))
+            return BN_ptr();
+        return q;
+    };
+
+    BN_ptr sp4 = new_share(4);
+    BN_ptr sp5 = new_share(5);
+    BN_ptr sp6 = new_share(6);
+    ASSERT_NE(sp4, nullptr);
+    ASSERT_NE(sp5, nullptr);
+    ASSERT_NE(sp6, nullptr);
+
+    std::vector<std::vector<uint8_t>> new_partials;
+    {
+        std::vector<uint8_t> p4, p5;
+        ASSERT_TRUE(dao_threshold_partial_decrypt(pk, c, sp4.get(), p4));
+        ASSERT_TRUE(dao_threshold_partial_decrypt(pk, c, sp5.get(), p5));
+        new_partials.push_back(std::move(p4));
+        new_partials.push_back(std::move(p5));
+    }
+    std::vector<uint8_t> C_new;
+    ASSERT_TRUE(dao_threshold_combine(
+        pk, {4u, 5u}, new_partials, 2, C_new));
+
+    EXPECT_EQ(C_old, C_new)
+        << "combined ciphertexts differ: resharing did not preserve the secret";
+
+    BN_free(m);
+    BN_free(r);
     BN_CTX_free(ctx);
 }
