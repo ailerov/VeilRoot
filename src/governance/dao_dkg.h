@@ -526,6 +526,32 @@ bool dao_partial_decryption_verify(const PaillierPublicKey& pk,
 // persisting. Those custodians are what this record names.
 // ====================================================================
 
+// A share set is the set of nodes that hold shares of the current
+// stable Paillier key, together with their per-member verification
+// keys VK_j = V^(Delta * s_j). It is independent of the stable key:
+// resharing produces a new share set without changing N, V, or theta.
+//
+// share_set_id is a monotone uint64 used to bind protocol messages
+// and prevent replay. It is not a key epoch; the public key does not
+// rotate when the share set changes.
+//
+// committee_members are 32-byte node public keys in canonical order.
+// VK_i is indexed parallel to committee_members.
+struct dao_share_set_record
+{
+    uint32_t             version        = 1;
+    uint64_t             share_set_id   = 0;
+    uint64_t             height         = 0;
+    uint32_t             threshold      = 0;
+    std::vector<uint8_t> key_id;                // 32 bytes; stable key this set belongs to
+    std::vector<uint8_t> committee_id_hash;     // 32 bytes
+    std::vector<std::vector<uint8_t>> committee_members;  // 32 bytes each
+    std::vector<std::vector<uint8_t>> VK_i;     // PAILLIER_CT_BYTES each
+
+    bool serialize(std::vector<uint8_t>& out) const;
+    bool deserialize(const std::vector<uint8_t>& in);
+};
+
 struct dao_tally_key_record
 {
     uint32_t             version        = 1;

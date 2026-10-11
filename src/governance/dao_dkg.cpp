@@ -1566,6 +1566,63 @@ bool dao_partial_decryption_verify(const PaillierPublicKey& pk,
 // Key record serialization
 // ====================================================================
 
+bool dao_share_set_record::serialize(std::vector<uint8_t>& out) const
+{
+    if (key_id.size() != 32) return false;
+    if (committee_id_hash.size() != 32) return false;
+    if (committee_members.size() == 0) return false;
+    if (committee_members.size() != VK_i.size()) return false;
+    if (threshold == 0 || threshold > committee_members.size()) return false;
+    for (const auto& m : committee_members)
+        if (m.size() != 32) return false;
+    for (const auto& vk : VK_i)
+        if (vk.size() != PAILLIER_CT_BYTES) return false;
+
+    out.clear();
+    push_u32(out, version);
+    push_u64(out, share_set_id);
+    push_u64(out, height);
+    push_u32(out, threshold);
+    push_bytes(out, key_id);
+    push_bytes(out, committee_id_hash);
+    push_u32(out, static_cast<uint32_t>(committee_members.size()));
+    for (const auto& m : committee_members) push_bytes(out, m);
+    for (const auto& vk : VK_i) push_bytes(out, vk);
+    return true;
+}
+
+bool dao_share_set_record::deserialize(const std::vector<uint8_t>& in)
+{
+    size_t off = 0;
+    uint32_t v = 0;
+    if (!pull_u32(in, off, v)) return false;
+    version = v;
+    if (version != 1) return false;
+    if (!pull_u64(in, off, share_set_id)) return false;
+    if (!pull_u64(in, off, height)) return false;
+    if (!pull_u32(in, off, threshold)) return false;
+    if (!pull_bytes(in, off, key_id)) return false;
+    if (key_id.size() != 32) return false;
+    if (!pull_bytes(in, off, committee_id_hash)) return false;
+    if (committee_id_hash.size() != 32) return false;
+    uint32_t n = 0;
+    if (!pull_u32(in, off, n)) return false;
+    if (n == 0 || n > DAO_DKG_MAX_COMMITTEE_SIZE) return false;
+    if (threshold == 0 || threshold > n) return false;
+    committee_members.assign(n, {});
+    for (uint32_t i = 0; i < n; ++i) {
+        if (!pull_bytes(in, off, committee_members[i])) return false;
+        if (committee_members[i].size() != 32) return false;
+    }
+    VK_i.assign(n, {});
+    for (uint32_t i = 0; i < n; ++i) {
+        if (!pull_bytes(in, off, VK_i[i])) return false;
+        if (VK_i[i].size() != PAILLIER_CT_BYTES) return false;
+    }
+    if (off != in.size()) return false;
+    return true;
+}
+
 bool dao_tally_key_record::serialize(std::vector<uint8_t>& out) const
 {
     // Strict canonical layout. Every field is length-prefixed or
