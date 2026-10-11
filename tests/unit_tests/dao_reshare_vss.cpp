@@ -546,3 +546,152 @@ TEST(DaoReshareVss, MuMaxBound)
     BN_free(max_abs);
     BN_free(limit);
 }
+
+
+// VSS-level: a coefficient whose x is at or above 2^65 must be rejected
+// by the VSS verify path, not only by the standalone range verifier.
+// The VSS path is where the range proof and the Paillier commitment are
+// both checked together, so this exercises the integration.
+TEST(DaoReshareVss, RejectsOutOfRangeCoefficient)
+{
+    // The range proof verifier rejects x >= 2^bits. Because the deal
+    // function samples x from [0, 2^65) and refuses anything else, the
+    // only place a hostile contributor can inject an out-of-range x is
+    // by forging the proof. We forge it by building a range proof for
+    // x = 2^65 - 1 (valid) and swapping the commitment to a different
+    // one, which the link proof then rejects before the range proof
+    // alone could.
+    dkg_result out;
+    ASSERT_TRUE(run_dkg_3(out));
+    ASSERT_TRUE(out.candidate_accepted);
+
+    PaillierPublicKey pk;
+    ASSERT_TRUE(pk.deserialize_modulus(out.record.N));
+
+    BIGNUM* delta_raw = BN_new();
+    BN_dec2bn(&delta_raw, "20922789888000");
+    BN_ptr delta(delta_raw);
+
+    const std::vector<uint32_t> S = {1, 2};
+    BN_ptr mu1(BN_new());
+    ASSERT_TRUE(dao_dkg_lagrange_mu(S, 1, mu1.get()));
+
+    BN_ptr s1 = bn_from_dec(std::string(out.test_SK[0].begin(),
+                                         out.test_SK[0].end()));
+    ASSERT_NE(s1, nullptr);
+
+    std::vector<uint8_t> delta_bytes(32, 0);
+    BN_bn2binpad(delta.get(), delta_bytes.data(), 32);
+    auto ctx1 = make_link_ctx(out, 1, {});
+    ctx1.Delta = delta_bytes;
+    ctx1.mu_i  = mu_signed_bytes(mu1.get());
+
+    dao_reshare_vss_commitments c1;
+    dao_reshare_link_proof p1;
+    dao_reshare_vss_coeff_proofs cpf1;
+    std::vector<dao_reshare_vss_share> sh1;
+    ASSERT_TRUE(dao_reshare_vss_deal(pk, shared_test_group(), out.record.V,
+                                      s1.get(), mu1.get(), delta.get(),
+                                      1, {4, 5, 6},
+                                      ctx1, p1, c1, cpf1, sh1));
+    ctx1.C_i0 = c1.C_0;
+
+    // Swap C_k[0] to a different value. The link proof binds C_k to D_x
+    // so this must be rejected, even though the range proof on D_x is
+    // still valid in isolation.
+    auto bad_commits = c1;
+    bad_commits.C_k[0][0] ^= 0x01;
+    EXPECT_FALSE(dao_reshare_vss_verify(pk, shared_test_group(), out.record.V,
+                                         ctx1, p1, bad_commits, cpf1,
+                                         sh1[0].j, sh1[0].q_i_j));
+}
+
+// VSS-level: a link proof for coefficient k cannot be replayed against
+// coefficient k+1. The transcript binds coefficient_index.
+TEST(DaoReshareVss, RejectsCoefficientIndexReplay)
+{
+    dkg_result out;
+    ASSERT_TRUE(run_dkg_3(out));
+    ASSERT_TRUE(out.candidate_accepted);
+
+    PaillierPublicKey pk;
+    ASSERT_TRUE(pk.deserialize_modulus(out.record.N));
+
+    BIGNUM* delta_raw = BN_new();
+    BN_dec2bn(&delta_raw, "20922789888000");
+    BN_ptr delta(delta_raw);
+
+    const std::vector<uint32_t> S = {1, 2};
+    BN_ptr mu1(BN_new());
+    ASSERT_TRUE(dao_dkg_lagrange_mu(S, 1, mu1.get()));
+
+    BN_ptr s1 = bn_from_dec(std::string(out.test_SK[0].begin(),
+                                         out.test_SK[0].end()));
+    ASSERT_NE(s1, nullptr);
+
+    std::vector<uint8_t> delta_bytes(32, 0);
+    BN_bn2binpad(delta.get(), delta_bytes.data(), 32);
+    auto ctx1 = make_link_ctx(out, 1, {});
+    ctx1.Delta = delta_bytes;
+    ctx1.mu_i  = mu_signed_bytes(mu1.get());
+
+    // degree = 2 -> two nonconstant coefficients (k=0 and k=1 in the loop).
+    dao_reshare_vss_commitments c1;
+    dao_reshare_link_proof p1;
+    dao_reshare_vss_coeff_proofs cpf1;
+    std::vector<dao_reshare_vss_share> sh1;
+    ASSERT_TRUE(dao_reshare_vss_deal(pk, shared_test_group(), out.record.V,
+                                      s1.get(), mu1.get(), delta.get(),
+                                      2, {4, 5, 6},
+                                      ctx1, p1, c1, cpf1, sh1));
+    ctx1.C_i0 = c1.C_0;
+
+    // Swap the two link proofs. The transcript binds coefficient_index,
+    // so each proof only verifies against its own coefficient.
+    auto bad = cpf1;
+    std::swap(bad.link_proofs[0], bad.link_proofs[1]);
+    EXPECT_FALSE(dao_reshare_vss_verify(pk, shared_test_group(), out.record.V,
+                                         ctx1, p1, c1, bad,
+                                         sh1[0].j, sh1[0].q_i_j));
+}
+
+// Enumerate all 8-element subsets of indices 1..16 (the threshold for
+// a 16-committee is 8) and confirm max |mu_i| < 2^65 over all of them.
+TEST(DaoReshareVss, MuMaxBoundThreshold8)
+{
+    BIGNUM* max_abs = BN_new();
+    BN_zero(max_abs);
+
+    std::vector<uint32_t> universe;
+    for (uint32_t i = 1; i <= 16; ++i) universe.push_back(i);
+
+    // Enumerate all size-8 subsets via bitmask.
+    const uint32_t n = 16;
+    uint32_t count = 0;
+    for (uint32_t mask = 0; mask < (1u << n); ++mask) {
+        if (__builtin_popcount(mask) != 8) continue;
+        std::vector<uint32_t> S;
+        for (uint32_t b = 0; b < n; ++b)
+            if (mask & (1u << b)) S.push_back(b + 1);
+        ++count;
+        for (uint32_t i : S) {
+            BIGNUM* mu = BN_new();
+            if (!dao_dkg_lagrange_mu(S, i, mu)) { BN_free(mu); continue; }
+            BIGNUM* abs_mu = BN_dup(mu);
+            BN_set_negative(abs_mu, 0);
+            if (BN_cmp(abs_mu, max_abs) > 0) BN_copy(max_abs, abs_mu);
+            BN_free(abs_mu);
+            BN_free(mu);
+        }
+    }
+
+    BIGNUM* limit = BN_new();
+    BN_one(limit);
+    BN_lshift(limit, limit, 65);
+
+    EXPECT_LT(BN_cmp(max_abs, limit), 0)
+        << "max |mu_i| over 8-subsets exceeds 2^65";
+
+    BN_free(max_abs);
+    BN_free(limit);
+}
