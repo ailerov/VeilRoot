@@ -77,6 +77,28 @@ bool dao_reshare_combine(
     const BIGNUM* delta,
     std::vector<dao_reshare_new_share>& new_shares_out);
 
+// Derive the new share for one target member. Every contribution must
+// carry exactly one share, addressed to that member.
+bool dao_reshare_combine_one(
+    const PaillierPublicKey& pk,
+    const dao_vss_group& grp,
+    const std::vector<uint8_t>& V_bytes,
+    const std::vector<dao_reshare_contribution>& contributions,
+    const std::vector<uint32_t>& new_indices,
+    uint32_t recipient_position,
+    uint32_t threshold,
+    const BIGNUM* delta,
+    dao_reshare_new_share& new_share_out);
+
+// Compute VK'_j for every member of new_indices from the public
+// commitments alone. Every node derives the same result.
+bool dao_reshare_compute_all_vks(
+    const PaillierPublicKey& pk,
+    const std::vector<uint8_t>& V_bytes,
+    const std::vector<dao_reshare_contribution>& contributions,
+    const std::vector<uint32_t>& new_indices,
+    std::vector<std::vector<uint8_t>>& vks_out);
+
 // Build the final share-set record from the verified contributions and
 // the new-member shares. The VK_i vector is taken from each new member's
 // computed VK_j. threshold must be <= new_indices.size().
@@ -147,7 +169,7 @@ class dao_reshare_runner
 public:
     struct config
     {
-        PaillierPublicKey                 pk;
+        const PaillierPublicKey*          pk = nullptr;  // not owned
         const dao_vss_group*              grp = nullptr;
         std::vector<uint8_t>              V_bytes;
         const BIGNUM*                     delta = nullptr;
@@ -162,8 +184,10 @@ public:
         uint32_t                          threshold = 0;
         std::vector<uint8_t>              key_id;
 
-        // 0 means this node is a new member only, not an old contributor.
+        // Old-contributor index (1-based), 0 if not contributing.
         uint32_t                          local_party_index = 0;
+        // New-member position (1-based into new_indices), 0 if not a new member.
+        uint32_t                          local_new_index   = 0;
         const BIGNUM*                     local_s_i = nullptr;
         const BIGNUM*                     local_mu_i = nullptr;
         crypto::public_key                local_pub{};
@@ -183,6 +207,10 @@ public:
                     const dao_reshare_msg& m);
     bool wait(dao_share_set_record& out, uint32_t timeout_s = 0);
     bool finished() const;
+
+    // Returns this node's derived s'_j if it is a new member and
+    // finalization has completed.
+    bool get_local_share(std::vector<uint8_t>& share_out) const;
 
 private:
     struct impl;
