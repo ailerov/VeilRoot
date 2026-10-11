@@ -89,6 +89,52 @@ bool dao_reshare_build_share_set(
     uint32_t threshold,
     dao_share_set_record& record_out);
 
+
+// ====================================================================
+// P2P resharing messages.
+//
+// Deal: one contributor's public commitment package plus per-recipient
+// encrypted shares. Complete: a candidate share-set record broadcast by
+// a recipient that has verified at least `threshold` deals.
+// ====================================================================
+
+struct dao_reshare_msg
+{
+    uint32_t version          = 1;
+    uint64_t old_share_set_id = 0;
+    uint64_t new_share_set_id = 0;
+    uint32_t sender_index     = 0;
+    uint8_t  type             = 0;   // 0 = deal, 1 = complete
+
+    std::vector<uint8_t>              public_blob;
+    std::vector<uint32_t>             recipient_indices;
+    std::vector<std::vector<uint8_t>> recipient_payloads;
+    std::vector<uint8_t>              record_blob;
+
+    bool serialize(std::vector<uint8_t>& out) const;
+    bool deserialize(const std::vector<uint8_t>& in);
+};
+
+bool dao_reshare_serialize_public(
+    const dao_reshare_contribution& c, std::vector<uint8_t>& out);
+bool dao_reshare_deserialize_public(
+    const std::vector<uint8_t>& in, dao_reshare_contribution& c_out);
+
+bool dao_reshare_serialize_share(
+    const dao_reshare_vss_share& sh, std::vector<uint8_t>& out);
+bool dao_reshare_deserialize_share(
+    const std::vector<uint8_t>& in, dao_reshare_vss_share& sh_out);
+
+struct dao_reshare_share_bundle
+{
+    uint64_t             old_share_set_id = 0;
+    uint32_t             sender_index     = 0;
+    std::vector<uint8_t> share_bytes;
+
+    bool serialize(std::vector<uint8_t>& out) const;
+    bool deserialize(const std::vector<uint8_t>& in);
+};
+
 } // namespace dao
 } // namespace cryptonote
 

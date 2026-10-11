@@ -241,5 +241,252 @@ bool dao_reshare_build_share_set(
     return true;
 }
 
+
+namespace {
+
+void rp_push_u32(std::vector<uint8_t>& v, uint32_t x)
+{
+    for (int i = 0; i < 4; ++i) v.push_back((x >> (8 * i)) & 0xff);
+}
+void rp_push_u64(std::vector<uint8_t>& v, uint64_t x)
+{
+    for (int i = 0; i < 8; ++i) v.push_back((x >> (8 * i)) & 0xff);
+}
+void rp_push_bytes(std::vector<uint8_t>& v, const std::vector<uint8_t>& b)
+{
+    rp_push_u32(v, static_cast<uint32_t>(b.size()));
+    v.insert(v.end(), b.begin(), b.end());
+}
+bool rp_pull_u32(const std::vector<uint8_t>& v, size_t& off, uint32_t& out)
+{
+    if (off + 4 > v.size()) return false;
+    out = 0;
+    for (int i = 0; i < 4; ++i) out |= uint32_t(v[off++]) << (8 * i);
+    return true;
+}
+bool rp_pull_u64(const std::vector<uint8_t>& v, size_t& off, uint64_t& out)
+{
+    if (off + 8 > v.size()) return false;
+    out = 0;
+    for (int i = 0; i < 8; ++i) out |= uint64_t(v[off++]) << (8 * i);
+    return true;
+}
+bool rp_pull_bytes(const std::vector<uint8_t>& v, size_t& off,
+                   std::vector<uint8_t>& out)
+{
+    uint32_t n = 0;
+    if (!rp_pull_u32(v, off, n)) return false;
+    if (off + n > v.size()) return false;
+    out.assign(v.begin() + off, v.begin() + off + n);
+    off += n;
+    return true;
+}
+
+} // namespace
+
+bool dao_reshare_msg::serialize(std::vector<uint8_t>& out) const
+{
+    out.clear();
+    rp_push_u32(out, version);
+    rp_push_u64(out, old_share_set_id);
+    rp_push_u64(out, new_share_set_id);
+    rp_push_u32(out, sender_index);
+    out.push_back(type);
+    rp_push_bytes(out, public_blob);
+    rp_push_u32(out, static_cast<uint32_t>(recipient_indices.size()));
+    for (uint32_t i : recipient_indices) rp_push_u32(out, i);
+    rp_push_u32(out, static_cast<uint32_t>(recipient_payloads.size()));
+    for (const auto& p : recipient_payloads) rp_push_bytes(out, p);
+    rp_push_bytes(out, record_blob);
+    return true;
+}
+
+bool dao_reshare_msg::deserialize(const std::vector<uint8_t>& in)
+{
+    size_t off = 0;
+    if (!rp_pull_u32(in, off, version)) return false;
+    if (version != 1) return false;
+    if (!rp_pull_u64(in, off, old_share_set_id)) return false;
+    if (!rp_pull_u64(in, off, new_share_set_id)) return false;
+    if (!rp_pull_u32(in, off, sender_index)) return false;
+    if (off >= in.size()) return false;
+    type = in[off++];
+    if (type != 0 && type != 1) return false;
+    if (!rp_pull_bytes(in, off, public_blob)) return false;
+    uint32_t nr = 0;
+    if (!rp_pull_u32(in, off, nr)) return false;
+    if (nr > 1024) return false;
+    recipient_indices.assign(nr, 0);
+    for (uint32_t i = 0; i < nr; ++i)
+        if (!rp_pull_u32(in, off, recipient_indices[i])) return false;
+    uint32_t np = 0;
+    if (!rp_pull_u32(in, off, np)) return false;
+    if (np != nr) return false;
+    recipient_payloads.assign(np, {});
+    for (uint32_t i = 0; i < np; ++i)
+        if (!rp_pull_bytes(in, off, recipient_payloads[i])) return false;
+    if (!rp_pull_bytes(in, off, record_blob)) return false;
+    return off == in.size();
+}
+
+bool dao_reshare_share_bundle::serialize(std::vector<uint8_t>& out) const
+{
+    out.clear();
+    rp_push_u64(out, old_share_set_id);
+    rp_push_u32(out, sender_index);
+    rp_push_bytes(out, share_bytes);
+    return true;
+}
+
+bool dao_reshare_share_bundle::deserialize(const std::vector<uint8_t>& in)
+{
+    size_t off = 0;
+    if (!rp_pull_u64(in, off, old_share_set_id)) return false;
+    if (!rp_pull_u32(in, off, sender_index)) return false;
+    if (!rp_pull_bytes(in, off, share_bytes)) return false;
+    return off == in.size();
+}
+
+bool dao_reshare_serialize_public(
+    const dao_reshare_contribution& c, std::vector<uint8_t>& out)
+{
+    out.clear();
+    rp_push_u32(out, c.contributor_index);
+    rp_push_bytes(out, c.contributor_pubkey);
+
+    const auto& ctx = c.link_ctx;
+    out.insert(out.end(), ctx.genesis_block_hash.data,
+               ctx.genesis_block_hash.data + 32);
+    rp_push_bytes(out, ctx.stable_key_record_hash);
+    rp_push_u64(out, ctx.share_set_id);
+    rp_push_bytes(out, ctx.contributor_pubkey);
+    rp_push_u32(out, ctx.original_index);
+    rp_push_u32(out, static_cast<uint32_t>(ctx.contributor_subset.size()));
+    for (uint32_t s : ctx.contributor_subset) rp_push_u32(out, s);
+    rp_push_bytes(out, ctx.N);
+    rp_push_bytes(out, ctx.V);
+    rp_push_bytes(out, ctx.VK_i);
+    rp_push_bytes(out, ctx.C_i0);
+    rp_push_bytes(out, ctx.Delta);
+    rp_push_bytes(out, ctx.mu_i);
+
+    {
+        std::vector<uint8_t> lp;
+        if (!c.link_proof.serialize(lp)) return false;
+        rp_push_bytes(out, lp);
+    }
+    {
+        std::vector<uint8_t> cb;
+        if (!c.commits.serialize(cb)) return false;
+        rp_push_bytes(out, cb);
+    }
+    {
+        const auto& cp = c.coeff_proofs;
+        rp_push_u32(out, static_cast<uint32_t>(cp.range_commitments.size()));
+        for (const auto& rc : cp.range_commitments) rp_push_bytes(out, rc);
+        rp_push_u32(out, static_cast<uint32_t>(cp.range_proofs.size()));
+        for (const auto& rpf : cp.range_proofs) rp_push_bytes(out, rpf);
+        rp_push_u32(out, static_cast<uint32_t>(cp.link_proofs.size()));
+        size_t veb = cp.range_commitments.empty()
+                   ? 0 : cp.range_commitments[0].size();
+        if (veb == 0) return false;
+        for (const auto& lp : cp.link_proofs) {
+            std::vector<uint8_t> lb;
+            if (!lp.serialize(lb, veb)) return false;
+            rp_push_bytes(out, lb);
+        }
+    }
+    return true;
+}
+
+bool dao_reshare_deserialize_public(
+    const std::vector<uint8_t>& in, dao_reshare_contribution& c_out)
+{
+    size_t off = 0;
+    c_out = dao_reshare_contribution{};
+    if (!rp_pull_u32(in, off, c_out.contributor_index)) return false;
+    if (!rp_pull_bytes(in, off, c_out.contributor_pubkey)) return false;
+
+    auto& ctx = c_out.link_ctx;
+    if (off + 32 > in.size()) return false;
+    std::memcpy(ctx.genesis_block_hash.data, in.data() + off, 32);
+    off += 32;
+    if (!rp_pull_bytes(in, off, ctx.stable_key_record_hash)) return false;
+    if (!rp_pull_u64(in, off, ctx.share_set_id)) return false;
+    if (!rp_pull_bytes(in, off, ctx.contributor_pubkey)) return false;
+    if (!rp_pull_u32(in, off, ctx.original_index)) return false;
+    uint32_t ns = 0;
+    if (!rp_pull_u32(in, off, ns)) return false;
+    if (ns > 32) return false;
+    ctx.contributor_subset.assign(ns, 0);
+    for (uint32_t i = 0; i < ns; ++i)
+        if (!rp_pull_u32(in, off, ctx.contributor_subset[i])) return false;
+    if (!rp_pull_bytes(in, off, ctx.N)) return false;
+    if (!rp_pull_bytes(in, off, ctx.V)) return false;
+    if (!rp_pull_bytes(in, off, ctx.VK_i)) return false;
+    if (!rp_pull_bytes(in, off, ctx.C_i0)) return false;
+    if (!rp_pull_bytes(in, off, ctx.Delta)) return false;
+    if (!rp_pull_bytes(in, off, ctx.mu_i)) return false;
+
+    {
+        std::vector<uint8_t> lp;
+        if (!rp_pull_bytes(in, off, lp)) return false;
+        if (!c_out.link_proof.deserialize(lp)) return false;
+    }
+    {
+        std::vector<uint8_t> cb;
+        if (!rp_pull_bytes(in, off, cb)) return false;
+        if (!c_out.commits.deserialize(cb)) return false;
+    }
+    {
+        auto& cp = c_out.coeff_proofs;
+
+        uint32_t nrc = 0;
+        if (!rp_pull_u32(in, off, nrc)) return false;
+        if (nrc == 0 || nrc > 256) return false;
+        cp.range_commitments.assign(nrc, {});
+        for (uint32_t i = 0; i < nrc; ++i)
+            if (!rp_pull_bytes(in, off, cp.range_commitments[i])) return false;
+
+        uint32_t nrp = 0;
+        if (!rp_pull_u32(in, off, nrp)) return false;
+        if (nrp != nrc) return false;
+        cp.range_proofs.assign(nrp, {});
+        for (uint32_t i = 0; i < nrp; ++i)
+            if (!rp_pull_bytes(in, off, cp.range_proofs[i])) return false;
+
+        uint32_t nlp = 0;
+        if (!rp_pull_u32(in, off, nlp)) return false;
+        if (nlp != nrc) return false;
+        size_t veb = cp.range_commitments[0].size();
+        if (veb == 0) return false;
+        cp.link_proofs.assign(nlp, {});
+        for (uint32_t i = 0; i < nlp; ++i) {
+            std::vector<uint8_t> lb;
+            if (!rp_pull_bytes(in, off, lb)) return false;
+            if (!cp.link_proofs[i].deserialize(lb, veb)) return false;
+        }
+    }
+    return off == in.size();
+}
+
+bool dao_reshare_serialize_share(
+    const dao_reshare_vss_share& sh, std::vector<uint8_t>& out)
+{
+    out.clear();
+    rp_push_u32(out, sh.j);
+    rp_push_bytes(out, sh.q_i_j);
+    return true;
+}
+
+bool dao_reshare_deserialize_share(
+    const std::vector<uint8_t>& in, dao_reshare_vss_share& sh_out)
+{
+    size_t off = 0;
+    if (!rp_pull_u32(in, off, sh_out.j)) return false;
+    if (!rp_pull_bytes(in, off, sh_out.q_i_j)) return false;
+    return off == in.size();
+}
+
 } // namespace dao
 } // namespace cryptonote
