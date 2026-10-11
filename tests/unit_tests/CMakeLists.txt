@@ -136,6 +136,7 @@ set(unit_tests_sources
   dao_reshare_vss.cpp
   dao_reshare_coeff_link.cpp
   dao_share_set_record.cpp
+  dao_reshare_pipeline.cpp
   voting_weight.cpp
   vns_transfer.cpp)
 

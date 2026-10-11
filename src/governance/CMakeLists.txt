@@ -26,6 +26,7 @@ set(governance_sources
     dao_reshare_proof.cpp
     dao_reshare_vss.cpp
     dao_reshare_coeff_link.cpp
+    dao_reshare_pipeline.cpp
     dao_wallet_v2.cpp
     dao_dkg_transport.cpp
     dao_consistency.cpp
