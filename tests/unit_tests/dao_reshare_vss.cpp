@@ -405,3 +405,123 @@ TEST(DaoReshareVss, RejectsSwappedC0)
     EXPECT_FALSE(dao_reshare_vss_verify(pk, out.record.V, ctx_swapped, p1,
                                          swapped, sh1[0].j, sh1[0].q_i_j));
 }
+
+
+// Expert §7: for n_new = 16 and degree 7, |q_i(j)| < 2^8420 and the
+// signed serialization must be exactly DAO_RESHARE_SIGNED_BYTES bytes.
+TEST(DaoReshareVss, MaxQjFits)
+{
+    dkg_result out;
+    ASSERT_TRUE(run_dkg_3(out));
+    ASSERT_TRUE(out.candidate_accepted);
+
+    PaillierPublicKey pk;
+    ASSERT_TRUE(pk.deserialize_modulus(out.record.N));
+
+    BIGNUM* delta_raw = BN_new();
+    BN_dec2bn(&delta_raw, "20922789888000");
+    BN_ptr delta(delta_raw);
+
+    const std::vector<uint32_t> S = {1, 2};
+    BN_ptr mu1(BN_new());
+    ASSERT_TRUE(dao_dkg_lagrange_mu(S, 1, mu1.get()));
+
+    BN_ptr s1 = bn_from_dec(std::string(out.test_SK[0].begin(),
+                                         out.test_SK[0].end()));
+    ASSERT_NE(s1, nullptr);
+
+    std::vector<uint8_t> delta_bytes(32, 0);
+    BN_bn2binpad(delta.get(), delta_bytes.data(), 32);
+    auto mu1_bytes = mu_signed_bytes(mu1.get());
+
+    auto ctx1 = make_link_ctx(out, 1, {});
+    ctx1.Delta = delta_bytes;
+    ctx1.mu_i  = mu1_bytes;
+
+    // 16 new indices, degree 7 = t_new = 7 nonconstant coefficients.
+    std::vector<uint32_t> new_indices;
+    for (uint32_t j = 4; j <= 19; ++j) new_indices.push_back(j);
+
+    dao_reshare_vss_commitments c1;
+    dao_reshare_link_proof p1;
+    std::vector<dao_reshare_vss_share> sh1;
+    ASSERT_TRUE(dao_reshare_vss_deal(pk, out.record.V, s1.get(),
+                                      mu1.get(), delta.get(),
+                                      7, new_indices,
+                                      ctx1, p1, c1, sh1));
+
+    ctx1.C_i0 = c1.C_0;
+    for (size_t k = 0; k < new_indices.size(); ++k) {
+        ASSERT_TRUE(dao_reshare_vss_verify(pk, out.record.V, ctx1, p1,
+                                            c1, new_indices[k], sh1[k].q_i_j));
+        EXPECT_EQ(sh1[k].q_i_j.size(), DAO_RESHARE_SIGNED_BYTES);
+    }
+}
+
+// Expert §7: coefficients at boundary values round-trip through the
+// signed serializer and deserializer.
+TEST(DaoReshareVss, SignedRoundTripBoundary)
+{
+    // +2^64 - 1 and -2^64 are the corners of the coefficient range.
+    BIGNUM* pos = BN_new();
+    BN_one(pos);
+    BN_lshift(pos, pos, 64);
+    BN_sub_word(pos, 1);
+
+    BIGNUM* neg = BN_new();
+    BN_one(neg);
+    BN_lshift(neg, neg, 64);
+    BN_set_negative(neg, 1);
+
+    std::vector<uint8_t> buf;
+    dao_reshare_serialize_signed(pos, buf);
+    EXPECT_EQ(buf.size(), DAO_RESHARE_SIGNED_BYTES);
+    BIGNUM* back = BN_new();
+    ASSERT_TRUE(dao_reshare_deserialize_signed(buf, back));
+    EXPECT_EQ(BN_cmp(pos, back), 0);
+    BN_free(back);
+
+    dao_reshare_serialize_signed(neg, buf);
+    back = BN_new();
+    ASSERT_TRUE(dao_reshare_deserialize_signed(buf, back));
+    EXPECT_EQ(BN_cmp(neg, back), 0);
+    EXPECT_TRUE(BN_is_negative(back));
+    BN_free(back);
+
+    BN_free(pos); BN_free(neg);
+}
+
+// Expert §7: max absolute mu_i over all permitted subsets of
+// indices 1..16 must be under 2^65.
+TEST(DaoReshareVss, MuMaxBound)
+{
+    // Enumerate subsets of size t = 2 (threshold of a 3-committee),
+    // pick the maximum absolute Lagrange coefficient.
+    BIGNUM* max_abs = BN_new();
+    BN_zero(max_abs);
+
+    for (uint32_t i = 1; i <= 16; ++i) {
+        for (uint32_t j = 1; j <= 16; ++j) {
+            if (i == j) continue;
+            std::vector<uint32_t> S = {i, j};
+            BIGNUM* mu = BN_new();
+            if (!dao_dkg_lagrange_mu(S, i, mu)) { BN_free(mu); continue; }
+            BIGNUM* abs_mu = BN_dup(mu);
+            BN_set_negative(abs_mu, 0);
+            if (BN_cmp(abs_mu, max_abs) > 0) BN_copy(max_abs, abs_mu);
+            BN_free(abs_mu);
+            BN_free(mu);
+        }
+    }
+
+    // 2^65
+    BIGNUM* limit = BN_new();
+    BN_one(limit);
+    BN_lshift(limit, limit, 65);
+
+    EXPECT_LT(BN_cmp(max_abs, limit), 0)
+        << "max |mu_i| exceeds 2^65";
+
+    BN_free(max_abs);
+    BN_free(limit);
+}
