@@ -4,6 +4,10 @@
 #include "dao_reshare_pipeline.h"
 
 #include <cstring>
+#include <atomic>
+#include <condition_variable>
+#include <map>
+#include <mutex>
 
 #define OPENSSL_SUPPRESS_DEPRECATED
 #include <openssl/bn.h>
@@ -486,6 +490,290 @@ bool dao_reshare_deserialize_share(
     if (!rp_pull_u32(in, off, sh_out.j)) return false;
     if (!rp_pull_bytes(in, off, sh_out.q_i_j)) return false;
     return off == in.size();
+}
+
+
+namespace {
+
+std::vector<uint8_t> pk_to_bytes(const crypto::public_key& pk)
+{
+    std::vector<uint8_t> v(32, 0);
+    std::memcpy(v.data(), pk.data, 32);
+    return v;
+}
+
+} // namespace
+
+struct dao_reshare_runner::impl
+{
+    // Non-owning reference. The caller must keep the config alive for
+    // the lifetime of the runner.
+    const config& cfg;
+    dao_reshare_p2p_callbacks cb;
+
+    mutable std::mutex mtx;
+    std::condition_variable cv;
+
+    bool stopped = false;
+
+    std::map<uint32_t, dao_reshare_contribution> contributions;
+
+    bool finalized = false;
+    dao_share_set_record final_record;
+
+    impl(const config& c, const dao_reshare_p2p_callbacks& b)
+        : cfg(c), cb(b) {}
+
+    void try_finalize_locked()
+    {
+        if (finalized) return;
+        if (contributions.size() < cfg.threshold) return;
+
+        std::vector<dao_reshare_contribution> ordered;
+        for (uint32_t idx : cfg.contributor_indices) {
+            auto it = contributions.find(idx);
+            if (it != contributions.end()) ordered.push_back(it->second);
+            if (ordered.size() >= cfg.threshold) break;
+        }
+        if (ordered.size() < cfg.threshold) return;
+
+        std::vector<dao_reshare_new_share> new_shares;
+        if (!dao_reshare_combine(cfg.pk, *cfg.grp, cfg.V_bytes,
+                                  ordered, cfg.new_indices, cfg.threshold,
+                                  cfg.delta, new_shares))
+            return;
+
+        dao_share_set_record rec;
+        if (!dao_reshare_build_share_set(cfg.new_share_set_id, cfg.height,
+                                          cfg.key_id, cfg.new_members,
+                                          new_shares, cfg.threshold, rec))
+            return;
+
+        final_record = rec;
+        finalized = true;
+
+        // Broadcast complete.
+        dao_reshare_msg cm;
+        cm.old_share_set_id = cfg.old_share_set_id;
+        cm.new_share_set_id = cfg.new_share_set_id;
+        cm.sender_index     = cfg.local_party_index;
+        cm.type             = 1;
+        if (rec.serialize(cm.record_blob)) {
+            std::vector<uint8_t> mb;
+            cm.serialize(mb);
+            std::string ms(mb.begin(), mb.end());
+            cb.broadcast(ms);
+        }
+        cv.notify_all();
+    }
+};
+
+dao_reshare_runner::dao_reshare_runner(
+    const config& cfg, const dao_reshare_p2p_callbacks& cb)
+    : p_(new impl(cfg, cb)) {}
+
+dao_reshare_runner::~dao_reshare_runner() = default;
+
+bool dao_reshare_runner::start()
+{
+    if (p_->cfg.local_party_index == 0) {
+        // New member only; wait for deals.
+        return true;
+    }
+    if (!p_->cfg.local_s_i || !p_->cfg.local_mu_i) return false;
+    if (!p_->cfg.grp || !p_->cfg.delta) return false;
+
+    dao_reshare_contribution contrib;
+    dao_reshare_link_context ctx = p_->cfg.link_ctx_base;
+    if (!dao_reshare_make_contribution(
+            p_->cfg.pk, *p_->cfg.grp, p_->cfg.V_bytes,
+            p_->cfg.local_s_i, p_->cfg.local_mu_i, p_->cfg.delta,
+            p_->cfg.t_new, p_->cfg.new_indices, ctx, contrib))
+        return false;
+
+    {
+        std::lock_guard<std::mutex> lk(p_->mtx);
+        p_->contributions[p_->cfg.local_party_index] = contrib;
+    }
+
+    // Build the deal message: our public part plus encrypted shares to
+    // each new member.
+    dao_reshare_msg m;
+    m.old_share_set_id = p_->cfg.old_share_set_id;
+    m.new_share_set_id = p_->cfg.new_share_set_id;
+    m.sender_index     = p_->cfg.local_party_index;
+    m.type             = 0;
+    if (!dao_reshare_serialize_public(contrib, m.public_blob)) return false;
+
+    for (size_t i = 0; i < p_->cfg.new_indices.size(); ++i) {
+        std::vector<uint8_t> sh_bytes;
+        if (!dao_reshare_serialize_share(contrib.shares[i], sh_bytes))
+            return false;
+        dao_reshare_share_bundle bundle;
+        bundle.old_share_set_id = p_->cfg.old_share_set_id;
+        bundle.sender_index     = p_->cfg.local_party_index;
+        bundle.share_bytes      = std::move(sh_bytes);
+        std::vector<uint8_t> bb;
+        if (!bundle.serialize(bb)) return false;
+
+        std::string bstr(bb.begin(), bb.end());
+        std::string encrypted;
+        if (!encrypt_dkg_private_payload(bstr, p_->cfg.local_pub,
+                                          p_->cfg.new_members[i], encrypted))
+            return false;
+        m.recipient_indices.push_back(p_->cfg.new_indices[i]);
+        m.recipient_payloads.push_back(
+            std::vector<uint8_t>(encrypted.begin(), encrypted.end()));
+    }
+
+    std::vector<uint8_t> mb;
+    m.serialize(mb);
+    std::string ms(mb.begin(), mb.end());
+    p_->cb.broadcast(ms);
+
+    {
+        std::lock_guard<std::mutex> lk(p_->mtx);
+        p_->try_finalize_locked();
+    }
+    return true;
+}
+
+void dao_reshare_runner::stop()
+{
+    std::lock_guard<std::mutex> lk(p_->mtx);
+    p_->stopped = true;
+    p_->cv.notify_all();
+}
+
+void dao_reshare_runner::on_message(const crypto::public_key& from,
+                                    const dao_reshare_msg& m)
+{
+    if (m.version != 1) return;
+    if (m.old_share_set_id != p_->cfg.old_share_set_id) return;
+    if (m.new_share_set_id != p_->cfg.new_share_set_id) return;
+
+    if (m.type == 0) {
+        // Deal.
+        if (m.sender_index == 0 ||
+            m.sender_index > p_->cfg.contributor_members.size())
+            return;
+        if (std::memcmp(p_->cfg.contributor_members[m.sender_index - 1].data,
+                        from.data, 32) != 0)
+            return;
+
+        {
+            std::lock_guard<std::mutex> lk(p_->mtx);
+            if (p_->contributions.count(m.sender_index) > 0) return;
+        }
+
+        dao_reshare_contribution contrib;
+        if (!dao_reshare_deserialize_public(m.public_blob, contrib))
+            return;
+        if (contrib.contributor_index != m.sender_index) return;
+        if (contrib.contributor_pubkey != pk_to_bytes(from)) return;
+        if (contrib.link_ctx.share_set_id != p_->cfg.old_share_set_id) return;
+        if (contrib.link_ctx.original_index != m.sender_index) return;
+
+        // Find our payload and decrypt if present.
+        bool got_share = false;
+        dao_reshare_vss_share my_share{};
+        if (p_->cfg.local_party_index != 0) {
+            // We may also be a new member.
+            for (size_t i = 0; i < m.recipient_indices.size(); ++i) {
+                if (m.recipient_indices[i] != p_->cfg.local_party_index)
+                    continue;
+                std::string ciphertext(m.recipient_payloads[i].begin(),
+                                       m.recipient_payloads[i].end());
+                if (!is_dkg_private_payload(ciphertext)) continue;
+                std::string plaintext;
+                if (!decrypt_dkg_private_payload(
+                        ciphertext, from, p_->cfg.local_priv, plaintext))
+                    continue;
+                std::vector<uint8_t> bb(plaintext.begin(), plaintext.end());
+                dao_reshare_share_bundle bundle;
+                if (!bundle.deserialize(bb)) continue;
+                if (bundle.old_share_set_id != p_->cfg.old_share_set_id)
+                    continue;
+                if (bundle.sender_index != m.sender_index) continue;
+                if (!dao_reshare_deserialize_share(bundle.share_bytes,
+                                                    my_share))
+                    continue;
+                got_share = true;
+                break;
+            }
+        }
+
+        // If this is not our own contribution, we must have obtained a
+        // share for ourselves to be able to use this contribution in
+        // combine.
+        if (m.sender_index != p_->cfg.local_party_index && !got_share)
+            return;
+
+        // Verify the delivered share against the contributor's public
+        // commitments, and verify all coefficient proofs and the link
+        // proof.
+        if (got_share) {
+            contrib.shares.clear();
+            contrib.shares.push_back(my_share);
+            if (!dao_reshare_vss_verify(p_->cfg.pk, *p_->cfg.grp,
+                                         p_->cfg.V_bytes,
+                                         contrib.link_ctx, contrib.link_proof,
+                                         contrib.commits, contrib.coeff_proofs,
+                                         my_share.j, my_share.q_i_j))
+                return;
+        } else {
+            // Our own contribution: shares vector already populated.
+        }
+
+        {
+            std::lock_guard<std::mutex> lk(p_->mtx);
+            if (p_->contributions.count(m.sender_index) > 0) return;
+            p_->contributions[m.sender_index] = std::move(contrib);
+            p_->try_finalize_locked();
+        }
+        return;
+    }
+
+    if (m.type == 1) {
+        // Complete.
+        dao_share_set_record rec;
+        if (!rec.deserialize(m.record_blob)) return;
+        if (rec.share_set_id != p_->cfg.new_share_set_id) return;
+        if (rec.committee_members.size() != p_->cfg.new_members.size())
+            return;
+        for (size_t i = 0; i < rec.committee_members.size(); ++i) {
+            if (rec.committee_members[i].size() != 32) return;
+            if (std::memcmp(rec.committee_members[i].data(),
+                            p_->cfg.new_members[i].data, 32) != 0)
+                return;
+        }
+
+        std::lock_guard<std::mutex> lk(p_->mtx);
+        if (p_->finalized) return;
+        p_->final_record = std::move(rec);
+        p_->finalized = true;
+        p_->cv.notify_all();
+    }
+}
+
+bool dao_reshare_runner::wait(dao_share_set_record& out, uint32_t timeout_s)
+{
+    std::unique_lock<std::mutex> lk(p_->mtx);
+    if (timeout_s == 0) {
+        p_->cv.wait(lk, [&] { return p_->finalized || p_->stopped; });
+    } else {
+        p_->cv.wait_for(lk, std::chrono::seconds(timeout_s),
+                        [&] { return p_->finalized || p_->stopped; });
+    }
+    if (!p_->finalized) return false;
+    out = p_->final_record;
+    return true;
+}
+
+bool dao_reshare_runner::finished() const
+{
+    std::lock_guard<std::mutex> lk(p_->mtx);
+    return p_->finalized;
 }
 
 } // namespace dao

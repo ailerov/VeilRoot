@@ -135,6 +135,60 @@ struct dao_reshare_share_bundle
     bool deserialize(const std::vector<uint8_t>& in);
 };
 
+
+struct dao_reshare_p2p_callbacks
+{
+    std::function<bool(const crypto::public_key&, const std::string&)> send_to;
+    std::function<void(const std::string&)> broadcast;
+};
+
+class dao_reshare_runner
+{
+public:
+    struct config
+    {
+        PaillierPublicKey                 pk;
+        const dao_vss_group*              grp = nullptr;
+        std::vector<uint8_t>              V_bytes;
+        const BIGNUM*                     delta = nullptr;
+        uint32_t                          t_new = 0;
+        std::vector<uint32_t>             new_indices;
+        std::vector<crypto::public_key>   new_members;
+        std::vector<uint32_t>             contributor_indices;
+        std::vector<crypto::public_key>   contributor_members;
+        uint64_t                          old_share_set_id = 0;
+        uint64_t                          new_share_set_id = 0;
+        uint64_t                          height = 0;
+        uint32_t                          threshold = 0;
+        std::vector<uint8_t>              key_id;
+
+        // 0 means this node is a new member only, not an old contributor.
+        uint32_t                          local_party_index = 0;
+        const BIGNUM*                     local_s_i = nullptr;
+        const BIGNUM*                     local_mu_i = nullptr;
+        crypto::public_key                local_pub{};
+        crypto::secret_key                local_priv{};
+        dao_reshare_link_context          link_ctx_base;
+    };
+
+    dao_reshare_runner(const config& cfg,
+                       const dao_reshare_p2p_callbacks& cb);
+    ~dao_reshare_runner();
+    dao_reshare_runner(const dao_reshare_runner&) = delete;
+    dao_reshare_runner& operator=(const dao_reshare_runner&) = delete;
+
+    bool start();
+    void stop();
+    void on_message(const crypto::public_key& from,
+                    const dao_reshare_msg& m);
+    bool wait(dao_share_set_record& out, uint32_t timeout_s = 0);
+    bool finished() const;
+
+private:
+    struct impl;
+    std::unique_ptr<impl> p_;
+};
+
 } // namespace dao
 } // namespace cryptonote
 
