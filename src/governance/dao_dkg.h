@@ -163,6 +163,17 @@ enum class dkg_msg_type : uint8_t
     key_record_ready         = 0x72,
     transcript_leaf          = 0x73,
 
+    // Post-bootstrap resharing of shares of the stable key. Distinct
+    // from the Reset ceremony (Reset re-runs DKG from scratch and is
+    // not on the production path). These messages carry the
+    // committee-to-committee resharing protocol that keeps the public
+    // key stable while the set of shareholders changes.
+    share_set_committee_ready  = 0x80,
+    share_set_deal             = 0x81,
+    share_set_deal_ack         = 0x82,
+    share_set_finalize         = 0x83,
+    share_set_complete         = 0x84,
+
     // Dynamic tally-share Reset (separate ceremony from DKG).
     reshare_start            = 0x74,
     reshare_commit           = 0x75,
