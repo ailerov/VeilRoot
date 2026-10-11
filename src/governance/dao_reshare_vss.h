@@ -28,7 +28,9 @@
 
 #include "crypto/crypto.h"
 #include "governance/dao_paillier.h"
+#include "governance/dao_dkg.h"
 #include "governance/dao_reshare_proof.h"
+#include "governance/dao_reshare_coeff_link.h"
 
 namespace cryptonote {
 namespace dao {
@@ -64,11 +66,22 @@ struct dao_reshare_vss_share
     std::vector<uint8_t> q_i_j;   // signed serialization
 };
 
+// Per-nonconstant-coefficient proof material. One entry per k in
+// [0, t_new). Each entry proves x_k = b_k + 2^64 in [0, 2^65) and
+// ties that x_k to the Paillier coefficient commitment C_i,k.
+struct dao_reshare_vss_coeff_proofs
+{
+    std::vector<std::vector<uint8_t>> range_commitments;  // D_x, vss bytes
+    std::vector<std::vector<uint8_t>> range_proofs;       // serialized dao_range_proof
+    std::vector<dao_reshare_coeff_link_proof> link_proofs;
+};
+
 // The link context is passed by value. On return it carries the
 // computed C_i0 in ctx.C_i0 and the accompanying common-exponent
 // proof in link_proof_out. The caller must not pre-populate C_i0.
 bool dao_reshare_vss_deal(
     const PaillierPublicKey& pk,
+    const dao_vss_group& grp,
     const std::vector<uint8_t>& V_bytes,
     const BIGNUM* s_i,
     const BIGNUM* mu_i,
@@ -78,6 +91,7 @@ bool dao_reshare_vss_deal(
     dao_reshare_link_context link_ctx,
     dao_reshare_link_proof& link_proof_out,
     dao_reshare_vss_commitments& commits_out,
+    dao_reshare_vss_coeff_proofs& coeff_proofs_out,
     std::vector<dao_reshare_vss_share>& shares_out);
 
 // Verifies the accompanying common-exponent proof first, then the
@@ -85,10 +99,12 @@ bool dao_reshare_vss_deal(
 // rejected regardless of the evaluation.
 bool dao_reshare_vss_verify(
     const PaillierPublicKey& pk,
+    const dao_vss_group& grp,
     const std::vector<uint8_t>& V_bytes,
     const dao_reshare_link_context& link_ctx,
     const dao_reshare_link_proof& link_proof,
     const dao_reshare_vss_commitments& commits,
+    const dao_reshare_vss_coeff_proofs& coeff_proofs,
     uint32_t j,
     const std::vector<uint8_t>& q_i_j);
 

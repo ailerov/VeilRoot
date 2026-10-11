@@ -17,6 +17,7 @@
 #include "governance/dao_paillier.h"
 #include "governance/dao_reshare_proof.h"
 #include "governance/dao_reshare_proof.h"
+#include "governance/dao_reshare_coeff_link.h"
 #include "governance/dao_reshare_vss.h"
 #include "crypto/crypto.h"
 
@@ -146,6 +147,15 @@ std::vector<uint8_t> mu_signed_bytes(const BIGNUM* m)
     return out;
 }
 
+static dao_vss_group& shared_test_group()
+{
+    static dao_vss_group g;
+    static bool init = dao_vss_group_generate(g,
+        dao_dkg_required_vss_bits(60, 128, 32));
+    (void)init;
+    return g;
+}
+
 } // namespace
 
 TEST(DaoReshareVss, EvaluationAndVk)
@@ -196,24 +206,27 @@ TEST(DaoReshareVss, EvaluationAndVk)
     dao_reshare_vss_commitments c1, c2;
     dao_reshare_link_proof p1, p2;
     std::vector<dao_reshare_vss_share> sh1, sh2;
-    ASSERT_TRUE(dao_reshare_vss_deal(pk, out.record.V, s1.get(),
-                                      mu1.get(), delta.get(),
+    dao_reshare_vss_coeff_proofs cpf1, cpf2;
+    ASSERT_TRUE(dao_reshare_vss_deal(pk, shared_test_group(), out.record.V,
+                                      s1.get(), mu1.get(), delta.get(),
                                       degree, new_indices,
-                                      ctx1, p1, c1, sh1));
-    ASSERT_TRUE(dao_reshare_vss_deal(pk, out.record.V, s2.get(),
-                                      mu2.get(), delta.get(),
+                                      ctx1, p1, c1, cpf1, sh1));
+    ASSERT_TRUE(dao_reshare_vss_deal(pk, shared_test_group(), out.record.V,
+                                      s2.get(), mu2.get(), delta.get(),
                                       degree, new_indices,
-                                      ctx2, p2, c2, sh2));
+                                      ctx2, p2, c2, cpf2, sh2));
     ASSERT_EQ(sh1.size(), 3u);
     ASSERT_EQ(sh2.size(), 3u);
 
     ctx1.C_i0 = c1.C_0;
     ctx2.C_i0 = c2.C_0;
     for (size_t k = 0; k < new_indices.size(); ++k) {
-        ASSERT_TRUE(dao_reshare_vss_verify(pk, out.record.V, ctx1, p1,
-                                            c1, new_indices[k], sh1[k].q_i_j));
-        ASSERT_TRUE(dao_reshare_vss_verify(pk, out.record.V, ctx2, p2,
-                                            c2, new_indices[k], sh2[k].q_i_j));
+        ASSERT_TRUE(dao_reshare_vss_verify(pk, shared_test_group(), out.record.V,
+                                            ctx1, p1, c1, cpf1,
+                                            new_indices[k], sh1[k].q_i_j));
+        ASSERT_TRUE(dao_reshare_vss_verify(pk, shared_test_group(), out.record.V,
+                                            ctx2, p2, c2, cpf2,
+                                            new_indices[k], sh2[k].q_i_j));
     }
 
     // Compute VK_j from both contributions and compare to
@@ -295,17 +308,19 @@ TEST(DaoReshareVss, RejectsTamperedEvaluation)
 
     dao_reshare_vss_commitments c1;
     dao_reshare_link_proof p1;
+    dao_reshare_vss_coeff_proofs cpf1;
     std::vector<dao_reshare_vss_share> sh1;
-    ASSERT_TRUE(dao_reshare_vss_deal(pk, out.record.V, s1.get(),
-                                      mu1.get(), delta.get(),
+    ASSERT_TRUE(dao_reshare_vss_deal(pk, shared_test_group(), out.record.V,
+                                      s1.get(), mu1.get(), delta.get(),
                                       1, {4, 5, 6},
-                                      ctx1, p1, c1, sh1));
+                                      ctx1, p1, c1, cpf1, sh1));
     ctx1.C_i0 = c1.C_0;
 
     auto bad = sh1[0].q_i_j;
     bad[2] ^= 0x01;
-    EXPECT_FALSE(dao_reshare_vss_verify(pk, out.record.V, ctx1, p1,
-                                         c1, sh1[0].j, bad));
+    EXPECT_FALSE(dao_reshare_vss_verify(pk, shared_test_group(), out.record.V,
+                                         ctx1, p1, c1, cpf1,
+                                         sh1[0].j, bad));
 }
 
 TEST(DaoReshareVss, RejectsTamperedCommitment)
@@ -338,17 +353,19 @@ TEST(DaoReshareVss, RejectsTamperedCommitment)
 
     dao_reshare_vss_commitments c1;
     dao_reshare_link_proof p1;
+    dao_reshare_vss_coeff_proofs cpf1;
     std::vector<dao_reshare_vss_share> sh1;
-    ASSERT_TRUE(dao_reshare_vss_deal(pk, out.record.V, s1.get(),
-                                      mu1.get(), delta.get(),
+    ASSERT_TRUE(dao_reshare_vss_deal(pk, shared_test_group(), out.record.V,
+                                      s1.get(), mu1.get(), delta.get(),
                                       1, {4, 5, 6},
-                                      ctx1, p1, c1, sh1));
+                                      ctx1, p1, c1, cpf1, sh1));
     ctx1.C_i0 = c1.C_0;
 
     auto bad_commits = c1;
     bad_commits.C_k[0][0] ^= 0x01;
-    EXPECT_FALSE(dao_reshare_vss_verify(pk, out.record.V, ctx1, p1,
-                                         bad_commits, sh1[0].j, sh1[0].q_i_j));
+    EXPECT_FALSE(dao_reshare_vss_verify(pk, shared_test_group(), out.record.V,
+                                         ctx1, p1, bad_commits, cpf1,
+                                         sh1[0].j, sh1[0].q_i_j));
 }
 
 
@@ -387,23 +404,25 @@ TEST(DaoReshareVss, RejectsSwappedC0)
 
     dao_reshare_vss_commitments c1, c2;
     dao_reshare_link_proof p1, p2;
+    dao_reshare_vss_coeff_proofs cpf1, cpf2;
     std::vector<dao_reshare_vss_share> sh1, sh2;
-    ASSERT_TRUE(dao_reshare_vss_deal(pk, out.record.V, s1.get(),
-                                      mu1.get(), delta.get(),
+    ASSERT_TRUE(dao_reshare_vss_deal(pk, shared_test_group(), out.record.V,
+                                      s1.get(), mu1.get(), delta.get(),
                                       1, {4, 5, 6},
-                                      ctx1, p1, c1, sh1));
-    ASSERT_TRUE(dao_reshare_vss_deal(pk, out.record.V, s2.get(),
-                                      mu2.get(), delta.get(),
+                                      ctx1, p1, c1, cpf1, sh1));
+    ASSERT_TRUE(dao_reshare_vss_deal(pk, shared_test_group(), out.record.V,
+                                      s2.get(), mu2.get(), delta.get(),
                                       1, {4, 5, 6},
-                                      ctx2, p2, c2, sh2));
+                                      ctx2, p2, c2, cpf2, sh2));
 
     // Take contributor 1's proof but present contributor 2's C_0.
     auto swapped = c1;
     swapped.C_0 = c2.C_0;
     auto ctx_swapped = ctx1;
     ctx_swapped.C_i0 = c2.C_0;
-    EXPECT_FALSE(dao_reshare_vss_verify(pk, out.record.V, ctx_swapped, p1,
-                                         swapped, sh1[0].j, sh1[0].q_i_j));
+    EXPECT_FALSE(dao_reshare_vss_verify(pk, shared_test_group(), out.record.V,
+                                         ctx_swapped, p1, swapped, cpf1,
+                                         sh1[0].j, sh1[0].q_i_j));
 }
 
 
@@ -444,16 +463,18 @@ TEST(DaoReshareVss, MaxQjFits)
 
     dao_reshare_vss_commitments c1;
     dao_reshare_link_proof p1;
+    dao_reshare_vss_coeff_proofs cpf1;
     std::vector<dao_reshare_vss_share> sh1;
-    ASSERT_TRUE(dao_reshare_vss_deal(pk, out.record.V, s1.get(),
-                                      mu1.get(), delta.get(),
+    ASSERT_TRUE(dao_reshare_vss_deal(pk, shared_test_group(), out.record.V,
+                                      s1.get(), mu1.get(), delta.get(),
                                       7, new_indices,
-                                      ctx1, p1, c1, sh1));
+                                      ctx1, p1, c1, cpf1, sh1));
 
     ctx1.C_i0 = c1.C_0;
     for (size_t k = 0; k < new_indices.size(); ++k) {
-        ASSERT_TRUE(dao_reshare_vss_verify(pk, out.record.V, ctx1, p1,
-                                            c1, new_indices[k], sh1[k].q_i_j));
+        ASSERT_TRUE(dao_reshare_vss_verify(pk, shared_test_group(), out.record.V,
+                                            ctx1, p1, c1, cpf1,
+                                            new_indices[k], sh1[k].q_i_j));
         EXPECT_EQ(sh1[k].q_i_j.size(), DAO_RESHARE_SIGNED_BYTES);
     }
 }
