@@ -32,7 +32,9 @@ namespace dao {
 struct dao_reshare_link_proof
 {
     static constexpr size_t REPS         = 128;
-    static constexpr size_t SCALAR_BYTES = 512;
+    // Bounds the response z = r + e*s where |s| < 2^8196 and r is
+    // masked by 128 statistical bits. 8324/8 = 1040.5 -> 1041.
+    static constexpr size_t SCALAR_BYTES = 1041;
 
     // Each A_l and B_l is a PAILLIER_CT_BYTES group element.
     std::vector<std::vector<uint8_t>> A;   // A_l = V^(Delta * r_l)

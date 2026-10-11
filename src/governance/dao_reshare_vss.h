@@ -33,9 +33,16 @@
 namespace cryptonote {
 namespace dao {
 
+// Coefficient scale per expert Stage D ruling.
+constexpr uint32_t DAO_RESHARE_COEFF_BITS       = 64;
+constexpr uint32_t DAO_RESHARE_COEFF_SCALE_BITS = 8281;
+
 // Signed serialization: 1 sign byte (0 = nonneg, 1 = negative) then
 // 512 bytes of big-endian magnitude.
-constexpr size_t DAO_RESHARE_SIGNED_BYTES = 1 + 1024;
+// Response magnitude width. |q_i(j)| < 2^8420 by the expert's
+// bound for n_new=16, degree=7, |mu_i*s_i| < 2^8261, scaled
+// coefficients. 8420/8 = 1052.5 -> 1053 bytes magnitude.
+constexpr size_t DAO_RESHARE_SIGNED_BYTES = 1 + 1053;
 
 void dao_reshare_serialize_signed(const BIGNUM* x, std::vector<uint8_t>& out);
 bool dao_reshare_deserialize_signed(const std::vector<uint8_t>& in,
@@ -68,7 +75,6 @@ bool dao_reshare_vss_deal(
     const BIGNUM* delta,
     uint32_t t_new,
     const std::vector<uint32_t>& new_indices,
-    uint32_t range_bits,
     dao_reshare_link_context link_ctx,
     dao_reshare_link_proof& link_proof_out,
     dao_reshare_vss_commitments& commits_out,

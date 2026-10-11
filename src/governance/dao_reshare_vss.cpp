@@ -129,7 +129,6 @@ bool dao_reshare_vss_deal(
     const BIGNUM* delta,
     uint32_t t_new,
     const std::vector<uint32_t>& new_indices,
-    uint32_t range_bits,
     dao_reshare_link_context link_ctx,
     dao_reshare_link_proof& link_proof_out,
     dao_reshare_vss_commitments& commits_out,
@@ -138,7 +137,6 @@ bool dao_reshare_vss_deal(
     if (!pk.valid() || !s_i || !mu_i || !delta) return false;
     if (t_new == 0 || t_new > 256) return false;
     if (new_indices.empty()) return false;
-    if (range_bits == 0 || range_bits > 512) return false;
     if (V_bytes.size() != PAILLIER_CT_BYTES) return false;
 
     CtxGuard g;
@@ -188,45 +186,65 @@ bool dao_reshare_vss_deal(
         return false;
     }
 
-    // Sample b_{i,k} in [-2^range_bits, 2^range_bits]
-    BIGNUM* range = BN_new();
-    BN_one(range);
-    BN_lshift(range, range, range_bits);
-    BIGNUM* range_plus = BN_new();
-    BN_add(range_plus, range, BN_value_one());
-    BN_add(range_plus, range_plus, range);   // 2*2^range_bits + 1
+    // Expert Stage D sampling. x is uniform in [0, 2^65), b = x - 2^64
+    // so b is in [-2^64, 2^64). The Paillier commitment uses scale
+    // 2^8281 so the effective nonconstant contribution is
+    // Delta * 2^8281 * b_k, sized to mask the constant mu_i*s_i
+    // statistically while remaining small enough to range-prove.
+    BIGNUM* coeff_range   = BN_new();
+    BIGNUM* sample_limit  = BN_new();
+    BIGNUM* coeff_scale   = BN_new();
+    BN_one(coeff_range);
+    BN_lshift(coeff_range, coeff_range, DAO_RESHARE_COEFF_BITS);
+    BN_one(sample_limit);
+    BN_lshift(sample_limit, sample_limit,
+              DAO_RESHARE_COEFF_BITS + 1);
+    BN_one(coeff_scale);
+    BN_lshift(coeff_scale, coeff_scale, DAO_RESHARE_COEFF_SCALE_BITS);
+    if (!coeff_range || !sample_limit || !coeff_scale) {
+        BN_free(coeff_range); BN_free(sample_limit); BN_free(coeff_scale);
+        BN_free(V); BN_free(c0_exp); BN_free(C0);
+        return false;
+    }
 
     std::vector<BIGNUM*> b(t_new, nullptr);
+    std::vector<BIGNUM*> xs(t_new, nullptr);
     commits_out.C_k.assign(t_new, {});
     for (uint32_t k = 0; k < t_new; ++k) {
         b[k] = BN_new();
-        // Sample in [0, 2^range_bits], then randomly negate
-        if (!BN_rand_range(b[k], range_plus)) {
+        xs[k] = BN_new();
+        if (!b[k] || !xs[k] || !BN_rand_range(xs[k], sample_limit)) {
+            BN_free(xs[k]);
             for (auto* p : b) if (p) BN_free(p);
-            BN_free(range); BN_free(range_plus);
+            BN_free(coeff_range); BN_free(sample_limit); BN_free(coeff_scale);
             BN_free(V); BN_free(c0_exp); BN_free(C0);
             return false;
         }
-        // Shift by 2^range_bits to get range [-2^r, 2^r]
-        BN_sub(b[k], b[k], range);
-        uint8_t sbit = 0;
-        RAND_bytes(&sbit, 1);
-        if (sbit & 1) BN_set_negative(b[k], 1);
+        if (!BN_sub(b[k], xs[k], coeff_range)) {
+            BN_free(xs[k]);
+            for (auto* p : b) if (p) BN_free(p);
+            BN_free(coeff_range); BN_free(sample_limit); BN_free(coeff_scale);
+            BN_free(V); BN_free(c0_exp); BN_free(C0);
+            return false;
+        }
 
         BIGNUM* exp = BN_new();
-        BN_mul(exp, delta, b[k], g.ctx);
+        BN_mul(exp, delta, coeff_scale, g.ctx);
+        BN_mul(exp, exp, b[k], g.ctx);
         BIGNUM* Ck = BN_new();
         if (!modexp_signed(V, exp, N2, Ck, g.ctx)) {
-            BN_free(exp); BN_free(Ck);
+            BN_free(exp); BN_free(Ck); BN_free(xs[k]);
             for (auto* p : b) if (p) BN_free(p);
-            BN_free(range); BN_free(range_plus);
+            BN_free(coeff_range); BN_free(sample_limit);
+            BN_free(coeff_scale);
             BN_free(V); BN_free(c0_exp); BN_free(C0);
             return false;
         }
         if (!bn_fixed(Ck, PAILLIER_CT_BYTES, commits_out.C_k[k])) {
-            BN_free(exp); BN_free(Ck);
+            BN_free(exp); BN_free(Ck); BN_free(xs[k]);
             for (auto* p : b) if (p) BN_free(p);
-            BN_free(range); BN_free(range_plus);
+            BN_free(coeff_range); BN_free(sample_limit);
+            BN_free(coeff_scale);
             BN_free(V); BN_free(c0_exp); BN_free(C0);
             return false;
         }
@@ -245,7 +263,8 @@ bool dao_reshare_vss_deal(
         BN_set_word(pow, j);
         for (uint32_t k = 0; k < t_new; ++k) {
             BIGNUM* term = BN_new();
-            BN_mul(term, delta, b[k], g.ctx);
+            BN_mul(term, delta, coeff_scale, g.ctx);
+            BN_mul(term, term, b[k], g.ctx);
             BN_mul(term, term, pow, g.ctx);
             BN_add(qj, qj, term);
             BN_free(term);
@@ -264,7 +283,8 @@ bool dao_reshare_vss_deal(
 
     BN_free(q_const);
     for (auto* p : b) if (p) BN_free(p);
-    BN_free(range); BN_free(range_plus);
+    for (auto* p : xs) if (p) BN_free(p);
+    BN_free(coeff_range); BN_free(sample_limit); BN_free(coeff_scale);
     BN_free(V); BN_free(c0_exp); BN_free(C0);
     return true;
 }

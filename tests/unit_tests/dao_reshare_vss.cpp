@@ -198,11 +198,11 @@ TEST(DaoReshareVss, EvaluationAndVk)
     std::vector<dao_reshare_vss_share> sh1, sh2;
     ASSERT_TRUE(dao_reshare_vss_deal(pk, out.record.V, s1.get(),
                                       mu1.get(), delta.get(),
-                                      degree, new_indices, 32,
+                                      degree, new_indices,
                                       ctx1, p1, c1, sh1));
     ASSERT_TRUE(dao_reshare_vss_deal(pk, out.record.V, s2.get(),
                                       mu2.get(), delta.get(),
-                                      degree, new_indices, 32,
+                                      degree, new_indices,
                                       ctx2, p2, c2, sh2));
     ASSERT_EQ(sh1.size(), 3u);
     ASSERT_EQ(sh2.size(), 3u);
@@ -298,7 +298,7 @@ TEST(DaoReshareVss, RejectsTamperedEvaluation)
     std::vector<dao_reshare_vss_share> sh1;
     ASSERT_TRUE(dao_reshare_vss_deal(pk, out.record.V, s1.get(),
                                       mu1.get(), delta.get(),
-                                      1, {4, 5, 6}, 32,
+                                      1, {4, 5, 6},
                                       ctx1, p1, c1, sh1));
     ctx1.C_i0 = c1.C_0;
 
@@ -341,7 +341,7 @@ TEST(DaoReshareVss, RejectsTamperedCommitment)
     std::vector<dao_reshare_vss_share> sh1;
     ASSERT_TRUE(dao_reshare_vss_deal(pk, out.record.V, s1.get(),
                                       mu1.get(), delta.get(),
-                                      1, {4, 5, 6}, 32,
+                                      1, {4, 5, 6},
                                       ctx1, p1, c1, sh1));
     ctx1.C_i0 = c1.C_0;
 
@@ -390,11 +390,11 @@ TEST(DaoReshareVss, RejectsSwappedC0)
     std::vector<dao_reshare_vss_share> sh1, sh2;
     ASSERT_TRUE(dao_reshare_vss_deal(pk, out.record.V, s1.get(),
                                       mu1.get(), delta.get(),
-                                      1, {4, 5, 6}, 32,
+                                      1, {4, 5, 6},
                                       ctx1, p1, c1, sh1));
     ASSERT_TRUE(dao_reshare_vss_deal(pk, out.record.V, s2.get(),
                                       mu2.get(), delta.get(),
-                                      1, {4, 5, 6}, 32,
+                                      1, {4, 5, 6},
                                       ctx2, p2, c2, sh2));
 
     // Take contributor 1's proof but present contributor 2's C_0.
