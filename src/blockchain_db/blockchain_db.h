@@ -31,6 +31,7 @@
 #pragma once
 
 namespace cryptonote { namespace dao { struct dao_tally_key_record; struct dao_tally_session; } }
+namespace cryptonote { namespace dao { struct dao_share_set_record; } }
 namespace cryptonote { namespace dao { struct dao_supply_snapshot; } }
 namespace cryptonote { namespace dao { struct dao_v2_outcome_record; } }
 
@@ -2220,6 +2221,19 @@ public:
     virtual bool get_dao_local_share(uint32_t epoch, uint32_t member_index,
                                      std::vector<uint8_t>& share_blob) const = 0;
     virtual void remove_dao_local_share(uint32_t epoch, uint32_t member_index) = 0;
+
+    // Persist a share-set record. Keyed by monotone share_set_id.
+    // share_set_id is NOT a public-key epoch: the stable Paillier key
+    // does not change when the share set changes.
+    virtual void add_dao_share_set(uint64_t share_set_id,
+                                   const dao::dao_share_set_record& record) = 0;
+    virtual bool get_dao_share_set(uint64_t share_set_id,
+                                   dao::dao_share_set_record& record) const = 0;
+    virtual void remove_dao_share_set(uint64_t share_set_id) = 0;
+
+    // The highest share_set_id ever written, or 0 if none exists.
+    virtual uint64_t get_current_dao_share_set_id() const = 0;
+    virtual void set_current_dao_share_set_id(uint64_t share_set_id) = 0;
     // ---------- VNS DAO LOCAL SHARE END ----------
 
     // BEGIN_VNS_DAO_LOCAL_DYNAMIC_SHARES

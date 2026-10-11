@@ -46,6 +46,7 @@
 #define LMDB_DAO_LOCAL_SHARES "dao_local_shares"
 #define LMDB_DAO_LOCAL_DYNAMIC_SHARES "dao_local_dynamic_shares"
 #define LMDB_DAO_TALLY_SESSIONS "dao_tally_sessions"
+#define LMDB_DAO_SHARE_SETS "dao_share_sets"
 #define LMDB_DAO_PROPOSAL_AGGREGATES "dao_proposal_aggregates"
 
 namespace cryptonote
@@ -104,6 +105,7 @@ typedef struct mdb_txn_cursors
   MDB_cursor *m_txc_dao_local_shares;
   MDB_cursor *m_txc_dao_local_dynamic_shares;
   MDB_cursor *m_txc_dao_tally_sessions;
+  MDB_cursor *m_txc_dao_share_sets;
   MDB_cursor *m_txc_extension_policy;
   MDB_cursor *m_txc_premium_label_policy;
   MDB_cursor *m_txc_banned_label_policy;
@@ -156,6 +158,7 @@ typedef struct mdb_txn_cursors
 #define m_cur_dao_local_shares     m_cursors->m_txc_dao_local_shares
 #define m_cur_dao_local_dynamic_shares     m_cursors->m_txc_dao_local_dynamic_shares
 #define m_cur_dao_tally_sessions     m_cursors->m_txc_dao_tally_sessions
+#define m_cur_dao_share_sets       m_cursors->m_txc_dao_share_sets
 #define m_cur_proposal_data        m_cursors->m_txc_proposal_data
 #define m_cur_pending_executions   m_cursors->m_txc_pending_executions
 #define m_cur_governance_parameters  m_cursors->m_txc_governance_parameters
@@ -219,6 +222,7 @@ typedef struct mdb_rflags
   bool m_rf_dao_local_shares;
   bool m_rf_dao_local_dynamic_shares;
   bool m_rf_dao_tally_sessions;
+  bool m_rf_dao_share_sets;
 } mdb_rflags;
 
 typedef struct mdb_threadinfo
@@ -643,6 +647,13 @@ public:
   virtual bool get_dao_local_share(uint32_t epoch, uint32_t member_index,
                                    std::vector<uint8_t>& share_blob) const override;
   virtual void remove_dao_local_share(uint32_t epoch, uint32_t member_index) override;
+  virtual void add_dao_share_set(uint64_t share_set_id,
+                                 const dao::dao_share_set_record& record) override;
+  virtual bool get_dao_share_set(uint64_t share_set_id,
+                                 dao::dao_share_set_record& record) const override;
+  virtual void remove_dao_share_set(uint64_t share_set_id) override;
+  virtual uint64_t get_current_dao_share_set_id() const override;
+  virtual void set_current_dao_share_set_id(uint64_t share_set_id) override;
   virtual void add_dao_local_dynamic_share(uint32_t share_epoch,
                                            const std::vector<uint8_t>& share_blob) override;
   virtual bool get_dao_local_dynamic_share(uint32_t share_epoch,
@@ -841,6 +852,7 @@ private:
   MDB_dbi m_dao_local_shares;
   MDB_dbi m_dao_local_dynamic_shares;
   MDB_dbi m_dao_tally_sessions;
+  MDB_dbi m_dao_share_sets;
 
   mutable uint64_t m_cum_size;
   mutable unsigned int m_cum_count;

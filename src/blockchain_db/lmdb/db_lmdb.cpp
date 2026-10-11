@@ -3697,6 +3697,116 @@ void BlockchainLMDB::remove_dao_v2_outcome(const crypto::hash& proposal_id)
 }
 // END_VNS_DAO_V2_OUTCOMES
 
+// BEGIN_VNS_DAO_SHARE_SETS
+namespace {
+void share_set_encode_key(uint64_t id, unsigned char out[8])
+{
+  for (int i = 0; i < 8; ++i) out[i] = (id >> (8*(7-i))) & 0xff;
+}
+uint64_t share_set_decode_key(const unsigned char in[8])
+{
+  uint64_t x = 0;
+  for (int i = 0; i < 8; ++i) x = (x << 8) | in[i];
+  return x;
+}
+constexpr unsigned char SHARE_SET_CURRENT_KEY = 0x53; // 'S'
+} // namespace
+
+void BlockchainLMDB::add_dao_share_set(uint64_t share_set_id,
+                                       const dao::dao_share_set_record& record)
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+
+  std::vector<uint8_t> blob;
+  if (!record.serialize(blob))
+    throw0(DB_ERROR("Failed to serialize dao_share_set_record"));
+
+  lmdb_cursor_guard cur(m_write_txn->m_txn, m_dao_share_sets);
+  unsigned char kbuf[8];
+  share_set_encode_key(share_set_id, kbuf);
+  MDB_val k = { sizeof(kbuf), kbuf };
+  MDB_val v = { blob.size(), blob.empty() ? nullptr : (void*)blob.data() };
+  int result = mdb_cursor_put(cur.get(), &k, &v, MDB_NODUPDATA);
+  if (result == MDB_KEYEXIST)
+    result = mdb_cursor_put(cur.get(), &k, &v, MDB_CURRENT);
+  if (result)
+    throw0(DB_ERROR(lmdb_error("Failed to add dao share set: ", result).c_str()));
+}
+
+bool BlockchainLMDB::get_dao_share_set(uint64_t share_set_id,
+                                       dao::dao_share_set_record& record) const
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+  TXN_PREFIX_RDONLY();
+  RCURSOR(dao_share_sets)
+  unsigned char kbuf[8];
+  share_set_encode_key(share_set_id, kbuf);
+  MDB_val k = { sizeof(kbuf), kbuf };
+  MDB_val v;
+  int result = mdb_cursor_get(m_cur_dao_share_sets, &k, &v, MDB_SET);
+  if (result == MDB_NOTFOUND) { TXN_POSTFIX_RDONLY(); return false; }
+  if (result)
+    throw0(DB_ERROR(lmdb_error("Failed to get dao share set: ", result).c_str()));
+  std::vector<uint8_t> blob(static_cast<const uint8_t*>(v.mv_data),
+                             static_cast<const uint8_t*>(v.mv_data) + v.mv_size);
+  TXN_POSTFIX_RDONLY();
+  return record.deserialize(blob);
+}
+
+void BlockchainLMDB::remove_dao_share_set(uint64_t share_set_id)
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+  lmdb_cursor_guard cur(m_write_txn->m_txn, m_dao_share_sets);
+  unsigned char kbuf[8];
+  share_set_encode_key(share_set_id, kbuf);
+  MDB_val k = { sizeof(kbuf), kbuf };
+  int result = mdb_cursor_get(cur.get(), &k, NULL, MDB_SET);
+  if (result == MDB_SUCCESS)
+    mdb_cursor_del(cur.get(), 0);
+  else if (result != MDB_NOTFOUND)
+    throw0(DB_ERROR(lmdb_error("Failed to remove dao share set: ", result).c_str()));
+}
+
+uint64_t BlockchainLMDB::get_current_dao_share_set_id() const
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+  TXN_PREFIX_RDONLY();
+  RCURSOR(tally_state)
+  unsigned char kbuf[1] = { SHARE_SET_CURRENT_KEY };
+  MDB_val k = { sizeof(kbuf), kbuf };
+  MDB_val v;
+  int result = mdb_cursor_get(m_cur_tally_state, &k, &v, MDB_SET);
+  if (result == MDB_NOTFOUND) { TXN_POSTFIX_RDONLY(); return 0; }
+  if (result)
+    throw0(DB_ERROR(lmdb_error("Failed to get current share set id: ", result).c_str()));
+  if (v.mv_size != 8) { TXN_POSTFIX_RDONLY(); return 0; }
+  const uint64_t id = share_set_decode_key(static_cast<const unsigned char*>(v.mv_data));
+  TXN_POSTFIX_RDONLY();
+  return id;
+}
+
+void BlockchainLMDB::set_current_dao_share_set_id(uint64_t share_set_id)
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+  lmdb_cursor_guard cur(m_write_txn->m_txn, m_tally_state);
+  unsigned char kbuf[1] = { SHARE_SET_CURRENT_KEY };
+  unsigned char vbuf[8];
+  share_set_encode_key(share_set_id, vbuf);
+  MDB_val k = { sizeof(kbuf), kbuf };
+  MDB_val v = { sizeof(vbuf), vbuf };
+  int result = mdb_cursor_put(cur.get(), &k, &v, MDB_NODUPDATA);
+  if (result == MDB_KEYEXIST)
+    result = mdb_cursor_put(cur.get(), &k, &v, MDB_CURRENT);
+  if (result)
+    throw0(DB_ERROR(lmdb_error("Failed to set current share set id: ", result).c_str()));
+}
+// END_VNS_DAO_SHARE_SETS
+
 // BEGIN_VNS_DAO_LOCAL_SHARES
 namespace {
 void local_share_encode_key(uint32_t epoch, uint32_t idx, unsigned char out[8])

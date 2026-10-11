@@ -198,6 +198,11 @@ public:
   virtual void add_dao_local_share(uint32_t, uint32_t, const std::vector<uint8_t>&) override {}
   virtual bool get_dao_local_share(uint32_t, uint32_t, std::vector<uint8_t>&) const override { return false; }
   virtual void remove_dao_local_share(uint32_t, uint32_t) override {}
+  virtual void add_dao_share_set(uint64_t, const dao::dao_share_set_record&) override {}
+  virtual bool get_dao_share_set(uint64_t, dao::dao_share_set_record&) const override { return false; }
+  virtual void remove_dao_share_set(uint64_t) override {}
+  virtual uint64_t get_current_dao_share_set_id() const override { return 0; }
+  virtual void set_current_dao_share_set_id(uint64_t) override {}
   virtual void add_dao_local_dynamic_share(uint32_t, const std::vector<uint8_t>&) override {}
   virtual bool get_dao_local_dynamic_share(uint32_t, std::vector<uint8_t>&) const override { return false; }
   virtual void remove_dao_local_dynamic_share(uint32_t) override {}
