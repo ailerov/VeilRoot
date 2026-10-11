@@ -1706,6 +1706,7 @@ void BlockchainLMDB::open(const std::string& filename, const int db_flags)
   lmdb_db_open(txn, LMDB_TALLY_KEYS, MDB_CREATE, m_tally_keys, "Failed to open db handle for tally_keys");
   // tally_state: singleton. Key = 0x45 ('E'), value = 4-byte BE current epoch.
   lmdb_db_open(txn, LMDB_TALLY_STATE, MDB_CREATE, m_tally_state, "Failed to open db handle for tally_state");
+  lmdb_db_open(txn, LMDB_DAO_SHARE_SETS, MDB_CREATE, m_dao_share_sets, "Failed to open db handle for dao_share_sets");
   // END_VNS_TALLY_KEYS
 
   // BEGIN_VNS_DAO_V2_VOTES

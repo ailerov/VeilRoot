@@ -344,6 +344,91 @@ TYPED_TEST(BlockchainDBTest, DaoTallyKeyRoundTrip)
   ASSERT_NO_THROW(this->m_db->close());
 }
 
+TYPED_TEST(BlockchainDBTest, DaoShareSetRoundTrip)
+{
+  boost::filesystem::path tempPath = boost::filesystem::temp_directory_path() / boost::filesystem::unique_path();
+  std::string dirPath = tempPath.string();
+  this->set_prefix(dirPath);
+
+  ASSERT_NO_THROW(this->m_db->open(dirPath));
+  this->get_filenames();
+
+  // Never-set current share set -> 0.
+  EXPECT_EQ(this->m_db->get_current_dao_share_set_id(), 0u);
+
+  auto make_record = [](uint64_t id, uint8_t fill) {
+    dao::dao_share_set_record r;
+    r.version = 1;
+    r.share_set_id = id;
+    r.height = 1000 + id;
+    r.threshold = 2;
+    r.key_id.assign(32, 0xAA);
+    r.committee_id_hash.assign(32, static_cast<uint8_t>(0x10 + fill));
+    for (int i = 0; i < 3; ++i) {
+      r.committee_members.push_back(std::vector<uint8_t>(32, fill + i));
+      r.VK_i.push_back(std::vector<uint8_t>(512, fill + i));
+    }
+    return r;
+  };
+
+  auto rec1 = make_record(1, 0x20);
+
+  {
+    db_wtxn_guard guard(this->m_db);
+    ASSERT_NO_THROW(this->m_db->add_dao_share_set(1, rec1));
+    ASSERT_NO_THROW(this->m_db->set_current_dao_share_set_id(1));
+  }
+
+  EXPECT_EQ(this->m_db->get_current_dao_share_set_id(), 1u);
+
+  {
+    dao::dao_share_set_record got;
+    ASSERT_TRUE(this->m_db->get_dao_share_set(1, got));
+    EXPECT_EQ(got.share_set_id, 1u);
+    EXPECT_EQ(got.threshold, 2u);
+    EXPECT_EQ(got.committee_id_hash, rec1.committee_id_hash);
+    EXPECT_EQ(got.committee_members, rec1.committee_members);
+    EXPECT_EQ(got.VK_i, rec1.VK_i);
+  }
+
+  // Historical retention.
+  auto rec2 = make_record(2, 0x40);
+  {
+    db_wtxn_guard guard(this->m_db);
+    ASSERT_NO_THROW(this->m_db->add_dao_share_set(2, rec2));
+    ASSERT_NO_THROW(this->m_db->set_current_dao_share_set_id(2));
+  }
+
+  EXPECT_EQ(this->m_db->get_current_dao_share_set_id(), 2u);
+
+  {
+    dao::dao_share_set_record g1, g2;
+    ASSERT_TRUE(this->m_db->get_dao_share_set(1, g1));
+    ASSERT_TRUE(this->m_db->get_dao_share_set(2, g2));
+    EXPECT_EQ(g1.share_set_id, 1u);
+    EXPECT_EQ(g2.share_set_id, 2u);
+    EXPECT_NE(g1.committee_id_hash, g2.committee_id_hash);
+  }
+
+  {
+    dao::dao_share_set_record miss;
+    EXPECT_FALSE(this->m_db->get_dao_share_set(99, miss));
+  }
+
+  {
+    db_wtxn_guard guard(this->m_db);
+    ASSERT_NO_THROW(this->m_db->remove_dao_share_set(1));
+  }
+  {
+    dao::dao_share_set_record gone;
+    EXPECT_FALSE(this->m_db->get_dao_share_set(1, gone));
+    dao::dao_share_set_record still;
+    EXPECT_TRUE(this->m_db->get_dao_share_set(2, still));
+  }
+
+  ASSERT_NO_THROW(this->m_db->close());
+}
+
 TYPED_TEST(BlockchainDBTest, DaoVoteRecordV2RoundTrip)
 {
   boost::filesystem::path tempPath = boost::filesystem::temp_directory_path() / boost::filesystem::unique_path();
