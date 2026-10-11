@@ -28,6 +28,7 @@
 
 #include "crypto/crypto.h"
 #include "governance/dao_paillier.h"
+#include "governance/dao_reshare_proof.h"
 
 namespace cryptonote {
 namespace dao {
@@ -56,6 +57,9 @@ struct dao_reshare_vss_share
     std::vector<uint8_t> q_i_j;   // signed serialization
 };
 
+// The link context is passed by value. On return it carries the
+// computed C_i0 in ctx.C_i0 and the accompanying common-exponent
+// proof in link_proof_out. The caller must not pre-populate C_i0.
 bool dao_reshare_vss_deal(
     const PaillierPublicKey& pk,
     const std::vector<uint8_t>& V_bytes,
@@ -65,12 +69,19 @@ bool dao_reshare_vss_deal(
     uint32_t t_new,
     const std::vector<uint32_t>& new_indices,
     uint32_t range_bits,
+    dao_reshare_link_context link_ctx,
+    dao_reshare_link_proof& link_proof_out,
     dao_reshare_vss_commitments& commits_out,
     std::vector<dao_reshare_vss_share>& shares_out);
 
+// Verifies the accompanying common-exponent proof first, then the
+// evaluation. Any commitment with a missing or invalid link proof is
+// rejected regardless of the evaluation.
 bool dao_reshare_vss_verify(
     const PaillierPublicKey& pk,
     const std::vector<uint8_t>& V_bytes,
+    const dao_reshare_link_context& link_ctx,
+    const dao_reshare_link_proof& link_proof,
     const dao_reshare_vss_commitments& commits,
     uint32_t j,
     const std::vector<uint8_t>& q_i_j);

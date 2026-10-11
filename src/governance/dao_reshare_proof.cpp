@@ -62,6 +62,15 @@ bool modexp_signed(const BIGNUM* base, const BIGNUM* exp,
     return ok;
 }
 
+bool bn_from_signed(const std::vector<uint8_t>& in, BIGNUM* out)
+{
+    if (in.size() != 1 + 512) return false;
+    if (in[0] != 0 && in[0] != 1) return false;
+    BN_bin2bn(in.data() + 1, 512, out);
+    if (in[0] == 1) BN_set_negative(out, 1);
+    return true;
+}
+
 bool bn_to_fixed(const BIGNUM* b, size_t width, std::vector<uint8_t>& out)
 {
     out.assign(width, 0);
@@ -196,9 +205,9 @@ bool dao_reshare_link_prove(
                             static_cast<int>(ctx.C_i0.size()), nullptr);
     BIGNUM* Dl = BN_bin2bn(ctx.Delta.data(),
                             static_cast<int>(ctx.Delta.size()), nullptr);
-    BIGNUM* mu = BN_bin2bn(ctx.mu_i.data(),
-                            static_cast<int>(ctx.mu_i.size()), nullptr);
-    if (!N || !V || !VK || !C0 || !Dl || !mu) {
+    BIGNUM* mu = BN_new();
+    if (!N || !V || !VK || !C0 || !Dl || !mu ||
+        !bn_from_signed(ctx.mu_i, mu)) {
         BN_free(N); BN_free(V); BN_free(VK); BN_free(C0);
         BN_free(Dl); BN_free(mu);
         return false;
@@ -209,8 +218,8 @@ bool dao_reshare_link_prove(
 
     BIGNUM* g1 = BN_new();
     BIGNUM* g2 = BN_new();
-    if (!BN_mod_exp(g1, V, Dl, N2, g.ctx) ||
-        !BN_mod_exp(g2, V, mu, N2, g.ctx)) {
+    if (!modexp_signed(V, Dl, N2, g1, g.ctx) ||
+        !modexp_signed(V, mu, N2, g2, g.ctx)) {
         BN_free(N); BN_free(V); BN_free(VK); BN_free(C0);
         BN_free(Dl); BN_free(mu); BN_free(N2);
         BN_free(g1); BN_free(g2);
@@ -340,9 +349,9 @@ bool dao_reshare_link_verify(
                             static_cast<int>(ctx.C_i0.size()), nullptr);
     BIGNUM* Dl = BN_bin2bn(ctx.Delta.data(),
                             static_cast<int>(ctx.Delta.size()), nullptr);
-    BIGNUM* mu = BN_bin2bn(ctx.mu_i.data(),
-                            static_cast<int>(ctx.mu_i.size()), nullptr);
-    if (!N || !V || !VK || !C0 || !Dl || !mu) {
+    BIGNUM* mu = BN_new();
+    if (!N || !V || !VK || !C0 || !Dl || !mu ||
+        !bn_from_signed(ctx.mu_i, mu)) {
         BN_free(N); BN_free(V); BN_free(VK); BN_free(C0);
         BN_free(Dl); BN_free(mu);
         return false;
@@ -353,8 +362,8 @@ bool dao_reshare_link_verify(
 
     BIGNUM* g1 = BN_new();
     BIGNUM* g2 = BN_new();
-    if (!BN_mod_exp(g1, V, Dl, N2, g.ctx) ||
-        !BN_mod_exp(g2, V, mu, N2, g.ctx)) {
+    if (!modexp_signed(V, Dl, N2, g1, g.ctx) ||
+        !modexp_signed(V, mu, N2, g2, g.ctx)) {
         BN_free(N); BN_free(V); BN_free(VK); BN_free(C0);
         BN_free(Dl); BN_free(mu); BN_free(N2);
         BN_free(g1); BN_free(g2);

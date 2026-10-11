@@ -16,6 +16,7 @@
 #include "governance/dao_dkg_transport.h"
 #include "governance/dao_paillier.h"
 #include "governance/dao_reshare_proof.h"
+#include "governance/dao_reshare_proof.h"
 #include "governance/dao_reshare_vss.h"
 #include "crypto/crypto.h"
 
@@ -102,6 +103,49 @@ bool modexp_signed(const BIGNUM* base, const BIGNUM* exp,
     return ok;
 }
 
+dao_reshare_link_context make_link_ctx(
+    const dkg_result& out,
+    uint32_t member_index,
+    const std::vector<uint8_t>& C0_placeholder)
+{
+    dao_reshare_link_context ctx;
+    ctx.genesis_block_hash = []{
+        crypto::hash h{}; std::memset(h.data, 0xAA, 32); return h;
+    }();
+    ctx.stable_key_record_hash.assign(32, 0xBB);
+    ctx.share_set_id = 1;
+    ctx.contributor_pubkey.assign(32, 0xCC);
+    ctx.original_index = member_index;
+    ctx.contributor_subset = {1, 2};
+    ctx.N    = out.record.N;
+    ctx.V    = out.record.V;
+    ctx.VK_i = out.record.V_K_i[member_index - 1];
+    ctx.C_i0 = C0_placeholder;
+    // Delta and mu_i are filled by the caller.
+    return ctx;
+}
+
+BN_ptr bn_from_dec_pub(const std::string& s)
+{
+    BIGNUM* b = nullptr;
+    if (BN_dec2bn(&b, s.c_str()) == 0) {
+        if (b) BN_free(b);
+        return BN_ptr();
+    }
+    return BN_ptr(b);
+}
+
+std::vector<uint8_t> mu_signed_bytes(const BIGNUM* m)
+{
+    std::vector<uint8_t> out(1 + 512, 0);
+    out[0] = BN_is_negative(m) ? 1 : 0;
+    BIGNUM* a = BN_dup(m);
+    BN_set_negative(a, 0);
+    BN_bn2binpad(a, out.data() + 1, 512);
+    BN_free(a);
+    return out;
+}
+
 } // namespace
 
 TEST(DaoReshareVss, EvaluationAndVk)
@@ -135,24 +179,41 @@ TEST(DaoReshareVss, EvaluationAndVk)
     const uint32_t degree = 1;
     std::vector<uint32_t> new_indices = {4, 5, 6};
 
+    // Delta bytes and mu bytes for the two contributors.
+    std::vector<uint8_t> delta_bytes(32, 0);
+    BN_bn2binpad(delta.get(), delta_bytes.data(), 32);
+
+    auto mu1_bytes = mu_signed_bytes(mu1.get());
+    auto mu2_bytes = mu_signed_bytes(mu2.get());
+
+    auto ctx1 = make_link_ctx(out, 1, {});
+    auto ctx2 = make_link_ctx(out, 2, {});
+    ctx1.Delta = delta_bytes;
+    ctx1.mu_i  = mu1_bytes;
+    ctx2.Delta = delta_bytes;
+    ctx2.mu_i  = mu2_bytes;
+
     dao_reshare_vss_commitments c1, c2;
+    dao_reshare_link_proof p1, p2;
     std::vector<dao_reshare_vss_share> sh1, sh2;
     ASSERT_TRUE(dao_reshare_vss_deal(pk, out.record.V, s1.get(),
                                       mu1.get(), delta.get(),
                                       degree, new_indices, 32,
-                                      c1, sh1));
+                                      ctx1, p1, c1, sh1));
     ASSERT_TRUE(dao_reshare_vss_deal(pk, out.record.V, s2.get(),
                                       mu2.get(), delta.get(),
                                       degree, new_indices, 32,
-                                      c2, sh2));
+                                      ctx2, p2, c2, sh2));
     ASSERT_EQ(sh1.size(), 3u);
     ASSERT_EQ(sh2.size(), 3u);
 
+    ctx1.C_i0 = c1.C_0;
+    ctx2.C_i0 = c2.C_0;
     for (size_t k = 0; k < new_indices.size(); ++k) {
-        ASSERT_TRUE(dao_reshare_vss_verify(pk, out.record.V, c1,
-                                            new_indices[k], sh1[k].q_i_j));
-        ASSERT_TRUE(dao_reshare_vss_verify(pk, out.record.V, c2,
-                                            new_indices[k], sh2[k].q_i_j));
+        ASSERT_TRUE(dao_reshare_vss_verify(pk, out.record.V, ctx1, p1,
+                                            c1, new_indices[k], sh1[k].q_i_j));
+        ASSERT_TRUE(dao_reshare_vss_verify(pk, out.record.V, ctx2, p2,
+                                            c2, new_indices[k], sh2[k].q_i_j));
     }
 
     // Compute VK_j from both contributions and compare to
@@ -225,17 +286,26 @@ TEST(DaoReshareVss, RejectsTamperedEvaluation)
                                          out.test_SK[0].end()));
     ASSERT_NE(s1, nullptr);
 
+    std::vector<uint8_t> delta_bytes(32, 0);
+    BN_bn2binpad(delta.get(), delta_bytes.data(), 32);
+    auto mu1_bytes = mu_signed_bytes(mu1.get());
+    auto ctx1 = make_link_ctx(out, 1, {});
+    ctx1.Delta = delta_bytes;
+    ctx1.mu_i  = mu1_bytes;
+
     dao_reshare_vss_commitments c1;
+    dao_reshare_link_proof p1;
     std::vector<dao_reshare_vss_share> sh1;
     ASSERT_TRUE(dao_reshare_vss_deal(pk, out.record.V, s1.get(),
                                       mu1.get(), delta.get(),
                                       1, {4, 5, 6}, 32,
-                                      c1, sh1));
+                                      ctx1, p1, c1, sh1));
+    ctx1.C_i0 = c1.C_0;
 
     auto bad = sh1[0].q_i_j;
     bad[2] ^= 0x01;
-    EXPECT_FALSE(dao_reshare_vss_verify(pk, out.record.V, c1,
-                                         sh1[0].j, bad));
+    EXPECT_FALSE(dao_reshare_vss_verify(pk, out.record.V, ctx1, p1,
+                                         c1, sh1[0].j, bad));
 }
 
 TEST(DaoReshareVss, RejectsTamperedCommitment)
@@ -259,15 +329,79 @@ TEST(DaoReshareVss, RejectsTamperedCommitment)
                                          out.test_SK[0].end()));
     ASSERT_NE(s1, nullptr);
 
+    std::vector<uint8_t> delta_bytes(32, 0);
+    BN_bn2binpad(delta.get(), delta_bytes.data(), 32);
+    auto mu1_bytes = mu_signed_bytes(mu1.get());
+    auto ctx1 = make_link_ctx(out, 1, {});
+    ctx1.Delta = delta_bytes;
+    ctx1.mu_i  = mu1_bytes;
+
     dao_reshare_vss_commitments c1;
+    dao_reshare_link_proof p1;
     std::vector<dao_reshare_vss_share> sh1;
     ASSERT_TRUE(dao_reshare_vss_deal(pk, out.record.V, s1.get(),
                                       mu1.get(), delta.get(),
                                       1, {4, 5, 6}, 32,
-                                      c1, sh1));
+                                      ctx1, p1, c1, sh1));
+    ctx1.C_i0 = c1.C_0;
 
     auto bad_commits = c1;
     bad_commits.C_k[0][0] ^= 0x01;
-    EXPECT_FALSE(dao_reshare_vss_verify(pk, out.record.V, bad_commits,
-                                         sh1[0].j, sh1[0].q_i_j));
+    EXPECT_FALSE(dao_reshare_vss_verify(pk, out.record.V, ctx1, p1,
+                                         bad_commits, sh1[0].j, sh1[0].q_i_j));
+}
+
+
+TEST(DaoReshareVss, RejectsSwappedC0)
+{
+    dkg_result out;
+    ASSERT_TRUE(run_dkg_3(out));
+    ASSERT_TRUE(out.candidate_accepted);
+
+    PaillierPublicKey pk;
+    ASSERT_TRUE(pk.deserialize_modulus(out.record.N));
+
+    BIGNUM* delta_raw = BN_new();
+    BN_dec2bn(&delta_raw, "20922789888000");
+    BN_ptr delta(delta_raw);
+
+    const std::vector<uint32_t> S = {1, 2};
+    BN_ptr mu1(BN_new()), mu2(BN_new());
+    ASSERT_TRUE(dao_dkg_lagrange_mu(S, 1, mu1.get()));
+    ASSERT_TRUE(dao_dkg_lagrange_mu(S, 2, mu2.get()));
+
+    BN_ptr s1 = bn_from_dec(std::string(out.test_SK[0].begin(),
+                                         out.test_SK[0].end()));
+    BN_ptr s2 = bn_from_dec(std::string(out.test_SK[1].begin(),
+                                         out.test_SK[1].end()));
+    ASSERT_NE(s1, nullptr);
+    ASSERT_NE(s2, nullptr);
+
+    std::vector<uint8_t> delta_bytes(32, 0);
+    BN_bn2binpad(delta.get(), delta_bytes.data(), 32);
+
+    auto ctx1 = make_link_ctx(out, 1, {});
+    ctx1.Delta = delta_bytes; ctx1.mu_i = mu_signed_bytes(mu1.get());
+    auto ctx2 = make_link_ctx(out, 2, {});
+    ctx2.Delta = delta_bytes; ctx2.mu_i = mu_signed_bytes(mu2.get());
+
+    dao_reshare_vss_commitments c1, c2;
+    dao_reshare_link_proof p1, p2;
+    std::vector<dao_reshare_vss_share> sh1, sh2;
+    ASSERT_TRUE(dao_reshare_vss_deal(pk, out.record.V, s1.get(),
+                                      mu1.get(), delta.get(),
+                                      1, {4, 5, 6}, 32,
+                                      ctx1, p1, c1, sh1));
+    ASSERT_TRUE(dao_reshare_vss_deal(pk, out.record.V, s2.get(),
+                                      mu2.get(), delta.get(),
+                                      1, {4, 5, 6}, 32,
+                                      ctx2, p2, c2, sh2));
+
+    // Take contributor 1's proof but present contributor 2's C_0.
+    auto swapped = c1;
+    swapped.C_0 = c2.C_0;
+    auto ctx_swapped = ctx1;
+    ctx_swapped.C_i0 = c2.C_0;
+    EXPECT_FALSE(dao_reshare_vss_verify(pk, out.record.V, ctx_swapped, p1,
+                                         swapped, sh1[0].j, sh1[0].q_i_j));
 }

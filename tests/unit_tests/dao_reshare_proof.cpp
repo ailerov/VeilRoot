@@ -118,10 +118,11 @@ bool build_fixture(const dkg_result& out,
     std::vector<uint32_t> S = {1, 2};
     BIGNUM* mu = BN_new();
     if (!dao_dkg_lagrange_mu(S, member_index, mu)) return false;
-    fx.mu_bytes.assign(64, 0);
+    fx.mu_bytes.assign(1 + 512, 0);
+    fx.mu_bytes[0] = BN_is_negative(mu) ? 1 : 0;
     BIGNUM* abs_mu = BN_dup(mu);
     BN_set_negative(abs_mu, 0);
-    BN_bn2binpad(abs_mu, fx.mu_bytes.data(), 64);
+    BN_bn2binpad(abs_mu, fx.mu_bytes.data() + 1, 512);
     BN_free(abs_mu);
 
     // N, V, VK

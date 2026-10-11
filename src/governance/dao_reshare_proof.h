@@ -61,7 +61,10 @@ struct dao_reshare_link_context
     std::vector<uint8_t>  VK_i;   // PAILLIER_CT_BYTES
     std::vector<uint8_t>  C_i0;   // PAILLIER_CT_BYTES
     std::vector<uint8_t>  Delta;  // canonical big-endian
-    std::vector<uint8_t>  mu_i;   // canonical big-endian
+    // Signed serialization: 1 sign byte (0=nonneg, 1=negative) then
+    // 512 bytes big-endian magnitude. mu_i is a Lagrange coefficient
+    // and may be negative.
+    std::vector<uint8_t>  mu_i;
 };
 
 bool dao_reshare_link_prove(

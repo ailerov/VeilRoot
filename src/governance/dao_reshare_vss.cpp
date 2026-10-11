@@ -130,6 +130,8 @@ bool dao_reshare_vss_deal(
     uint32_t t_new,
     const std::vector<uint32_t>& new_indices,
     uint32_t range_bits,
+    dao_reshare_link_context link_ctx,
+    dao_reshare_link_proof& link_proof_out,
     dao_reshare_vss_commitments& commits_out,
     std::vector<dao_reshare_vss_share>& shares_out)
 {
@@ -159,6 +161,29 @@ bool dao_reshare_vss_deal(
 
     commits_out.t_new = t_new;
     if (!bn_fixed(C0, PAILLIER_CT_BYTES, commits_out.C_0)) {
+        BN_free(V); BN_free(c0_exp); BN_free(C0);
+        return false;
+    }
+
+    // Bind C_0 to the contributor's existing VK_i via the
+    // common-exponent proof. The transcript commits to the just-computed
+    // C_0 via link_ctx.
+    link_ctx.C_i0 = commits_out.C_0;
+    {
+        std::vector<uint8_t> sgn(1 + 512, 0);
+        sgn[0] = BN_is_negative(mu_i) ? 1 : 0;
+        BIGNUM* abs_mu = BN_dup(mu_i);
+        BN_set_negative(abs_mu, 0);
+        if (static_cast<size_t>(BN_num_bytes(abs_mu)) > 512) {
+            BN_free(abs_mu);
+            BN_free(V); BN_free(c0_exp); BN_free(C0);
+            return false;
+        }
+        BN_bn2binpad(abs_mu, sgn.data() + 1, 512);
+        BN_free(abs_mu);
+        link_ctx.mu_i = std::move(sgn);
+    }
+    if (!dao_reshare_link_prove(link_ctx, s_i, link_proof_out)) {
         BN_free(V); BN_free(c0_exp); BN_free(C0);
         return false;
     }
@@ -247,11 +272,22 @@ bool dao_reshare_vss_deal(
 bool dao_reshare_vss_verify(
     const PaillierPublicKey& pk,
     const std::vector<uint8_t>& V_bytes,
+    const dao_reshare_link_context& link_ctx,
+    const dao_reshare_link_proof& link_proof,
     const dao_reshare_vss_commitments& commits,
     uint32_t j,
     const std::vector<uint8_t>& q_i_j)
 {
     if (!pk.valid()) return false;
+
+    // The common-exponent proof must validate against the same C_0
+    // stored in the commitments. This rejects a swapped C_0 that
+    // belongs to a different contributor.
+    {
+        if (link_ctx.C_i0.size() != PAILLIER_CT_BYTES) return false;
+        if (link_ctx.C_i0 != commits.C_0) return false;
+        if (!dao_reshare_link_verify(link_ctx, link_proof)) return false;
+    }
     if (V_bytes.size() != PAILLIER_CT_BYTES) return false;
     if (commits.C_0.size() != PAILLIER_CT_BYTES) return false;
     if (commits.C_k.size() != commits.t_new) return false;
