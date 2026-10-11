@@ -24,6 +24,7 @@ set(governance_sources
     tally_manager.cpp
     dao_dkg.cpp
     dao_reshare_proof.cpp
+    dao_reshare_vss.cpp
     dao_wallet_v2.cpp
     dao_dkg_transport.cpp
     dao_consistency.cpp

@@ -133,6 +133,7 @@ set(unit_tests_sources
   dao_v2_replay.cpp
   dao_reshare_algebra.cpp
   dao_reshare_proof.cpp
+  dao_reshare_vss.cpp
   voting_weight.cpp
   vns_transfer.cpp)
 
