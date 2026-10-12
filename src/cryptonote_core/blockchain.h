@@ -42,6 +42,7 @@
 #include <boost/multi_index/global_fun.hpp>
 #include <boost/multi_index/hashed_index.hpp>
 #include <boost/multi_index/member.hpp>
+#include <openssl/bn.h>
 #include <atomic>
 #include <thread>
 #include <functional>
@@ -71,6 +72,7 @@
 #include "governance/domain_policy.h"
 #include "governance/dao_tally_share.h"
 #include "governance/dao_dkg.h"
+#include "governance/dao_reshare_pipeline.h"
 #include <array>
 #include <deque>
 #include <mutex>
@@ -1458,6 +1460,19 @@ namespace cryptonote
   // results queued by the DKG watcher threads onto this owner thread.
   void maybe_process_dao_v2_dkg_results();
 
+  // Lifecycle hook called from the daemon idle loop. If the eligible
+  // node set has grown beyond the current share set, starts a
+  // resharing so that every eligible node holds a share. Idempotent:
+  // does nothing while a reshare is already running or when the
+  // share set already covers every eligible node.
+  void maybe_maintain_dao_v2_share_set();
+
+  // Reshare P2P handler. Routes a reshare message to the running
+  // runner, if any. Called from handle_dao_v2_dkg_msg when the wire
+  // payload is a reshare message rather than a DKG message.
+  void handle_dao_v2_reshare_msg(const crypto::public_key& from,
+                                 const std::string& payload);
+
   // Producer side. Called once from the bootstrap path. Spawns the
   // runner for the current committee. Fails if a runner is already
   // running.
@@ -1804,6 +1819,25 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
         m_dao_v2_key_ready_submitted;
     mutable std::mutex m_dao_v2_key_ready_mutex;
     // END_VNS_DAO_V2_KEY_READY
+
+    // BEGIN_VNS_DAO_V2_RESHARE
+    // Single reshare runner. Only one reshare runs at a time. The
+    // runner holds raw pointers into the backing storage below, so
+    // that storage must outlive it and is cleared together with it.
+    std::unique_ptr<dao::dao_reshare_runner>
+        m_dao_v2_reshare_runner;
+    std::unique_ptr<dao::dao_vss_group>
+        m_dao_v2_reshare_vss;
+    std::unique_ptr<dao::PaillierPublicKey>
+        m_dao_v2_reshare_pk;
+    std::unique_ptr<BIGNUM, void(*)(BIGNUM*)>
+        m_dao_v2_reshare_delta{nullptr, BN_free};
+    std::unique_ptr<BIGNUM, void(*)(BIGNUM*)>
+        m_dao_v2_reshare_s_i{nullptr, BN_free};
+    std::unique_ptr<BIGNUM, void(*)(BIGNUM*)>
+        m_dao_v2_reshare_mu_i{nullptr, BN_free};
+    mutable std::mutex m_dao_v2_reshare_mutex;
+    // END_VNS_DAO_V2_RESHARE
     // END_VNS_DAO_V2_DKG
     // END_VNS_DECRYPTION_STATE
 
