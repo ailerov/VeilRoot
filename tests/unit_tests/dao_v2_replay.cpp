@@ -1418,5 +1418,103 @@ TEST(DaoV2Replay, ReshareNewMemberReceivesShare)
         BN_CTX_free(ctx);
     }
 
+    // --------------------------------------------------------------
+    // Produce a tally share from the reshared set.
+    //
+    // The producer must index its output against the current (reshared)
+    // share set, and its proof must be built against that set's VK.
+    // We exercise this on node a.
+    // --------------------------------------------------------------
+    {
+        // Add a proposal and an aggregate on node a.
+        crypto::hash prop_id{};
+        std::memset(prop_id.data, 0x5A, 32);
+        const uint64_t VOTE_END = 50000;
+
+        PaillierPublicKey pk;
+        ASSERT_TRUE(pk.deserialize_modulus(dkg_out.record.N));
+        BIGNUM* W = BN_new(); BN_set_word(W, 1000);
+        BIGNUM* S = BN_new(); BN_set_word(S, 1000);
+        BIGNUM* B = BN_new(); BN_set_word(B, 5000);
+        BIGNUM* r1 = BN_new(); BN_set_word(r1, 3);
+        BIGNUM* r2 = BN_new(); BN_set_word(r2, 5);
+        BIGNUM* r3 = BN_new(); BN_set_word(r3, 7);
+        std::vector<uint8_t> E_W, E_S, E_B;
+        ASSERT_TRUE(pk.encrypt(W, r1, E_W));
+        ASSERT_TRUE(pk.encrypt(S, r2, E_S));
+        ASSERT_TRUE(pk.encrypt(B, r3, E_B));
+        BN_free(W); BN_free(S); BN_free(B);
+        BN_free(r1); BN_free(r2); BN_free(r3);
+
+        {
+            db_wtxn_guard g(&db_a);
+            proposal_record rec{};
+            std::memset(&rec, 0, sizeof(rec));
+            rec.proposal_id = prop_id;
+            rec.voting_period_days = 7;
+            rec.submission_height = VOTE_END - 1000;
+            rec.voting_end_height = VOTE_END;
+            std::memcpy(rec.tally_key_id.data,
+                        dkg_out.record.key_id.data(), 32);
+            rec.submission_tx_hash = prop_id;
+            rec.status = PROPOSAL_STATUS_ACTIVE;
+            rec.status_height = VOTE_END - 1000;
+            db_a.add_proposal_record(prop_id, rec);
+
+            dao_proposal_aggregate agg;
+            agg.aggregate_E_W = E_W;
+            agg.aggregate_E_S = E_S;
+            agg.aggregate_E_B = E_B;
+            agg.aggregate_C_W = rct::identity();
+            agg.aggregate_C_S = rct::identity();
+            agg.aggregate_C_B = rct::identity();
+            db_a.add_dao_proposal_aggregate(prop_id, agg);
+
+            dao::dao_supply_snapshot snap;
+            snap.height = VOTE_END;
+            snap.minted = dao::dao_u128(100000);
+            snap.circulating = dao::dao_u128(50000);
+            db_a.add_dao_supply_snapshot(snap);
+        }
+
+        // Broadcast callback captures the produced share.
+        dao::dao_v2_tally_share produced{};
+        bool got_share = false;
+        bc_a.set_dao_v2_tally_broadcast([&](const dao::dao_v2_tally_share& s) {
+            produced = s;
+            got_share = true;
+        });
+        bc_a.set_dao_v2_dkg_send([](const std::string&) -> bool {
+            return true;
+        });
+
+        {
+            db_wtxn_guard g(&db_a);
+            bc_a.maybe_produce_dao_v2_share(VOTE_END + 1);
+        }
+        ASSERT_TRUE(got_share) << "producer did not fire after reshare";
+        EXPECT_EQ(produced.proposal_id, prop_id);
+        EXPECT_EQ(std::memcmp(produced.tally_key_id.data(),
+                              dkg_out.record.key_id.data(), 32), 0);
+
+        // a's position in share set 2 must match its actual position.
+        size_t a_pos = 0;
+        bool found_a = false;
+        for (size_t i = 0; i < sa.committee_members.size(); ++i) {
+            if (sa.committee_members[i].size() != 32) continue;
+            if (std::memcmp(sa.committee_members[i].data(),
+                            a_pub.data, 32) == 0) {
+                a_pos = i + 1;
+                found_a = true;
+                break;
+            }
+        }
+        ASSERT_TRUE(found_a);
+        EXPECT_EQ(produced.member_index, a_pos);
+        EXPECT_FALSE(produced.partial_W.empty());
+        EXPECT_FALSE(produced.partial_S.empty());
+        EXPECT_FALSE(produced.partial_B.empty());
+    }
+
     boost::filesystem::remove_all(base);
 }
