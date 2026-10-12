@@ -9702,10 +9702,16 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
                   if (new_ss.committee_members[i].size() != 32) continue;
                   if (std::memcmp(new_ss.committee_members[i].data(),
                                   self_pk.data, 32) != 0) continue;
-                  m_db->add_dao_local_share(
-                      static_cast<uint32_t>(new_ss.share_set_id),
-                      static_cast<uint32_t>(i + 1),
-                      local_share);
+                  dao::dao_tally_key_record kr;
+                  if (m_db->get_dao_tally_key(kr)) {
+                    std::vector<uint8_t> packed =
+                        dao::dao_pack_local_share(kr.key_id, local_share);
+                    if (!packed.empty())
+                      m_db->add_dao_local_share(
+                          static_cast<uint32_t>(new_ss.share_set_id),
+                          static_cast<uint32_t>(i + 1),
+                          packed);
+                  }
                   break;
                 }
               }
@@ -9891,19 +9897,20 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     std::memcpy(cfg.link_ctx_base.contributor_pubkey.data(),
                 self_pk.data, 32);
     cfg.link_ctx_base.original_index = our_contrib_pos;
-    for (size_t i = 0; i < cur_ss.threshold; ++i)
-      cfg.link_ctx_base.contributor_subset.push_back(
-          contributor_indices[i]);
     cfg.link_ctx_base.N = key_rec.N;
     cfg.link_ctx_base.V = key_rec.V;
-    if (our_contrib_pos == 0 ||
-        our_contrib_pos > key_rec.V_K_i.size()) return;
-    cfg.link_ctx_base.VK_i = key_rec.V_K_i[our_contrib_pos - 1];
     cfg.link_ctx_base.C_i0.assign(dao::PAILLIER_CT_BYTES, 0);
-    {
-        std::vector<uint8_t> db(32, 0);
-        BN_bn2binpad(delta, db.data(), 32);
-        cfg.link_ctx_base.Delta = std::move(db);
+    if (our_contrib_pos != 0) {
+      // Contributor-only fields. A new-member-only node never produces
+      // a contribution, so it does not need these.
+      if (our_contrib_pos > key_rec.V_K_i.size()) return;
+      for (size_t i = 0; i < cur_ss.threshold; ++i)
+        cfg.link_ctx_base.contributor_subset.push_back(
+            contributor_indices[i]);
+      cfg.link_ctx_base.VK_i = key_rec.V_K_i[our_contrib_pos - 1];
+      std::vector<uint8_t> db(32, 0);
+      BN_bn2binpad(delta, db.data(), 32);
+      cfg.link_ctx_base.Delta = std::move(db);
     }
 
     // P2P callbacks. The runner hands out a serialized dao_reshare_msg
