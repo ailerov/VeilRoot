@@ -307,6 +307,25 @@ namespace cryptonote
         m_blockchain.is_dao_v2_tally_result_tx(tx);
     const bool is_dkg_activation_extra =
         m_blockchain.is_dao_v2_dkg_activation_tx(tx);
+    // Dedicated protocol transactions bypass the ordinary
+    // MAX_TX_EXTRA_SIZE limit, but they are not unbounded. A tally
+    // certificate carries three partial sets, each with up to
+    // DAO_DKG_MAX_COMMITTEE_SIZE entries of one 512-byte partial and
+    // one (32 + 1200)-byte proof. 96 KiB is a hard ceiling on the
+    // entire extra field for a tally-result transaction.
+    constexpr size_t DAO_TALLY_RESULT_MAX_EXTRA_BYTES = 96 * 1024;
+    if (is_tally_result_extra &&
+        tx_extra_size > DAO_TALLY_RESULT_MAX_EXTRA_BYTES)
+    {
+      LOG_PRINT_L1("DAO tally-result tx-extra exceeds protocol ceiling: "
+                   << tx_extra_size << " bytes, limit "
+                   << DAO_TALLY_RESULT_MAX_EXTRA_BYTES);
+      tvc.m_verifivation_failed = true;
+      tvc.m_tx_extra_too_big = true;
+      tvc.m_no_drop_offense = true;
+      return false;
+    }
+
     if (!kept_by_block &&
         tx_extra_size > MAX_TX_EXTRA_SIZE &&
         !is_tally_result_extra &&

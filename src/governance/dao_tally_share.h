@@ -23,7 +23,8 @@ namespace dao {
 
 struct dao_v2_tally_share
 {
-    uint8_t      version = 1;
+    static constexpr uint8_t WIRE_VERSION = 2;
+    uint8_t      version = WIRE_VERSION;
     crypto::hash proposal_id;
     uint64_t     vote_end_height = 0;
 

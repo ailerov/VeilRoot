@@ -1514,6 +1514,98 @@ TEST(DaoV2Replay, ReshareNewMemberReceivesShare)
         EXPECT_FALSE(produced.partial_W.empty());
         EXPECT_FALSE(produced.partial_S.empty());
         EXPECT_FALSE(produced.partial_B.empty());
+
+        // Now produce the same on B, then combine into a certificate.
+        {
+            db_wtxn_guard g(&db_b);
+            proposal_record rec{};
+            std::memset(&rec, 0, sizeof(rec));
+            rec.proposal_id = prop_id;
+            rec.voting_period_days = 7;
+            rec.submission_height = VOTE_END - 1000;
+            rec.voting_end_height = VOTE_END;
+            std::memcpy(rec.tally_key_id.data,
+                        dkg_out.record.key_id.data(), 32);
+            rec.submission_tx_hash = prop_id;
+            rec.status = PROPOSAL_STATUS_ACTIVE;
+            rec.status_height = VOTE_END - 1000;
+            db_b.add_proposal_record(prop_id, rec);
+
+            dao_proposal_aggregate agg;
+            agg.aggregate_E_W = E_W;
+            agg.aggregate_E_S = E_S;
+            agg.aggregate_E_B = E_B;
+            agg.aggregate_C_W = rct::identity();
+            agg.aggregate_C_S = rct::identity();
+            agg.aggregate_C_B = rct::identity();
+            db_b.add_dao_proposal_aggregate(prop_id, agg);
+
+            dao::dao_supply_snapshot snap;
+            snap.height = VOTE_END;
+            snap.minted = dao::dao_u128(100000);
+            snap.circulating = dao::dao_u128(50000);
+            db_b.add_dao_supply_snapshot(snap);
+        }
+
+        dao::dao_v2_tally_share share_b{};
+        bool got_b = false;
+        bc_b.set_dao_v2_tally_broadcast(
+            [&](const dao::dao_v2_tally_share& s) {
+                share_b = s;
+                got_b = true;
+            });
+        bc_b.set_dao_v2_dkg_send([](const std::string&) -> bool {
+            return true;
+        });
+        {
+            db_wtxn_guard g(&db_b);
+            bc_b.maybe_produce_dao_v2_share(VOTE_END + 1);
+        }
+        ASSERT_TRUE(got_b) << "producer did not fire on B";
+        EXPECT_EQ(share_b.proposal_id, prop_id);
+        EXPECT_NE(share_b.member_index, produced.member_index);
+
+        // Combine A's and B's shares into a certificate at A.
+        std::map<crypto::public_key, dao::dao_v2_tally_share> shares;
+        shares[a_pub] = produced;
+        shares[b_pub] = share_b;
+
+        const governance_params params =
+            governance_params::default_params();
+        cryptonote::TallyManager tm(db_a, params);
+        transaction result_tx;
+        ASSERT_TRUE(tm.build_tally_result_transaction(
+            prop_id, shares, 2, result_tx));
+
+        // Both nodes must validate the certificate.
+        ASSERT_TRUE(bc_a.validate_dao_v2_tally_result_tx(
+            result_tx, VOTE_END + 1));
+        ASSERT_TRUE(bc_b.validate_dao_v2_tally_result_tx(
+            result_tx, VOTE_END + 1));
+
+        // Apply on both nodes.
+        {
+            db_wtxn_guard g(&db_a);
+            ASSERT_TRUE(bc_a.apply_dao_v2_tally_result(
+                result_tx, VOTE_END + 1));
+        }
+        {
+            db_wtxn_guard g(&db_b);
+            ASSERT_TRUE(bc_b.apply_dao_v2_tally_result(
+                result_tx, VOTE_END + 1));
+        }
+
+        // Both must carry the same outcome.
+        dao::dao_v2_outcome_record out_a, out_b;
+        ASSERT_TRUE(db_a.get_dao_v2_outcome(prop_id, out_a));
+        ASSERT_TRUE(db_b.get_dao_v2_outcome(prop_id, out_b));
+        EXPECT_EQ(out_a.share_set_id, out_b.share_set_id);
+        EXPECT_EQ(out_a.passed, out_b.passed);
+        EXPECT_EQ(out_a.quorum_met, out_b.quorum_met);
+        EXPECT_EQ(out_a.majority_met, out_b.majority_met);
+        EXPECT_EQ(out_a.yes_weight, out_b.yes_weight);
+        EXPECT_EQ(out_a.no_weight, out_b.no_weight);
+        EXPECT_EQ(out_a.participation_coins, out_b.participation_coins);
     }
 
     boost::filesystem::remove_all(base);

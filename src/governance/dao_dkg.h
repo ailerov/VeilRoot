@@ -478,6 +478,16 @@ struct dao_partial_decryption
     std::vector<uint8_t> c_i;
 };
 
+// Partial-decryption proof response size. The response is
+//     Z = r + E * Delta * s
+// where r is bounded by N, E is a 32-byte challenge, Delta = 16!, and
+// s is the share being proven. For a bootstrap share s is ~2048 bits,
+// so Z fits in 512 bytes. For a reshared share (scaled by 2^8281) s is
+// ~8389 bits, so Z is ~8700 bits and does not fit in 512 bytes.
+// 1200 bytes is the fixed width for the response. It is not the same
+// as PAILLIER_CT_BYTES, which stays at 512 for actual ciphertexts.
+constexpr uint32_t DAO_DKG_PARTIAL_PROOF_Z_BYTES = 1200;
+
 struct dao_partial_decryption_proof
 {
     uint32_t             member_index = 0;

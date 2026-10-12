@@ -1474,11 +1474,51 @@ bool dao_partial_decryption_prove(const PaillierPublicKey& pk,
     if (!BN_mul(ed, ed, share, ctx.ctx)) return false;
     if (!BN_add(Z, randomness, ed)) return false;
 
+    // Response width. Fixed at DAO_DKG_PARTIAL_PROOF_Z_BYTES so a
+    // reshared share (magnitude ~2^8389) fits. Hard-fail on overflow;
+    // do not silently truncate.
     proof_out.member_index = member_index;
     E_to_bytes(E, proof_out.E);
-    proof_out.Z.assign(PAILLIER_CT_BYTES, 0);
-    BN_bn2binpad(Z, proof_out.Z.data(), PAILLIER_CT_BYTES);
 
+    if (static_cast<uint32_t>(BN_num_bytes(Z)) >
+        DAO_DKG_PARTIAL_PROOF_Z_BYTES) {
+        BN_free(c); BN_free(ci); BN_free(vk);
+        BN_free(c4); BN_free(four); BN_free(ci2);
+        BN_free(a); BN_free(b); BN_free(E); BN_free(Z); BN_free(ed);
+        proof_out.E.clear();
+        proof_out.Z.clear();
+        return false;
+    }
+    // Signed encoding: 1 sign byte (0 = nonneg, 1 = negative) then
+    // (DAO_DKG_PARTIAL_PROOF_Z_BYTES - 1) magnitude bytes.
+    proof_out.Z.assign(DAO_DKG_PARTIAL_PROOF_Z_BYTES, 0);
+    proof_out.Z[0] = BN_is_negative(Z) ? 1 : 0;
+    {
+        BIGNUM* abs_Z = BN_dup(Z);
+        BN_set_negative(abs_Z, 0);
+        const size_t mag = DAO_DKG_PARTIAL_PROOF_Z_BYTES - 1;
+        if (static_cast<size_t>(BN_num_bytes(abs_Z)) > mag) {
+            BN_free(abs_Z);
+            BN_free(c); BN_free(ci); BN_free(vk);
+            BN_free(c4); BN_free(four); BN_free(ci2);
+            BN_free(a); BN_free(b); BN_free(E); BN_free(Z); BN_free(ed);
+            proof_out.E.clear();
+            proof_out.Z.clear();
+            return false;
+        }
+        const int n = BN_bn2binpad(abs_Z,
+                                   proof_out.Z.data() + 1,
+                                   static_cast<int>(mag));
+        BN_free(abs_Z);
+        if (n != static_cast<int>(mag)) {
+            BN_free(c); BN_free(ci); BN_free(vk);
+            BN_free(c4); BN_free(four); BN_free(ci2);
+            BN_free(a); BN_free(b); BN_free(E); BN_free(Z); BN_free(ed);
+            proof_out.E.clear();
+            proof_out.Z.clear();
+            return false;
+        }
+    }
     BN_free(c); BN_free(ci); BN_free(vk);
     BN_free(c4); BN_free(four); BN_free(ci2);
     BN_free(a); BN_free(b); BN_free(E); BN_free(Z); BN_free(ed);
@@ -1496,20 +1536,23 @@ bool dao_partial_decryption_verify(const PaillierPublicKey& pk,
     if (!pk.valid()) return false;
     if (proof.member_index != member_index) return false;
     if (proof.E.size() != 32) return false;
-    if (proof.Z.size() != PAILLIER_CT_BYTES) return false;
+    if (proof.Z.size() != DAO_DKG_PARTIAL_PROOF_Z_BYTES) return false;
     if (V_K.size() != PAILLIER_CT_BYTES) return false;
     if (V_K_i.size() != PAILLIER_CT_BYTES) return false;
 
     CtxGuard ctx;
     if (!ctx.ok()) return false;
 
+    if (proof.Z[0] != 0 && proof.Z[0] != 1) return false;
     BIGNUM* c   = BN_bin2bn(c_bytes.data(),   static_cast<int>(c_bytes.size()),   nullptr);
     BIGNUM* ci  = BN_bin2bn(c_i_bytes.data(), static_cast<int>(c_i_bytes.size()), nullptr);
     BIGNUM* vk  = BN_bin2bn(V_K.data(),       static_cast<int>(V_K.size()),       nullptr);
     BIGNUM* vki = BN_bin2bn(V_K_i.data(),     static_cast<int>(V_K_i.size()),     nullptr);
     BIGNUM* E   = BN_bin2bn(proof.E.data(),   static_cast<int>(proof.E.size()),   nullptr);
-    BIGNUM* Z   = BN_bin2bn(proof.Z.data(),   static_cast<int>(proof.Z.size()),   nullptr);
+    BIGNUM* Z   = BN_bin2bn(proof.Z.data() + 1,
+                            static_cast<int>(proof.Z.size() - 1), nullptr);
     if (!c || !ci || !vk || !vki || !E || !Z) return false;
+    if (proof.Z[0] == 1) BN_set_negative(Z, 1);
 
     const BIGNUM* N2 = pk.N2();
 
@@ -1527,14 +1570,14 @@ bool dao_partial_decryption_verify(const PaillierPublicKey& pk,
 
     BIGNUM* a1 = BN_new();
     BIGNUM* a2 = BN_new();
-    if (!BN_mod_exp(a1, c4, Z, N2, ctx.ctx)) return false;
+    if (!modexp_signed(c4, Z, N2, a1, ctx.ctx)) return false;
     if (!modexp_signed(ci2, negE, N2, a2, ctx.ctx)) return false;
     BIGNUM* a = BN_new();
     BN_mod_mul(a, a1, a2, N2, ctx.ctx);
 
     BIGNUM* b1 = BN_new();
     BIGNUM* b2 = BN_new();
-    if (!BN_mod_exp(b1, vk, Z, N2, ctx.ctx)) return false;
+    if (!modexp_signed(vk, Z, N2, b1, ctx.ctx)) return false;
     if (!modexp_signed(vki, negE, N2, b2, ctx.ctx)) return false;
     BIGNUM* b = BN_new();
     BN_mod_mul(b, b1, b2, N2, ctx.ctx);

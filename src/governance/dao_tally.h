@@ -55,7 +55,7 @@ struct dao_partial_set
 
 struct dao_tally_certificate
 {
-    static constexpr uint8_t WIRE_VERSION = 2;
+    static constexpr uint8_t WIRE_VERSION = 3;
 
     crypto::hash         proposal_id;
     uint64_t             vote_end_height = 0;

@@ -84,6 +84,16 @@ bool pull_proof(const std::vector<uint8_t>& v, size_t& off,
 bool dao_v2_tally_share::serialize(std::vector<uint8_t>& out) const
 {
     out.clear();
+    if (version != WIRE_VERSION) return false;
+    if (partial_W.size() != PAILLIER_CT_BYTES) return false;
+    if (partial_S.size() != PAILLIER_CT_BYTES) return false;
+    if (partial_B.size() != PAILLIER_CT_BYTES) return false;
+    if (proof_W.E.size() != 32 ||
+        proof_W.Z.size() != DAO_DKG_PARTIAL_PROOF_Z_BYTES) return false;
+    if (proof_S.E.size() != 32 ||
+        proof_S.Z.size() != DAO_DKG_PARTIAL_PROOF_Z_BYTES) return false;
+    if (proof_B.E.size() != 32 ||
+        proof_B.Z.size() != DAO_DKG_PARTIAL_PROOF_Z_BYTES) return false;
     push_u8(out, version);
     out.insert(out.end(), proposal_id.data, proposal_id.data + 32);
     push_u64(out, vote_end_height);
@@ -104,8 +114,15 @@ bool dao_v2_tally_share::serialize(std::vector<uint8_t>& out) const
 
 bool dao_v2_tally_share::deserialize(const std::vector<uint8_t>& in)
 {
+    // Hard cap on the entire incoming P2P share before parsing. The
+    // largest legitimate share carries three 512-byte partials and
+    // three proofs of (32 + 1200) bytes each, plus fixed metadata.
+    constexpr size_t MAX_SHARE_BYTES = 8 * 1024;
+    if (in.size() > MAX_SHARE_BYTES) return false;
+
     size_t off = 0;
     if (!pull_u8(in, off, version)) return false;
+    if (version != WIRE_VERSION) return false;
     if (in.size() < off + 32) return false;
     std::memcpy(proposal_id.data, in.data() + off, 32); off += 32;
     if (!pull_u64(in, off, vote_end_height)) return false;
@@ -121,6 +138,15 @@ bool dao_v2_tally_share::deserialize(const std::vector<uint8_t>& in)
     if (!pull_proof(in, off, proof_W)) return false;
     if (!pull_proof(in, off, proof_S)) return false;
     if (!pull_proof(in, off, proof_B)) return false;
+    if (partial_W.size() != PAILLIER_CT_BYTES) return false;
+    if (partial_S.size() != PAILLIER_CT_BYTES) return false;
+    if (partial_B.size() != PAILLIER_CT_BYTES) return false;
+    if (proof_W.E.size() != 32 ||
+        proof_W.Z.size() != DAO_DKG_PARTIAL_PROOF_Z_BYTES) return false;
+    if (proof_S.E.size() != 32 ||
+        proof_S.Z.size() != DAO_DKG_PARTIAL_PROOF_Z_BYTES) return false;
+    if (proof_B.E.size() != 32 ||
+        proof_B.Z.size() != DAO_DKG_PARTIAL_PROOF_Z_BYTES) return false;
     return off == in.size();
 }
 

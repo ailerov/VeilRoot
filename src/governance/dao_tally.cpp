@@ -176,8 +176,14 @@ bool dao_partial_set::serialize(std::vector<uint8_t>& out) const
     if (member_indices.size() != partials.size()) return false;
     if (proofs.size() != partials.size()) return false;
 
+    if (member_indices.size() > DAO_DKG_MAX_COMMITTEE_SIZE) return false;
+
     push_u32(out, uint32_t(member_indices.size()));
     for (size_t i = 0; i < member_indices.size(); ++i) {
+        if (partials[i].size() != PAILLIER_CT_BYTES) return false;
+        if (proofs[i].E.size() != 32) return false;
+        if (proofs[i].Z.size() != DAO_DKG_PARTIAL_PROOF_Z_BYTES)
+            return false;
         push_u32(out, member_indices[i]);
         push_vec(out, partials[i]);
         push_u32(out, proofs[i].member_index);
@@ -196,15 +202,19 @@ bool dao_partial_set::deserialize(const std::vector<uint8_t>& in)
     size_t off = 0;
     uint32_t n = 0;
     if (!pull_u32(in, off, n)) return false;
+    if (n > DAO_DKG_MAX_COMMITTEE_SIZE) return false;
     for (uint32_t i = 0; i < n; ++i) {
         uint32_t idx = 0;
         std::vector<uint8_t> p, e, z;
         uint32_t proof_idx = 0;
         if (!pull_u32(in, off, idx)) return false;
         if (!pull_vec(in, off, p)) return false;
+        if (p.size() != PAILLIER_CT_BYTES) return false;
         if (!pull_u32(in, off, proof_idx)) return false;
         if (!pull_vec(in, off, e)) return false;
+        if (e.size() != 32) return false;
         if (!pull_vec(in, off, z)) return false;
+        if (z.size() != DAO_DKG_PARTIAL_PROOF_Z_BYTES) return false;
         member_indices.push_back(idx);
         partials.push_back(std::move(p));
         dao_partial_decryption_proof pr;

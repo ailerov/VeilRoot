@@ -602,7 +602,7 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxValidatedAndApplied)
 
     // ---- 5. Build the second share from test_SK[1] ----
     dao::dao_v2_tally_share second_share{};
-    second_share.version = 1;
+    second_share.version = dao::dao_v2_tally_share::WIRE_VERSION;
     second_share.proposal_id = prop_id;
     second_share.vote_end_height = VOTE_END;
     second_share.tally_key_id.assign(32, 0);
@@ -833,7 +833,7 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxRolledBackByReorg)
     ASSERT_TRUE(captured_first);
 
     dao::dao_v2_tally_share second_share{};
-    second_share.version = 1;
+    second_share.version = dao::dao_v2_tally_share::WIRE_VERSION;
     second_share.proposal_id = prop_id;
     second_share.vote_end_height = VOTE_END;
     second_share.tally_key_id.assign(32, 0);
@@ -1139,7 +1139,7 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxRejectionBoundaries)
     ASSERT_TRUE(captured_first);
 
     dao::dao_v2_tally_share second_share{};
-    second_share.version = 1;
+    second_share.version = dao::dao_v2_tally_share::WIRE_VERSION;
     second_share.proposal_id = prop_id;
     second_share.vote_end_height = VOTE_END;
     second_share.tally_key_id.assign(32, 0);
@@ -1427,7 +1427,7 @@ TEST_F(DaoBootstrapIntegration, TallyResultReconstructableFromChainState)
     ASSERT_TRUE(captured_first);
 
     dao::dao_v2_tally_share second_share{};
-    second_share.version = 1;
+    second_share.version = dao::dao_v2_tally_share::WIRE_VERSION;
     second_share.proposal_id = prop_id;
     second_share.vote_end_height = VOTE_END;
     second_share.tally_key_id.assign(32, 0);
@@ -1650,7 +1650,7 @@ TEST_F(DaoBootstrapIntegration, BootstrapSharePersistsAfterTally)
     ASSERT_TRUE(captured_first);
 
     dao::dao_v2_tally_share second_share{};
-    second_share.version = 1;
+    second_share.version = dao::dao_v2_tally_share::WIRE_VERSION;
     second_share.proposal_id = prop_id;
     second_share.vote_end_height = VOTE_END;
     second_share.tally_key_id.assign(32, 0);
@@ -1880,7 +1880,7 @@ TEST_F(DaoBootstrapIntegration, OutOfCommitteeShareholderShareAccepted)
     // Build a share from member 3. Member 3 holds a legitimate DKG
     // share; only its eligibility is missing.
     dao::dao_v2_tally_share third_share{};
-    third_share.version = 1;
+    third_share.version = dao::dao_v2_tally_share::WIRE_VERSION;
     third_share.proposal_id = prop_id;
     third_share.vote_end_height = VOTE_END;
     third_share.tally_key_id.assign(32, 0);

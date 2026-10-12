@@ -316,7 +316,7 @@ TEST(dao_tally_e2e, tally_manager_finalizes_automatically)
     std::map<crypto::public_key, dao_v2_tally_share> shares;
     for (uint32_t m = 1; m <= 3; ++m) {
         dao_v2_tally_share sh;
-        sh.version = 1;
+        sh.version = dao::dao_v2_tally_share::WIRE_VERSION;
         sh.proposal_id = prop_id;
         sh.vote_end_height = VOTE_END;
         sh.tally_key_id.assign(32, 0);

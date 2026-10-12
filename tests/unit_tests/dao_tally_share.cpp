@@ -20,31 +20,31 @@ namespace {
 dao_v2_tally_share make_share()
 {
     dao_v2_tally_share s;
-    s.version = 1;
+    s.version = dao_v2_tally_share::WIRE_VERSION;
     std::memset(s.proposal_id.data, 0x33, 32);
     s.vote_end_height = 60000;
     s.tally_key_id.assign(32, 0); s.tally_key_id[0] = 1;
+    std::memset(s.reset_transcript_hash.data, 0xCD, 32);
     std::memset(s.aggregate_ciphertext_hash.data, 0x44, 32);
     s.member_index = 2;
 
-    s.partial_W.assign(512, 0xA1);
-    s.partial_S.assign(512, 0xB2);
-    s.partial_B.assign(512, 0xC3);
+    s.partial_W.assign(PAILLIER_CT_BYTES, 0xA1);
+    s.partial_S.assign(PAILLIER_CT_BYTES, 0xB2);
+    s.partial_B.assign(PAILLIER_CT_BYTES, 0xC3);
 
     s.proof_W.member_index = 2;
-    s.proof_W.E.assign(512, 0x11);
-    s.proof_W.Z.assign(32, 0x21);
+    s.proof_W.E.assign(32, 0x11);
+    s.proof_W.Z.assign(DAO_DKG_PARTIAL_PROOF_Z_BYTES, 0x21);
 
     s.proof_S.member_index = 2;
-    s.proof_S.E.assign(512, 0x12);
-    s.proof_S.Z.assign(32, 0x22);
+    s.proof_S.E.assign(32, 0x12);
+    s.proof_S.Z.assign(DAO_DKG_PARTIAL_PROOF_Z_BYTES, 0x22);
 
     s.proof_B.member_index = 2;
-    s.proof_B.E.assign(512, 0x13);
-    s.proof_B.Z.assign(32, 0x23);
+    s.proof_B.E.assign(32, 0x13);
+    s.proof_B.Z.assign(DAO_DKG_PARTIAL_PROOF_Z_BYTES, 0x23);
 
     return s;
-    std::memset(s.reset_transcript_hash.data, 0xCD, 32);
 }
 
 } // namespace
