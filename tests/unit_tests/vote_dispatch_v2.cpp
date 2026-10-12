@@ -80,7 +80,6 @@ transaction make_v2_vote_tx(const crypto::hash& pid,
     vp.version = vote_proof_v2::VERSION;
     vp.proposal_id = pid;
     vp.vote_height = height;
-    vp.tally_key_epoch = epoch;
     vp.C_W = rct::identity();
     vp.C_S = rct::identity();
     for (size_t i = 0; i < n_inputs; ++i) {
@@ -202,7 +201,7 @@ protected:
         rec.voting_end_height = end;
         rec.submission_tx_hash = pid;
         rec.status = 0;
-        rec.tally_key_epoch = tally_key_epoch;
+        std::memset(rec.tally_key_id.data, 0, 32);
         db_wtxn_guard g(m_db);
         gov.store_proposal(rec);
     }
@@ -211,7 +210,6 @@ protected:
     {
         dao::dao_tally_key_record rec;
         rec.version = 1;
-        rec.epoch = epoch;
         rec.committee_size = 16;
         rec.threshold = 8;
         rec.t = 7;
@@ -231,8 +229,7 @@ protected:
         rec.dkg_transcript_hash.assign(32, 0);
         rec.key_id.assign(32, 0);
         db_wtxn_guard g(m_db);
-        m_db->add_dao_tally_key(epoch, rec);
-        m_db->set_current_dao_tally_key_epoch(epoch);
+        m_db->add_dao_tally_key(rec);
     }
 };
 

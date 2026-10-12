@@ -43,7 +43,7 @@ struct dao_consistency_context
     uint8_t              version = 2;
     crypto::hash         proposal_id;
     uint64_t             vote_height = 0;
-    uint64_t             tally_key_epoch = 0;
+    crypto::hash         tally_key_id{};
     std::vector<uint8_t> vote_input_transcript;  // hashed inputs
 };
 
@@ -97,8 +97,7 @@ struct dao_vote_transcript_input
     crypto::hash         proposal_id;
     uint64_t             proposal_submission_height = 0;
     uint64_t             vote_height                = 0;
-    uint64_t             tally_key_epoch            = 0;
-    crypto::hash         tally_key_id;
+    crypto::hash         tally_key_id{};
 
     std::vector<std::vector<uint64_t>> key_offsets;
     std::vector<std::vector<uint64_t>> absolute_indices;

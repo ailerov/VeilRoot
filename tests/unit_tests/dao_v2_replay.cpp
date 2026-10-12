@@ -431,8 +431,8 @@ TEST(DaoV2Replay, NodeBReconstructsKeyRecordFromActivationBlock)
     // local share. Both records must still be absent.
     dao::dao_tally_key_record key_rec_a;
     dao::dao_tally_key_record key_rec_b;
-    EXPECT_FALSE(adb.get_dao_tally_key(1, key_rec_a));
-    EXPECT_FALSE(bdb.get_dao_tally_key(1, key_rec_b));
+    EXPECT_FALSE(adb.get_dao_tally_key(key_rec_a));
+    EXPECT_FALSE(bdb.get_dao_tally_key(key_rec_b));
 
     // Build the activation certificate. Sign with members 1 and 2
     // (threshold = 2 of 3).
@@ -568,17 +568,13 @@ TEST(DaoV2Replay, NodeBReconstructsKeyRecordFromActivationBlock)
 
     // Both nodes now reconstruct the key record and the active epoch
     // by replaying the activation block alone.
-    ASSERT_TRUE(adb.get_dao_tally_key(1, key_rec_a));
-    ASSERT_TRUE(bdb.get_dao_tally_key(1, key_rec_b));
+    ASSERT_TRUE(adb.get_dao_tally_key(key_rec_a));
+    ASSERT_TRUE(bdb.get_dao_tally_key(key_rec_b));
     EXPECT_EQ(key_rec_a.key_id, key_rec_b.key_id);
     EXPECT_EQ(key_rec_a.committee_size, key_rec_b.committee_size);
     EXPECT_EQ(key_rec_a.threshold, key_rec_b.threshold);
     {
         uint32_t e_a = 0, e_b = 0;
-        EXPECT_TRUE(adb.get_current_dao_tally_key_epoch(e_a));
-        EXPECT_TRUE(bdb.get_current_dao_tally_key_epoch(e_b));
-        EXPECT_EQ(e_a, 1u);
-        EXPECT_EQ(e_b, 1u);
     }
 
     // No block on disk contains the private share.
@@ -627,7 +623,7 @@ TEST(DaoV2Replay, NodeBReconstructsKeyRecordFromActivationBlock)
         rec.voting_period_days = 7;
         rec.submission_height = VOTE_END - 1000;
         rec.voting_end_height = VOTE_END;
-        rec.tally_key_epoch = 1;
+        std::memset(rec.tally_key_id.data, 0, 32);
         rec.submission_tx_hash = prop_id;
         rec.status = PROPOSAL_STATUS_ACTIVE;
         rec.status_height = VOTE_END - 1000;
@@ -670,8 +666,7 @@ TEST(DaoV2Replay, NodeBReconstructsKeyRecordFromActivationBlock)
     second_share.version = 1;
     second_share.proposal_id = prop_id;
     second_share.vote_end_height = VOTE_END;
-    second_share.tally_key_epoch = 1;
-    second_share.share_epoch = 1;
+    second_share.tally_key_id.assign(32, 0);
     second_share.member_index = 2;
     second_share.aggregate_ciphertext_hash = agg_hash;
     {

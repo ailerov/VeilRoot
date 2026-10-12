@@ -151,8 +151,12 @@ bool VoteManager::rollback_block(const block& blk,
         BlockchainDB& bdb = m_db.get_underlying_db();
 
         dao::dao_tally_key_record key_rec;
-        if (!bdb.get_dao_tally_key(
-                static_cast<uint32_t>(proof.tally_key_epoch), key_rec))
+        if (!bdb.get_dao_tally_key(key_rec))
+            continue;
+        if (key_rec.key_id.size() != 32)
+            continue;
+        if (std::memcmp(key_rec.key_id.data(),
+                        proof.tally_key_id.data, 32) != 0)
             continue;
         dao::PaillierPublicKey pk;
         if (!pk.deserialize_modulus(key_rec.N))
@@ -567,13 +571,11 @@ vote_result VoteManager::process_v2_vote(
         return vote_result::invalid_format;
     }
 
-    // Historical key record for this proposal's epoch must exist.
+    // The single stable key record must exist.
     dao::dao_tally_key_record key_rec;
-    if (!m_db.get_underlying_db().get_dao_tally_key(
-            static_cast<uint32_t>(proof.tally_key_epoch), key_rec))
+    if (!m_db.get_underlying_db().get_dao_tally_key(key_rec))
     {
-        MERROR("V2 vote: tally key not found for epoch "
-               << proof.tally_key_epoch);
+        MERROR("V2 vote: tally key not found");
         return vote_result::invalid_proposal_id;
     }
 
@@ -596,7 +598,6 @@ vote_result VoteManager::process_v2_vote(
         block_nullifiers.insert(nf);
 
     MINFO("Stored V2 vote for proposal " << proof.proposal_id
-          << " epoch=" << proof.tally_key_epoch
           << " height=" << height);
     return vote_result::success;
 }
@@ -607,8 +608,7 @@ bool VoteManager::apply_dao_vote(const vote_proof_v2& proof,
     BlockchainDB& bdb = m_db.get_underlying_db();
 
     dao::dao_tally_key_record key_rec;
-    if (!bdb.get_dao_tally_key(static_cast<uint32_t>(proof.tally_key_epoch),
-                               key_rec))
+    if (!bdb.get_dao_tally_key(key_rec))
         return false;
 
     dao::PaillierPublicKey pk;

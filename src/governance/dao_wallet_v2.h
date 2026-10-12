@@ -50,7 +50,6 @@ bool build_dao_v2_vote(
     const crypto::hash& proposal_id,
     uint64_t proposal_submission_height,
     uint64_t vote_height,
-    uint32_t tally_key_epoch,
     const crypto::hash& tally_key_id,
     const std::vector<uint8_t>& paillier_modulus,
     uint8_t direction,

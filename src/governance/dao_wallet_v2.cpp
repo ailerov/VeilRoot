@@ -57,7 +57,6 @@ bool build_dao_v2_vote(
     const crypto::hash& proposal_id,
     uint64_t proposal_submission_height,
     uint64_t vote_height,
-    uint32_t tally_key_epoch,
     const crypto::hash& tally_key_id,
     const std::vector<uint8_t>& paillier_modulus,
     uint8_t direction,
@@ -89,7 +88,7 @@ bool build_dao_v2_vote(
     out.version         = vote_proof_v2::VERSION;
     out.proposal_id     = proposal_id;
     out.vote_height     = vote_height;
-    out.tally_key_epoch = tally_key_epoch;
+    out.tally_key_id    = tally_key_id;
 
     rct::key C_W = rct::identity();
     rct::key C_B = rct::identity();
@@ -106,7 +105,6 @@ bool build_dao_v2_vote(
     ti.proposal_id                = proposal_id;
     ti.proposal_submission_height = proposal_submission_height;
     ti.vote_height                = vote_height;
-    ti.tally_key_epoch            = tally_key_epoch;
     std::memcpy(ti.tally_key_id.data, tally_key_id.data, 32);
 
     bool ok = true;
@@ -172,7 +170,7 @@ bool build_dao_v2_vote(
         cc.proposal_id                = proposal_id;
         cc.proposal_submission_height = proposal_submission_height;
         cc.vote_height                = vote_height;
-        cc.tally_key_epoch            = tally_key_epoch;
+        cc.tally_key_id               = tally_key_id;
         cc.P = s.P;
         cc.C = s.C;
         cc.output_indices = s.output_indices;
@@ -320,7 +318,7 @@ bool build_dao_v2_vote(
     cctx.version               = 2;
     cctx.proposal_id           = proposal_id;
     cctx.vote_height           = vote_height;
-    cctx.tally_key_epoch       = tally_key_epoch;
+    cctx.tally_key_id          = tally_key_id;
     cctx.vote_input_transcript = digest;
 
     cctx.domain = "C_W-Enc(W)";

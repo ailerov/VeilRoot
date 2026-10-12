@@ -66,8 +66,7 @@ bool TallyManager::build_tally_result_transaction(
         return false;
 
     dao::dao_tally_key_record key_rec;
-    if (!m_db.get_dao_tally_key(
-            static_cast<uint32_t>(prop.tally_key_epoch), key_rec))
+    if (!m_db.get_dao_tally_key(key_rec))
         return false;
 
     if (threshold < key_rec.threshold)
@@ -112,14 +111,18 @@ bool TallyManager::build_tally_result_transaction(
     if (!m_db.get_dao_supply_snapshot(prop.voting_end_height, snap))
         return false;
 
+    dao::dao_share_set_record share_set;
+    if (!dao::dao_synthesize_bootstrap_share_set(key_rec, share_set))
+        return false;
+
     dao::dao_tally_certificate cert;
     if (!dao::dao_build_tally_certificate(
-            key_rec, proposal_id, prop.voting_end_height,
+            key_rec, share_set, proposal_id, prop.voting_end_height,
             agg.aggregate_E_W, agg.aggregate_E_S, agg.aggregate_E_B,
             W_set, S_set, B_set, cert))
         return false;
     if (!dao::dao_verify_tally_certificate(
-            key_rec, snap, m_params.voting_quorum_percent,
+            key_rec, share_set, snap, m_params.voting_quorum_percent,
             agg.aggregate_E_W, agg.aggregate_E_S, agg.aggregate_E_B, cert))
         return false;
 
@@ -168,14 +171,11 @@ bool TallyManager::produce_local_share(
     // same share is used for every tally this node is selected for;
     // there is no per-proposal share transfer.
     std::vector<uint8_t> packed_blob;
-    if (!m_db.get_dao_local_share(
-            static_cast<uint32_t>(prop.tally_key_epoch),
-            global_member_index, packed_blob))
+    if (!m_db.get_dao_local_share(1, global_member_index, packed_blob))
         return false;
     std::vector<uint8_t> sk_blob;
     if (!dao::dao_unpack_local_share(packed_blob, key_rec.key_id, sk_blob)) {
-        MERROR("V2 tally: local share does not match key_id for epoch "
-               << prop.tally_key_epoch);
+        MERROR("V2 tally: local share does not match key_id");
         return false;
     }
     BIGNUM* sk = bn_from_signed_share(sk_blob);
@@ -197,8 +197,7 @@ bool TallyManager::produce_local_share(
     share_out.version         = 1;
     share_out.proposal_id     = proposal_id;
     share_out.vote_end_height = prop.voting_end_height;
-    share_out.tally_key_epoch = prop.tally_key_epoch;
-    share_out.share_epoch     = prop.tally_key_epoch;
+    share_out.tally_key_id    = key_rec.key_id;
     share_out.member_index    = global_member_index;
     share_out.aggregate_ciphertext_hash =
         dao::dao_aggregate_ciphertext_hash(agg.aggregate_E_W,

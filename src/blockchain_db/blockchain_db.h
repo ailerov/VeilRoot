@@ -2177,11 +2177,12 @@ public:
     // temporary tally committee; that committee is derived from
     // canonical state at a proposal's voting end and stored in a
     // dao_tally_session record.
-    virtual void add_dao_tally_key(uint32_t epoch, const dao::dao_tally_key_record& record) = 0;
-    virtual bool get_dao_tally_key(uint32_t epoch, dao::dao_tally_key_record& record) const = 0;
-    virtual bool get_current_dao_tally_key_epoch(uint32_t& epoch) const = 0;
-    virtual void set_current_dao_tally_key_epoch(uint32_t epoch) = 0;
-    virtual void remove_dao_tally_key(uint32_t epoch) = 0;
+    // There is one stable DKG key record per network. It is not
+    // epoch-scoped. All proposals, votes and shares bind to it by
+    // key_id (32 bytes) carried inside the record itself.
+    virtual void add_dao_tally_key(const dao::dao_tally_key_record& record) = 0;
+    virtual bool get_dao_tally_key(dao::dao_tally_key_record& record) const = 0;
+    virtual void remove_dao_tally_key() = 0;
     // ---------- VNS DAO TALLY KEYS END ----------
 
     // ---------- VNS DAO V2 VOTES START ----------

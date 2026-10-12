@@ -198,7 +198,6 @@ dao_tally_key_record make_serializable_record()
 {
     dao_tally_key_record rec;
     rec.version = 1;
-    rec.epoch = 1;
     rec.committee_size = DAO_DKG_COMMITTEE_SIZE;
     rec.threshold = DAO_DKG_THRESHOLD;
     rec.t = DAO_DKG_SHARING_DEGREE;
@@ -237,7 +236,6 @@ TEST(dao_dkg, key_record_serialize_deserialize)
     dao_tally_key_record out;
     ASSERT_TRUE(out.deserialize(enc));
     EXPECT_EQ(out.version, rec.version);
-    EXPECT_EQ(out.epoch, rec.epoch);
     EXPECT_EQ(out.committee_size, rec.committee_size);
     EXPECT_EQ(out.threshold, rec.threshold);
     EXPECT_EQ(out.t, rec.t);

@@ -27,16 +27,9 @@ struct dao_v2_tally_share
     crypto::hash proposal_id;
     uint64_t     vote_end_height = 0;
 
-    // Stable Paillier public-key epoch the aggregate was encrypted
-    // under. Set at proposal submission; never changes.
-    uint32_t     tally_key_epoch = 0;
-
-    // Share-session identity. Names the temporary tally committee
-    // that produced this share. Multiple proposals ending at the same
-    // height share a session (and therefore a share_epoch). A share
-    // from an earlier session is rejected even if its key_epoch
-    // matches.
-    uint32_t     share_epoch = 0;
+    // 32-byte key_id of the single stable DKG key record the
+    // aggregate was encrypted under. Never changes.
+    std::vector<uint8_t> tally_key_id;   // 32 bytes
 
     // Reset transcript hash for the session. A partial decryption
     // generated under a different Reset ceremony carries a different

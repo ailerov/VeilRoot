@@ -3305,7 +3305,7 @@ uint32_t decode_epoch_be(const unsigned char* in)
 constexpr unsigned char TALLY_STATE_EPOCH_KEY = 0x45; // 'E'
 } // namespace
 
-void BlockchainLMDB::add_dao_tally_key(uint32_t epoch, const dao::dao_tally_key_record& record)
+void BlockchainLMDB::add_dao_tally_key(const dao::dao_tally_key_record& record)
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
@@ -3315,11 +3315,9 @@ void BlockchainLMDB::add_dao_tally_key(uint32_t epoch, const dao::dao_tally_key_
     throw0(DB_ERROR("Failed to serialize dao_tally_key_record"));
 
   lmdb_cursor_guard cur(m_write_txn->m_txn, m_tally_keys);
-
-  unsigned char kbuf[4];
-  encode_epoch_be(epoch, kbuf);
+  unsigned char kbuf[1] = { TALLY_STATE_EPOCH_KEY };
   MDB_val k = { sizeof(kbuf), kbuf };
-  MDB_val v = { blob.size(), blob.empty() ? nullptr : blob.data() };
+  MDB_val v = { blob.size(), blob.empty() ? nullptr : (void*)blob.data() };
   int result = mdb_cursor_put(cur.get(), &k, &v, MDB_NODUPDATA);
   if (result == MDB_KEYEXIST)
     result = mdb_cursor_put(cur.get(), &k, &v, MDB_CURRENT);
@@ -3327,7 +3325,7 @@ void BlockchainLMDB::add_dao_tally_key(uint32_t epoch, const dao::dao_tally_key_
     throw0(DB_ERROR(lmdb_error("Failed to add dao tally key: ", result).c_str()));
 }
 
-bool BlockchainLMDB::get_dao_tally_key(uint32_t epoch, dao::dao_tally_key_record& record) const
+bool BlockchainLMDB::get_dao_tally_key(dao::dao_tally_key_record& record) const
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
@@ -3335,8 +3333,7 @@ bool BlockchainLMDB::get_dao_tally_key(uint32_t epoch, dao::dao_tally_key_record
   TXN_PREFIX_RDONLY();
   RCURSOR(tally_keys)
 
-  unsigned char kbuf[4];
-  encode_epoch_be(epoch, kbuf);
+  unsigned char kbuf[1] = { TALLY_STATE_EPOCH_KEY };
   MDB_val k = { sizeof(kbuf), kbuf };
   MDB_val v;
   int result = mdb_cursor_get(m_cur_tally_keys, &k, &v, MDB_SET);
@@ -3354,58 +3351,12 @@ bool BlockchainLMDB::get_dao_tally_key(uint32_t epoch, dao::dao_tally_key_record
   return ok;
 }
 
-bool BlockchainLMDB::get_current_dao_tally_key_epoch(uint32_t& epoch) const
-{
-  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
-  check_open();
-
-  TXN_PREFIX_RDONLY();
-  RCURSOR(tally_state)
-
-  unsigned char kbuf[1] = { TALLY_STATE_EPOCH_KEY };
-  MDB_val k = { sizeof(kbuf), kbuf };
-  MDB_val v;
-  int result = mdb_cursor_get(m_cur_tally_state, &k, &v, MDB_SET);
-  if (result == MDB_NOTFOUND) {
-    TXN_POSTFIX_RDONLY();
-    return false;
-  }
-  if (result)
-    throw0(DB_ERROR(lmdb_error("Failed to get current tally key epoch: ", result).c_str()));
-  if (v.mv_size != 4) {
-    TXN_POSTFIX_RDONLY();
-    return false;
-  }
-  epoch = decode_epoch_be(static_cast<const unsigned char*>(v.mv_data));
-  TXN_POSTFIX_RDONLY();
-  return true;
-}
-
-void BlockchainLMDB::set_current_dao_tally_key_epoch(uint32_t epoch)
-{
-  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
-  check_open();
-
-  lmdb_cursor_guard cur(m_write_txn->m_txn, m_tally_state);
-
-  unsigned char kbuf[1] = { TALLY_STATE_EPOCH_KEY };
-  unsigned char vbuf[4];
-  encode_epoch_be(epoch, vbuf);
-  MDB_val k = { sizeof(kbuf), kbuf };
-  MDB_val v = { sizeof(vbuf), vbuf };
-  int result = mdb_cursor_put(cur.get(), &k, &v, MDB_NODUPDATA);
-  if (result == MDB_KEYEXIST)
-    result = mdb_cursor_put(cur.get(), &k, &v, MDB_CURRENT);
-  if (result)
-    throw0(DB_ERROR(lmdb_error("Failed to set current tally key epoch: ", result).c_str()));
-}
-void BlockchainLMDB::remove_dao_tally_key(uint32_t epoch)
+void BlockchainLMDB::remove_dao_tally_key()
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
   lmdb_cursor_guard cur(m_write_txn->m_txn, m_tally_keys);
-  unsigned char kbuf[4];
-  encode_epoch_be(epoch, kbuf);
+  unsigned char kbuf[1] = { TALLY_STATE_EPOCH_KEY };
   MDB_val k = { sizeof(kbuf), kbuf };
   int result = mdb_cursor_get(cur.get(), &k, NULL, MDB_SET);
   if (result == MDB_SUCCESS)

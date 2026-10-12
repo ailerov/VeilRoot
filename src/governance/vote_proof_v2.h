@@ -58,7 +58,7 @@ struct vote_proof_v2
     uint8_t      version         = VERSION;
     crypto::hash proposal_id;
     uint64_t     vote_height     = 0;
-    uint64_t     tally_key_epoch = 0;
+    crypto::hash tally_key_id{};
 
     std::vector<vote_input_v2>  inputs;
     std::vector<crypto::hash>   nullifiers;
@@ -83,7 +83,7 @@ struct vote_proof_v2
         FIELD(version)
         FIELD(proposal_id)
         VARINT_FIELD(vote_height)
-        VARINT_FIELD(tally_key_epoch)
+        FIELD(tally_key_id)
         FIELD(inputs)
         FIELD(nullifiers)
         FIELD(C_W)

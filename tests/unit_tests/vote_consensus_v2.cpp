@@ -96,12 +96,12 @@ protected:
         rec.voting_end_height     = fx.proposal_voting_end_height;
         rec.submission_tx_hash    = fx.proposal_id;
         rec.status                = 0;
-        rec.tally_key_epoch       = fx.tally_epoch;
+        if (fx.key_rec.key_id.size() == 32)
+            std::memcpy(rec.tally_key_id.data, fx.key_rec.key_id.data(), 32);
 
         db_wtxn_guard g(m_db);
         m_db->add_proposal_record(fx.proposal_id, rec);
-        m_db->add_dao_tally_key(fx.tally_epoch, fx.key_rec);
-        m_db->set_current_dao_tally_key_epoch(fx.tally_epoch);
+        m_db->add_dao_tally_key(fx.key_rec);
     }
 
     dao::PaillierPrivateKey m_psk;

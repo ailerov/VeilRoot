@@ -398,7 +398,6 @@ void expect_public_fields_agree(const std::vector<dkg_result>& rs,
         EXPECT_EQ(a.record.committee_size,    b.record.committee_size);
         EXPECT_EQ(a.record.threshold,         b.record.threshold);
         EXPECT_EQ(a.record.t,                 b.record.t);
-        EXPECT_EQ(a.record.epoch,             b.record.epoch);
         // Now that private DKG messages are represented in the
         // transcript by their public leaf hash, every honest node
         // derives the same transcript hash and the same key id.

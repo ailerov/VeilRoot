@@ -1644,7 +1644,6 @@ bool dao_tally_key_record::serialize(std::vector<uint8_t>& out) const
 
     out.clear();
     push_u32(out, version);
-    push_u32(out, epoch);
     push_u32(out, committee_size);
     push_u32(out, threshold);
     push_u32(out, t);
@@ -1671,9 +1670,8 @@ bool dao_tally_key_record::serialize(std::vector<uint8_t>& out) const
 bool dao_tally_key_record::deserialize(const std::vector<uint8_t>& in)
 {
     size_t off = 0;
-    uint32_t v = 0, e = 0, cs = 0, th = 0, tt = 0;
+    uint32_t v = 0, cs = 0, th = 0, tt = 0;
     if (!pull_u32(in, off, v)) return false;
-    if (!pull_u32(in, off, e)) return false;
     if (!pull_u32(in, off, cs)) return false;
     if (!pull_u32(in, off, th)) return false;
     if (!pull_u32(in, off, tt)) return false;
@@ -1710,7 +1708,6 @@ bool dao_tally_key_record::deserialize(const std::vector<uint8_t>& in)
     if (off != in.size()) return false;
 
     version = v;
-    epoch = e;
     committee_size = cs;
     threshold = th;
     t = tt;
@@ -5016,7 +5013,6 @@ bool dkg_run_with_transport(const dkg_config& cfg,
         std::vector<uint8_t> buf;
         const char* dom = DAO_DKG_COMMITTEE_DOMAIN;
         buf.insert(buf.end(), dom, dom + std::strlen(dom));
-        for (int i = 0; i < 4; ++i) buf.push_back((cfg.epoch >> (8*i)) & 0xff);
         for (const auto& pk : cfg.member_ids)
             buf.insert(buf.end(), pk.data, pk.data + sizeof(pk.data));
         SHA256(buf.data(), buf.size(), committee_id_hash);
@@ -5919,7 +5915,6 @@ bool dkg_run_with_transport(const dkg_config& cfg,
 
             // Fill record basics.
             out.record.version        = 1;
-            out.record.epoch          = cfg.epoch;
             out.record.committee_size = cfg.committee_size;
             out.record.threshold      = cfg.threshold;
             out.record.t              = cfg.threshold - 1;
@@ -8097,7 +8092,6 @@ bool dkg_p2p_runner::impl::run_key_phases(const BIGNUM* N)
 
         // Assemble record.
         result.record.version        = 1;
-        result.record.epoch          = cfg.epoch;
         result.record.committee_size = cfg.committee_size;
         result.record.threshold      = cfg.threshold;
         result.record.t              = cfg.threshold - 1;
@@ -8212,8 +8206,6 @@ bool dkg_p2p_runner::start()
         std::vector<uint8_t> buf;
         const char* dom = DAO_DKG_COMMITTEE_DOMAIN;
         buf.insert(buf.end(), dom, dom + std::strlen(dom));
-        for (int i = 0; i < 4; ++i)
-            buf.push_back((p_->cfg.epoch >> (8*i)) & 0xff);
         for (const auto& pk : p_->cfg.member_ids)
             buf.insert(buf.end(), pk.data, pk.data + sizeof(pk.data));
         SHA256(buf.data(), buf.size(), p_->committee_id_hash);

@@ -23,7 +23,7 @@ dao_v2_tally_share make_share()
     s.version = 1;
     std::memset(s.proposal_id.data, 0x33, 32);
     s.vote_end_height = 60000;
-    s.tally_key_epoch = 1;
+    s.tally_key_id.assign(32, 0); s.tally_key_id[0] = 1;
     std::memset(s.aggregate_ciphertext_hash.data, 0x44, 32);
     s.member_index = 2;
 
@@ -60,7 +60,7 @@ TEST(dao_tally_share, round_trip)
     EXPECT_EQ(t.version, s.version);
     EXPECT_EQ(std::memcmp(t.proposal_id.data, s.proposal_id.data, 32), 0);
     EXPECT_EQ(t.vote_end_height, s.vote_end_height);
-    EXPECT_EQ(t.tally_key_epoch, s.tally_key_epoch);
+    EXPECT_EQ(t.tally_key_id, s.tally_key_id);
     EXPECT_EQ(std::memcmp(t.aggregate_ciphertext_hash.data,
                           s.aggregate_ciphertext_hash.data, 32), 0);
     EXPECT_EQ(t.member_index, s.member_index);
@@ -121,9 +121,10 @@ TEST(dao_tally_share, tamper_detected)
     // Change every byte one at a time in a small window and confirm
     // that at least the re-deserialization sees the change or fails.
     // Layout: version(1) proposal_id(32) vote_end_height(8)
-    //         tally_key_epoch(4) share_epoch(4)
-    //         aggregate_ciphertext_hash(32) member_index(4)
-    const size_t mpos = 1 + 32 + 8 + 4 + 4 + 32 + 32;
+    //         tally_key_id(len 4 + 32)
+    //         reset_transcript_hash(32) aggregate_ciphertext_hash(32)
+    //         member_index(4)
+    const size_t mpos = 1 + 32 + 8 + 4 + 32 + 32 + 32;
     blob[mpos] ^= 0x01;
 
     dao_v2_tally_share t;

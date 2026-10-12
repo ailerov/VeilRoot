@@ -168,7 +168,6 @@ inline bool build_valid_vote(
 
     // --- Tally key record (from ppk) ---
     fx.key_rec.version        = 1;
-    fx.key_rec.epoch          = tally_epoch;
     fx.key_rec.committee_size = 16;
     fx.key_rec.threshold      = 8;
     fx.key_rec.t              = 7;
@@ -209,7 +208,6 @@ inline bool build_valid_vote(
     ti.proposal_id                = proposal_id;
     ti.proposal_submission_height = proposal_submission_height;
     ti.vote_height                = vote_height;
-    ti.tally_key_epoch            = tally_epoch;
     std::memcpy(ti.tally_key_id.data, fx.key_rec.key_id.data(), 32);
 
     std::vector<uint64_t> abs_indices(abs, abs + N);
@@ -245,7 +243,7 @@ inline bool build_valid_vote(
     cctx.version               = 2;
     cctx.proposal_id           = proposal_id;
     cctx.vote_height           = vote_height;
-    cctx.tally_key_epoch       = tally_epoch;
+    std::memcpy(cctx.tally_key_id.data, fx.key_rec.key_id.data(), 32);
     cctx.vote_input_transcript = digest;
 
     dao::dao_consistency_proof pW;
@@ -303,7 +301,7 @@ inline bool build_valid_vote(
     cc.proposal_id                = proposal_id;
     cc.proposal_submission_height = proposal_submission_height;
     cc.vote_height                = vote_height;
-    cc.tally_key_epoch            = tally_epoch;
+    std::memcpy(cc.tally_key_id.data, fx.key_rec.key_id.data(), 32);
     cc.P = Pv;
     cc.C = Cv;
     cc.output_indices = abs_indices;
@@ -354,7 +352,7 @@ inline bool build_valid_vote(
     fx.proof.version         = vote_proof_v2::VERSION;
     fx.proof.proposal_id     = proposal_id;
     fx.proof.vote_height     = vote_height;
-    fx.proof.tally_key_epoch = tally_epoch;
+    std::memcpy(fx.proof.tally_key_id.data, fx.key_rec.key_id.data(), 32);
 
     vote_input_v2 in;
     in.key_offsets        = rel_offsets;

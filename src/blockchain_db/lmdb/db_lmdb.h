@@ -619,11 +619,9 @@ public:
 
   // Tally-key storage: stable Paillier public-key epoch and its
   // bootstrap shareholder set. Not the temporary tally committee.
-  virtual void add_dao_tally_key(uint32_t epoch, const dao::dao_tally_key_record& record) override;
-  virtual bool get_dao_tally_key(uint32_t epoch, dao::dao_tally_key_record& record) const override;
-  virtual bool get_current_dao_tally_key_epoch(uint32_t& epoch) const override;
-  virtual void set_current_dao_tally_key_epoch(uint32_t epoch) override;
-  virtual void remove_dao_tally_key(uint32_t epoch) override;
+  virtual void add_dao_tally_key(const dao::dao_tally_key_record& record) override;
+  virtual bool get_dao_tally_key(dao::dao_tally_key_record& record) const override;
+  virtual void remove_dao_tally_key() override;
 
   virtual void add_dao_vote_record_v2(const crypto::hash& tx_hash, const dao_vote_record_v2& record) override;
   virtual bool get_dao_vote_record_v2(const crypto::hash& tx_hash, dao_vote_record_v2& record) const override;

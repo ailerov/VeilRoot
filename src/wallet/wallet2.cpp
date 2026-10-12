@@ -17386,18 +17386,16 @@ wallet2::vote_tx_result wallet2::create_vote_v2_tx(
       return result;
     }
   }
-  if (prop_res.tally_key_epoch == 0)
+  if (prop_res.tally_key_id.empty())
   {
-    result.error = "Proposal has no tally key epoch";
+    result.error = "Proposal has no tally key id";
     return result;
   }
-  const uint32_t tally_epoch = prop_res.tally_key_epoch;
   const uint64_t submission_height = prop_res.submission_height;
 
   // ---- Tally key record ----
   COMMAND_RPC_GET_DAO_TALLY_KEY::request tk_req = AUTO_VAL_INIT(tk_req);
   COMMAND_RPC_GET_DAO_TALLY_KEY::response tk_res = AUTO_VAL_INIT(tk_res);
-  tk_req.epoch = tally_epoch;
   {
     const boost::lock_guard<boost::recursive_mutex> lock{m_daemon_rpc_mutex};
     bool r = net_utils::invoke_http_json_rpc("/json_rpc", "get_dao_tally_key",
@@ -17525,7 +17523,6 @@ wallet2::vote_tx_result wallet2::create_vote_v2_tx(
         proposal_id,
         submission_height,
         vote_height,
-        tally_epoch,
         tally_key_id,
         modulus_bytes,
         direction,

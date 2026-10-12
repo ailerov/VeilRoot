@@ -566,7 +566,6 @@ struct dao_share_set_record
 struct dao_tally_key_record
 {
     uint32_t             version        = 1;
-    uint32_t             epoch          = 0;
     uint32_t             committee_size = DAO_DKG_COMMITTEE_SIZE;
     uint32_t             threshold      = DAO_DKG_THRESHOLD;
     uint32_t             t              = DAO_DKG_SHARING_DEGREE;

@@ -37,7 +37,7 @@ public:
     bool have_tally_key = false;
     uint64_t proposal_submission_height = 0;
     uint64_t proposal_voting_end_height = 0;
-    uint64_t proposal_tally_key_epoch   = 0;
+    crypto::hash proposal_tally_key_id{};
     uint8_t  proposal_status            = PROPOSAL_STATUS_ACTIVE;
 
     dao::dao_tally_key_record tally_key_record;
@@ -67,14 +67,16 @@ public:
         rec.status              = proposal_status;
         rec.submission_height   = proposal_submission_height;
         rec.voting_end_height   = proposal_voting_end_height;
-        rec.tally_key_epoch     = proposal_tally_key_epoch;
+        std::memcpy(rec.tally_key_id.data, proposal_tally_key_id.data, 32);
         return true;
     }
 
-    bool get_dao_tally_key(uint32_t, dao::dao_tally_key_record& rec) const override
+    bool get_dao_tally_key(dao::dao_tally_key_record& rec) const override
     {
         if (!have_tally_key) return false;
         rec = tally_key_record;
+        rec.key_id.assign(proposal_tally_key_id.data,
+                          proposal_tally_key_id.data + 32);
         return true;
     }
 
@@ -126,7 +128,7 @@ vote_proof_v2 make_valid_until_step8()
     vote_proof_v2 p;
     p.version = vote_proof_v2::VERSION;
     p.vote_height = 100;
-    p.tally_key_epoch = 1;
+    p.tally_key_id.data[0] = 1;
     p.inputs.push_back(make_ring_input(16));
     { crypto::hash n; n.data[0] = 0x03; p.nullifiers.push_back(n); }
     return p;
@@ -176,7 +178,7 @@ TEST(vote_proof_verifier, step4_voting_period_closed)
     db.proposal_submission_height = 50;
     db.proposal_voting_end_height = 90;
     db.have_tally_key = true;
-    db.proposal_tally_key_epoch = 1;
+    db.proposal_tally_key_id.data[0] = 1;
 
     vote_proof_v2 p = make_valid_until_step8();
     p.vote_height = 100;
@@ -194,7 +196,7 @@ TEST(vote_proof_verifier, step5_vote_height_mismatch)
     db.proposal_submission_height = 50;
     db.proposal_voting_end_height = 200;
     db.have_tally_key = true;
-    db.proposal_tally_key_epoch = 1;
+    db.proposal_tally_key_id.data[0] = 1;
 
     vote_proof_v2 p = make_valid_until_step8();
     p.vote_height = 99; // != block_height 100
@@ -211,11 +213,11 @@ TEST(vote_proof_verifier, step6_epoch_mismatch)
     db.have_proposal = true;
     db.proposal_submission_height = 50;
     db.proposal_voting_end_height = 200;
-    db.proposal_tally_key_epoch = 7;
+    db.proposal_tally_key_id.data[0] = 7;
     db.have_tally_key = true;
 
     vote_proof_v2 p = make_valid_until_step8();
-    p.tally_key_epoch = 1;
+    p.tally_key_id.data[0] = 1;
 
     std::unordered_set<crypto::hash> bn;
     auto r = VoteProofVerifier::verify(p, db, 100, bn);
@@ -230,7 +232,7 @@ TEST(vote_proof_verifier, step7_no_inputs)
     db.proposal_submission_height = 50;
     db.proposal_voting_end_height = 200;
     db.have_tally_key = true;
-    db.proposal_tally_key_epoch = 1;
+    db.proposal_tally_key_id.data[0] = 1;
 
     vote_proof_v2 p = make_valid_until_step8();
     p.inputs.clear();
@@ -238,6 +240,7 @@ TEST(vote_proof_verifier, step7_no_inputs)
 
     std::unordered_set<crypto::hash> bn;
     auto r = VoteProofVerifier::verify(p, db, 100, bn);
+    std::cerr << "DIAG step7 reason: " << r.reason << "\n";
     EXPECT_FALSE(r.success);
     EXPECT_NE(r.reason.find("step7"), std::string::npos);
 }
@@ -249,12 +252,12 @@ TEST(vote_proof_verifier, step8_empty_ring)
     db.proposal_submission_height = 50;
     db.proposal_voting_end_height = 200;
     db.have_tally_key = true;
-    db.proposal_tally_key_epoch = 1;
+    db.proposal_tally_key_id.data[0] = 1;
 
     vote_proof_v2 p;
     p.version = vote_proof_v2::VERSION;
     p.vote_height = 100;
-    p.tally_key_epoch = 1;
+    p.tally_key_id.data[0] = 1;
     vote_input_v2 in;
     // key_offsets left empty
     p.inputs.push_back(in);
@@ -273,12 +276,12 @@ TEST(vote_proof_verifier, step8_clsag_size_mismatch)
     db.proposal_submission_height = 50;
     db.proposal_voting_end_height = 200;
     db.have_tally_key = true;
-    db.proposal_tally_key_epoch = 1;
+    db.proposal_tally_key_id.data[0] = 1;
 
     vote_proof_v2 p;
     p.version = vote_proof_v2::VERSION;
     p.vote_height = 100;
-    p.tally_key_epoch = 1;
+    p.tally_key_id.data[0] = 1;
     vote_input_v2 in = make_ring_input(5);
     in.weight_signature.s.resize(4); // mismatch
     p.inputs.push_back(in);
@@ -297,12 +300,12 @@ TEST(vote_proof_verifier, step8_duplicate_absolute_index)
     db.proposal_submission_height = 50;
     db.proposal_voting_end_height = 200;
     db.have_tally_key = true;
-    db.proposal_tally_key_epoch = 1;
+    db.proposal_tally_key_id.data[0] = 1;
 
     vote_proof_v2 p;
     p.version = vote_proof_v2::VERSION;
     p.vote_height = 100;
-    p.tally_key_epoch = 1;
+    p.tally_key_id.data[0] = 1;
     vote_input_v2 in;
     in.key_offsets = { 0, 1, 0 }; // abs = {0, 1, 1}: duplicate
     in.weight_signature.s.resize(3);
@@ -326,14 +329,14 @@ TEST(vote_proof_verifier, step8_variable_ring_accepted)
     db.proposal_submission_height = 50;
     db.proposal_voting_end_height = 200;
     db.have_tally_key = true;
-    db.proposal_tally_key_epoch = 1;
+    db.proposal_tally_key_id.data[0] = 1;
     for (uint64_t i = 0; i < 3; ++i)
         db.add_output(i);
 
     vote_proof_v2 p;
     p.version = vote_proof_v2::VERSION;
     p.vote_height = 100;
-    p.tally_key_epoch = 1;
+    p.tally_key_id.data[0] = 1;
     p.inputs.push_back(make_ring_input(3));
     { crypto::hash n; n.data[0] = 0x01; p.nullifiers.push_back(n); }
 
@@ -357,14 +360,14 @@ TEST(vote_proof_verifier, spent_ring_member_accepted_by_design)
     db.proposal_submission_height = 50;
     db.proposal_voting_end_height = 200;
     db.have_tally_key = true;
-    db.proposal_tally_key_epoch = 1;
+    db.proposal_tally_key_id.data[0] = 1;
     for (uint64_t i = 0; i < 5; ++i)
         db.add_output(i);
 
     vote_proof_v2 p;
     p.version = vote_proof_v2::VERSION;
     p.vote_height = 100;
-    p.tally_key_epoch = 1;
+    p.tally_key_id.data[0] = 1;
     p.inputs.push_back(make_ring_input(5));
     { crypto::hash n; n.data[0] = 0x02; p.nullifiers.push_back(n); }
 
@@ -387,7 +390,7 @@ TEST(vote_proof_verifier, step9_output_missing)
     db.proposal_submission_height = 50;
     db.proposal_voting_end_height = 200;
     db.have_tally_key = true;
-    db.proposal_tally_key_epoch = 1;
+    db.proposal_tally_key_id.data[0] = 1;
     // existing_global_indices is empty; any lookup throws.
 
     vote_proof_v2 p = make_valid_until_step8();
@@ -407,7 +410,7 @@ TEST(vote_proof_verifier, step15_clsag_fails_first)
     db.proposal_submission_height = 50;
     db.proposal_voting_end_height = 200;
     db.have_tally_key = true;
-    db.proposal_tally_key_epoch = 1;
+    db.proposal_tally_key_id.data[0] = 1;
     for (uint64_t i = 0; i < 16; ++i)
         db.add_output(i);
 
@@ -426,7 +429,7 @@ TEST(vote_proof_verifier, step13_zero_nullifier)
     db.proposal_submission_height = 50;
     db.proposal_voting_end_height = 200;
     db.have_tally_key = true;
-    db.proposal_tally_key_epoch = 1;
+    db.proposal_tally_key_id.data[0] = 1;
     for (uint64_t i = 0; i < 16; ++i)
         db.add_output(i);
 
@@ -446,14 +449,14 @@ TEST(vote_proof_verifier, step13_duplicate_nullifier_within_vote)
     db.proposal_submission_height = 50;
     db.proposal_voting_end_height = 200;
     db.have_tally_key = true;
-    db.proposal_tally_key_epoch = 1;
+    db.proposal_tally_key_id.data[0] = 1;
     for (uint64_t i = 0; i < 32; ++i)
         db.add_output(i);
 
     vote_proof_v2 p;
     p.version = vote_proof_v2::VERSION;
     p.vote_height = 100;
-    p.tally_key_epoch = 1;
+    p.tally_key_id.data[0] = 1;
     p.inputs.push_back(make_ring_input(16));
     p.inputs.push_back(make_ring_input(16));
     crypto::hash n; n.data[0] = 0xAA;
@@ -473,7 +476,7 @@ TEST(vote_proof_verifier, step14_output_height_exceeds_vote_height)
     db.proposal_submission_height = 50;
     db.proposal_voting_end_height = 200;
     db.have_tally_key = true;
-    db.proposal_tally_key_epoch = 1;
+    db.proposal_tally_key_id.data[0] = 1;
     for (uint64_t i = 0; i < 16; ++i)
         db.add_output(i, 200); // height 200 > vote_height 100
 
@@ -541,7 +544,8 @@ TEST(vote_proof_verifier, valid_vote_passes_all_24_steps)
     db.have_proposal = true;
     db.proposal_submission_height = PROPOSAL_SUB;
     db.proposal_voting_end_height = PROPOSAL_END;
-    db.proposal_tally_key_epoch   = TALLY_EPOCH;
+    std::memcpy(db.proposal_tally_key_id.data,
+                fx.key_rec.key_id.data(), 32);
     db.have_tally_key = true;
     db.tally_key_record = fx.key_rec;
 
@@ -591,7 +595,7 @@ TEST(vote_proof_verifier, step17_wire_nullifier_must_match_dao_clsag_I)
     db.have_proposal = true;
     db.proposal_submission_height = 50000;
     db.proposal_voting_end_height = 60000;
-    db.proposal_tally_key_epoch   = 1;
+    std::memcpy(db.proposal_tally_key_id.data, fx.key_rec.key_id.data(), 32);
     db.have_tally_key = true;
     db.tally_key_record = fx.key_rec;
     for (const auto& kv : fx.outputs) db.outputs[kv.first] = kv.second;
@@ -657,7 +661,7 @@ TEST(vote_proof_verifier, v2_payload_roundtrip_via_governance_object)
     vote_proof_v2 p;
     p.version         = vote_proof_v2::VERSION;
     p.vote_height     = 51000;
-    p.tally_key_epoch = 1;
+    p.tally_key_id.data[0] = 1;
     p.C_W = rct::identity();
     p.C_S = rct::identity();
 
@@ -686,5 +690,5 @@ TEST(vote_proof_verifier, v2_payload_roundtrip_via_governance_object)
     ASSERT_TRUE(cryptonote::t_serializable_object_from_blob(p2, body2));
     EXPECT_EQ(p2.version, vote_proof_v2::VERSION);
     EXPECT_EQ(p2.vote_height, 51000u);
-    EXPECT_EQ(p2.tally_key_epoch, 1u);
+    EXPECT_EQ(p2.tally_key_id.data[0], 1u);
 }

@@ -64,7 +64,7 @@ dao_clsag_context make_reference_context()
         "3333333333333333333333333333333333333333333333333333333333333333");
     ctx.proposal_submission_height = 50000;
     ctx.vote_height                = 51000;
-    ctx.tally_key_epoch            = 1;
+    ctx.tally_key_id.data[0]       = 1;
 
     ctx.P = {
         hex_to_key("4228dd6dce46fdb1dff47cc02f1a483fe0e9dabe16bc84a37199e25c403d2fa4"),
@@ -91,12 +91,12 @@ rct::clsag make_reference_sig()
 {
     rct::clsag sig;
     sig.s  = {
-        hex_to_key("44117aa4c35a23dff3a5645c90498c05ffffffffffffffffffffffffffffff04"),
-        hex_to_key("45117aa4c35a23dff3a5645c90498c05ffffffffffffffffffffffffffffff03"),
-        hex_to_key("b81bd915fec7c5fdbbe454ac109d058a73f9edb90fe25eec0af3019191673b09"),
-        hex_to_key("47117aa4c35a23dff3a5645c90498c05ffffffffffffffffffffffffffffff05")
+        hex_to_key("7a2a78a6ce0c8e442b3b590e437554d0836d2e4ddbba298d9c66c87a477f3601"),
+        hex_to_key("0590a47742a39f977a608400b016bd88c1b0ba6e6d26c121cdd026228897050f"),
+        hex_to_key("1c66b7791ae744e7c5abcecfeb293e03a86401ec760a353a05b6b905fe535a0f"),
+        hex_to_key("2c830de26bb90d5a9e59f1be38e5ebc6c2868f51b614faa8fae368e36b94ea0b")
     };
-    sig.c1 = hex_to_key("c0c43164852b92430b2b00b9bd34a167ea8cf6ae9420994d11617eefad8f5d0d");
+    sig.c1 = hex_to_key("79cfc26cb4feda114a38aef375e24c8019e9110e11eb6ff8ef5640fc3a97a204");
     sig.I  = hex_to_key("35e281077984811952d31d39fa7103ba11dae6cd1befb0712016fb10e9ce4eca");
     sig.D  = hex_to_key("1c96b01c70452fea17a029c5cae0f3e7d72dc81c22a9f71c214f4c5226fe5443");
     return sig;
@@ -130,6 +130,7 @@ TEST(dao_clsag, generate_then_verify)
         "35e281077984811952d31d39fa7103ba11dae6cd1befb0712016fb10e9ce4eca"));
     EXPECT_TRUE(dao_clsag_verify(ctx, sig));
 }
+
 
 // ---- Nullifier scope ----
 
@@ -217,11 +218,11 @@ TEST(dao_clsag, tamper_proposal_submission_height_fails)
     EXPECT_FALSE(dao_clsag_verify(ctx, sig));
 }
 
-TEST(dao_clsag, tamper_tally_key_epoch_fails)
+TEST(dao_clsag, tamper_tally_key_id_fails)
 {
     auto ctx = make_reference_context();
     auto sig = make_reference_sig();
-    ctx.tally_key_epoch += 1;
+    ctx.tally_key_id.data[0] ^= 1;
     EXPECT_FALSE(dao_clsag_verify(ctx, sig));
 }
 

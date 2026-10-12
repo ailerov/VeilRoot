@@ -23,7 +23,7 @@ dao_consistency_context make_ctx(const char* domain)
     ctx.version = 2;
     std::memset(ctx.proposal_id.data, 0x33, 32);
     ctx.vote_height = 51000;
-    ctx.tally_key_epoch = 1;
+    ctx.tally_key_id.data[0] = 1;
     ctx.vote_input_transcript = { 0xAA, 0xBB, 0xCC };
     return ctx;
 }

@@ -3347,7 +3347,7 @@ struct COMMAND_RPC_PUBLISH_NOSTR_EVENT
       uint64_t voting_end_height;
       std::string submission_tx_hash;
       std::string proposal_status;
-      uint32_t tally_key_epoch;
+      std::string tally_key_id;    // hex, 32 bytes
       uint64_t yes_weight;
       uint64_t no_weight;
       uint64_t yes_participation_balance;
@@ -3370,7 +3370,7 @@ struct COMMAND_RPC_PUBLISH_NOSTR_EVENT
         KV_SERIALIZE(voting_end_height)
         KV_SERIALIZE(submission_tx_hash)
         KV_SERIALIZE(proposal_status)
-        KV_SERIALIZE(tally_key_epoch)
+        KV_SERIALIZE(tally_key_id)
         KV_SERIALIZE(yes_weight)
         KV_SERIALIZE(no_weight)
         KV_SERIALIZE(yes_participation_balance)
@@ -3442,10 +3442,8 @@ struct COMMAND_RPC_PUBLISH_NOSTR_EVENT
   {
     struct request_t: public rpc_request_base
     {
-      uint32_t epoch;
       BEGIN_KV_SERIALIZE_MAP()
         KV_SERIALIZE_PARENT(rpc_request_base)
-        KV_SERIALIZE(epoch)
       END_KV_SERIALIZE_MAP()
     };
     typedef epee::misc_utils::struct_init<request_t> request;
@@ -3453,14 +3451,12 @@ struct COMMAND_RPC_PUBLISH_NOSTR_EVENT
     struct response_t: public rpc_response_base
     {
       uint32_t    version;
-      uint32_t    epoch;
       std::string key_id;    // hex, 32 bytes
       std::string modulus;   // hex, 256 bytes (Paillier N)
 
       BEGIN_KV_SERIALIZE_MAP()
         KV_SERIALIZE_PARENT(rpc_response_base)
         KV_SERIALIZE(version)
-        KV_SERIALIZE(epoch)
         KV_SERIALIZE(key_id)
         KV_SERIALIZE(modulus)
       END_KV_SERIALIZE_MAP()

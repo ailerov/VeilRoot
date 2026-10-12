@@ -36,7 +36,7 @@ static vote_proof_v2 make_serializable_v2(size_t n_inputs)
     vp.version         = vote_proof_v2::VERSION;
     vp.proposal_id     = make_hash(0x10);
     vp.vote_height     = 42000;
-    vp.tally_key_epoch = 1;
+    vp.tally_key_id = make_hash(0x11);
 
     vp.C_W = make_key(0xAB);
     vp.C_S = make_key(0xCD);
@@ -80,7 +80,7 @@ TEST(vote_proof_v2_serialization, empty_roundtrip)
     ASSERT_TRUE(t_serializable_object_from_blob(out, blob));
     EXPECT_EQ(vp.proposal_id, out.proposal_id);
     EXPECT_EQ(vp.vote_height, out.vote_height);
-    EXPECT_EQ(vp.tally_key_epoch, out.tally_key_epoch);
+    EXPECT_EQ(vp.tally_key_id, out.tally_key_id);
     EXPECT_EQ(0u, out.inputs.size());
     EXPECT_EQ(0u, out.nullifiers.size());
 

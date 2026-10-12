@@ -264,16 +264,14 @@ TYPED_TEST(BlockchainDBTest, DaoTallyKeyRoundTrip)
   ASSERT_NO_THROW(this->m_db->open(dirPath));
   this->get_filenames();
 
-  // Never-set current epoch -> false.
+  // Never-set -> false.
   {
-    uint32_t ep = 0;
-    EXPECT_FALSE(this->m_db->get_current_dao_tally_key_epoch(ep));
+    dao::dao_tally_key_record miss;
+    EXPECT_FALSE(this->m_db->get_dao_tally_key(miss));
   }
 
-  // Build a well-formed dummy record.
   dao::dao_tally_key_record rec;
   rec.version = 1;
-  rec.epoch = 1;
   rec.committee_size = 16;
   rec.threshold = 8;
   rec.t = 7;
@@ -295,50 +293,37 @@ TYPED_TEST(BlockchainDBTest, DaoTallyKeyRoundTrip)
 
   {
     db_wtxn_guard guard(this->m_db);
-    ASSERT_NO_THROW(this->m_db->add_dao_tally_key(1, rec));
-    ASSERT_NO_THROW(this->m_db->set_current_dao_tally_key_epoch(1));
+    ASSERT_NO_THROW(this->m_db->add_dao_tally_key(rec));
   }
 
-  // Read back.
-  {
-    uint32_t ep = 0;
-    EXPECT_TRUE(this->m_db->get_current_dao_tally_key_epoch(ep));
-    EXPECT_EQ(ep, 1u);
-  }
   {
     dao::dao_tally_key_record got;
-    ASSERT_TRUE(this->m_db->get_dao_tally_key(1, got));
-    EXPECT_EQ(got.epoch, rec.epoch);
+    ASSERT_TRUE(this->m_db->get_dao_tally_key(got));
     EXPECT_EQ(got.committee_id_hash, rec.committee_id_hash);
     EXPECT_EQ(got.N, rec.N);
     EXPECT_EQ(got.V, rec.V);
     EXPECT_EQ(got.key_id, rec.key_id);
   }
 
-  // Historical retention: add epoch 2, epoch 1 must still exist.
-  rec.epoch = 2;
+  // Overwrite with a new key_id.
   rec.key_id.assign(32, 0xDD);
   {
     db_wtxn_guard guard(this->m_db);
-    ASSERT_NO_THROW(this->m_db->add_dao_tally_key(2, rec));
-    ASSERT_NO_THROW(this->m_db->set_current_dao_tally_key_epoch(2));
+    ASSERT_NO_THROW(this->m_db->add_dao_tally_key(rec));
   }
   {
-    dao::dao_tally_key_record got1, got2;
-    ASSERT_TRUE(this->m_db->get_dao_tally_key(1, got1));
-    ASSERT_TRUE(this->m_db->get_dao_tally_key(2, got2));
-    EXPECT_EQ(got1.epoch, 1u);
-    EXPECT_EQ(got2.epoch, 2u);
-    EXPECT_NE(got1.key_id, got2.key_id);
+    dao::dao_tally_key_record got;
+    ASSERT_TRUE(this->m_db->get_dao_tally_key(got));
+    EXPECT_EQ(got.key_id, rec.key_id);
   }
+
   {
-    uint32_t ep = 0;
-    EXPECT_TRUE(this->m_db->get_current_dao_tally_key_epoch(ep));
-    EXPECT_EQ(ep, 2u);
+    db_wtxn_guard guard(this->m_db);
+    ASSERT_NO_THROW(this->m_db->remove_dao_tally_key());
   }
   {
     dao::dao_tally_key_record miss;
-    EXPECT_FALSE(this->m_db->get_dao_tally_key(99, miss));
+    EXPECT_FALSE(this->m_db->get_dao_tally_key(miss));
   }
 
   ASSERT_NO_THROW(this->m_db->close());
@@ -550,7 +535,7 @@ TYPED_TEST(BlockchainDBTest, DaoV2OutcomeRoundTrip)
   dao::dao_v2_outcome_record rec;
   std::memset(rec.proposal_id.data, 0x77, 32);
   rec.vote_end_height = 60000;
-  rec.tally_key_epoch = 1;
+  rec.share_set_id = 1;
   std::memset(rec.aggregate_ciphertext_hash.data, 0x88, 32);
   rec.yes_weight          = 1000;
   rec.no_weight           = 200;

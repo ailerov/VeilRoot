@@ -75,15 +75,15 @@ bool ProposalManager::index_proposal(const transaction& tx, const crypto::hash& 
     rec.submission_height = height;
     rec.submission_tx_hash = tx_hash;
     {
-        // tally_key_epoch names the STABLE Paillier public-key epoch
-        // the proposal's ballots are encrypted under. It has no
-        // relation to the tally committee, which is selected
-        // automatically at this proposal's voting end.
-        uint32_t ep = 0;
-        if (m_db.get_underlying_db().get_current_dao_tally_key_epoch(ep))
-            rec.tally_key_epoch = ep;
+        // Bind the proposal to the single stable DKG key record by
+        // its 32-byte key_id.
+        dao::dao_tally_key_record key_rec;
+        if (m_db.get_underlying_db().get_dao_tally_key(key_rec) &&
+            key_rec.key_id.size() == 32)
+            std::memcpy(rec.tally_key_id.data,
+                        key_rec.key_id.data(), 32);
         else
-            rec.tally_key_epoch = 0;   // pre-activation: no tally key yet
+            std::memset(rec.tally_key_id.data, 0, 32);
     }
     rec.executed = false;
     rec.status = PROPOSAL_STATUS_ACTIVE;

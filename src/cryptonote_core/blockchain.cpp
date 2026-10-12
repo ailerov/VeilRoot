@@ -1058,34 +1058,14 @@ block Blockchain::pop_block_from_blockchain()
       if (!act.deserialize(gpf.payload.data))
         break;
 
-      const uint32_t popped_epoch = act.record.epoch;
-
-      // Remove the key record for this epoch.
+      // Remove the key record.
       try {
-        m_db->remove_dao_tally_key(popped_epoch);
+        m_db->remove_dao_tally_key();
       } catch (...) {
         // Key record not present; not an error.
       }
 
-      // Restore active epoch to the highest epoch below the removed
-      // one that is still present.
-      uint32_t new_current = 0;
-      bool found_lower = false;
-      for (uint32_t e = 1; e < popped_epoch; ++e) {
-        dao::dao_tally_key_record r;
-        try {
-          if (m_db->get_dao_tally_key(e, r)) {
-            new_current = e;
-            found_lower = true;
-          }
-        } catch (...) {}
-      }
-      try {
-        m_db->set_current_dao_tally_key_epoch(
-            found_lower ? new_current : 0);
-      } catch (...) {}
-
-      MINFO("Rolled back DKG key activation for epoch " << popped_epoch);
+      MINFO("Rolled back DKG key activation");
       break;
     }
   }
@@ -6881,7 +6861,7 @@ leave:
   };
 
   {
-    std::set<uint32_t> activation_epochs_in_block;
+    bool activation_seen_in_block = false;
     std::set<std::string> tally_proposals_in_block;
 
     for (const auto& tx_pair : txs)
@@ -6893,11 +6873,10 @@ leave:
         std::vector<uint8_t> blob;
         dao::dao_dkg_key_activation activation;
 
+        activation_seen_in_block = true;
         if (!extract_dao_payload(
                 tx, governance_object::dkg_key_activation, blob) ||
             !activation.deserialize(blob) ||
-            !activation_epochs_in_block.insert(
-                activation.record.epoch).second ||
             !validate_dao_v2_dkg_activation_tx(
                 tx, blockchain_height))
         {
@@ -9153,7 +9132,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     {
       dao::dao_tally_key_record existing;
       try {
-        if (m_db->get_dao_tally_key(epoch, existing)) {
+        if (m_db->get_dao_tally_key(existing)) {
           std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
           m_dao_v2_key_ready_attestations.erase(epoch);
           return true;
@@ -9241,7 +9220,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     {
       dao::dao_tally_key_record existing;
       try {
-        if (m_db->get_dao_tally_key(bootstrap_key_epoch, existing)) return;
+        if (m_db->get_dao_tally_key(existing)) return;
       } catch (...) {
         // Read failure is not fatal here; try to bootstrap next cycle.
       }
@@ -9669,8 +9648,10 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       MWARNING("V2 tally share: unknown proposal " << share.proposal_id);
       return;
     }
-    if (prop.tally_key_epoch != share.tally_key_epoch) {
-      MWARNING("V2 tally share: epoch mismatch");
+    if (share.tally_key_id.size() != 32 ||
+        std::memcmp(prop.tally_key_id.data,
+                    share.tally_key_id.data(), 32) != 0) {
+      MWARNING("V2 tally share: key id mismatch");
       return;
     }
     if (share.vote_end_height != prop.voting_end_height) {
@@ -9680,8 +9661,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
     dao::dao_tally_key_record key_rec;
     try {
-      if (!m_db->get_dao_tally_key(
-              static_cast<uint32_t>(share.tally_key_epoch), key_rec)) {
+      if (!m_db->get_dao_tally_key(key_rec)) {
         MWARNING("V2 tally share: key record missing");
         return;
       }
@@ -9829,12 +9809,10 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       [&](const crypto::hash& pid, const proposal_record& rec) -> bool {
         if (rec.status != PROPOSAL_STATUS_ACTIVE) return true;
         if (rec.voting_end_height + 1 != height) return true;
-        if (rec.tally_key_epoch == 0) return true;
 
         dao::dao_tally_key_record key_rec;
         try {
-          if (!m_db->get_dao_tally_key(
-                  static_cast<uint32_t>(rec.tally_key_epoch), key_rec))
+          if (!m_db->get_dao_tally_key(key_rec))
             return true;
         } catch (...) { return true; }
 
@@ -9879,7 +9857,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
         if (!have_session) {
           session = dao::dao_tally_session{};
           session.version        = 1;
-          session.share_epoch    = static_cast<uint32_t>(rec.tally_key_epoch);
+          session.share_epoch    = 1;
           session.proposal_id    = pid;
           if (key_rec.key_id.size() == 32)
             std::memcpy(session.public_key_id.data,
@@ -10039,11 +10017,6 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       return false;
     }
 
-    if (cert.tally_key_epoch != prop.tally_key_epoch) {
-      MERROR("tally-result: epoch mismatch");
-      return false;
-    }
-
     if (cert.vote_end_height != prop.voting_end_height) {
       MERROR("tally-result: vote_end_height mismatch");
       return false;
@@ -10055,11 +10028,8 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     }
 
     dao::dao_tally_key_record key_rec;
-    if (!m_db->get_dao_tally_key(
-            static_cast<uint32_t>(cert.tally_key_epoch),
-            key_rec)) {
-      MERROR("tally-result: key record missing for epoch "
-             << cert.tally_key_epoch);
+    if (!m_db->get_dao_tally_key(key_rec)) {
+      MERROR("tally-result: key record missing");
       return false;
     }
 
@@ -10089,8 +10059,15 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     // certificate, the partial-decryption proofs, the threshold, the
     // aggregate and the recovered outcome. A validator does not need a
     // secret share to verify those.
+    dao::dao_share_set_record share_set;
+    if (!dao::dao_synthesize_bootstrap_share_set(key_rec, share_set)) {
+      MERROR("tally-result: cannot derive share set");
+      return false;
+    }
+
     if (!dao::dao_verify_tally_certificate(
             key_rec,
+            share_set,
             snap,
             m_governance_params.voting_quorum_percent,
             agg.aggregate_E_W,
@@ -10117,8 +10094,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     // apply path opens one; a direct test call must do the same.
     m_db->block_wtxn_start();
     try {
-      m_db->add_dao_tally_key(record.epoch, record);
-      m_db->set_current_dao_tally_key_epoch(record.epoch);
+      m_db->add_dao_tally_key(record);
     } catch (...) {
       try { m_db->block_wtxn_abort(); } catch (...) {}
       throw;
@@ -10191,29 +10167,12 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
     const dao::dao_tally_key_record& rec = act.record;
 
-    // 3. epoch check: rec.epoch must be the next allowed epoch.
+    // 3. Reject a second activation: the single key record already exists.
     {
-      uint32_t current = 0;
-      bool have_current = false;
-      try {
-        have_current = m_db->get_current_dao_tally_key_epoch(current);
-      } catch (...) { have_current = false; }
-
-      uint32_t expected = 1;
-      if (have_current) {
-        if (current == UINT32_MAX) return false;
-        expected = current + 1;
-      }
-      if (rec.epoch != expected) {
-        MERROR("dkg-activation: epoch " << rec.epoch
-               << " not the next expected " << expected);
-        return false;
-      }
-      // If the same epoch is already installed, reject.
       dao::dao_tally_key_record existing;
       try {
-        if (m_db->get_dao_tally_key(rec.epoch, existing)) {
-          MERROR("dkg-activation: epoch already installed");
+        if (m_db->get_dao_tally_key(existing)) {
+          MERROR("dkg-activation: key record already installed");
           return false;
         }
       } catch (...) {}
@@ -10246,8 +10205,6 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       std::vector<uint8_t> buf;
       const char* dom = "VeilRoot-DAO-DKG-COMMITTEE-V1";
       buf.insert(buf.end(), dom, dom + std::strlen(dom));
-      for (int i = 0; i < 4; ++i)
-        buf.push_back((rec.epoch >> (8 * i)) & 0xff);
       for (const auto& pk : rec.committee_members)
         buf.insert(buf.end(), pk.begin(), pk.end());
       uint8_t want[32] = {};
@@ -10366,11 +10323,9 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
       // Install the public key record. This is the only place the
       // authoritative key record is written.
-      m_db->add_dao_tally_key(rec.epoch, rec);
-      m_db->set_current_dao_tally_key_epoch(rec.epoch);
+      m_db->add_dao_tally_key(rec);
 
       MINFO("DKG key activation applied at height " << block_height
-            << " epoch " << rec.epoch
             << " committee " << rec.committee_size);
       return true;
     }
@@ -10415,7 +10370,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       dao::dao_v2_outcome_record out;
       out.proposal_id               = cert.proposal_id;
       out.vote_end_height           = cert.vote_end_height;
-      out.tally_key_epoch           = cert.tally_key_epoch;
+      out.share_set_id              = cert.share_set_id;
       out.aggregate_ciphertext_hash = cert.aggregate_ciphertext_hash;
       out.yes_weight                = cert.YES_weight;
       out.no_weight                 = cert.NO_weight;

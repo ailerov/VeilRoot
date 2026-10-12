@@ -109,7 +109,8 @@ bool compute_challenge(const dao_consistency_context& ctx,
     buf.push_back(ctx.version);
     buf.insert(buf.end(), ctx.proposal_id.data, ctx.proposal_id.data + 32);
     append_le64(buf, ctx.vote_height);
-    append_le64(buf, ctx.tally_key_epoch);
+    buf.insert(buf.end(), ctx.tally_key_id.data,
+               ctx.tally_key_id.data + 32);
     append_le32(buf, static_cast<uint32_t>(ctx.vote_input_transcript.size()));
     buf.insert(buf.end(), ctx.vote_input_transcript.begin(),
                ctx.vote_input_transcript.end());
@@ -336,7 +337,6 @@ std::vector<uint8_t> dao_vote_input_transcript(
     tx_push_bytes(out, reinterpret_cast<const uint8_t*>(in.proposal_id.data), 32);
     tx_push_u64(out, in.proposal_submission_height);
     tx_push_u64(out, in.vote_height);
-    tx_push_u64(out, in.tally_key_epoch);
     tx_push_bytes(out, reinterpret_cast<const uint8_t*>(in.tally_key_id.data), 32);
 
     tx_push_u32(out, uint32_t(in.key_offsets.size()));

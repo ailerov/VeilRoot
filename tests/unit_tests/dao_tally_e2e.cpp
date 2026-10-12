@@ -319,8 +319,7 @@ TEST(dao_tally_e2e, tally_manager_finalizes_automatically)
         sh.version = 1;
         sh.proposal_id = prop_id;
         sh.vote_end_height = VOTE_END;
-        sh.tally_key_epoch = 1;
-        sh.share_epoch     = static_cast<uint32_t>(VOTE_END);
+        sh.tally_key_id.assign(32, 0);
         std::memset(sh.reset_transcript_hash.data, 0xAB, 32);
         sh.member_index = m;
         sh.aggregate_ciphertext_hash = agg_hash;
@@ -367,10 +366,10 @@ TEST(dao_tally_e2e, tally_manager_finalizes_automatically)
         rec.voting_end_height = VOTE_END;
         rec.submission_tx_hash = prop_id;
         rec.status = PROPOSAL_STATUS_ACTIVE;
-        rec.tally_key_epoch = 1;
+        std::memset(rec.tally_key_id.data, 0, 32);
         db.add_proposal_record(prop_id, rec);
 
-        db.add_dao_tally_key(1, out.record);
+        db.add_dao_tally_key(out.record);
 
         // The tally pipeline is driven by the per-proposal session.
         // In this test the session committee is the bootstrap
@@ -378,7 +377,6 @@ TEST(dao_tally_e2e, tally_manager_finalizes_automatically)
         // The reset is marked complete.
         dao_tally_session session;
         session.version              = 1;
-        session.share_epoch          = static_cast<uint32_t>(VOTE_END);
         session.proposal_id          = prop_id;
         session.selection_height     = VOTE_END;
         session.vote_end_height      = VOTE_END;

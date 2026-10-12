@@ -56,16 +56,18 @@ verification_result VoteProofVerifier::verify(
     if (proof.vote_height != block_height)
         return fail("step5: vote_height != block_height");
 
-    // Step 6: tally-key epoch matches the proposal; historical record
-    // for that epoch must exist.
-    if (proof.tally_key_epoch != prop.tally_key_epoch)
-        return fail("step6: tally_key_epoch mismatch");
-    if (proof.tally_key_epoch > std::numeric_limits<uint32_t>::max())
-        return fail("step6: tally_key_epoch out of range");
+    // Step 6: the vote binds to the single stable key record by key_id.
+    if (std::memcmp(proof.tally_key_id.data,
+                    prop.tally_key_id.data, 32) != 0)
+        return fail("step6: tally_key_id mismatch");
     dao::dao_tally_key_record key_rec;
-    if (!db.get_dao_tally_key(static_cast<uint32_t>(proof.tally_key_epoch),
-                              key_rec))
+    if (!db.get_dao_tally_key(key_rec))
         return fail("step6: tally key not found");
+    if (key_rec.key_id.size() != 32)
+        return fail("step6: tally key id malformed");
+    if (std::memcmp(key_rec.key_id.data(),
+                    proof.tally_key_id.data, 32) != 0)
+        return fail("step6: tally key id mismatch");
 
     // Step 7: no invented DAO-specific numeric limit. Non-empty and
     // matching the nullifier count (step 1). Strict deserialization
@@ -144,7 +146,7 @@ verification_result VoteProofVerifier::verify(
         rc.proposal_id                = proof.proposal_id;
         rc.proposal_submission_height = prop.submission_height;
         rc.vote_height                = proof.vote_height;
-        rc.tally_key_epoch            = proof.tally_key_epoch;
+        rc.tally_key_id               = proof.tally_key_id;
         rc.V                          = in.weight_commitment;
 
         uint64_t acc = 0;
@@ -280,7 +282,6 @@ verification_result VoteProofVerifier::verify(
     ti.proposal_id                = proof.proposal_id;
     ti.proposal_submission_height = prop.submission_height;
     ti.vote_height                = proof.vote_height;
-    ti.tally_key_epoch            = proof.tally_key_epoch;
     std::memcpy(ti.tally_key_id.data, key_rec.key_id.data(), 32);
 
     for (size_t i = 0; i < proof.inputs.size(); ++i) {
@@ -312,7 +313,7 @@ verification_result VoteProofVerifier::verify(
     cctx_w.version               = proof.version;
     cctx_w.proposal_id           = proof.proposal_id;
     cctx_w.vote_height           = proof.vote_height;
-    cctx_w.tally_key_epoch       = proof.tally_key_epoch;
+    cctx_w.tally_key_id          = proof.tally_key_id;
     cctx_w.vote_input_transcript = transcript_digest;
 
     dao::dao_consistency_context cctx_s = cctx_w;

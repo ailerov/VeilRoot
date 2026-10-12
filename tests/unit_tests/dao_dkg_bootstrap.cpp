@@ -235,13 +235,13 @@ TEST_F(DaoV2Bootstrap, ThreeEligibleNodesSelectAndComplete2of3DKG)
     // would during block application.
     for (uint32_t i = 0; i < 3; ++i) {
         db_wtxn_guard wtxn(m_dbs[i].get());
-        m_dbs[i]->add_dao_tally_key(1, results[i].record);
+        m_dbs[i]->add_dao_tally_key(results[i].record);
     }
 
     // Compare public key records across DBs.
     std::vector<dao_tally_key_record> recs(3);
     for (uint32_t i = 0; i < 3; ++i)
-        ASSERT_TRUE(m_dbs[i]->get_dao_tally_key(1, recs[i]));
+        ASSERT_TRUE(m_dbs[i]->get_dao_tally_key(recs[i]));
 
     for (uint32_t i = 1; i < 3; ++i) {
         EXPECT_EQ(recs[0].committee_id_hash, recs[i].committee_id_hash);

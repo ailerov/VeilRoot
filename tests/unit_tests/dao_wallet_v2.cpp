@@ -33,7 +33,7 @@ class WalletV2TestDB : public BaseTestDB
 public:
     uint64_t proposal_submission_height = 0;
     uint64_t proposal_voting_end_height = 0;
-    uint32_t proposal_tally_key_epoch   = 0;
+    crypto::hash proposal_tally_key_id{};
 
     dao::dao_tally_key_record tally_key_record;
     std::unordered_set<crypto::hash> persistent_nullifiers;
@@ -55,13 +55,15 @@ public:
         rec.status            = PROPOSAL_STATUS_ACTIVE;
         rec.submission_height = proposal_submission_height;
         rec.voting_end_height = proposal_voting_end_height;
-        rec.tally_key_epoch   = proposal_tally_key_epoch;
+        std::memcpy(rec.tally_key_id.data, proposal_tally_key_id.data, 32);
         return true;
     }
 
-    bool get_dao_tally_key(uint32_t, dao::dao_tally_key_record& rec) const override
+    bool get_dao_tally_key(dao::dao_tally_key_record& rec) const override
     {
         rec = tally_key_record;
+        rec.key_id.assign(proposal_tally_key_id.data,
+                          proposal_tally_key_id.data + 32);
         return true;
     }
 
@@ -180,7 +182,6 @@ TEST(dao_wallet_v2, builds_valid_vote_one_input_yes)
         proposal_id,
         /*submission=*/50000,
         /*vote_height=*/51000,
-        /*tally_key_epoch=*/1,
         tally_key_id,
         modulus,
         /*direction=*/0,
@@ -191,7 +192,7 @@ TEST(dao_wallet_v2, builds_valid_vote_one_input_yes)
     WalletV2TestDB db;
     db.proposal_submission_height = 50000;
     db.proposal_voting_end_height = 60000;
-    db.proposal_tally_key_epoch   = 1;
+    std::memcpy(db.proposal_tally_key_id.data, tally_key_id.data, 32);
     db.tally_key_record.key_id.assign(32, 0);
     std::memcpy(db.tally_key_record.key_id.data(), tally_key_id.data, 32);
     db.tally_key_record.N = modulus;
@@ -230,13 +231,13 @@ TEST(dao_wallet_v2, builds_valid_vote_two_inputs_no)
     vote_proof_v2 proof;
     ASSERT_TRUE(build_dao_v2_vote(
         proposal_id,
-        50000, 51000, 1, tally_key_id, modulus,
+        50000, 51000, tally_key_id, modulus,
         /*direction=*/1, sources, proof));
 
     WalletV2TestDB db;
     db.proposal_submission_height = 50000;
     db.proposal_voting_end_height = 60000;
-    db.proposal_tally_key_epoch   = 1;
+    std::memcpy(db.proposal_tally_key_id.data, tally_key_id.data, 32);
     db.tally_key_record.key_id.assign(32, 0);
     std::memcpy(db.tally_key_record.key_id.data(), tally_key_id.data, 32);
     db.tally_key_record.N = modulus;
@@ -272,7 +273,7 @@ TEST(dao_wallet_v2, yes_vote_tampered_to_no_cs_fails)
     std::vector<dao_v2_vote_source> sources = { s.src };
 
     vote_proof_v2 proof;
-    ASSERT_TRUE(build_dao_v2_vote(proposal_id, 50000, 51000, 1,
+    ASSERT_TRUE(build_dao_v2_vote(proposal_id, 50000, 51000,
         tally_key_id, modulus, /*yes*/0, sources, proof));
 
     // Replace C_S with the identity. That breaks the OR proof and the
@@ -282,7 +283,7 @@ TEST(dao_wallet_v2, yes_vote_tampered_to_no_cs_fails)
     WalletV2TestDB db;
     db.proposal_submission_height = 50000;
     db.proposal_voting_end_height = 60000;
-    db.proposal_tally_key_epoch   = 1;
+    std::memcpy(db.proposal_tally_key_id.data, tally_key_id.data, 32);
     db.tally_key_record.key_id.assign(32, 0);
     std::memcpy(db.tally_key_record.key_id.data(), tally_key_id.data, 32);
     db.tally_key_record.N = modulus;
@@ -313,7 +314,7 @@ TEST(dao_wallet_v2, no_vote_tampered_direction_fails)
     std::vector<dao_v2_vote_source> sources = { s.src };
 
     vote_proof_v2 proof;
-    ASSERT_TRUE(build_dao_v2_vote(proposal_id, 50000, 51000, 1,
+    ASSERT_TRUE(build_dao_v2_vote(proposal_id, 50000, 51000,
         tally_key_id, modulus, /*no*/1, sources, proof));
 
     // Flip a byte in the OR proof so the challenge no longer closes.
@@ -322,7 +323,7 @@ TEST(dao_wallet_v2, no_vote_tampered_direction_fails)
     WalletV2TestDB db;
     db.proposal_submission_height = 50000;
     db.proposal_voting_end_height = 60000;
-    db.proposal_tally_key_epoch   = 1;
+    std::memcpy(db.proposal_tally_key_id.data, tally_key_id.data, 32);
     db.tally_key_record.key_id.assign(32, 0);
     std::memcpy(db.tally_key_record.key_id.data(), tally_key_id.data, 32);
     db.tally_key_record.N = modulus;

@@ -308,15 +308,12 @@ TEST_F(DaoBootstrapIntegration, ActivationChainBindsEpochAfterPersistence)
 
     // Key record persisted.
     dao::dao_tally_key_record rec;
-    ASSERT_TRUE(bc.get_db().get_dao_tally_key(1, rec));
+    ASSERT_TRUE(bc.get_db().get_dao_tally_key(rec));
     EXPECT_EQ(rec.committee_size, 3u);
     EXPECT_EQ(rec.threshold, 2u);
 
     // Epoch activated.
-    uint32_t ep = 0;
-    ASSERT_TRUE(bc.get_db().get_current_dao_tally_key_epoch(ep));
-    EXPECT_EQ(ep, 1u);
-
+    
     // Local share stored under this node's committee index.
     std::vector<uint8_t> share;
     ASSERT_TRUE(bc.get_db().get_dao_local_share(1, 1, share));
@@ -530,7 +527,7 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxValidatedAndApplied)
     bc.install_dao_tally_key_for_test(out.record);
 
     dao::dao_tally_key_record key_rec;
-    ASSERT_TRUE(bc.get_db().get_dao_tally_key(1, key_rec));
+    ASSERT_TRUE(bc.get_db().get_dao_tally_key(key_rec));
     ASSERT_EQ(key_rec.committee_size, 3u);
     ASSERT_EQ(key_rec.threshold, 2u);
 
@@ -542,7 +539,7 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxValidatedAndApplied)
         rec.voting_period_days = 7;
         rec.submission_height = VOTE_END - 1000;
         rec.voting_end_height = VOTE_END;
-        rec.tally_key_epoch = 1;
+        std::memset(rec.tally_key_id.data, 0, 32);
         rec.submission_tx_hash = prop_id;
         rec.status = PROPOSAL_STATUS_ACTIVE;
         rec.status_height = VOTE_END - 1000;
@@ -608,8 +605,7 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxValidatedAndApplied)
     second_share.version = 1;
     second_share.proposal_id = prop_id;
     second_share.vote_end_height = VOTE_END;
-    second_share.tally_key_epoch = 1;
-    second_share.share_epoch = 1;
+    second_share.tally_key_id.assign(32, 0);
     second_share.member_index = 2;
     second_share.aggregate_ciphertext_hash = agg_hash;
     {
@@ -770,7 +766,7 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxRolledBackByReorg)
     bc.install_dao_tally_key_for_test(out.record);
 
     dao::dao_tally_key_record key_rec;
-    ASSERT_TRUE(bc.get_db().get_dao_tally_key(1, key_rec));
+    ASSERT_TRUE(bc.get_db().get_dao_tally_key(key_rec));
 
     {
         proposal_record rec{};
@@ -779,7 +775,7 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxRolledBackByReorg)
         rec.voting_period_days = 7;
         rec.submission_height = VOTE_END - 1000;
         rec.voting_end_height = VOTE_END;
-        rec.tally_key_epoch = 1;
+        std::memset(rec.tally_key_id.data, 0, 32);
         rec.submission_tx_hash = prop_id;
         rec.status = PROPOSAL_STATUS_ACTIVE;
         rec.status_height = VOTE_END - 1000;
@@ -840,8 +836,7 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxRolledBackByReorg)
     second_share.version = 1;
     second_share.proposal_id = prop_id;
     second_share.vote_end_height = VOTE_END;
-    second_share.tally_key_epoch = 1;
-    second_share.share_epoch = 1;
+    second_share.tally_key_id.assign(32, 0);
     second_share.member_index = 2;
     second_share.aggregate_ciphertext_hash = agg_hash;
     {
@@ -1081,7 +1076,7 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxRejectionBoundaries)
     bc.install_dao_tally_key_for_test(out.record);
 
     dao::dao_tally_key_record key_rec;
-    ASSERT_TRUE(bc.get_db().get_dao_tally_key(1, key_rec));
+    ASSERT_TRUE(bc.get_db().get_dao_tally_key(key_rec));
 
     {
         proposal_record rec{};
@@ -1090,7 +1085,7 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxRejectionBoundaries)
         rec.voting_period_days = 7;
         rec.submission_height = VOTE_END - 1000;
         rec.voting_end_height = VOTE_END;
-        rec.tally_key_epoch = 1;
+        std::memset(rec.tally_key_id.data, 0, 32);
         rec.submission_tx_hash = prop_id;
         rec.status = PROPOSAL_STATUS_ACTIVE;
         rec.status_height = VOTE_END - 1000;
@@ -1147,8 +1142,7 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxRejectionBoundaries)
     second_share.version = 1;
     second_share.proposal_id = prop_id;
     second_share.vote_end_height = VOTE_END;
-    second_share.tally_key_epoch = 1;
-    second_share.share_epoch = 1;
+    second_share.tally_key_id.assign(32, 0);
     second_share.member_index = 2;
     second_share.aggregate_ciphertext_hash = agg_hash;
     {
@@ -1217,10 +1211,10 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxRejectionBoundaries)
     EXPECT_TRUE (bc.validate_dao_v2_tally_result_tx(valid_tx, VOTE_END + 1));
     EXPECT_TRUE (bc.validate_dao_v2_tally_result_tx(valid_tx, VOTE_END + 2));
 
-    // ---- Case 4: wrong tally_key_epoch ----
+    // ---- Case 4: wrong share_set_id ----
     {
         auto c = base_cert;
-        c.tally_key_epoch = 999;
+        c.share_set_id = 999;
         transaction tx;
         ASSERT_TRUE(rebuild_tx_with_cert(valid_tx, c, tx));
         EXPECT_FALSE(bc.validate_dao_v2_tally_result_tx(tx, VOTE_END + 1));
@@ -1370,7 +1364,7 @@ TEST_F(DaoBootstrapIntegration, TallyResultReconstructableFromChainState)
     bc.install_dao_tally_key_for_test(out.record);
 
     dao::dao_tally_key_record key_rec;
-    ASSERT_TRUE(bc.get_db().get_dao_tally_key(1, key_rec));
+    ASSERT_TRUE(bc.get_db().get_dao_tally_key(key_rec));
 
     {
         proposal_record rec{};
@@ -1379,7 +1373,7 @@ TEST_F(DaoBootstrapIntegration, TallyResultReconstructableFromChainState)
         rec.voting_period_days = 7;
         rec.submission_height = VOTE_END - 1000;
         rec.voting_end_height = VOTE_END;
-        rec.tally_key_epoch = 1;
+        std::memset(rec.tally_key_id.data, 0, 32);
         rec.submission_tx_hash = prop_id;
         rec.status = PROPOSAL_STATUS_ACTIVE;
         rec.status_height = VOTE_END - 1000;
@@ -1436,8 +1430,7 @@ TEST_F(DaoBootstrapIntegration, TallyResultReconstructableFromChainState)
     second_share.version = 1;
     second_share.proposal_id = prop_id;
     second_share.vote_end_height = VOTE_END;
-    second_share.tally_key_epoch = 1;
-    second_share.share_epoch = 1;
+    second_share.tally_key_id.assign(32, 0);
     second_share.member_index = 2;
     second_share.aggregate_ciphertext_hash = agg_hash;
     {
@@ -1594,7 +1587,7 @@ TEST_F(DaoBootstrapIntegration, BootstrapSharePersistsAfterTally)
     ASSERT_FALSE(share_before.empty());
 
     dao::dao_tally_key_record key_rec;
-    ASSERT_TRUE(bc.get_db().get_dao_tally_key(1, key_rec));
+    ASSERT_TRUE(bc.get_db().get_dao_tally_key(key_rec));
 
     {
         proposal_record rec{};
@@ -1603,7 +1596,7 @@ TEST_F(DaoBootstrapIntegration, BootstrapSharePersistsAfterTally)
         rec.voting_period_days = 7;
         rec.submission_height = VOTE_END - 1000;
         rec.voting_end_height = VOTE_END;
-        rec.tally_key_epoch = 1;
+        std::memset(rec.tally_key_id.data, 0, 32);
         rec.submission_tx_hash = prop_id;
         rec.status = PROPOSAL_STATUS_ACTIVE;
         rec.status_height = VOTE_END - 1000;
@@ -1660,8 +1653,7 @@ TEST_F(DaoBootstrapIntegration, BootstrapSharePersistsAfterTally)
     second_share.version = 1;
     second_share.proposal_id = prop_id;
     second_share.vote_end_height = VOTE_END;
-    second_share.tally_key_epoch = 1;
-    second_share.share_epoch = 1;
+    second_share.tally_key_id.assign(32, 0);
     second_share.member_index = 2;
     second_share.aggregate_ciphertext_hash = agg_hash;
     {
@@ -1719,7 +1711,7 @@ TEST_F(DaoBootstrapIntegration, BootstrapSharePersistsAfterTally)
     // The public key record also persists — it belongs to the DAO for
     // the lifetime of the key epoch, not to a single proposal.
     dao::dao_tally_key_record key_after;
-    ASSERT_TRUE(bc.get_db().get_dao_tally_key(1, key_after));
+    ASSERT_TRUE(bc.get_db().get_dao_tally_key(key_after));
     EXPECT_EQ(key_after.N, key_rec.N);
     EXPECT_EQ(key_after.V_K_i, key_rec.V_K_i);
 
@@ -1811,7 +1803,7 @@ TEST_F(DaoBootstrapIntegration, OutOfCommitteeShareholderShareAccepted)
     bc.install_dao_tally_key_for_test(out.record);
 
     dao::dao_tally_key_record key_rec;
-    ASSERT_TRUE(bc.get_db().get_dao_tally_key(1, key_rec));
+    ASSERT_TRUE(bc.get_db().get_dao_tally_key(key_rec));
 
     // Confirm the selected committee excludes member 3.
     {
@@ -1832,7 +1824,7 @@ TEST_F(DaoBootstrapIntegration, OutOfCommitteeShareholderShareAccepted)
         rec.voting_period_days = 7;
         rec.submission_height = VOTE_END - 1000;
         rec.voting_end_height = VOTE_END;
-        rec.tally_key_epoch = 1;
+        std::memset(rec.tally_key_id.data, 0, 32);
         rec.submission_tx_hash = prop_id;
         rec.status = PROPOSAL_STATUS_ACTIVE;
         rec.status_height = VOTE_END - 1000;
@@ -1891,8 +1883,7 @@ TEST_F(DaoBootstrapIntegration, OutOfCommitteeShareholderShareAccepted)
     third_share.version = 1;
     third_share.proposal_id = prop_id;
     third_share.vote_end_height = VOTE_END;
-    third_share.tally_key_epoch = 1;
-    third_share.share_epoch = 1;
+    third_share.tally_key_id.assign(32, 0);
     third_share.member_index = 3;
     third_share.aggregate_ciphertext_hash = agg_hash;
     {
