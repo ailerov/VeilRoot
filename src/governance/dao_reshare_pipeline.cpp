@@ -75,7 +75,24 @@ bool dao_reshare_make_contribution(
 
     // deal fills C_i0 inside its own copy of link_ctx. Store the
     // post-deal value so verifiers see the same C_i0 that C_0 carries.
+    // deal fills C_i0 and mu_i inside its own copy of link_ctx (the
+    // function takes it by value). Reproduce the mu_i encoding here so
+    // the serialized link context that verifiers see carries the same
+    // value the proof was built over.
     link_ctx.C_i0 = commits.C_0;
+    {
+        std::vector<uint8_t> sgn(1 + 512, 0);
+        sgn[0] = BN_is_negative(mu_i) ? 1 : 0;
+        BIGNUM* abs_mu = BN_dup(mu_i);
+        BN_set_negative(abs_mu, 0);
+        if (static_cast<size_t>(BN_num_bytes(abs_mu)) > 512) {
+            BN_free(abs_mu);
+            return false;
+        }
+        BN_bn2binpad(abs_mu, sgn.data() + 1, 512);
+        BN_free(abs_mu);
+        link_ctx.mu_i = std::move(sgn);
+    }
     out.link_ctx = std::move(link_ctx);
     out.link_proof = std::move(lp);
     out.commits = std::move(commits);
@@ -814,24 +831,37 @@ void dao_reshare_runner::on_message(const crypto::public_key& from,
     if (m.type == 0) {
         // Deal.
         if (m.sender_index == 0 ||
-            m.sender_index > p_->cfg.contributor_members.size())
+            m.sender_index > p_->cfg.contributor_members.size()) {
             return;
+        }
         if (std::memcmp(p_->cfg.contributor_members[m.sender_index - 1].data,
-                        from.data, 32) != 0)
+                        from.data, 32) != 0) {
             return;
+        }
 
         {
             std::lock_guard<std::mutex> lk(p_->mtx);
-            if (p_->contributions.count(m.sender_index) > 0) return;
+            if (p_->contributions.count(m.sender_index) > 0) {
+                return;
+            }
         }
 
         dao_reshare_contribution contrib;
-        if (!dao_reshare_deserialize_public(m.public_blob, contrib))
+        if (!dao_reshare_deserialize_public(m.public_blob, contrib)) {
             return;
-        if (contrib.contributor_index != m.sender_index) return;
-        if (contrib.contributor_pubkey != pk_to_bytes(from)) return;
-        if (contrib.link_ctx.share_set_id != p_->cfg.old_share_set_id) return;
-        if (contrib.link_ctx.original_index != m.sender_index) return;
+        }
+        if (contrib.contributor_index != m.sender_index) {
+            return;
+        }
+        if (contrib.contributor_pubkey != pk_to_bytes(from)) {
+            return;
+        }
+        if (contrib.link_ctx.share_set_id != p_->cfg.old_share_set_id) {
+            return;
+        }
+        if (contrib.link_ctx.original_index != m.sender_index) {
+            return;
+        }
 
         // Find our payload and decrypt if present.
         bool got_share = false;
@@ -867,8 +897,9 @@ void dao_reshare_runner::on_message(const crypto::public_key& from,
         // If this is not our own contribution, we must have obtained a
         // share for ourselves to be able to use this contribution in
         // combine.
-        if (m.sender_index != p_->cfg.local_party_index && !got_share)
+        if (m.sender_index != p_->cfg.local_party_index && !got_share) {
             return;
+        }
 
         // Verify the delivered share against the contributor's public
         // commitments, and verify all coefficient proofs and the link

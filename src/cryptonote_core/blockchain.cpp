@@ -9684,16 +9684,16 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
         if (!m_dao_v2_reshare_runner->finished()) return;
 
         dao::dao_share_set_record new_ss;
+        // Caller must own an active write transaction. This mirrors
+        // persist_dao_v2_dkg_result: the trigger never opens its own.
         if (m_dao_v2_reshare_runner->wait(new_ss, 1)) {
           try {
-            m_db->block_wtxn_start();
             m_db->add_dao_share_set(new_ss.share_set_id, new_ss);
             m_db->set_current_dao_share_set_id(new_ss.share_set_id);
 
             // Persist this node's new share if it is a new member.
             std::vector<uint8_t> local_share;
             if (m_dao_v2_reshare_runner->get_local_share(local_share)) {
-              // Find our position in the new committee.
               crypto::public_key self_pk{};
               if (crypto::secret_key_to_public_key(m_node_privkey,
                                                     self_pk)) {
@@ -9710,11 +9710,9 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
                 }
               }
             }
-            m_db->block_wtxn_stop();
             MINFO("DAO V2 reshare: committed share set "
                   << new_ss.share_set_id);
           } catch (const std::exception& e) {
-            try { m_db->block_wtxn_abort(); } catch (...) {}
             MWARNING("DAO V2 reshare: commit failed: " << e.what());
           }
         }

@@ -882,3 +882,223 @@ TEST(DaoV2Replay, ReshareTriggerFiresWhenEligibleSetGrows)
 
     boost::filesystem::remove_all(base);
 }
+
+
+// ---------------------------------------------------------------------
+// Two-node resharing.
+//
+// Two ReplayNodes with distinct node keys, sharing the same bootstrap
+// key record and share set. Both nodes install the same eligible set
+// including a fourth, new node. Both run the trigger. Their reshare
+// messages are passed through a shared mailbox. Both must commit the
+// same new share set.
+// ---------------------------------------------------------------------
+TEST(DaoV2Replay, ReshareCompletesAcrossTwoNodes)
+{
+    using namespace cryptonote;
+    using namespace cryptonote::dao;
+
+    boost::filesystem::path base =
+        boost::filesystem::temp_directory_path() /
+        boost::filesystem::unique_path("vr_replay_two_%%%%-%%%%");
+
+    ReplayNode a;
+    ReplayNode b;
+    ASSERT_TRUE(a.init((base / "a").string()));
+    ASSERT_TRUE(b.init((base / "b").string()));
+
+    auto& bc_a = a.core->get_blockchain_storage();
+    auto& bc_b = b.core->get_blockchain_storage();
+    auto& db_a = bc_a.get_db();
+    auto& db_b = bc_b.get_db();
+    bc_a.set_dao_v2_active_for_test(true);
+    bc_b.set_dao_v2_active_for_test(true);
+
+    // Committee of 3, sorted ascending.
+    std::vector<crypto::public_key> c_pks;
+    std::vector<crypto::secret_key> c_sks;
+    for (int i = 0; i < 3; ++i) {
+        crypto::public_key pk; crypto::secret_key sk;
+        crypto::generate_keys(pk, sk);
+        c_pks.push_back(pk);
+        c_sks.push_back(sk);
+    }
+    {
+        std::vector<size_t> idx = {0, 1, 2};
+        std::sort(idx.begin(), idx.end(), [&](size_t x, size_t y) {
+            return std::memcmp(c_pks[x].data, c_pks[y].data, 32) < 0;
+        });
+        std::vector<crypto::public_key> p2;
+        std::vector<crypto::secret_key> s2;
+        for (auto i : idx) { p2.push_back(c_pks[i]); s2.push_back(c_sks[i]); }
+        c_pks = std::move(p2);
+        c_sks = std::move(s2);
+    }
+    a.core->set_node_key(c_sks[0]);
+    b.core->set_node_key(c_sks[1]);
+
+    crypto::public_key a_pub, b_pub;
+    ASSERT_TRUE(crypto::secret_key_to_public_key(c_sks[0], a_pub));
+    ASSERT_TRUE(crypto::secret_key_to_public_key(c_sks[1], b_pub));
+
+    // Real DKG for the bootstrap committee.
+    dao_vss_group vss;
+    ASSERT_TRUE(dao_vss_group_generate(vss,
+        dao_dkg_required_vss_bits(60, 128, 32)));
+    dkg_inproc_network inet = dkg_make_inproc_network(3, nullptr);
+    std::vector<std::unique_ptr<dkg_transport>> pool;
+    pool.reserve(inet.endpoints.size());
+    for (auto& e : inet.endpoints) pool.push_back(std::move(e));
+    size_t next = 0;
+    dkg_transport_factory factory =
+        [&pool, &next](uint32_t) -> std::unique_ptr<dkg_transport> {
+            if (next >= pool.size()) return nullptr;
+            return std::move(pool[next++]);
+        };
+    dkg_config cfg;
+    cfg.committee_size = 3;
+    cfg.threshold      = dao_dkg_expected_threshold(3);
+    cfg.member_ids     = c_pks;
+    cfg.epoch          = 1;
+    cfg.k              = 60;
+    cfg.target_N_bits  = 128;
+    cfg.security_bits  = 32;
+    cfg.qproof_rounds  = DAO_DKG_QPROOF_ROUNDS_TEST;
+    cfg.max_attempts   = 1;
+    cfg.test_seed      = 0x5645494C52544F33ULL;
+    cfg.local_party_id = 1;
+    dkg_result dkg_out;
+    ASSERT_TRUE(dkg_run_with_transport(cfg, factory, dkg_out));
+    ASSERT_TRUE(dkg_out.candidate_accepted);
+
+    // Install the same key record on both nodes.
+    bc_a.install_dao_tally_key_for_test(dkg_out.record);
+    bc_b.install_dao_tally_key_for_test(dkg_out.record);
+
+    // Local shares: A holds position 1, B holds position 2. We use the
+    // test-only oracle SK for member 2 to give B a valid share.
+    {
+        std::vector<uint8_t> packed_a = dao_pack_local_share(
+            dkg_out.record.key_id, dkg_out.local_secret_share);
+        ASSERT_FALSE(packed_a.empty());
+        db_wtxn_guard g(&db_a);
+        db_a.add_dao_local_share(1, 1, packed_a);
+    }
+    {
+        // test_SK[1] holds B's share as a decimal string (test oracle).
+        // Convert to BIGNUM, then encode in the signed byte layout the
+        // envelope expects: 1 sign byte then big-endian magnitude.
+        const std::string dec(dkg_out.test_SK[1].begin(),
+                              dkg_out.test_SK[1].end());
+        BIGNUM* bn = nullptr;
+        ASSERT_NE(BN_dec2bn(&bn, dec.c_str()), 0);
+        const bool neg = BN_is_negative(bn) != 0;
+        BIGNUM* abs_bn = BN_dup(bn);
+        BN_set_negative(abs_bn, 0);
+        const int nb = BN_num_bytes(abs_bn);
+        std::vector<uint8_t> raw(1 + nb, 0);
+        raw[0] = neg ? 1 : 0;
+        BN_bn2bin(abs_bn, raw.data() + 1);
+        BN_free(abs_bn);
+        BN_free(bn);
+        std::vector<uint8_t> packed_b =
+            dao_pack_local_share(dkg_out.record.key_id, raw);
+        ASSERT_FALSE(packed_b.empty());
+        db_wtxn_guard g(&db_b);
+        db_b.add_dao_local_share(1, 2, packed_b);
+    }
+
+    // Same eligible set on both nodes: 3 existing + 1 new.
+    crypto::public_key new_pk;
+    crypto::secret_key new_sk;
+    crypto::generate_keys(new_pk, new_sk);
+    for (auto* db : { &db_a, &db_b }) {
+        for (size_t i = 0; i < 3; ++i) {
+            committee_eligible_record er{};
+            er.node_pubkey = c_pks[i];
+            er.amount = 3000000;
+            er.unlock_height = 0;
+            crypto::key_image ki{};
+            std::memset(ki.data, 0, sizeof(ki.data));
+            ki.data[0] = static_cast<uint8_t>(i + 1);
+            db_wtxn_guard g(db);
+            db->add_committee_eligible(ki, er);
+        }
+        committee_eligible_record er{};
+        er.node_pubkey = new_pk;
+        er.amount = 1000000;
+        er.unlock_height = 0;
+        crypto::key_image ki{};
+        std::memset(ki.data, 0, sizeof(ki.data));
+        ki.data[0] = 4;
+        db_wtxn_guard g(db);
+        db->add_committee_eligible(ki, er);
+    }
+
+    // Shared mailbox.
+    std::vector<std::pair<crypto::public_key, std::string>> mailbox;
+    std::mutex mb_mu;
+
+    bc_a.set_dao_v2_dkg_send([&](const std::string& s) -> bool {
+        std::lock_guard<std::mutex> lk(mb_mu);
+        mailbox.emplace_back(a_pub, s);
+        return true;
+    });
+    bc_b.set_dao_v2_dkg_send([&](const std::string& s) -> bool {
+        std::lock_guard<std::mutex> lk(mb_mu);
+        mailbox.emplace_back(b_pub, s);
+        return true;
+    });
+
+    // Trigger both.
+    {
+        db_wtxn_guard g(&db_a);
+        bc_a.maybe_maintain_dao_v2_share_set();
+    }
+    {
+        db_wtxn_guard g(&db_b);
+        bc_b.maybe_maintain_dao_v2_share_set();
+    }
+
+    // Deliver messages round-robin until both have finalized or we
+    // run out of patience.
+    for (int round = 0; round < 8; ++round) {
+        std::vector<std::pair<crypto::public_key, std::string>> batch;
+        {
+            std::lock_guard<std::mutex> lk(mb_mu);
+            batch.swap(mailbox);
+        }
+        if (batch.empty()) break;
+
+        for (auto& [sender, payload] : batch) {
+            if (std::memcmp(sender.data, a_pub.data, 32) == 0) {
+                bc_b.handle_dao_v2_dkg_msg(a_pub, payload);
+            } else {
+                bc_a.handle_dao_v2_dkg_msg(b_pub, payload);
+            }
+        }
+
+        // Let each node's trigger observe what it has received.
+        {
+            db_wtxn_guard g(&db_a);
+            bc_a.maybe_maintain_dao_v2_share_set();
+        }
+        {
+            db_wtxn_guard g(&db_b);
+            bc_b.maybe_maintain_dao_v2_share_set();
+        }
+    }
+
+    // Both nodes should now be on share set 2.
+    EXPECT_EQ(db_a.get_current_dao_share_set_id(), 2u);
+    EXPECT_EQ(db_b.get_current_dao_share_set_id(), 2u);
+
+    dao::dao_share_set_record sa, sb;
+    ASSERT_TRUE(db_a.get_dao_share_set(2, sa));
+    ASSERT_TRUE(db_b.get_dao_share_set(2, sb));
+    EXPECT_EQ(sa.share_set_id, sb.share_set_id);
+    EXPECT_EQ(sa.committee_id_hash, sb.committee_id_hash);
+    EXPECT_EQ(sa.VK_i, sb.VK_i);
+
+    boost::filesystem::remove_all(base);
+}
