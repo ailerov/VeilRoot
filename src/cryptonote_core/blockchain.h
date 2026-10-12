@@ -1327,16 +1327,16 @@ namespace cryptonote
 
   // BEGIN_VNS_DAO_V2_TALLY_SHARE
   // Receiving side of the automatic V2 tally. Validates the incoming
-  // share against the proposal's epoch key record and the current
-  // aggregate, stores it, and — if the epoch threshold has now been
-  // reached — combines and writes the outcome automatically.
+  // share against the single stable key record and the current
+  // aggregate, stores it, and — if the committee threshold has now
+  // been reached — combines and writes the outcome automatically.
   void handle_dao_v2_tally_share(const crypto::public_key& member,
                                  const std::string& payload);
 
   // Producer side. Called from the block-apply path when a proposal's
   // voting window has just ended. If this node is a committee member
-  // for the proposal's epoch and holds its own DKG share, it produces
-  // and hands the share to the installed broadcast callback.
+  // for the proposal and holds its own DKG share, it produces and
+  // hands the share to the installed broadcast callback.
   void maybe_produce_dao_v2_share(uint64_t height);
 
   // Installed by the protocol handler. Called when this node produces
@@ -1374,9 +1374,9 @@ namespace cryptonote
       dao::dao_dkg_key_activation act,
       transaction& tx_out);
 
-  // Rebuild the canonical activation transaction for an epoch from
-  // cached record + verified attestations and submit it to the
-  // mempool. Retains attestations on failure so the blockchain-owner
+  // Rebuild the canonical activation transaction from the cached
+  // record and verified attestations, and submit it to the mempool.
+  // Retains attestations on failure so the blockchain-owner
   // maintenance path can retry. Never installs the key locally.
   bool try_submit_pending_dao_v2_key_activation(uint32_t epoch);
 
@@ -1396,7 +1396,7 @@ namespace cryptonote
 
   // Apply a validated DKG key-activation transaction. Called from the
   // block-application path after m_db->add_block() succeeds. Installs
-  // the public key record and advances the active key epoch. Throws
+  // the single public key record and the bootstrap share set. Throws
   // on internal inconsistency; returns false on precondition failure.
   bool apply_dao_v2_dkg_activation(const transaction& tx,
                                    uint64_t block_height);
@@ -1414,8 +1414,8 @@ namespace cryptonote
   // called from production code.
   void clear_dao_v2_tally_shares_for_test();
 
-  // Test-only: install a DKG public key record and set the active
-  // epoch directly, bypassing the activation transaction. Used by
+  // Test-only: install a DKG public key record and its bootstrap
+  // share set directly, bypassing the activation transaction. Used by
   // single-node fixtures that exercise the tally path and do not care
   // about how the key record arrived. Tests that specifically exercise
   // the activation path must not use this.
@@ -1444,23 +1444,23 @@ namespace cryptonote
       uint64_t selection_height) const;
 
   // Bootstrap entry point. Selects the current committee (top-N
-  // eligible nodes by stake-age weight), derives the epoch VSS group
+  // eligible nodes by stake-age weight), derives the VSS group
   // deterministically, spawns the runner, and starts a watcher that
-  // persists the outcome when the ceremony finishes. Idempotent per
-  // epoch: calling with an already-running epoch is a no-op.
+  // persists the outcome when the ceremony finishes. Idempotent: a
+  // second call while the ceremony is running is a no-op.
   bool bootstrap_dao_v2_dkg(uint32_t epoch);
 
-  // Lifecycle hook called from the daemon idle loop. Bootstraps the
-  // current epoch's DKG once when the node has eligible records and
-  // no key record exists yet for the epoch. No-op otherwise.
+  // Lifecycle hook called from the daemon idle loop. Runs the DKG
+  // once when the node has eligible records and no key record exists
+  // yet. No-op otherwise.
   void maybe_bootstrap_dao_v2_dkg();
   // Lifecycle hook called from the daemon idle loop. Drains any
   // results queued by the DKG watcher threads onto this owner thread.
   void maybe_process_dao_v2_dkg_results();
 
   // Producer side. Called once from the bootstrap path. Spawns the
-  // runner for the current epoch and committee. Fails if a runner for
-  // this epoch is already running.
+  // runner for the current committee. Fails if a runner is already
+  // running.
   bool start_dao_v2_dkg(uint32_t epoch,
                         const std::vector<crypto::public_key>& committee,
                         const dao::dao_vss_group& vss,
@@ -1754,7 +1754,7 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     // In-memory share store, keyed by proposal and by sender member
     // public key. Same lifetime model as m_decryption_shares: a node
     // collects valid shares while the proposal's tally window is open
-    // and combines them automatically once the epoch threshold is
+    // and combines them automatically once the committee threshold is
     // reached. Shares do not persist to disk.
     std::map<crypto::hash,
              std::map<crypto::public_key, dao::dao_v2_tally_share>>
@@ -1791,8 +1791,8 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     // Post-DKG attestation exchange. Each participating node signs
     // the canonical activation digest for its locally-completed DKG
     // record and broadcasts the attestation over the DKG transport
-    // (dkg_msg_type::key_record_ready). Accumulation is bounded to
-    // epochs for which this node holds a local DKG record.
+    // (dkg_msg_type::key_record_ready). Accumulation happens only for
+    // the single ceremony this node participated in.
     std::map<uint32_t, dao::dao_tally_key_record>
         m_dao_v2_local_records;
     std::map<uint32_t, uint64_t>

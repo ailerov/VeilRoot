@@ -1035,8 +1035,7 @@ block Blockchain::pop_block_from_blockchain()
   // A DKG key activation is consensus state only for as long as the
   // transaction that carried it is in a block. When a block containing
   // a dkg_key_activation transaction is popped, remove the key record
-  // introduced by that transaction and restore the prior active epoch
-  // from the remaining canonical activations.
+  // and its bootstrap share set introduced by that transaction.
   for (const transaction& tx : popped_txs)
   {
     if (!is_dao_v2_dkg_activation_tx(tx))
@@ -8980,7 +8979,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
     auto it = m_dao_v2_dkg_runners.find(m.hdr.epoch);
     if (it == m_dao_v2_dkg_runners.end()) {
-      // No ceremony running for this epoch. Silent: peers may be
+      // No ceremony running for this DKG run. Silent: peers may be
       // ahead of us.
       return;
     }
@@ -9005,7 +9004,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
     // Targeted messages: only the addressed committee member may
     // process them. Broadcast (recipient_id == 0) is accepted by every
-    // committee member for this epoch.
+    // committee member of the running ceremony.
     if (m.hdr.recipient_id != 0 &&
         m.hdr.recipient_id != runner_cfg->local_party_id) {
       return;
@@ -9034,7 +9033,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
       auto it = m_dao_v2_local_records.find(epoch);
       if (it == m_dao_v2_local_records.end()) {
-        // We did not participate in this epoch's DKG. Silent.
+        // We did not participate in this DKG ceremony. Silent.
         return;
       }
       local_rec   = it->second;
@@ -9199,10 +9198,10 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
   void Blockchain::maybe_bootstrap_dao_v2_dkg()
   {
-    // One-time bootstrap of the stable Paillier public key epoch.
+    // One-time bootstrap of the stable Paillier public key.
     //
-    // This establishes N, G, theta, V, V_K_i for the epoch and the
-    // distributed secret sharing among the bootstrap shareholders.
+    // This establishes N, G, theta, V, V_K_i and the distributed
+    // secret sharing among the bootstrap shareholders.
     // Every currently eligible node is a bootstrap shareholder, so
     // every node that could ever be selected for a tally committee
     // already holds a share for this key.
@@ -9212,14 +9211,14 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     // No new DKG, no share transfer: the selected members use the
     // shares they already hold.
     //
-    // Runs once per key epoch. Idempotent.
+    // Runs once. Idempotent.
     const uint64_t height = get_current_blockchain_height();
     if (!config::dao_v2_active(height)) return;
 
-    const uint32_t bootstrap_key_epoch = 1;
+    const uint32_t bootstrap_ceremony_id = 1;
 
     // Already running or already persisted.
-    if (m_dao_v2_dkg_runners.count(bootstrap_key_epoch) > 0) return;
+    if (m_dao_v2_dkg_runners.count(bootstrap_ceremony_id) > 0) return;
 
     {
       dao::dao_tally_key_record existing;
@@ -9243,7 +9242,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       return;
 
     // Not a bootstrap shareholder is fine — other nodes will run it.
-    (void)bootstrap_dao_v2_dkg(bootstrap_key_epoch);
+    (void)bootstrap_dao_v2_dkg(bootstrap_ceremony_id);
   }
 
   void Blockchain::maybe_process_dao_v2_dkg_results()
@@ -9342,9 +9341,8 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
         continue;
       }
 
-      // The public key record is NOT installed here and the current
-      // epoch is NOT advanced here. Both are set only by a
-      // DKG key-activation transaction during block application.
+      // The public key record is NOT installed here. It is set only
+      // by a DKG key-activation transaction during block application.
 
       try {
         m_db->block_wtxn_stop();
@@ -9452,7 +9450,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
     // The bootstrap DKG must run over the complete eligible
     // shareholder set: every node that would be eligible to hold a
-    // DKG share for the key epoch. Selecting only the top-N here was
+    // DKG share. Selecting only the top-N here was
     // the bug: it turned the bootstrap DKG shareholder set into the
     // first tally committee.
     const uint64_t chain_height = get_current_blockchain_height();
@@ -9482,8 +9480,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
     // Deterministic VSS group. In production this selects an FFDHE
     // named group and derives h from a canonical tuple of the group
-    // parameters, so every node derives the same group for the same
-    // epoch.
+    // parameters, so every node derives the same group.
 #ifdef VEILROOT_DAO_DKG_TESTING
     const uint32_t target_N_bits = 128;
     const uint32_t qproof_rounds = dao::DAO_DKG_QPROOF_ROUNDS_TEST;
