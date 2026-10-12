@@ -740,3 +740,145 @@ TEST(DaoV2Replay, NodeBReconstructsKeyRecordFromActivationBlock)
     BN_free(r1); BN_free(r2); BN_free(r3);
     boost::filesystem::remove_all(base);
 }
+
+
+// ---------------------------------------------------------------------
+// Reshare trigger.
+//
+// The eligible set must at all times be covered by the current share
+// set. When an eligible node appears that is not in the current share
+// set, maybe_maintain_dao_v2_share_set() must start a reshare.
+//
+// This test installs the bootstrap share set (2 members) on a single
+// node, adds a third eligible record, captures the P2P sends, and
+// confirms that the trigger broadcast at least one reshare deal.
+// It does not run the reshare to completion; that requires two
+// cooperating nodes, and is covered separately.
+// ---------------------------------------------------------------------
+TEST(DaoV2Replay, ReshareTriggerFiresWhenEligibleSetGrows)
+{
+    using namespace cryptonote;
+    using namespace cryptonote::dao;
+
+    boost::filesystem::path base =
+        boost::filesystem::temp_directory_path() /
+        boost::filesystem::unique_path("vr_replay_trigger_%%%%-%%%%");
+
+    ReplayNode a;
+    ASSERT_TRUE(a.init((base / "a").string()));
+
+    auto& bc = a.core->get_blockchain_storage();
+    auto& db = bc.get_db();
+    bc.set_dao_v2_active_for_test(true);
+
+    // Three committee member keys, sorted ascending.
+    std::vector<crypto::public_key> committee_pks;
+    std::vector<crypto::secret_key> committee_sks;
+    for (int i = 0; i < 3; ++i) {
+        crypto::public_key pk; crypto::secret_key sk;
+        crypto::generate_keys(pk, sk);
+        committee_pks.push_back(pk);
+        committee_sks.push_back(sk);
+    }
+    {
+        std::vector<size_t> idx = {0, 1, 2};
+        std::sort(idx.begin(), idx.end(), [&](size_t x, size_t y) {
+            return std::memcmp(committee_pks[x].data,
+                               committee_pks[y].data, 32) < 0;
+        });
+        std::vector<crypto::public_key> p2;
+        std::vector<crypto::secret_key> s2;
+        for (auto i : idx) { p2.push_back(committee_pks[i]); s2.push_back(committee_sks[i]); }
+        committee_pks = std::move(p2);
+        committee_sks = std::move(s2);
+    }
+    a.core->set_node_key(committee_sks[0]);
+
+    // Real DKG.
+    dao_vss_group vss;
+    ASSERT_TRUE(dao_vss_group_generate(vss,
+        dao_dkg_required_vss_bits(60, 128, 32)));
+    dkg_inproc_network inet = dkg_make_inproc_network(3, nullptr);
+    std::vector<std::unique_ptr<dkg_transport>> pool;
+    pool.reserve(inet.endpoints.size());
+    for (auto& e : inet.endpoints) pool.push_back(std::move(e));
+    size_t next = 0;
+    dkg_transport_factory factory =
+        [&pool, &next](uint32_t) -> std::unique_ptr<dkg_transport> {
+            if (next >= pool.size()) return nullptr;
+            return std::move(pool[next++]);
+        };
+    dkg_config cfg;
+    cfg.committee_size = 3;
+    cfg.threshold      = dao_dkg_expected_threshold(3);
+    cfg.member_ids     = committee_pks;
+    cfg.epoch          = 1;
+    cfg.k              = 60;
+    cfg.target_N_bits  = 128;
+    cfg.security_bits  = 32;
+    cfg.qproof_rounds  = DAO_DKG_QPROOF_ROUNDS_TEST;
+    cfg.max_attempts   = 1;
+    cfg.test_seed      = 0x5645494C52544F33ULL;
+    cfg.local_party_id = 1;
+    dkg_result dkg_out;
+    ASSERT_TRUE(dkg_run_with_transport(cfg, factory, dkg_out));
+    ASSERT_TRUE(dkg_out.candidate_accepted);
+
+    // Install key record + bootstrap share set.
+    bc.install_dao_tally_key_for_test(dkg_out.record);
+
+    EXPECT_EQ(db.get_current_dao_share_set_id(), 1u);
+
+    // Store local share for member 1 under share set 1.
+    {
+        std::vector<uint8_t> packed = dao_pack_local_share(
+            dkg_out.record.key_id, dkg_out.local_secret_share);
+        ASSERT_FALSE(packed.empty());
+        db_wtxn_guard g(&db);
+        db.add_dao_local_share(1, 1, packed);
+    }
+
+    // Install eligible records for the three existing members, plus a
+    // fourth node not present in the bootstrap set.
+    for (int i = 0; i < 3; ++i) {
+        committee_eligible_record er{};
+        er.node_pubkey = committee_pks[i];
+        er.amount = 3000000;
+        er.unlock_height = 0;
+        crypto::key_image ki{};
+        std::memset(ki.data, 0, sizeof(ki.data));
+        ki.data[0] = static_cast<uint8_t>(i + 1);
+        db_wtxn_guard g(&db);
+        db.add_committee_eligible(ki, er);
+    }
+    {
+        crypto::public_key p4; crypto::secret_key s4;
+        crypto::generate_keys(p4, s4);
+        committee_eligible_record er{};
+        er.node_pubkey = p4;
+        er.amount = 1000000;
+        er.unlock_height = 0;
+        crypto::key_image ki{};
+        std::memset(ki.data, 0, sizeof(ki.data));
+        ki.data[0] = 4;
+        db_wtxn_guard g(&db);
+        db.add_committee_eligible(ki, er);
+    }
+
+    // Capture reshare broadcasts.
+    std::atomic<int> broadcasts{0};
+    bc.set_dao_v2_dkg_send([&broadcasts](const std::string&) -> bool {
+        broadcasts.fetch_add(1);
+        return true;
+    });
+
+    // Run the trigger.
+    {
+        db_wtxn_guard g(&db);
+        bc.maybe_maintain_dao_v2_share_set();
+    }
+
+    EXPECT_GT(broadcasts.load(), 0);
+
+    boost::filesystem::remove_all(base);
+}

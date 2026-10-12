@@ -1358,6 +1358,10 @@ namespace cryptonote
   void handle_dao_v2_dkg_msg(const crypto::public_key& member,
                              const std::string& payload);
 
+  // Pass-through for config::dao_v2_active() that honours a test-only
+  // override. Never enabled in production builds.
+  bool dao_v2_active_or_test_override(uint64_t height) const;
+
   // Post-DKG attestation. Validates the sender maps to the claimed
   // member_index in the record, verifies the signature against the
   // canonical activation digest, accumulates distinct attestations,
@@ -1411,6 +1415,14 @@ namespace cryptonote
       uint64_t block_height) const;
 
 #ifdef VEILROOT_DAO_DKG_TESTING
+  // Test-only: pretend DAO V2 is active regardless of the configured
+  // activation height. Used by fixtures that do not mine 10000 blocks
+  // before exercising the trigger or the tally path. Never enabled in
+  // production builds.
+  void set_dao_v2_active_for_test(bool active) {
+    m_dao_v2_active_for_test = active;
+  }
+
   // Test-only: clear the in-memory tally-share accumulator so a test
   // can verify that reconciliation reads only chain state. Never
   // called from production code.
@@ -1820,6 +1832,9 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     mutable std::mutex m_dao_v2_key_ready_mutex;
     // END_VNS_DAO_V2_KEY_READY
 
+#ifdef VEILROOT_DAO_DKG_TESTING
+    bool m_dao_v2_active_for_test = false;
+#endif
     // BEGIN_VNS_DAO_V2_RESHARE
     // Single reshare runner. Only one reshare runs at a time. The
     // runner holds raw pointers into the backing storage below, so

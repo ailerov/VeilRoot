@@ -8941,6 +8941,17 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
   // BEGIN_VNS_DAO_V2_TALLY_SHARE
   // BEGIN_VNS_DAO_V2_DKG
+  // Wrap the activation-height check so tests can exercise the trigger
+  // and the tally path without mining to the real activation height.
+  // In production builds this is a plain pass-through.
+  bool Blockchain::dao_v2_active_or_test_override(uint64_t height) const
+  {
+#ifdef VEILROOT_DAO_DKG_TESTING
+    if (m_dao_v2_active_for_test) return true;
+#endif
+    return config::dao_v2_active(height);
+  }
+
   void Blockchain::handle_dao_v2_dkg_msg(const crypto::public_key& member,
                                          const std::string& payload)
   {
@@ -9228,7 +9239,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     //
     // Runs once. Idempotent.
     const uint64_t height = get_current_blockchain_height();
-    if (!config::dao_v2_active(height)) return;
+    if (!dao_v2_active_or_test_override(height)) return;
 
     const uint32_t bootstrap_ceremony_id = 1;
 
@@ -9661,7 +9672,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     if (!m_dao_v2_dkg_send) return;
 
     const uint64_t height = get_current_blockchain_height();
-    if (!config::dao_v2_active(height)) return;
+    if (!dao_v2_active_or_test_override(height)) return;
     if (height == 0) return;
     const uint64_t sel_h = height - 1;
 
@@ -9887,7 +9898,15 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
           contributor_indices[i]);
     cfg.link_ctx_base.N = key_rec.N;
     cfg.link_ctx_base.V = key_rec.V;
+    if (our_contrib_pos == 0 ||
+        our_contrib_pos > key_rec.V_K_i.size()) return;
+    cfg.link_ctx_base.VK_i = key_rec.V_K_i[our_contrib_pos - 1];
     cfg.link_ctx_base.C_i0.assign(dao::PAILLIER_CT_BYTES, 0);
+    {
+        std::vector<uint8_t> db(32, 0);
+        BN_bn2binpad(delta, db.data(), 32);
+        cfg.link_ctx_base.Delta = std::move(db);
+    }
 
     // P2P callbacks. The runner hands out a serialized dao_reshare_msg
     // in a std::string. Wrap it in a DKG envelope so the existing
