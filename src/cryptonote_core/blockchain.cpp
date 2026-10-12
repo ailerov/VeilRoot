@@ -1058,7 +1058,11 @@ block Blockchain::pop_block_from_blockchain()
       if (!act.deserialize(gpf.payload.data))
         break;
 
-      // Remove the key record.
+      // Remove the share set first, then the key record.
+      try {
+        m_db->remove_dao_share_set(1);
+        m_db->set_current_dao_share_set_id(0);
+      } catch (...) {}
       try {
         m_db->remove_dao_tally_key();
       } catch (...) {
@@ -10060,8 +10064,16 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     // aggregate and the recovered outcome. A validator does not need a
     // secret share to verify those.
     dao::dao_share_set_record share_set;
-    if (!dao::dao_synthesize_bootstrap_share_set(key_rec, share_set)) {
-      MERROR("tally-result: cannot derive share set");
+    if (cert.share_set_id == 0 ||
+        !m_db->get_dao_share_set(cert.share_set_id, share_set)) {
+      MERROR("tally-result: share set not found for id "
+             << cert.share_set_id);
+      return false;
+    }
+    if (share_set.key_id.size() != key_rec.key_id.size() ||
+        std::memcmp(share_set.key_id.data(),
+                    key_rec.key_id.data(), 32) != 0) {
+      MERROR("tally-result: share set key_id mismatch");
       return false;
     }
 
@@ -10095,6 +10107,11 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     m_db->block_wtxn_start();
     try {
       m_db->add_dao_tally_key(record);
+      dao::dao_share_set_record share_set;
+      if (dao::dao_synthesize_bootstrap_share_set(record, share_set)) {
+        m_db->add_dao_share_set(share_set.share_set_id, share_set);
+        m_db->set_current_dao_share_set_id(share_set.share_set_id);
+      }
     } catch (...) {
       try { m_db->block_wtxn_abort(); } catch (...) {}
       throw;
@@ -10324,6 +10341,16 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       // Install the public key record. This is the only place the
       // authoritative key record is written.
       m_db->add_dao_tally_key(rec);
+
+      // Install the bootstrap share set. In the bootstrap set,
+      // share-set positions are identical to DKG indices, so this
+      // simply republishes V_K_i as VK_i. Later resharing writes
+      // share_set_id 2, 3, ... without touching this one.
+      dao::dao_share_set_record share_set;
+      if (dao::dao_synthesize_bootstrap_share_set(rec, share_set)) {
+        m_db->add_dao_share_set(share_set.share_set_id, share_set);
+        m_db->set_current_dao_share_set_id(share_set.share_set_id);
+      }
 
       MINFO("DKG key activation applied at height " << block_height
             << " committee " << rec.committee_size);

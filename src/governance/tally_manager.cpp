@@ -112,8 +112,15 @@ bool TallyManager::build_tally_result_transaction(
         return false;
 
     dao::dao_share_set_record share_set;
-    if (!dao::dao_synthesize_bootstrap_share_set(key_rec, share_set))
-        return false;
+    {
+        uint64_t sid = m_db.get_current_dao_share_set_id();
+        if (sid == 0 || !m_db.get_dao_share_set(sid, share_set))
+            return false;
+        if (share_set.key_id.size() != key_rec.key_id.size() ||
+            std::memcmp(share_set.key_id.data(),
+                        key_rec.key_id.data(), 32) != 0)
+            return false;
+    }
 
     dao::dao_tally_certificate cert;
     if (!dao::dao_build_tally_certificate(
