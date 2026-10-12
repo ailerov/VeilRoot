@@ -164,14 +164,15 @@ bool TallyManager::build_tally_result_transaction(
 bool TallyManager::produce_local_share(
     const crypto::hash& proposal_id,
     const dao::dao_tally_key_record& key_rec,
-    uint32_t global_member_index,
+    const dao::dao_share_set_record& share_set,
+    uint32_t share_set_position,
     dao::dao_v2_tally_share& share_out)
 {
     proposal_record prop;
     if (!m_db.get_proposal_record(proposal_id, prop)) return false;
 
-    if (global_member_index < 1 ||
-        global_member_index > key_rec.committee_size)
+    if (share_set_position < 1 ||
+        share_set_position > share_set.committee_members.size())
         return false;
 
     // Local share for this member's position in the current share
@@ -182,7 +183,7 @@ bool TallyManager::produce_local_share(
     std::vector<uint8_t> packed_blob;
     if (!m_db.get_dao_local_share(
             static_cast<uint32_t>(share_set_id),
-            global_member_index, packed_blob))
+            share_set_position, packed_blob))
         return false;
     std::vector<uint8_t> sk_blob;
     if (!dao::dao_unpack_local_share(packed_blob, key_rec.key_id, sk_blob)) {
@@ -209,7 +210,7 @@ bool TallyManager::produce_local_share(
     share_out.proposal_id     = proposal_id;
     share_out.vote_end_height = prop.voting_end_height;
     share_out.tally_key_id    = key_rec.key_id;
-    share_out.member_index    = global_member_index;
+    share_out.member_index    = share_set_position;
     share_out.aggregate_ciphertext_hash =
         dao::dao_aggregate_ciphertext_hash(agg.aggregate_E_W,
                                            agg.aggregate_E_S,
@@ -222,14 +223,13 @@ bool TallyManager::produce_local_share(
         if (!dao_threshold_partial_decrypt(pk, c, sk, ci)) return false;
         BIGNUM* r = BN_new();
         if (!dao_dkg_sample_r(pk, r)) { BN_free(r); return false; }
-        // Bind the proof to the bootstrap key record's V_K_i for the
-        // member's global index. The selected committee is a subset of
-        // the bootstrap shareholder set, so the correct verification
-        // key is the one recorded in the key epoch for that index.
+        // Bind the proof to the current share set's VK for this
+        // position. After resharing, this is the reshared VK, not the
+        // bootstrap one.
         const std::vector<uint8_t>& vk =
-            key_rec.V_K_i[global_member_index - 1];
+            share_set.VK_i[share_set_position - 1];
         const bool ok = dao_partial_decryption_prove(
-            pk, key_rec.V, vk, global_member_index,
+            pk, key_rec.V, vk, share_set_position,
             c, ci, sk, r, proof_out);
         BN_free(r);
         if (!ok) return false;

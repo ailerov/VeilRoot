@@ -1395,7 +1395,19 @@ TEST(DaoV2Replay, ReshareNewMemberReceivesShare)
         BIGNUM* V = BN_bin2bn(key_rec.V.data(),
                                static_cast<int>(key_rec.V.size()), nullptr);
         BIGNUM* got = BN_new();
-        BN_mod_exp(got, V, exp, pk.N2(), ctx);
+        // Signed exponentiation. sc_bn may be negative; BN_mod_exp
+        // with a negative exponent does not invert.
+        if (BN_is_negative(exp)) {
+            BIGNUM* Vinv = BN_mod_inverse(nullptr, V, pk.N2(), ctx);
+            ASSERT_NE(Vinv, nullptr);
+            BIGNUM* pos = BN_dup(exp);
+            BN_set_negative(pos, 0);
+            ASSERT_EQ(BN_mod_exp(got, Vinv, pos, pk.N2(), ctx), 1);
+            BN_free(Vinv);
+            BN_free(pos);
+        } else {
+            ASSERT_EQ(BN_mod_exp(got, V, exp, pk.N2(), ctx), 1);
+        }
         std::vector<uint8_t> got_bytes(dao::PAILLIER_CT_BYTES, 0);
         BN_bn2binpad(got, got_bytes.data(), dao::PAILLIER_CT_BYTES);
 

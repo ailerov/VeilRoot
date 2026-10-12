@@ -10016,51 +10016,38 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       return;
     }
 
-    // The tally committee is determined from protocol state at
-    // voting_end_height. This is the authoritative source; no session
-    // record is required and no P2P-only state is consulted.
-    const auto selected_members =
-        select_dao_v2_tally_committee(key_rec, prop.voting_end_height);
-
-    if (selected_members.size() < key_rec.threshold) {
-      MWARNING("V2 tally share: selected committee below threshold");
+    // Resolve the current share set. The sender's position and the
+    // share.member_index both refer to positions in this set.
+    const uint64_t cur_sid = m_db->get_current_dao_share_set_id();
+    if (cur_sid == 0) {
+      MWARNING("V2 tally share: no current share set");
+      return;
+    }
+    dao::dao_share_set_record share_set;
+    if (!m_db->get_dao_share_set(cur_sid, share_set)) {
+      MWARNING("V2 tally share: current share set not found");
       return;
     }
 
-    // Map the sender to its bootstrap global index. Both the identity
-    // check and the share.member_index check use that index. Reject
-    // the sender unless it is one of the selected members.
-    uint32_t expected_global_index = 0;
-    for (size_t i = 0; i < key_rec.committee_members.size(); ++i) {
-      const auto& km = key_rec.committee_members[i];
+    // Map the sender to its position in the current share set.
+    uint32_t expected_position = 0;
+    for (size_t i = 0; i < share_set.committee_members.size(); ++i) {
+      const auto& km = share_set.committee_members[i];
       if (km.size() != sizeof(member.data)) continue;
       if (std::memcmp(km.data(), member.data, sizeof(member.data)) == 0) {
-        expected_global_index = static_cast<uint32_t>(i) + 1;
+        expected_position = static_cast<uint32_t>(i) + 1;
         break;
       }
     }
-    if (expected_global_index == 0) {
-      MWARNING("V2 tally share: sender not a bootstrap shareholder");
+    if (expected_position == 0) {
+      MWARNING("V2 tally share: sender not in current share set");
       return;
     }
 
-    bool in_committee = false;
-    for (const auto& pk : selected_members) {
-      if (std::memcmp(pk.data, member.data, sizeof(pk.data)) == 0) {
-        in_committee = true;
-        break;
-      }
-    }
-    if (!in_committee) {
-      MWARNING("V2 tally share: sender " << member
-               << " is not in the selected tally committee");
-      return;
-    }
-
-    if (share.member_index != expected_global_index) {
+    if (share.member_index != expected_position) {
       MWARNING("V2 tally share: member_index mismatch (claimed "
-               << share.member_index << ", expected global "
-               << expected_global_index << ")");
+               << share.member_index << ", expected position "
+               << expected_position << ")");
       return;
     }
 
@@ -10091,7 +10078,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     }
     per_prop.emplace(member, std::move(share));
     MINFO("V2 tally share stored for proposal " << proposal_id
-          << " from global index " << expected_global_index
+          << " from share set position " << expected_position
           << " (total " << per_prop.size() << ")");
 
     // BEGIN_VNS_DAO_V2_TALLY_RESULT_SUBMIT
@@ -10099,12 +10086,12 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     // threshold is reached, build the tally-result transaction and
     // hand it to the ordinary mempool. Only block application writes
     // the authoritative outcome.
-    if (per_prop.size() < key_rec.threshold) return;
+    if (per_prop.size() < share_set.threshold) return;
 
     cryptonote::TallyManager tm(*m_db, m_governance_params);
     transaction result_tx;
     if (!tm.build_tally_result_transaction(
-            proposal_id, per_prop, key_rec.threshold, result_tx)) {
+            proposal_id, per_prop, share_set.threshold, result_tx)) {
       MINFO("V2 tally: threshold reached but result tx not built "
             "(already finalized or not eligible) for " << proposal_id);
       return;
@@ -10239,29 +10226,34 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
           }
         }
 
-        // Look up this node's ORIGINAL DKG shareholder index directly
-        // against the activated key record. The validation committee is
-        // irrelevant to whether this node can produce a share.
-        uint32_t global_index = 0;
-        for (size_t i = 0; i < key_rec.committee_members.size(); ++i) {
-          const auto& km = key_rec.committee_members[i];
+        // Look up this node's position in the current share set. This
+        // is what the verifier will use, so the producer must use it
+        // too.
+        const uint64_t cur_sid = m_db->get_current_dao_share_set_id();
+        if (cur_sid == 0) return true;
+        dao::dao_share_set_record share_set;
+        if (!m_db->get_dao_share_set(cur_sid, share_set)) return true;
+
+        uint32_t share_set_position = 0;
+        for (size_t i = 0; i < share_set.committee_members.size(); ++i) {
+          const auto& km = share_set.committee_members[i];
           if (km.size() != sizeof(self_pk.data)) continue;
           if (std::memcmp(km.data(), self_pk.data,
                           sizeof(self_pk.data)) == 0) {
-            global_index = static_cast<uint32_t>(i) + 1;
+            share_set_position = static_cast<uint32_t>(i) + 1;
             break;
           }
         }
-        if (global_index == 0) return true;
+        if (share_set_position == 0) return true;
 
         cryptonote::TallyManager tm(*m_db, m_governance_params);
         dao::dao_v2_tally_share share;
-        if (!tm.produce_local_share(pid, key_rec, global_index, share))
+        if (!tm.produce_local_share(pid, key_rec, share_set, share_set_position, share))
           return true;
 
         MINFO("V2 tally: producing share for proposal " << pid
-              << " global index " << global_index
-              << " share_epoch " << session.share_epoch);
+              << " share_set_pos " << share_set_position
+              << " share_set_id " << cur_sid);
         m_dao_v2_tally_broadcast(share);
         return true;
       });
