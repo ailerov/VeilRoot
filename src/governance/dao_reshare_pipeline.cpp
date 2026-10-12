@@ -739,7 +739,20 @@ bool dao_reshare_runner::start()
 
     {
         std::lock_guard<std::mutex> lk(p_->mtx);
-        p_->contributions[p_->cfg.local_party_index] = contrib;
+        // Store our own contribution with only the share destined for
+        // our own new-member slot, matching the shape that received
+        // contributions have after decryption. If we are not a new
+        // member, do not store at all: we will not finalize.
+        if (p_->cfg.local_new_index != 0 &&
+            p_->cfg.local_new_index <= contrib.shares.size()) {
+            dao_reshare_contribution own = contrib;
+            dao_reshare_vss_share mine =
+                contrib.shares[p_->cfg.local_new_index - 1];
+            own.shares.clear();
+            own.shares.push_back(std::move(mine));
+            p_->contributions[p_->cfg.local_party_index] =
+                std::move(own);
+        }
     }
 
     // Build the deal message: our public part plus encrypted shares to
