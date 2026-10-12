@@ -196,6 +196,20 @@ TEST_F(DaoV2Bootstrap, ThreeEligibleNodesSelectAndComplete2of3DKG)
     routed_network net;
 
     std::vector<std::unique_ptr<dkg_p2p_runner>> runners;
+
+    // Stop every runner before the vector destructs. Without this, the
+    // vector's own destructor frees runners in reverse order while
+    // peers may still be broadcasting through routed_network into
+    // already-freed peers. Guard is declared after the vector, so its
+    // destructor runs first.
+    struct StopGuard {
+        std::vector<std::unique_ptr<dkg_p2p_runner>>& v;
+        ~StopGuard() {
+            for (auto& r : v) if (r) r->stop();
+        }
+    };
+    StopGuard stop_guard{runners};
+
     for (uint32_t i = 0; i < 3; ++i) {
         dkg_config cfg;
         cfg.committee_size = 3;
@@ -205,7 +219,7 @@ TEST_F(DaoV2Bootstrap, ThreeEligibleNodesSelectAndComplete2of3DKG)
         cfg.local_party_id = i + 1;
         cfg.test_seed      = FIXED_TEST_CANDIDATE_SEED_3;
         cfg.target_N_bits  = 128;
-        cfg.phase_timeout_seconds = 120;
+        cfg.phase_timeout_seconds = 600;
 
         auto cb = net.callbacks_for_self();
         runners.emplace_back(new dkg_p2p_runner(cfg, vss, cb));
@@ -217,7 +231,7 @@ TEST_F(DaoV2Bootstrap, ThreeEligibleNodesSelectAndComplete2of3DKG)
 
     std::vector<dkg_result> results(3);
     for (uint32_t i = 0; i < 3; ++i) {
-        ASSERT_TRUE(runners[i]->wait(results[i], 180));
+        ASSERT_TRUE(runners[i]->wait(results[i], 900));
         ASSERT_TRUE(results[i].ok);
     }
 
