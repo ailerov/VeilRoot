@@ -2217,11 +2217,14 @@ public:
     // Per-node persistent store for this node's own DKG secret share.
     // Each node has its own LMDB; nothing here is consensus state.
     // Key: epoch (4 BE) || member_index (4 BE).
-    virtual void add_dao_local_share(uint32_t epoch, uint32_t member_index,
+    virtual void add_dao_local_share(uint32_t share_set_id,
+                                     uint32_t member_index,
                                      const std::vector<uint8_t>& share_blob) = 0;
-    virtual bool get_dao_local_share(uint32_t epoch, uint32_t member_index,
+    virtual bool get_dao_local_share(uint32_t share_set_id,
+                                     uint32_t member_index,
                                      std::vector<uint8_t>& share_blob) const = 0;
-    virtual void remove_dao_local_share(uint32_t epoch, uint32_t member_index) = 0;
+    virtual void remove_dao_local_share(uint32_t share_set_id,
+                                        uint32_t member_index) = 0;
 
     // Persist a share-set record. Keyed by monotone share_set_id.
     // share_set_id is NOT a public-key epoch: the stable Paillier key

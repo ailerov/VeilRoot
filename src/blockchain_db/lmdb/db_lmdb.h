@@ -640,11 +640,14 @@ public:
   virtual bool get_dao_v2_outcome(const crypto::hash& proposal_id, dao::dao_v2_outcome_record& rec) const override;
   virtual void remove_dao_v2_outcome(const crypto::hash& proposal_id) override;
 
-  virtual void add_dao_local_share(uint32_t epoch, uint32_t member_index,
+  virtual void add_dao_local_share(uint32_t share_set_id,
+                                   uint32_t member_index,
                                    const std::vector<uint8_t>& share_blob) override;
-  virtual bool get_dao_local_share(uint32_t epoch, uint32_t member_index,
+  virtual bool get_dao_local_share(uint32_t share_set_id,
+                                   uint32_t member_index,
                                    std::vector<uint8_t>& share_blob) const override;
-  virtual void remove_dao_local_share(uint32_t epoch, uint32_t member_index) override;
+  virtual void remove_dao_local_share(uint32_t share_set_id,
+                                      uint32_t member_index) override;
   virtual void add_dao_share_set(uint64_t share_set_id,
                                  const dao::dao_share_set_record& record) override;
   virtual bool get_dao_share_set(uint64_t share_set_id,

@@ -3768,14 +3768,14 @@ void local_share_encode_key(uint32_t epoch, uint32_t idx, unsigned char out[8])
 }
 } // namespace
 
-void BlockchainLMDB::add_dao_local_share(uint32_t epoch, uint32_t member_index,
+void BlockchainLMDB::add_dao_local_share(uint32_t share_set_id, uint32_t member_index,
                                          const std::vector<uint8_t>& share_blob)
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
   lmdb_cursor_guard cur(m_write_txn->m_txn, m_dao_local_shares);
   unsigned char kbuf[8];
-  local_share_encode_key(epoch, member_index, kbuf);
+  local_share_encode_key(share_set_id, member_index, kbuf);
   MDB_val k = { sizeof(kbuf), kbuf };
   MDB_val v = { share_blob.size(),
                 share_blob.empty() ? nullptr : (void*)share_blob.data() };
@@ -3786,7 +3786,7 @@ void BlockchainLMDB::add_dao_local_share(uint32_t epoch, uint32_t member_index,
     throw0(DB_ERROR(lmdb_error("Failed to add dao local share: ", result).c_str()));
 }
 
-bool BlockchainLMDB::get_dao_local_share(uint32_t epoch, uint32_t member_index,
+bool BlockchainLMDB::get_dao_local_share(uint32_t share_set_id, uint32_t member_index,
                                          std::vector<uint8_t>& share_blob) const
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
@@ -3794,7 +3794,7 @@ bool BlockchainLMDB::get_dao_local_share(uint32_t epoch, uint32_t member_index,
   TXN_PREFIX_RDONLY();
   RCURSOR(dao_local_shares)
   unsigned char kbuf[8];
-  local_share_encode_key(epoch, member_index, kbuf);
+  local_share_encode_key(share_set_id, member_index, kbuf);
   MDB_val k = { sizeof(kbuf), kbuf };
   MDB_val v;
   int result = mdb_cursor_get(m_cur_dao_local_shares, &k, &v, MDB_SET);
@@ -3807,13 +3807,13 @@ bool BlockchainLMDB::get_dao_local_share(uint32_t epoch, uint32_t member_index,
   return true;
 }
 
-void BlockchainLMDB::remove_dao_local_share(uint32_t epoch, uint32_t member_index)
+void BlockchainLMDB::remove_dao_local_share(uint32_t share_set_id, uint32_t member_index)
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
   lmdb_cursor_guard cur(m_write_txn->m_txn, m_dao_local_shares);
   unsigned char kbuf[8];
-  local_share_encode_key(epoch, member_index, kbuf);
+  local_share_encode_key(share_set_id, member_index, kbuf);
   MDB_val k = { sizeof(kbuf), kbuf };
   int result = mdb_cursor_get(cur.get(), &k, NULL, MDB_SET);
   if (result == MDB_SUCCESS)

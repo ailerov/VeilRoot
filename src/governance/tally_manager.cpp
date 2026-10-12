@@ -174,11 +174,15 @@ bool TallyManager::produce_local_share(
         global_member_index > key_rec.committee_size)
         return false;
 
-    // Local bootstrap DKG share for this member's global index. The
-    // same share is used for every tally this node is selected for;
-    // there is no per-proposal share transfer.
+    // Local share for this member's position in the current share
+    // set. Before resharing the current set is the bootstrap set
+    // (id 1); afterwards it is the reshared set.
+    const uint64_t share_set_id = m_db.get_current_dao_share_set_id();
+    if (share_set_id == 0) return false;
     std::vector<uint8_t> packed_blob;
-    if (!m_db.get_dao_local_share(1, global_member_index, packed_blob))
+    if (!m_db.get_dao_local_share(
+            static_cast<uint32_t>(share_set_id),
+            global_member_index, packed_blob))
         return false;
     std::vector<uint8_t> sk_blob;
     if (!dao::dao_unpack_local_share(packed_blob, key_rec.key_id, sk_blob)) {
