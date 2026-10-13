@@ -9,6 +9,14 @@ namespace cryptonote {
 GovernanceEngine::GovernanceEngine() = default;
 GovernanceEngine::~GovernanceEngine() = default;
 
+#ifdef VEILROOT_DAO_DKG_TESTING
+void GovernanceEngine::set_dao_v2_active_for_test(bool a)
+{
+    if (m_impl)
+        m_impl->set_dao_v2_active_for_test(a);
+}
+#endif
+
 bool GovernanceEngine::initialize(BlockchainDB& db, const governance_params& params, network_type nettype)
 {
     m_impl = std::make_unique<GovernanceManager>(db, params, nettype);

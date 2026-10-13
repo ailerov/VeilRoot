@@ -408,6 +408,14 @@ vote_result VoteManager::process_vote(const transaction& tx, uint64_t height, bo
     return vote_result::invalid_format;
 }
 
+bool VoteManager::dao_v2_active_effective(uint64_t height) const
+{
+#ifdef VEILROOT_DAO_DKG_TESTING
+    if (m_dao_v2_active_for_test) return true;
+#endif
+    return config::dao_v2_active(height);
+}
+
 vote_result VoteManager::process_v1_vote(const transaction& tx, uint64_t height, bool dry_run)
 {
     if (!is_vote_tx(tx))
@@ -435,7 +443,7 @@ vote_result VoteManager::process_v1_vote(const transaction& tx, uint64_t height,
     }
 
     // V1 is forbidden after network-wide DAO V2 activation.
-    if (config::dao_v2_active(height)) {
+    if (dao_v2_active_effective(height)) {
         MERROR("V1 vote rejected: DAO V2 active");
         return vote_result::invalid_format;
     }
@@ -566,7 +574,7 @@ vote_result VoteManager::process_v2_vote(
 
     // Network-wide activation gate. V2 is rejected before the network
     // constant is reached, regardless of any local tally-keys row.
-    if (!config::dao_v2_active(height)) {
+    if (!dao_v2_active_effective(height)) {
         MERROR("V2 vote rejected: DAO V2 not yet active");
         return vote_result::invalid_format;
     }

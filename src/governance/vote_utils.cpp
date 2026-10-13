@@ -3,12 +3,38 @@
 
 #include "vote_utils.h"
 #include <cstring>
+#include "cryptonote_config.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
+#include "cryptonote_basic/tx_extra.h"
+#include "governance/governance_payload.h"
 
 namespace cryptonote {
 
 bool is_vote_tx(const transaction& tx) {
     return !tx.vin.empty() && tx.vin[0].type() == typeid(txin_vns_vote);
+}
+
+bool is_dao_v2_vote_tx(const transaction& tx)
+{
+    if (tx.version != TX_VERSION_DAO_VOTE ||
+        !tx.vin.empty() || !tx.vout.empty())
+        return false;
+
+    std::vector<tx_extra_field> fields;
+    if (!parse_tx_extra(tx.extra, fields))
+        return false;
+
+    size_t vote_v2_count = 0;
+    for (const auto& field : fields)
+    {
+        if (field.type() != typeid(tx_extra_governance_payload))
+            continue;
+        const auto& gp =
+            boost::get<tx_extra_governance_payload>(field).payload;
+        if (gp.type == governance_object::vote_v2)
+            ++vote_v2_count;
+    }
+    return vote_v2_count == 1;
 }
 
 bool is_eligible_tx(const transaction& tx) {

@@ -39,6 +39,11 @@ public:
     uint64_t get_governance_parameter(governance_parameter param, uint64_t height) const;
     void recover_overdue_executions(uint64_t current_height);
 
+#ifdef VEILROOT_DAO_DKG_TESTING
+    // Test-only: propagate the activation override to VoteManager.
+    void set_dao_v2_active_for_test(bool a) { m_votes.set_dao_v2_active_for_test(a); }
+#endif
+
 private:
     GovernanceDB m_db;
     governance_params m_params;

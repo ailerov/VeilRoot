@@ -1421,6 +1421,8 @@ namespace cryptonote
   // production builds.
   void set_dao_v2_active_for_test(bool active) {
     m_dao_v2_active_for_test = active;
+    if (m_governance)
+      m_governance->set_dao_v2_active_for_test(active);
   }
 
   // Test-only: clear the in-memory tally-share accumulator so a test

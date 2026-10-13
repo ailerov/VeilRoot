@@ -34,6 +34,7 @@
 #include "cryptonote_basic/cryptonote_format_utils.h"
 #include "cryptonote_basic/tx_extra.h"
 #include "governance/governance_payload.h"
+#include "governance/vote_utils.h"
 #include "hardforks/hardforks.h"
 #include "ringct/rctSigs.h"
 #include "cryptonote_config.h"
@@ -253,6 +254,26 @@ static bool ver_non_input_consensus_templated(TxForwardIt tx_begin, TxForwardIt 
             tvc.m_too_big = true;
             return false;
         }
+
+        // BEGIN_VNS_DAO_V2_VOTE_BYPASS
+        // A V2 vote is a zero-input, zero-output, version-3 transaction
+        // carrying exactly one governance_object::vote_v2 payload.
+        // check_tx_semantic() rejects empty-input transactions and
+        // check_tx_outputs()/RCT semantics do not apply to RCTTypeNull.
+        // The blob-size and weight checks above still apply. The extra
+        // field is capped at DAO_VOTE_V2_MAX_EXTRA_BYTES, which is also
+        // enforced by the mempool and by VoteManager on block apply.
+        if (is_dao_v2_vote_tx(tx))
+        {
+            if (tx.extra.size() > DAO_VOTE_V2_MAX_EXTRA_BYTES)
+            {
+                tvc.m_verifivation_failed = true;
+                tvc.m_tx_extra_too_big = true;
+                return false;
+            }
+            continue;
+        }
+        // END_VNS_DAO_V2_VOTE_BYPASS
 
         // Rule 5
         if (!core::check_tx_semantic(tx, tvc, hf_version))

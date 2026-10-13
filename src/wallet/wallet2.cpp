@@ -17544,7 +17544,7 @@ wallet2::vote_tx_result wallet2::create_vote_v2_tx(
   std::string extra = t_serializable_object_to_blob(ef);
 
   transaction tx;
-  tx.version = 2;
+  tx.version = TX_VERSION_DAO_VOTE;
   tx.unlock_time = 0;
   tx.extra.assign(extra.begin(), extra.end());
   tx.rct_signatures.type = rct::RCTTypeNull;

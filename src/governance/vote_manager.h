@@ -43,7 +43,16 @@ public:
 
     bool vote_exists(const crypto::hash& proposal_id, const crypto::hash& nullifier) const;
 
+#ifdef VEILROOT_DAO_DKG_TESTING
+    // Test-only: pretend DAO V2 is active regardless of the configured
+    // activation height, so fixtures can drive a real vote through
+    // process_block() without mining to DAO_V2_ACTIVATION_HEIGHT.
+    // Never enabled in production builds.
+    void set_dao_v2_active_for_test(bool a) { m_dao_v2_active_for_test = a; }
+#endif
+
 private:
+    bool dao_v2_active_effective(uint64_t height) const;
     bool validate_vote(const vote_proof& vp, uint64_t height) const;
     bool is_vote_tx(const transaction& tx) const;
     bool extract_vote(const transaction& tx, vote_proof& vp) const;
@@ -61,6 +70,9 @@ private:
 
     GovernanceDB& m_db;
     const governance_params& m_params;
+#ifdef VEILROOT_DAO_DKG_TESTING
+    bool m_dao_v2_active_for_test = false;
+#endif
 };
 
 } // namespace cryptonote

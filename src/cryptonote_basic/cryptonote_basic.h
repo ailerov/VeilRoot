@@ -277,7 +277,17 @@ struct txout_to_burn
 
     BEGIN_SERIALIZE()
       VARINT_FIELD(version)
-      if(version == 0 || CURRENT_TRANSACTION_VERSION < version) return false;
+      // BEGIN_VNS_DAO_VOTE_VERSION
+      // Version TX_VERSION_DAO_VOTE is reserved for zero-input,
+      // zero-output DAO V2 vote transactions (see governance/vote_utils.h
+      // is_dao_v2_vote_tx). It is admitted by the parser so the vote
+      // payload can be read and validated by the governance layer.
+      // Every other transaction shape must still obey
+      // CURRENT_TRANSACTION_VERSION.
+      if(version == 0 ||
+         (CURRENT_TRANSACTION_VERSION < version &&
+          version != TX_VERSION_DAO_VOTE)) return false;
+      // END_VNS_DAO_VOTE_VERSION
       VARINT_FIELD(unlock_time)
       FIELD(vin)
       FIELD(vout)

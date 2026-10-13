@@ -46,6 +46,7 @@
 #include "misc_language.h"
 #include "misc_log_ex.h"
 #include "tx_verification_utils.h"
+#include "governance/vote_utils.h"
 #include "warnings.h"
 #include "common/perf_timer.h"
 #include "crypto/hash.h"
@@ -192,6 +193,9 @@ namespace cryptonote
     bool is_dao_dkg_activation = false;
     // END_VNS_MEMPOOL_DKG_ACTIVATION_SCOPE
     // END_VNS_MEMPOOL_VOTE_SCOPE
+    // BEGIN_VNS_MEMPOOL_V2_VOTE_SCOPE
+    bool is_dao_v2_vote = false;
+    // END_VNS_MEMPOOL_V2_VOTE_SCOPE
 
     uint64_t fee;
     bool fee_good = false;
@@ -221,7 +225,14 @@ namespace cryptonote
       is_dao_dkg_activation = m_blockchain.is_dao_v2_dkg_activation_tx(tx);
       // END_VNS_MEMPOOL_DKG_ACTIVATION_FEE
 
-      fee_good = kept_by_block || is_vote || is_eligible || is_proposal || is_dao_exec || is_dao_tally_result || is_dao_dkg_activation || m_blockchain.check_fee(tx_weight, fee);
+      // BEGIN_VNS_MEMPOOL_V2_VOTE_FEE
+      // A DAO V2 vote is a zero-input, zero-output, version-3
+      // transaction carrying a vote_v2 payload. It is not the legacy
+      // input-based V1 vote, and it must be identified by shape alone.
+      is_dao_v2_vote = is_dao_v2_vote_tx(tx);
+      // END_VNS_MEMPOOL_V2_VOTE_FEE
+
+      fee_good = kept_by_block || is_vote || is_dao_v2_vote || is_eligible || is_proposal || is_dao_exec || is_dao_tally_result || is_dao_dkg_activation || m_blockchain.check_fee(tx_weight, fee);
     }
     catch(...) {}
     if (!fee_good) // if fee calculation failed or fee in relayed tx is too low...
@@ -326,10 +337,30 @@ namespace cryptonote
       return false;
     }
 
+    // BEGIN_VNS_MEMPOOL_V2_VOTE_EXTRA_LIMIT
+    // A V2 vote carries a vote_proof_v2: three 512-byte Paillier
+    // ciphertexts, three consistency proofs, one hidden-direction OR
+    // proof, and at least one pair of CLSAGs. The ceiling is 128 KiB
+    // and it applies even to txs reprocessed from a block, because
+    // this is a consensus rule, not only a mempool policy.
+    if (is_dao_v2_vote &&
+        tx_extra_size > DAO_VOTE_V2_MAX_EXTRA_BYTES)
+    {
+      LOG_PRINT_L1("DAO V2 vote tx-extra exceeds protocol ceiling: "
+                   << tx_extra_size << " bytes, limit "
+                   << DAO_VOTE_V2_MAX_EXTRA_BYTES);
+      tvc.m_verifivation_failed = true;
+      tvc.m_tx_extra_too_big = true;
+      tvc.m_no_drop_offense = true;
+      return false;
+    }
+    // END_VNS_MEMPOOL_V2_VOTE_EXTRA_LIMIT
+
     if (!kept_by_block &&
         tx_extra_size > MAX_TX_EXTRA_SIZE &&
         !is_tally_result_extra &&
-        !is_dkg_activation_extra)
+        !is_dkg_activation_extra &&
+        !is_dao_v2_vote)
     {
       LOG_PRINT_L1("transaction tx-extra is too big: " << tx_extra_size << " bytes, the limit is: " << MAX_TX_EXTRA_SIZE);
       tvc.m_verifivation_failed = true;
@@ -475,7 +506,8 @@ namespace cryptonote
           // are included by the miner. Standard relay logic assigns
           // relay_method::none to zero‑fee txs, which blocks mining.
           const bool is_dao_protocol_tx =
-              is_dao_tally_result || is_dao_dkg_activation;
+              is_dao_tally_result || is_dao_dkg_activation ||
+              is_dao_v2_vote;
 
           if ((tx.vin.empty() && !is_dao_protocol_tx) ||
               (!tx.vin.empty() &&

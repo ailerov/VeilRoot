@@ -42,6 +42,11 @@ public:
 
     void recover_overdue_executions(uint64_t current_height);
 
+#ifdef VEILROOT_DAO_DKG_TESTING
+    // Test-only: propagate to the underlying GovernanceManager.
+    void set_dao_v2_active_for_test(bool a);
+#endif
+
 private:
     std::unique_ptr<GovernanceManager> m_impl;
 };
