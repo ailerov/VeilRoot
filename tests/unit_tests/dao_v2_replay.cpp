@@ -1105,6 +1105,109 @@ TEST(DaoV2Replay, RealVoteTxEntersPoolAndBlock)
 }
 
 // ---------------------------------------------------------------------
+// Reorg rollback of a V2 vote.
+//
+// A block containing a V2 vote is added, the aggregate and nullifier
+// are written, and the block is then popped. VoteManager::rollback_block
+// must remove both the aggregate contribution and the nullifier, so
+// the same vote can be re-included on the new chain. The proposal
+// record itself must be untouched.
+// ---------------------------------------------------------------------
+TEST(DaoV2Replay, ReorgRollsBackV2Vote)
+{
+    using namespace cryptonote;
+
+    V2VoteFixture fx;
+    ASSERT_TRUE(build_v2_vote_fixture(fx, "votereorg"));
+
+    auto& db_a = fx.node->core->get_blockchain_storage().get_db();
+
+    // Admit and mine.
+    {
+        const cryptonote::blobdata vb = tx_to_blob(fx.vote_tx);
+        tx_verification_context tvc{};
+        ASSERT_TRUE(fx.node->core->handle_incoming_tx(
+            vb, tvc, relay_method::local, false));
+        ASSERT_FALSE(tvc.m_verifivation_failed);
+    }
+    {
+        block blk;
+        ASSERT_TRUE(construct_block_here(*fx.node, fx.miner_acc,
+                                          fx.chain_height, {fx.vote_tx},
+                                          blk));
+        cryptonote::blobdata bb = cryptonote::block_to_blob(blk);
+        block_verification_context bvc{};
+        pool_supplement e{};
+        e.txs_by_txid.emplace(
+            get_transaction_hash(fx.vote_tx),
+            std::make_pair(fx.vote_tx, tx_to_blob(fx.vote_tx)));
+        ASSERT_TRUE(fx.node->core->handle_single_incoming_block(
+            bb, &blk, bvc, e, false));
+        ASSERT_FALSE(bvc.m_verifivation_failed);
+    }
+
+    // Pre-pop: aggregate present, nullifier recorded.
+    {
+        dao_proposal_aggregate agg;
+        ASSERT_TRUE(db_a.get_dao_proposal_aggregate(fx.prop_id, agg));
+        ASSERT_TRUE(db_a.has_vote_nullifier(fx.prop_id,
+                                             fx.proof.nullifiers[0]));
+    }
+
+    const uint64_t height_before =
+        fx.node->core->get_current_blockchain_height();
+    ASSERT_EQ(height_before, fx.chain_height + 1);
+
+    // Pop the block containing the vote.
+    fx.node->core->get_blockchain_storage().pop_blocks(1);
+
+    const uint64_t height_after =
+        fx.node->core->get_current_blockchain_height();
+    ASSERT_EQ(height_after, fx.chain_height);
+
+    // Nullifier removed.
+    EXPECT_FALSE(db_a.has_vote_nullifier(fx.prop_id,
+                                          fx.proof.nullifiers[0]));
+
+    // Aggregate removed (byte-for-byte rollback: when the aggregate
+    // returns to identity, the row is deleted, not persisted).
+    {
+        dao_proposal_aggregate agg;
+        EXPECT_FALSE(db_a.get_dao_proposal_aggregate(fx.prop_id, agg));
+    }
+
+    // Proposal record is untouched.
+    proposal_record rec;
+    ASSERT_TRUE(db_a.get_proposal_record(fx.prop_id, rec));
+    EXPECT_EQ(rec.status, PROPOSAL_STATUS_ACTIVE);
+}
+
+// ---------------------------------------------------------------------
+// Successive multi-block pop.
+//
+// pop_blocks(2) must remove two blocks cleanly, leaving the chain at
+// the expected height, and must not throw MDB_NOTFOUND from the
+// hard-fork rollback path. The two-block variant exercises the
+// on_block_popped loop more than once and the batch is stopped once at
+// the end, not per pop.
+// ---------------------------------------------------------------------
+TEST(DaoV2Replay, MultiBlockPopSucceeds)
+{
+    using namespace cryptonote;
+
+    V2VoteFixture fx;
+    ASSERT_TRUE(build_v2_vote_fixture(fx, "multipop"));
+
+    const uint64_t h0 = fx.node->core->get_current_blockchain_height();
+    ASSERT_GE(h0, 3u);
+
+    fx.node->core->get_blockchain_storage().pop_blocks(2);
+
+    const uint64_t h1 = fx.node->core->get_current_blockchain_height();
+    EXPECT_EQ(h1, h0 - 2);
+}
+
+// ---------------------------------------------------------------------
 // Oversized V2 vote extra.
 //
 // A zero-input version-3 vote whose governance payload exceeds the
