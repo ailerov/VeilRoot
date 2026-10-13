@@ -356,6 +356,35 @@ namespace cryptonote
     }
     // END_VNS_MEMPOOL_V2_VOTE_EXTRA_LIMIT
 
+    // BEGIN_VNS_MEMPOOL_V2_VOTE_VERIFY
+    // A V2 vote must be validated by the same cryptographic verifier
+    // that the block-apply path runs. Mempool admission is not a
+    // substitute for block validation; running the verifier here
+    // rejects duplicate nullifiers and invalid proofs before relay,
+    // and matches the practice already used for tally-result and
+    // DKG-activation transactions.
+    //
+    // The proof binds to the block height at which it will be
+    // applied (verifier step 5), so the dry-run is performed at the
+    // next block height, not at the current tip.
+    if (!kept_by_block && is_dao_v2_vote)
+    {
+      const uint64_t candidate_height =
+          m_blockchain.get_current_blockchain_height() + 1;
+      const vote_result vr = m_blockchain.governance().process_vote(
+          tx, candidate_height, /*dry_run=*/true);
+      if (vr != vote_result::success)
+      {
+        LOG_PRINT_L1("DAO V2 vote failed dry-run verification at height "
+                     << candidate_height
+                     << " result " << (int)vr);
+        tvc.m_verifivation_failed = true;
+        tvc.m_no_drop_offense = true;
+        return false;
+      }
+    }
+    // END_VNS_MEMPOOL_V2_VOTE_VERIFY
+
     if (!kept_by_block &&
         tx_extra_size > MAX_TX_EXTRA_SIZE &&
         !is_tally_result_extra &&

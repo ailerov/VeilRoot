@@ -763,25 +763,49 @@ TEST(DaoV2Replay, NodeBReconstructsKeyRecordFromActivationBlock)
 // real derived spend secret, real Paillier ciphertexts, real CLSAGs,
 // real transcript, real block-apply through GovernanceManager.
 // ---------------------------------------------------------------------
-TEST(DaoV2Replay, RealVoteTxEntersPoolAndBlock)
+namespace {
+
+struct V2VoteFixture
+{
+    boost::filesystem::path                  base;
+    std::unique_ptr<ReplayNode>              node;
+    account_base                             miner_acc;
+    crypto::hash                             prop_id{};
+    cryptonote::dao::dao_tally_key_record    key_rec;
+    crypto::hash                             tally_key_id{};
+    uint64_t                                 chain_height = 0;
+    uint64_t                                 vote_height  = 0;
+    uint64_t                                 prop_submit  = 0;
+    cryptonote::dao::dao_v2_vote_source      source;
+    cryptonote::transaction                  vote_tx;
+    cryptonote::vote_proof_v2                proof;
+    size_t                                   serialized_proof_bytes = 0;
+
+    ~V2VoteFixture()
+    {
+        node.reset();
+        if (!base.empty())
+            boost::filesystem::remove_all(base);
+    }
+};
+
+bool build_v2_vote_fixture(V2VoteFixture& fx, const std::string& tag)
 {
     using namespace cryptonote;
     using namespace cryptonote::dao;
 
-    boost::filesystem::path base =
-        boost::filesystem::temp_directory_path() /
-        boost::filesystem::unique_path("vr_replay_vote_%%%%-%%%%");
+    fx.base = boost::filesystem::temp_directory_path() /
+        boost::filesystem::unique_path("vr_replay_" + tag + "_%%%%-%%%%");
+    fx.node.reset(new ReplayNode);
+    if (!fx.node->init((fx.base / "a").string())) return false;
 
-    ReplayNode a;
-    ASSERT_TRUE(a.init((base / "a").string()));
-    auto& bc_a = a.core->get_blockchain_storage();
+    auto& bc_a = fx.node->core->get_blockchain_storage();
     auto& db_a = bc_a.get_db();
     bc_a.set_dao_v2_active_for_test(true);
 
-    account_base miner_acc;
-    miner_acc.generate();
+    fx.miner_acc.generate();
 
-    // ---- 3-party bootstrap DKG to obtain a real key record. ----
+    // 3-party bootstrap DKG for a real key record.
     std::vector<crypto::public_key> cps;
     std::vector<crypto::secret_key> css;
     for (int i = 0; i < 3; ++i) {
@@ -798,11 +822,12 @@ TEST(DaoV2Replay, RealVoteTxEntersPoolAndBlock)
         for (auto i : idx) { p2.push_back(cps[i]); s2.push_back(css[i]); }
         cps = std::move(p2); css = std::move(s2);
     }
-    a.core->set_node_key(css[0]);
+    fx.node->core->set_node_key(css[0]);
 
     dao_vss_group vss;
-    ASSERT_TRUE(dao_vss_group_generate(vss,
-        dao_dkg_required_vss_bits(60, 128, 32)));
+    if (!dao_vss_group_generate(vss,
+            dao_dkg_required_vss_bits(60, 128, 32)))
+        return false;
     dkg_inproc_network inet = dkg_make_inproc_network(3, nullptr);
     std::vector<std::unique_ptr<dkg_transport>> pool;
     for (auto& e : inet.endpoints) pool.push_back(std::move(e));
@@ -825,31 +850,29 @@ TEST(DaoV2Replay, RealVoteTxEntersPoolAndBlock)
     cfg.test_seed      = 0x5645494C52544F33ULL;
     cfg.local_party_id = 1;
     dkg_result dkg_out;
-    ASSERT_TRUE(dkg_run_with_transport(cfg, factory, dkg_out));
-    ASSERT_TRUE(dkg_out.candidate_accepted);
-    ASSERT_EQ(dkg_out.record.key_id.size(), 32u);
-    ASSERT_EQ(dkg_out.record.N.size(), 256u);
+    if (!dkg_run_with_transport(cfg, factory, dkg_out)) return false;
+    if (!dkg_out.candidate_accepted) return false;
+    if (dkg_out.record.key_id.size() != 32) return false;
+    if (dkg_out.record.N.size() != 256) return false;
+    fx.key_rec = dkg_out.record;
     bc_a.install_dao_tally_key_for_test(dkg_out.record);
 
-    // ---- Mine a handful of empty blocks so real coinbase outputs exist. ----
+    // Mine empty blocks so real coinbase outputs exist.
     for (int i = 0; i < 5; ++i) {
-        const uint64_t h = a.core->get_current_blockchain_height();
+        const uint64_t h = fx.node->core->get_current_blockchain_height();
         block blk;
-        ASSERT_TRUE(construct_block_here(a, miner_acc, h, {}, blk));
+        if (!construct_block_here(*fx.node, fx.miner_acc, h, {}, blk))
+            return false;
         cryptonote::blobdata bb = cryptonote::block_to_blob(blk);
         block_verification_context bvc{};
         pool_supplement e{};
-        ASSERT_TRUE(a.core->handle_single_incoming_block(
-            bb, &blk, bvc, e, false));
-        ASSERT_FALSE(bvc.m_verifivation_failed);
+        if (!fx.node->core->handle_single_incoming_block(
+                bb, &blk, bvc, e, false))
+            return false;
+        if (bvc.m_verifivation_failed) return false;
     }
 
-    // ---- Enumerate owned coinbase outputs. ------------------------------
-    // Every coinbase v2 output is stored by BlockchainDB::add_block() as
-    // an RCT output with amount 0 and commitment = zeroCommit(real_amount),
-    // so the Pedersen mask is rct::zero() and the commitment is
-    // amount*H. The matching spend secret is derivation_to_scalar(der, i)
-    // plus the account's spend secret.
+    // Enumerate owned coinbase outputs.
     struct OwnedOutput {
         uint64_t           global_index;
         crypto::public_key pubkey;
@@ -872,43 +895,37 @@ TEST(DaoV2Replay, RealVoteTxEntersPoolAndBlock)
             if (!db_a.get_tx(toi.first, tx)) continue;
             if (tx.vin.empty() ||
                 tx.vin[0].type() != typeid(txin_gen)) continue;
-
             const crypto::public_key tx_pub =
                 get_tx_pub_key_from_extra(tx);
             if (tx_pub == crypto::null_pkey) continue;
             crypto::key_derivation der;
             if (!crypto::generate_key_derivation(
-                    tx_pub, miner_acc.get_keys().m_view_secret_key, der))
+                    tx_pub, fx.miner_acc.get_keys().m_view_secret_key, der))
                 continue;
-
             crypto::public_key expected;
             if (!crypto::derive_public_key(
                     der, toi.second,
-                    miner_acc.get_keys().m_account_address.m_spend_public_key,
+                    fx.miner_acc.get_keys().m_account_address.m_spend_public_key,
                     expected))
                 continue;
             if (std::memcmp(&expected, &od.pubkey, 32) != 0) continue;
-
             block blk;
             try { blk = db_a.get_block_from_height(od.height); }
             catch (...) { continue; }
             if (toi.second >= blk.miner_tx.vout.size()) continue;
-
             crypto::ec_scalar der_scalar;
             crypto::derivation_to_scalar(der, toi.second, der_scalar);
-
             OwnedOutput oo{};
             oo.global_index = g;
             oo.pubkey       = od.pubkey;
             oo.commitment   = od.commitment;
             oo.height       = od.height;
             oo.amount       = blk.miner_tx.vout[toi.second].amount;
-            // x_l = H_s(der || i) + b.
             {
                 rct::key der_k{};   std::memcpy(der_k.bytes,
                     der_scalar.data, 32);
                 rct::key spend_k{}; std::memcpy(spend_k.bytes,
-                    miner_acc.get_keys().m_spend_secret_key.data, 32);
+                    fx.miner_acc.get_keys().m_spend_secret_key.data, 32);
                 rct::key out_k{};
                 sc_add(out_k.bytes, der_k.bytes, spend_k.bytes);
                 std::memcpy(oo.output_secret.data, out_k.bytes, 32);
@@ -916,41 +933,34 @@ TEST(DaoV2Replay, RealVoteTxEntersPoolAndBlock)
             owned.push_back(oo);
         }
     }
-    ASSERT_GE(owned.size(), 4u);
+    if (owned.size() < 4) return false;
     std::sort(owned.begin(), owned.end(),
               [](const OwnedOutput& x, const OwnedOutput& y) {
-                  return x.global_index < y.global_index;
-              });
+                  return x.global_index < y.global_index; });
 
-    // ---- Insert the proposal record the verifier reads. ----------------
-    // construct_block_here() is called with the pre-add chain height,
-    // but handle_single_incoming_block() applies the block at
-    // new_height = chain_height + 1. The proof's vote_height must equal
-    // what VoteManager::process_block sees.
-    const uint64_t chain_height = a.core->get_current_blockchain_height();
-    const uint64_t vote_height  = chain_height + 1;
-    const uint64_t prop_submit  = chain_height - 1;
-    const uint64_t prop_end     = vote_height + 100;
-
-    crypto::hash prop_id{};
-    std::memset(prop_id.data, 0x5A, 32);
+    // Proposal record the verifier reads.
+    fx.chain_height = fx.node->core->get_current_blockchain_height();
+    fx.vote_height  = fx.chain_height + 1;
+    const uint64_t prop_submit = fx.chain_height - 1;
+    fx.prop_submit  = prop_submit;
+    const uint64_t prop_end    = fx.vote_height + 100;
+    std::memset(fx.prop_id.data, 0x5A, 32);
 
     proposal_record rec{};
-    rec.proposal_id          = prop_id;
-    rec.voting_period_days   = 7;
-    rec.submission_height    = prop_submit;
-    rec.voting_end_height    = prop_end;
-    std::memcpy(rec.tally_key_id.data,
-                dkg_out.record.key_id.data(), 32);
-    rec.submission_tx_hash   = prop_id;
-    rec.status               = PROPOSAL_STATUS_ACTIVE;
-    rec.status_height        = prop_submit;
+    rec.proposal_id        = fx.prop_id;
+    rec.voting_period_days = 7;
+    rec.submission_height  = prop_submit;
+    rec.voting_end_height  = prop_end;
+    std::memcpy(rec.tally_key_id.data, fx.key_rec.key_id.data(), 32);
+    rec.submission_tx_hash = fx.prop_id;
+    rec.status             = PROPOSAL_STATUS_ACTIVE;
+    rec.status_height      = prop_submit;
     {
         db_wtxn_guard g(&db_a);
-        db_a.add_proposal_record(prop_id, rec);
+        db_a.add_proposal_record(fx.prop_id, rec);
     }
 
-    // ---- Build the real vote on a ring of 4 owned outputs. --------------
+    // Vote source on a ring of 4 owned coinbase outputs.
     dao_v2_vote_source src{};
     for (size_t i = 0; i < 4; ++i) {
         src.P.push_back(rct::pk2rct(owned[i].pubkey));
@@ -965,94 +975,335 @@ TEST(DaoV2Replay, RealVoteTxEntersPoolAndBlock)
     src.real_index        = 0;
     src.real_spend_secret = owned[0].output_secret;
     {
-        // BlockchainDB::add_block() stores every coinbase v2 output with
-        // rct::zeroCommit(amount) == G + amount*H, i.e. the Pedersen mask
-        // is the scalar one.
+        // BlockchainDB::add_block() stores every coinbase v2 output
+        // with rct::zeroCommit(amount) == G + amount*H, so the
+        // Pedersen mask is the scalar one.
         rct::key one{};
         one.bytes[0] = 1;
         src.real_mask = one;
     }
-    src.real_amount       = owned[0].amount;
+    src.real_amount = owned[0].amount;
 
-    crypto::hash tally_key_id{};
-    std::memcpy(tally_key_id.data, dkg_out.record.key_id.data(), 32);
+    fx.source = src;
+    std::memcpy(fx.tally_key_id.data, fx.key_rec.key_id.data(), 32);
 
-    vote_proof_v2 proof;
-    ASSERT_TRUE(dao::build_dao_v2_vote(
-        prop_id, prop_submit, vote_height, tally_key_id,
-        dkg_out.record.N, /*direction=YES*/ 0,
-        std::vector<dao_v2_vote_source>{src}, proof));
+    if (!dao::build_dao_v2_vote(
+            fx.prop_id, prop_submit, fx.vote_height, fx.tally_key_id,
+            fx.key_rec.N, /*direction=YES*/ 0,
+            std::vector<dao_v2_vote_source>{src}, fx.proof))
+        return false;
 
-    // ---- Wrap into a txin_vns_vote transaction with a vote_v2 payload. -
-    transaction vote_tx{};
-    vote_tx.version     = TX_VERSION_DAO_VOTE;
-    vote_tx.unlock_time = 0;
-    // Zero vin, zero vout: the V2 vote carries everything inside the
-    // vote_v2 governance payload in tx.extra.
+    // Wrap into a zero-input, zero-output version-3 transaction.
+    fx.vote_tx = transaction{};
+    fx.vote_tx.version     = TX_VERSION_DAO_VOTE;
+    fx.vote_tx.unlock_time = 0;
     {
-        const std::string proof_blob_str =
-            cryptonote::t_serializable_object_to_blob(proof);
-        std::vector<uint8_t> proof_blob(proof_blob_str.begin(),
-                                         proof_blob_str.end());
+        const std::string proof_blob =
+            cryptonote::t_serializable_object_to_blob(fx.proof);
+        fx.serialized_proof_bytes = proof_blob.size();
 
         governance_payload gp;
         gp.type = governance_object::vote_v2;
-        gp.data = std::move(proof_blob);
+        gp.data.assign(proof_blob.begin(), proof_blob.end());
 
         tx_extra_governance_payload txgp;
         txgp.payload = std::move(gp);
         tx_extra_field ef = txgp;
         const std::string extra_blob = t_serializable_object_to_blob(ef);
-        vote_tx.extra.assign(extra_blob.begin(), extra_blob.end());
+        fx.vote_tx.extra.assign(extra_blob.begin(), extra_blob.end());
     }
-    vote_tx.rct_signatures = rct::rctSig{};
-    vote_tx.rct_signatures.type = rct::RCTTypeNull;
+    fx.vote_tx.rct_signatures = rct::rctSig{};
+    fx.vote_tx.rct_signatures.type = rct::RCTTypeNull;
 
-    // ---- Mempool admission. --------------------------------------------
+    return true;
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------
+// Real V2 vote path.
+//
+// Real coinbase outputs, real derived spend secret, real Paillier
+// ciphertexts, real CLSAGs, real transcript, and a real block-apply
+// through GovernanceManager. Asserts the outer transaction shape is
+// the zero-input, zero-output version-3 form, that the payload
+// exceeds the legacy MAX_TX_EXTRA_SIZE limit, and that the legacy
+// input-based V1 classifier does not match.
+// ---------------------------------------------------------------------
+TEST(DaoV2Replay, RealVoteTxEntersPoolAndBlock)
+{
+    using namespace cryptonote;
+
+    V2VoteFixture fx;
+    ASSERT_TRUE(build_v2_vote_fixture(fx, "vote"));
+
+    // Shape assertions.
+    EXPECT_EQ(fx.vote_tx.version, (size_t)TX_VERSION_DAO_VOTE);
+    EXPECT_TRUE(fx.vote_tx.vin.empty());
+    EXPECT_TRUE(fx.vote_tx.vout.empty());
+    EXPECT_EQ(fx.vote_tx.rct_signatures.type, rct::RCTTypeNull);
+    EXPECT_GT(fx.vote_tx.extra.size(), (size_t)MAX_TX_EXTRA_SIZE);
+    EXPECT_GT(fx.serialized_proof_bytes, (size_t)MAX_TX_EXTRA_SIZE);
+    EXPECT_TRUE(is_dao_v2_vote_tx(fx.vote_tx));
+    EXPECT_FALSE(is_vote_tx(fx.vote_tx));
+
+    auto& db_a = fx.node->core->get_blockchain_storage().get_db();
+
+    // Mempool admission.
     {
-        const cryptonote::blobdata vb = tx_to_blob(vote_tx);
+        const cryptonote::blobdata vb = tx_to_blob(fx.vote_tx);
         tx_verification_context tvc{};
-        ASSERT_TRUE(a.core->handle_incoming_tx(
+        ASSERT_TRUE(fx.node->core->handle_incoming_tx(
             vb, tvc, relay_method::local, false));
         EXPECT_FALSE(tvc.m_verifivation_failed);
 
         std::vector<crypto::hash> pool_hashes;
-        a.core->get_pool_transaction_hashes(pool_hashes);
-        const crypto::hash vote_txid = get_transaction_hash(vote_tx);
+        fx.node->core->get_pool_transaction_hashes(pool_hashes);
+        const crypto::hash vote_txid = get_transaction_hash(fx.vote_tx);
         EXPECT_NE(std::find(pool_hashes.begin(), pool_hashes.end(),
                             vote_txid),
                   pool_hashes.end());
     }
 
-    // ---- Mine the vote into a block and feed it to the node. -----------
+    // Mine and apply.
     {
         block blk;
-        ASSERT_TRUE(construct_block_here(a, miner_acc, chain_height,
-                                          {vote_tx}, blk));
+        ASSERT_TRUE(construct_block_here(*fx.node, fx.miner_acc,
+                                          fx.chain_height, {fx.vote_tx},
+                                          blk));
         cryptonote::blobdata bb = cryptonote::block_to_blob(blk);
         block_verification_context bvc{};
         pool_supplement e{};
         e.txs_by_txid.emplace(
-            get_transaction_hash(vote_tx),
-            std::make_pair(vote_tx, tx_to_blob(vote_tx)));
-        ASSERT_TRUE(a.core->handle_single_incoming_block(
+            get_transaction_hash(fx.vote_tx),
+            std::make_pair(fx.vote_tx, tx_to_blob(fx.vote_tx)));
+        ASSERT_TRUE(fx.node->core->handle_single_incoming_block(
             bb, &blk, bvc, e, false));
         EXPECT_FALSE(bvc.m_verifivation_failed);
     }
 
-    // ---- Assert the vote was counted. ----------------------------------
+    // Aggregate and nullifier written.
     dao_proposal_aggregate agg;
-    ASSERT_TRUE(db_a.get_dao_proposal_aggregate(prop_id, agg));
+    ASSERT_TRUE(db_a.get_dao_proposal_aggregate(fx.prop_id, agg));
     EXPECT_FALSE(agg.aggregate_E_W.empty());
     EXPECT_FALSE(agg.aggregate_E_S.empty());
     EXPECT_FALSE(agg.aggregate_E_B.empty());
     EXPECT_TRUE(!(agg.aggregate_C_W == rct::identity()));
     EXPECT_TRUE(!(agg.aggregate_C_B == rct::identity()));
 
-    EXPECT_TRUE(db_a.has_vote_nullifier(prop_id, proof.nullifiers[0]));
-
-    boost::filesystem::remove_all(base);
+    EXPECT_TRUE(db_a.has_vote_nullifier(fx.prop_id,
+                                         fx.proof.nullifiers[0]));
 }
+
+// ---------------------------------------------------------------------
+// Oversized V2 vote extra.
+//
+// A zero-input version-3 vote whose governance payload exceeds the
+// 128 KiB ceiling must be rejected by the mempool AND by block
+// validation, even though the classifier still recognises it.
+// ---------------------------------------------------------------------
+TEST(DaoV2Replay, OversizedV2VoteExtraRejectedByMempoolAndBlock)
+{
+    using namespace cryptonote;
+
+    V2VoteFixture fx;
+    ASSERT_TRUE(build_v2_vote_fixture(fx, "votebig"));
+
+    // Rebuild the tx with a payload larger than the ceiling. The
+    // classifier only inspects the outer shape, so the extra can be
+    // padded without changing the shape.
+    transaction big_tx = fx.vote_tx;
+    {
+        std::vector<uint8_t> padded(
+            DAO_VOTE_V2_MAX_EXTRA_BYTES + 4096, 0x00);
+
+        governance_payload gp;
+        gp.type = governance_object::vote_v2;
+        gp.data = std::move(padded);
+
+        tx_extra_governance_payload txgp;
+        txgp.payload = std::move(gp);
+        tx_extra_field ef = txgp;
+        const std::string extra_blob = t_serializable_object_to_blob(ef);
+        big_tx.extra.assign(extra_blob.begin(), extra_blob.end());
+    }
+    ASSERT_GT(big_tx.extra.size(), DAO_VOTE_V2_MAX_EXTRA_BYTES);
+    ASSERT_TRUE(is_dao_v2_vote_tx(big_tx));
+
+    // Mempool must reject.
+    {
+        const cryptonote::blobdata bb = tx_to_blob(big_tx);
+        tx_verification_context tvc{};
+        EXPECT_FALSE(fx.node->core->handle_incoming_tx(
+            bb, tvc, relay_method::local, false));
+        EXPECT_TRUE(tvc.m_verifivation_failed);
+
+        std::vector<crypto::hash> pool_hashes;
+        fx.node->core->get_pool_transaction_hashes(pool_hashes);
+        const crypto::hash big_txid = get_transaction_hash(big_tx);
+        EXPECT_EQ(std::find(pool_hashes.begin(), pool_hashes.end(),
+                            big_txid),
+                  pool_hashes.end());
+    }
+
+    // Block validation must reject even when the mempool is skipped.
+    {
+        block blk;
+        ASSERT_TRUE(construct_block_here(*fx.node, fx.miner_acc,
+                                          fx.chain_height, {big_tx}, blk));
+        cryptonote::blobdata bb = cryptonote::block_to_blob(blk);
+        block_verification_context bvc{};
+        pool_supplement e{};
+        e.txs_by_txid.emplace(
+            get_transaction_hash(big_tx),
+            std::make_pair(big_tx, tx_to_blob(big_tx)));
+        const bool ok = fx.node->core->handle_single_incoming_block(
+            bb, &blk, bvc, e, false);
+        EXPECT_FALSE(ok && !bvc.m_verifivation_failed);
+        EXPECT_TRUE(bvc.m_verifivation_failed);
+    }
+}
+
+// ---------------------------------------------------------------------
+// Invalid V2 proof.
+//
+// A tampered vote_proof_v2 must be rejected by the mempool dry-run.
+// VoteProofVerifier step 21 rejects a non-canonical Paillier
+// ciphertext, so a single bit flip in E_W is sufficient.
+// ---------------------------------------------------------------------
+TEST(DaoV2Replay, InvalidV2VoteProofRejectedByMempool)
+{
+    using namespace cryptonote;
+
+    V2VoteFixture fx;
+    ASSERT_TRUE(build_v2_vote_fixture(fx, "votebad"));
+
+    // Tamper one byte of E_W.
+    vote_proof_v2 bad = fx.proof;
+    bad.E_W.data[0] ^= 0xFF;
+
+    transaction bad_tx = fx.vote_tx;
+    {
+        const std::string proof_blob =
+            cryptonote::t_serializable_object_to_blob(bad);
+        governance_payload gp;
+        gp.type = governance_object::vote_v2;
+        gp.data.assign(proof_blob.begin(), proof_blob.end());
+        tx_extra_governance_payload txgp;
+        txgp.payload = std::move(gp);
+        tx_extra_field ef = txgp;
+        const std::string extra_blob = t_serializable_object_to_blob(ef);
+        bad_tx.extra.assign(extra_blob.begin(), extra_blob.end());
+    }
+    ASSERT_TRUE(is_dao_v2_vote_tx(bad_tx));
+
+    const cryptonote::blobdata bb = tx_to_blob(bad_tx);
+    tx_verification_context tvc{};
+    EXPECT_FALSE(fx.node->core->handle_incoming_tx(
+        bb, tvc, relay_method::local, false));
+    EXPECT_TRUE(tvc.m_verifivation_failed);
+
+    std::vector<crypto::hash> pool_hashes;
+    fx.node->core->get_pool_transaction_hashes(pool_hashes);
+    const crypto::hash bad_txid = get_transaction_hash(bad_tx);
+    EXPECT_EQ(std::find(pool_hashes.begin(), pool_hashes.end(),
+                        bad_txid),
+              pool_hashes.end());
+}
+
+// ---------------------------------------------------------------------
+// Duplicate nullifier.
+//
+// A V2 vote that was already applied to the chain must be rejected
+// when resubmitted. VoteProofVerifier step27 checks prior-chain DAO
+// nullifiers before VoteManager can write a second aggregate.
+// ---------------------------------------------------------------------
+TEST(DaoV2Replay, DuplicateV2VoteNullifierRejected)
+{
+    using namespace cryptonote;
+    using namespace cryptonote::dao;
+
+    V2VoteFixture fx;
+    ASSERT_TRUE(build_v2_vote_fixture(fx, "votedup"));
+
+    auto& db_a = fx.node->core->get_blockchain_storage().get_db();
+
+    // First submission and inclusion.
+    {
+        const cryptonote::blobdata vb = tx_to_blob(fx.vote_tx);
+        tx_verification_context tvc{};
+        ASSERT_TRUE(fx.node->core->handle_incoming_tx(
+            vb, tvc, relay_method::local, false));
+        ASSERT_FALSE(tvc.m_verifivation_failed);
+    }
+    {
+        block blk;
+        ASSERT_TRUE(construct_block_here(*fx.node, fx.miner_acc,
+                                          fx.chain_height, {fx.vote_tx},
+                                          blk));
+        cryptonote::blobdata bb = cryptonote::block_to_blob(blk);
+        block_verification_context bvc{};
+        pool_supplement e{};
+        e.txs_by_txid.emplace(
+            get_transaction_hash(fx.vote_tx),
+            std::make_pair(fx.vote_tx, tx_to_blob(fx.vote_tx)));
+        ASSERT_TRUE(fx.node->core->handle_single_incoming_block(
+            bb, &blk, bvc, e, false));
+        ASSERT_FALSE(bvc.m_verifivation_failed);
+    }
+    ASSERT_TRUE(db_a.has_vote_nullifier(fx.prop_id,
+                                         fx.proof.nullifiers[0]));
+
+    // Build a SECOND, independent proof from the same output. The
+    // CLSAG randomness makes the tx hash different, but the
+    // proposal-scoped nullifier x*H_vote(P, proposal_id) is
+    // deterministic and must match the first one.
+    vote_proof_v2 proof2;
+    ASSERT_TRUE(dao::build_dao_v2_vote(
+        fx.prop_id, fx.prop_submit, fx.vote_height + 1,
+        fx.tally_key_id, fx.key_rec.N, /*direction=YES*/ 0,
+        std::vector<dao_v2_vote_source>{fx.source}, proof2));
+    ASSERT_EQ(proof2.nullifiers.size(), 1u);
+    EXPECT_EQ(std::memcmp(proof2.nullifiers[0].data,
+                          fx.proof.nullifiers[0].data, 32), 0);
+
+    transaction tx2{};
+    tx2.version     = TX_VERSION_DAO_VOTE;
+    tx2.unlock_time = 0;
+    {
+        const std::string pb =
+            cryptonote::t_serializable_object_to_blob(proof2);
+        governance_payload gp;
+        gp.type = governance_object::vote_v2;
+        gp.data.assign(pb.begin(), pb.end());
+        tx_extra_governance_payload txgp;
+        txgp.payload = std::move(gp);
+        tx_extra_field ef = txgp;
+        const std::string xb = t_serializable_object_to_blob(ef);
+        tx2.extra.assign(xb.begin(), xb.end());
+    }
+    tx2.rct_signatures = rct::rctSig{};
+    tx2.rct_signatures.type = rct::RCTTypeNull;
+
+    EXPECT_NE(get_transaction_hash(tx2), get_transaction_hash(fx.vote_tx));
+    EXPECT_TRUE(is_dao_v2_vote_tx(tx2));
+
+    // The chain-committed nullifier must reject the fresh proof.
+    {
+        const cryptonote::blobdata vb2 = tx_to_blob(tx2);
+        tx_verification_context tvc{};
+        EXPECT_FALSE(fx.node->core->handle_incoming_tx(
+            vb2, tvc, relay_method::local, false));
+        EXPECT_TRUE(tvc.m_verifivation_failed);
+
+        std::vector<crypto::hash> pool_hashes;
+        fx.node->core->get_pool_transaction_hashes(pool_hashes);
+        const crypto::hash id2 = get_transaction_hash(tx2);
+        EXPECT_EQ(std::find(pool_hashes.begin(), pool_hashes.end(), id2),
+                  pool_hashes.end());
+    }
+}
+
 
 // ---------------------------------------------------------------------
 // Reshare trigger.
