@@ -848,7 +848,9 @@ block Blockchain::pop_block_from_blockchain()
   block popped_block;
   std::vector<transaction> popped_txs;
 
-  CHECK_AND_ASSERT_THROW_MES(m_db->height() > 1, "Cannot pop the genesis block");
+  const uint64_t old_chain_height = m_db->height();
+  CHECK_AND_ASSERT_THROW_MES(old_chain_height > 1,
+                             "Cannot pop the genesis block");
 
   const uint8_t previous_hf_version = get_current_hard_fork_version();
   try
@@ -1138,7 +1140,7 @@ block Blockchain::pop_block_from_blockchain()
   // END_VNS_DAO_V2_TALLY_RESULT_ROLLBACK
 
   // make sure the hard fork object updates its current version
-  m_hardfork->on_block_popped(1);
+  m_hardfork->on_block_popped(old_chain_height - 1);
 
   // return transactions from popped block to the tx_pool
   size_t pruned = 0;

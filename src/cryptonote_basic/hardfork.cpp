@@ -283,29 +283,51 @@ bool HardFork::rescan_from_chain_height(uint64_t height)
   return rescan_from_block_height(height - 1);
 }
 
-void HardFork::on_block_popped(uint64_t nblocks)
+void HardFork::on_block_popped(uint64_t new_chain_height)
 {
-  CHECK_AND_ASSERT_THROW_MES(nblocks > 0, "nblocks must be greater than 0");
+  CHECK_AND_ASSERT_THROW_MES(
+      new_chain_height > 0,
+      "new_chain_height must be greater than 0");
 
   CRITICAL_REGION_LOCAL(lock);
 
-  const uint64_t new_chain_height = db.height();
-  const uint64_t old_chain_height = new_chain_height + nblocks;
-  uint8_t version;
-  for (uint64_t height = old_chain_height - 1; height >= new_chain_height; --height)
+  // pop_block_from_blockchain() removes exactly one block per call.
+  // Do not derive this height from db.height(): the caller supplies
+  // the expected height after the removal.
+  const uint64_t old_chain_height = new_chain_height + 1;
+
+  for (uint64_t height = old_chain_height - 1;
+       height >= new_chain_height;
+       --height)
   {
-    version = versions.back();
-    last_versions[version]--;
+    CHECK_AND_ASSERT_THROW_MES(
+        !versions.empty(),
+        "Hard-fork voting history is empty during block pop");
+
+    // Read before modifying the in-memory voting history. If the
+    // database lookup fails, leave that history unchanged.
+    const uint8_t stored_version = db.get_hard_fork_version(height);
+    const uint8_t removed_vote_version = versions.back();
+
+    CHECK_AND_ASSERT_THROW_MES(
+        last_versions[removed_vote_version] > 0,
+        "Hard-fork vote count underflow during block pop");
+
+    --last_versions[removed_vote_version];
     versions.pop_back();
-    version = db.get_hard_fork_version(height);
-    versions.push_front(version);
-    last_versions[version]++;
+
+    versions.push_front(stored_version);
+    ++last_versions[stored_version];
   }
 
   // does not take voting into account
-  for (current_fork_index = heights.size() - 1; current_fork_index > 0; --current_fork_index)
+  for (current_fork_index = heights.size() - 1;
+       current_fork_index > 0;
+       --current_fork_index)
+  {
     if (new_chain_height >= heights[current_fork_index].height)
       break;
+  }
 }
 
 int HardFork::get_voted_fork_index(uint64_t height) const
