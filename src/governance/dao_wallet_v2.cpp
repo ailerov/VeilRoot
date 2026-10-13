@@ -17,6 +17,12 @@
 #include "governance/dao_dkg.h"
 #include "governance/dao_paillier.h"
 #include "governance/dao_vote_or_proof.h"
+#include "governance/governance_payload.h"
+#include "cryptonote_basic/tx_extra.h"
+#include "cryptonote_basic/cryptonote_format_utils.h"
+#include "serialization/binary_utils.h"
+#include "serialization/string.h"
+#include "cryptonote_config.h"
 
 namespace cryptonote {
 namespace dao {
@@ -379,6 +385,89 @@ bool build_dao_v2_vote(
     BN_free(N_bn);
     BN_free(W_bn); BN_free(B_bn); BN_free(S_signed_bn); BN_free(S_paillier_bn);
     BN_free(r_W); BN_free(r_S); BN_free(r_B);
+    return true;
+}
+
+
+bool prepare_dao_v2_vote_source(const dao_v2_vote_output& in,
+                                dao_v2_vote_source& out)
+{
+    out = dao_v2_vote_source{};
+
+    if (in.ring.empty()) return false;
+    if (in.real_index >= in.ring.size()) return false;
+
+    out.P.reserve(in.ring.size());
+    out.C.reserve(in.ring.size());
+    out.output_indices.reserve(in.ring.size());
+    out.output_heights.reserve(in.ring.size());
+    out.key_offsets.reserve(in.ring.size());
+
+    for (size_t i = 0; i < in.ring.size(); ++i) {
+        const auto& m = in.ring[i];
+        out.P.push_back(m.P);
+        out.C.push_back(m.C);
+        out.output_indices.push_back(m.global_index);
+        out.output_heights.push_back(m.height);
+        if (i == 0)
+            out.key_offsets.push_back(m.global_index);
+        else
+            out.key_offsets.push_back(m.global_index -
+                                      in.ring[i-1].global_index);
+    }
+
+    out.real_index        = in.real_index;
+    out.real_spend_secret = in.output_secret;
+    out.real_mask         = in.mask;
+    out.real_amount       = in.amount;
+    return true;
+}
+
+bool build_dao_v2_vote_tx(
+    const crypto::hash& proposal_id,
+    uint64_t proposal_submission_height,
+    uint64_t vote_height,
+    const crypto::hash& tally_key_id,
+    const std::vector<uint8_t>& paillier_modulus,
+    uint8_t direction,
+    const std::vector<dao_v2_vote_output>& outputs,
+    transaction& tx_out)
+{
+    tx_out = transaction{};
+
+    if (outputs.empty()) return false;
+
+    std::vector<dao_v2_vote_source> sources;
+    sources.reserve(outputs.size());
+    for (const auto& o : outputs) {
+        dao_v2_vote_source src;
+        if (!prepare_dao_v2_vote_source(o, src))
+            return false;
+        sources.push_back(std::move(src));
+    }
+
+    vote_proof_v2 proof;
+    if (!build_dao_v2_vote(proposal_id, proposal_submission_height,
+                           vote_height, tally_key_id, paillier_modulus,
+                           direction, sources, proof))
+        return false;
+
+    const std::string proof_blob =
+        cryptonote::t_serializable_object_to_blob(proof);
+    governance_payload gp;
+    gp.type = governance_object::vote_v2;
+    gp.data.assign(proof_blob.begin(), proof_blob.end());
+
+    tx_extra_governance_payload txgp;
+    txgp.payload = std::move(gp);
+    tx_extra_field ef = txgp;
+    const std::string extra_blob = t_serializable_object_to_blob(ef);
+
+    tx_out.version     = TX_VERSION_DAO_VOTE;
+    tx_out.unlock_time = 0;
+    tx_out.extra.assign(extra_blob.begin(), extra_blob.end());
+    tx_out.rct_signatures = rct::rctSig{};
+    tx_out.rct_signatures.type = rct::RCTTypeNull;
     return true;
 }
 

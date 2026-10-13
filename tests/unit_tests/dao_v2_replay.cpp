@@ -765,6 +765,28 @@ TEST(DaoV2Replay, NodeBReconstructsKeyRecordFromActivationBlock)
 // ---------------------------------------------------------------------
 namespace {
 
+// Pull the vote_proof_v2 out of a vote_v2 payload. Used by the fixture
+// to expose the proof for downstream assertions without duplicating
+// the wrapping logic.
+bool VoteManager_ExtractProofForTest(const cryptonote::transaction& tx,
+                                     cryptonote::vote_proof_v2& out)
+{
+    std::vector<cryptonote::tx_extra_field> fields;
+    if (!cryptonote::parse_tx_extra(tx.extra, fields))
+        return false;
+    for (const auto& f : fields) {
+        if (f.type() != typeid(cryptonote::tx_extra_governance_payload))
+            continue;
+        const auto& gp = boost::get<cryptonote::tx_extra_governance_payload>(f).payload;
+        if (gp.type != cryptonote::governance_object::vote_v2)
+            continue;
+        epee::span<const uint8_t> sp(gp.data.data(), gp.data.size());
+        binary_archive<false> ar(sp);
+        return ::serialization::serialize(ar, out);
+    }
+    return false;
+}
+
 struct V2VoteFixture
 {
     boost::filesystem::path                  base;
@@ -776,7 +798,7 @@ struct V2VoteFixture
     uint64_t                                 chain_height = 0;
     uint64_t                                 vote_height  = 0;
     uint64_t                                 prop_submit  = 0;
-    cryptonote::dao::dao_v2_vote_source      source;
+    cryptonote::dao::dao_v2_vote_output      vote_output;
     cryptonote::transaction                  vote_tx;
     cryptonote::vote_proof_v2                proof;
     size_t                                   serialized_proof_bytes = 0;
@@ -960,60 +982,47 @@ bool build_v2_vote_fixture(V2VoteFixture& fx, const std::string& tag)
         db_a.add_proposal_record(fx.prop_id, rec);
     }
 
-    // Vote source on a ring of 4 owned coinbase outputs.
-    dao_v2_vote_source src{};
+    // One vote output on a ring of 4 owned coinbase outputs. The
+    // ring is expressed in the shared dao_v2_vote_output shape, which
+    // is exactly the input type of dao::build_dao_v2_vote_tx() -- the
+    // same function wallet2::create_vote_v2_tx() now calls.
+    dao::dao_v2_vote_output vo;
+    vo.ring.reserve(4);
     for (size_t i = 0; i < 4; ++i) {
-        src.P.push_back(rct::pk2rct(owned[i].pubkey));
-        src.C.push_back(owned[i].commitment);
-        src.output_indices.push_back(owned[i].global_index);
-        src.output_heights.push_back(owned[i].height);
-        const uint64_t off =
-            (i == 0) ? owned[i].global_index
-                     : owned[i].global_index - owned[i-1].global_index;
-        src.key_offsets.push_back(off);
+        dao::dao_v2_ring_member_data rm;
+        rm.P = rct::pk2rct(owned[i].pubkey);
+        rm.C = owned[i].commitment;
+        rm.global_index = owned[i].global_index;
+        rm.height       = owned[i].height;
+        vo.ring.push_back(std::move(rm));
     }
-    src.real_index        = 0;
-    src.real_spend_secret = owned[0].output_secret;
+    vo.real_index    = 0;
+    vo.output_secret = owned[0].output_secret;
     {
         // BlockchainDB::add_block() stores every coinbase v2 output
         // with rct::zeroCommit(amount) == G + amount*H, so the
         // Pedersen mask is the scalar one.
         rct::key one{};
         one.bytes[0] = 1;
-        src.real_mask = one;
+        vo.mask = one;
     }
-    src.real_amount = owned[0].amount;
+    vo.amount = owned[0].amount;
 
-    fx.source = src;
+    fx.vote_output = vo;
     std::memcpy(fx.tally_key_id.data, fx.key_rec.key_id.data(), 32);
 
-    if (!dao::build_dao_v2_vote(
+    // Build the transaction via the same shared helper that the wallet
+    // uses. The fixture keeps the proof for later assertions.
+    if (!dao::build_dao_v2_vote_tx(
             fx.prop_id, prop_submit, fx.vote_height, fx.tally_key_id,
             fx.key_rec.N, /*direction=YES*/ 0,
-            std::vector<dao_v2_vote_source>{src}, fx.proof))
+            std::vector<dao::dao_v2_vote_output>{vo}, fx.vote_tx))
         return false;
 
-    // Wrap into a zero-input, zero-output version-3 transaction.
-    fx.vote_tx = transaction{};
-    fx.vote_tx.version     = TX_VERSION_DAO_VOTE;
-    fx.vote_tx.unlock_time = 0;
-    {
-        const std::string proof_blob =
-            cryptonote::t_serializable_object_to_blob(fx.proof);
-        fx.serialized_proof_bytes = proof_blob.size();
-
-        governance_payload gp;
-        gp.type = governance_object::vote_v2;
-        gp.data.assign(proof_blob.begin(), proof_blob.end());
-
-        tx_extra_governance_payload txgp;
-        txgp.payload = std::move(gp);
-        tx_extra_field ef = txgp;
-        const std::string extra_blob = t_serializable_object_to_blob(ef);
-        fx.vote_tx.extra.assign(extra_blob.begin(), extra_blob.end());
-    }
-    fx.vote_tx.rct_signatures = rct::rctSig{};
-    fx.vote_tx.rct_signatures.type = rct::RCTTypeNull;
+    if (!VoteManager_ExtractProofForTest(fx.vote_tx, fx.proof))
+        return false;
+    fx.serialized_proof_bytes =
+        cryptonote::t_serializable_object_to_blob(fx.proof).size();
 
     return true;
 }
@@ -1258,32 +1267,17 @@ TEST(DaoV2Replay, DuplicateV2VoteNullifierRejected)
     // CLSAG randomness makes the tx hash different, but the
     // proposal-scoped nullifier x*H_vote(P, proposal_id) is
     // deterministic and must match the first one.
-    vote_proof_v2 proof2;
-    ASSERT_TRUE(dao::build_dao_v2_vote(
+    transaction tx2{};
+    ASSERT_TRUE(dao::build_dao_v2_vote_tx(
         fx.prop_id, fx.prop_submit, fx.vote_height + 1,
         fx.tally_key_id, fx.key_rec.N, /*direction=YES*/ 0,
-        std::vector<dao_v2_vote_source>{fx.source}, proof2));
+        std::vector<dao::dao_v2_vote_output>{fx.vote_output}, tx2));
+
+    vote_proof_v2 proof2;
+    ASSERT_TRUE(VoteManager_ExtractProofForTest(tx2, proof2));
     ASSERT_EQ(proof2.nullifiers.size(), 1u);
     EXPECT_EQ(std::memcmp(proof2.nullifiers[0].data,
                           fx.proof.nullifiers[0].data, 32), 0);
-
-    transaction tx2{};
-    tx2.version     = TX_VERSION_DAO_VOTE;
-    tx2.unlock_time = 0;
-    {
-        const std::string pb =
-            cryptonote::t_serializable_object_to_blob(proof2);
-        governance_payload gp;
-        gp.type = governance_object::vote_v2;
-        gp.data.assign(pb.begin(), pb.end());
-        tx_extra_governance_payload txgp;
-        txgp.payload = std::move(gp);
-        tx_extra_field ef = txgp;
-        const std::string xb = t_serializable_object_to_blob(ef);
-        tx2.extra.assign(xb.begin(), xb.end());
-    }
-    tx2.rct_signatures = rct::rctSig{};
-    tx2.rct_signatures.type = rct::RCTTypeNull;
 
     EXPECT_NE(get_transaction_hash(tx2), get_transaction_hash(fx.vote_tx));
     EXPECT_TRUE(is_dao_v2_vote_tx(tx2));

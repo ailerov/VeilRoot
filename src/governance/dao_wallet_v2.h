@@ -16,6 +16,7 @@
 
 #include "crypto/crypto.h"
 #include "ringct/rctOps.h"
+#include "cryptonote_basic/cryptonote_basic.h"
 #include "governance/vote_proof_v2.h"
 
 namespace cryptonote {
@@ -55,6 +56,55 @@ bool build_dao_v2_vote(
     uint8_t direction,
     const std::vector<dao_v2_vote_source>& sources,
     vote_proof_v2& out);
+
+// ---------------------------------------------------------------------
+// Shared V2 vote transaction construction
+//
+// These two helpers contain the source-preparation, proof-building and
+// transaction-wrapping logic that is otherwise duplicated between
+// wallet2::create_vote_v2_tx() and its tests. They are wallet-free: the
+// caller supplies the ring data and the real output's spend material,
+// and the helper returns a fully-formed TX_VERSION_DAO_VOTE
+// transaction with the vote_v2 payload.
+// ---------------------------------------------------------------------
+
+// One ring member, as selected by the caller.
+struct dao_v2_ring_member_data
+{
+    rct::key P{};
+    rct::key C{};
+    uint64_t global_index = 0;
+    uint64_t height       = 0;
+};
+
+// One owned eligible output plus its ring. `ring` includes the real
+// output at position `real_index`.
+struct dao_v2_vote_output
+{
+    std::vector<dao_v2_ring_member_data> ring;
+    size_t             real_index = 0;
+
+    crypto::secret_key output_secret{};   // x_l
+    rct::key           mask{};            // Pedersen mask of C_l
+    uint64_t           amount = 0;        // atomic units
+};
+
+// Convert one owned output into the wire-form source struct.
+bool prepare_dao_v2_vote_source(const dao_v2_vote_output& in,
+                                dao_v2_vote_source& out);
+
+// Prepare every output, build the proof, and wrap it in a
+// TX_VERSION_DAO_VOTE transaction (zero vin, zero vout, RCTTypeNull,
+// one governance_object::vote_v2 payload).
+bool build_dao_v2_vote_tx(
+    const crypto::hash& proposal_id,
+    uint64_t proposal_submission_height,
+    uint64_t vote_height,
+    const crypto::hash& tally_key_id,
+    const std::vector<uint8_t>& paillier_modulus,
+    uint8_t direction,
+    const std::vector<dao_v2_vote_output>& outputs,
+    transaction& tx_out);
 
 } // namespace dao
 } // namespace cryptonote

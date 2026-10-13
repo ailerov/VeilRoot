@@ -17443,9 +17443,9 @@ wallet2::vote_tx_result wallet2::create_vote_v2_tx(
     return result;
   }
 
-  // ---- Build the sources vector ----
-  std::vector<dao::dao_v2_vote_source> sources;
-  sources.reserve(selected.size());
+  // ---- Build the shared-shape outputs vector ----
+  std::vector<dao::dao_v2_vote_output> outputs;
+  outputs.reserve(selected.size());
 
   for (size_t sel : selected)
   {
@@ -17484,70 +17484,44 @@ wallet2::vote_tx_result wallet2::create_vote_v2_tx(
                         m_account.get_keys().m_spend_secret_key, real_sk);
     }
 
-    // Ring member data in the order the helper produced them.
-    dao::dao_v2_vote_source src;
-    src.P.reserve(ring.size());
-    src.C.reserve(ring.size());
-    src.output_indices.reserve(ring.size());
-    src.output_heights.reserve(ring.size());
-    src.key_offsets.reserve(ring.size());
+    // Ring member data in the order the helper produced them. The
+    // conversion to the shared dao_v2_vote_output shape (and the
+    // downstream proof-building + wrapping) is done once, in
+    // dao::build_dao_v2_vote_tx(), which is the same code path the
+    // tests exercise.
+    dao::dao_v2_vote_output o;
+    o.real_index    = real_index;
+    o.output_secret = real_sk;
+    o.mask          = td.m_mask;
+    o.amount        = td.amount();
+    o.ring.reserve(ring.size());
     for (size_t j = 0; j < ring.size(); ++j)
     {
-      rct::key P{};
-      std::memcpy(P.bytes, ring[j].P.data, sizeof(P.bytes));
-      src.P.push_back(P);
-      src.C.push_back(ring[j].C);
-      src.output_indices.push_back(ring[j].global_index);
-      src.output_heights.push_back(ring[j].height);
+      dao::dao_v2_ring_member_data rm;
+      rm.P = rct::pk2rct(ring[j].P);
+      rm.C = ring[j].C;
+      rm.global_index = ring[j].global_index;
+      rm.height       = ring[j].height;
+      o.ring.push_back(std::move(rm));
     }
-    // Relative offsets: cumulative differences of sorted globals.
-    for (size_t j = 0; j < src.output_indices.size(); ++j)
-    {
-      if (j == 0)
-        src.key_offsets.push_back(src.output_indices[0]);
-      else
-        src.key_offsets.push_back(src.output_indices[j] - src.output_indices[j-1]);
-    }
-
-    src.real_index        = real_index;
-    src.real_spend_secret = real_sk;
-    src.real_mask         = td.m_mask;
-    src.real_amount       = td.amount();
-
-    sources.push_back(std::move(src));
+    outputs.push_back(std::move(o));
   }
 
-  // ---- Construct the proof ----
-  vote_proof_v2 proof;
-  if (!dao::build_dao_v2_vote(
+  // ---- Build proof and wrap in one shared call ----
+  transaction tx;
+  if (!dao::build_dao_v2_vote_tx(
         proposal_id,
         submission_height,
         vote_height,
         tally_key_id,
         modulus_bytes,
         direction,
-        sources,
-        proof))
+        outputs,
+        tx))
   {
-    result.error = "Failed to build V2 vote proof";
+    result.error = "Failed to build V2 vote transaction";
     return result;
   }
-
-  // ---- Wrap in tx ----
-  governance_payload gp;
-  gp.type = governance_object::vote_v2;
-  std::string blob = t_serializable_object_to_blob(proof);
-  gp.data.assign(blob.begin(), blob.end());
-
-  tx_extra_governance_payload tgp{gp};
-  tx_extra_field ef = tgp;
-  std::string extra = t_serializable_object_to_blob(ef);
-
-  transaction tx;
-  tx.version = TX_VERSION_DAO_VOTE;
-  tx.unlock_time = 0;
-  tx.extra.assign(extra.begin(), extra.end());
-  tx.rct_signatures.type = rct::RCTTypeNull;
 
   crypto::hash tx_hash = cryptonote::get_transaction_hash(tx);
   result.tx_hash = epee::string_tools::pod_to_hex(tx_hash);
