@@ -19,9 +19,11 @@
 #include "gtest/gtest.h"
 
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <map>
 #include <memory>
+#include <thread>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -320,6 +322,20 @@ TEST_F(DaoV2Bootstrap, RepeatedWaitReturnsSameResult)
 
     routed_network net;
     std::vector<std::unique_ptr<dkg_p2p_runner>> runners;
+
+    // Stop every runner before the vector destructs. Without this, the
+    // vector's own destructor frees runners in reverse order while
+    // peers may still be broadcasting through routed_network into
+    // already-freed peers. Guard is declared after the vector, so its
+    // destructor runs first.
+    struct StopGuard {
+        std::vector<std::unique_ptr<dkg_p2p_runner>>& v;
+        ~StopGuard() {
+            for (auto& r : v) if (r) r->stop();
+        }
+    };
+    StopGuard stop_guard{runners};
+
     for (uint32_t i = 0; i < 3; ++i) {
         dkg_config cfg;
         cfg.committee_size = 3;
@@ -354,6 +370,67 @@ TEST_F(DaoV2Bootstrap, RepeatedWaitReturnsSameResult)
         EXPECT_EQ(first.record.key_id, second.record.key_id);
         EXPECT_EQ(first.local_secret_share, second.local_secret_share);
     }
+}
+
+TEST_F(DaoV2Bootstrap, StopOnIdleRunnerReturnsPromptly)
+{
+    for (auto& db : m_dbs) {
+        install_eligible(*db, m_pub[0], 3000000, 1);
+        install_eligible(*db, m_pub[1], 2000000, 2);
+        install_eligible(*db, m_pub[2], 1000000, 3);
+    }
+
+    auto sel = dao::select_dao_v2_committee(*m_dbs[0], 3, 1000000ULL);
+    std::vector<crypto::public_key> committee;
+    for (const auto& [pk, w] : sel) committee.push_back(pk);
+
+    dao_vss_group vss;
+    ASSERT_TRUE(dao_vss_group_generate(vss,
+        dao_dkg_required_vss_bits(60, 128, 32)));
+
+    routed_network net;
+
+    std::vector<std::unique_ptr<dkg_p2p_runner>> runners;
+    struct StopGuard {
+        std::vector<std::unique_ptr<dkg_p2p_runner>>& v;
+        ~StopGuard() { for (auto& r : v) if (r) r->stop(); }
+    };
+    StopGuard stop_guard{runners};
+
+    // One runner, no peers, no messages. The worker sits in the
+    // phase-1 collect loop waiting for traffic that never arrives.
+    dkg_config cfg;
+    cfg.committee_size = 3;
+    cfg.threshold      = dao_dkg_expected_threshold(3);
+    cfg.epoch          = 1;
+    cfg.member_ids     = committee;
+    cfg.local_party_id = 1;
+    cfg.test_seed      = FIXED_TEST_CANDIDATE_SEED_3;
+    cfg.target_N_bits  = 128;
+    cfg.phase_timeout_seconds = 600;
+
+    auto cb = net.callbacks_for_self();
+    runners.emplace_back(new dkg_p2p_runner(cfg, vss, cb));
+    net.register_runner(1, committee[0], runners[0].get());
+
+    ASSERT_TRUE(runners[0]->start());
+    EXPECT_TRUE(runners[0]->running());
+
+    // Give the worker a moment to enter the collect loop.
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    // stop() must wake the worker and return with the worker joined.
+    const auto t0 = std::chrono::steady_clock::now();
+    runners[0]->stop();
+    const auto elapsed_ms = std::chrono::duration_cast<
+        std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t0).count();
+
+    // The worker polls stop_flag at the top of every collect_until()
+    // iteration, which sleeps at most 20ms between polls. 2s is a
+    // generous ceiling on a slow host; it catches a hang.
+    EXPECT_LT(elapsed_ms, 2000);
+    EXPECT_FALSE(runners[0]->running());
 }
 
 TEST_F(DaoV2Bootstrap, PersistentCommitteeIdentitySurvivesRestart)
