@@ -2070,13 +2070,15 @@ bool core_rpc_server::on_send_raw_tx_json(const COMMAND_RPC_SEND_RAW_TX::request
     difficulty_type difficulty;
 
     std::vector<tx_block_template_backlog_entry> tx_backlog;
-    if (!m_core.get_miner_data(res.major_version, res.height, prev_id, seed_hash, difficulty, res.median_weight, res.already_generated_coins, tx_backlog))
+    vns_supply_t generated_supply = 0;
+    if (!m_core.get_miner_data(res.major_version, res.height, prev_id, seed_hash, difficulty, res.median_weight, generated_supply, tx_backlog))
     {
       error_resp.code = CORE_RPC_ERROR_CODE_INTERNAL_ERROR;
       error_resp.message = "Internal error: failed to get miner data";
       LOG_ERROR("Failed to get miner data");
       return false;
     }
+    res.already_generated_coins = cryptonote::vns_supply_to_decimal(generated_supply);
 
     res.tx_backlog.clear();
     res.tx_backlog.reserve(tx_backlog.size());

@@ -175,7 +175,6 @@
 
 /* VeilRoot Name System (VNS) Constants */
 #define VNS_MAX_SUPPLY                          20000000ULL
-#define VNS_BASE_BLOCK_REWARD                   0.65
 #define VNS_TREASURY_SPLIT_PERCENT              18
 #define VNS_BASE_REGISTRATION_FEE               0.1
 #define VNS_FEE_TIER_MULTIPLIER                 10
@@ -228,11 +227,6 @@ constexpr uint64_t VNS_DOMAIN_FEE_BURN_HEIGHT = 50000;
 #define HF_VERSION_VIEW_TAGS                    15
 #define HF_VERSION_2021_SCALING                 15
 #define HF_VERSION_DAO_V2                       20
-// Block-weight penalty activation. Not present in any mainnet fork
-// table entry yet; the reward is flat until the coordinated consensus
-// fork that activates this version. Historical validation (versions
-// below this constant) must remain unchanged.
-#define HF_VERSION_VNS_WEIGHT_PENALTY           21
 
 #define PER_KB_FEE_QUANTIZATION_DECIMALS        8
 #define CRYPTONOTE_SCALING_2021_FEE_ROUNDING_PLACES 2

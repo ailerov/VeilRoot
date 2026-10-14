@@ -60,7 +60,7 @@ namespace
   constexpr const char txpool_signal[] = "tx_signal";
 
   using chain_writer =  void(epee::byte_stream&, std::uint64_t, epee::span<const cryptonote::block>);
-  using miner_writer =  void(epee::byte_stream&, uint8_t, uint64_t, const crypto::hash&, const crypto::hash&, cryptonote::difficulty_type, uint64_t, uint64_t, const std::vector<cryptonote::tx_block_template_backlog_entry>&);
+  using miner_writer =  void(epee::byte_stream&, uint8_t, uint64_t, const crypto::hash&, const crypto::hash&, cryptonote::difficulty_type, uint64_t, vns_supply_t, const std::vector<cryptonote::tx_block_template_backlog_entry>&);
   using txpool_writer = void(epee::byte_stream&, epee::span<const cryptonote::txpool_event>);
 
   template<typename F>
@@ -129,7 +129,9 @@ namespace
     const crypto::hash& seed_hash;
     cryptonote::difficulty_type diff;
     uint64_t median_weight;
-    uint64_t already_generated_coins;
+    // Decimal string for the full 128-bit cumulative supply; the low
+    // 64 bits alone cannot represent the 20,000,000 VNS cap.
+    std::string already_generated_coins;
     const std::vector<cryptonote::tx_block_template_backlog_entry>& tx_backlog;
   };
 
@@ -198,9 +200,12 @@ namespace
     json_pub(buf, minimal_chain{height, blocks});
   }
 
-  void json_miner_data(epee::byte_stream& buf, uint8_t major_version, uint64_t height, const crypto::hash& prev_id, const crypto::hash& seed_hash, cryptonote::difficulty_type diff, uint64_t median_weight, uint64_t already_generated_coins, const std::vector<cryptonote::tx_block_template_backlog_entry>& tx_backlog)
+  void json_miner_data(epee::byte_stream& buf, uint8_t major_version, uint64_t height, const crypto::hash& prev_id, const crypto::hash& seed_hash, cryptonote::difficulty_type diff, uint64_t median_weight, vns_supply_t already_generated_coins, const std::vector<cryptonote::tx_block_template_backlog_entry>& tx_backlog)
   {
-    json_pub(buf, miner_data{major_version, height, prev_id, seed_hash, diff, median_weight, already_generated_coins, tx_backlog});
+    json_pub(buf, miner_data{
+        major_version, height, prev_id, seed_hash, diff, median_weight,
+        cryptonote::vns_supply_to_decimal(already_generated_coins),
+        tx_backlog});
   }
 
   // boost::adaptors are in place "views" - no copy/move takes place
@@ -480,7 +485,7 @@ std::size_t zmq_pub::send_chain_main(const std::uint64_t height, const epee::spa
   return 0;
 }
 
-std::size_t zmq_pub::send_miner_data(uint8_t major_version, uint64_t height, const crypto::hash& prev_id, const crypto::hash& seed_hash, difficulty_type diff, uint64_t median_weight, uint64_t already_generated_coins, const std::vector<tx_block_template_backlog_entry>& tx_backlog)
+std::size_t zmq_pub::send_miner_data(uint8_t major_version, uint64_t height, const crypto::hash& prev_id, const crypto::hash& seed_hash, difficulty_type diff, uint64_t median_weight, vns_supply_t already_generated_coins, const std::vector<tx_block_template_backlog_entry>& tx_backlog)
 {
   boost::unique_lock<boost::mutex> guard{sync_};
 
@@ -529,7 +534,7 @@ void zmq_pub::chain_main::operator()(const std::uint64_t height, epee::span<cons
     MERROR("Unable to send ZMQ/Pub - ZMQ server destroyed");
 }
 
-void zmq_pub::miner_data::operator()(uint8_t major_version, uint64_t height, const crypto::hash& prev_id, const crypto::hash& seed_hash, difficulty_type diff, uint64_t median_weight, uint64_t already_generated_coins, const std::vector<tx_block_template_backlog_entry>& tx_backlog) const
+void zmq_pub::miner_data::operator()(uint8_t major_version, uint64_t height, const crypto::hash& prev_id, const crypto::hash& seed_hash, difficulty_type diff, uint64_t median_weight, vns_supply_t already_generated_coins, const std::vector<tx_block_template_backlog_entry>& tx_backlog) const
 {
   const std::shared_ptr<zmq_pub> self = self_.lock();
   if (self)

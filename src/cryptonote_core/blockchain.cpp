@@ -1859,9 +1859,9 @@ bool Blockchain::validate_miner_transaction(const block& b, size_t cumulative_bl
 {
   LOG_PRINT_L3("Blockchain::" << __func__);
   //validate reward
-  uint64_t money_in_use = 0;
-  for (auto& o: b.miner_tx.vout)
-    money_in_use += o.amount;
+  vns_supply_t money_in_use = 0;
+  for (const auto& o : b.miner_tx.vout)
+    money_in_use += static_cast<vns_supply_t>(o.amount);
   partial_block_reward = false;
 
   uint64_t median_weight;
@@ -1889,10 +1889,7 @@ bool Blockchain::validate_miner_transaction(const block& b, size_t cumulative_bl
     current_treasury_ratio = governance().get_governance_parameter(governance_parameter::treasury_ratio, m_db->height());
     treasury_reward = base_reward * current_treasury_ratio / 100;
   }
-  // Transaction fees are burned, not paid to miners. The expected
-  // miner payment is the subsidy portion only.
-  uint64_t expected_miner_amount = base_reward - treasury_reward;
-  (void)expected_miner_amount;
+  // Transaction fees are burned, not paid to miners or treasury.
   // ---------- END VNS TREASURY EMISSION ----------
 
   // ---------- VNS_VERIFY_TREASURY_OUTPUT ----------
@@ -1925,6 +1922,18 @@ bool Blockchain::validate_miner_transaction(const block& b, size_t cumulative_bl
   // Grants are now handled by GovernanceManager::process_block()
   // TODO: validate that the coinbase includes the correct grant payouts
   // END_VNS_GRANT_AMOUNT_CALC
+
+  // The coinbase must pay exactly the permitted subsidy: miner plus
+  // treasury, nothing more. Transaction fees are burned and must not
+  // appear in the coinbase.
+  if (money_in_use != static_cast<vns_supply_t>(base_reward))
+  {
+    MERROR("Miner transaction output sum "
+           << vns_supply_to_decimal(money_in_use)
+           << " does not equal permitted subsidy "
+           << base_reward);
+    return false;
+  }
 
   // No partial reward handling because fees are burned
   partial_block_reward = false;
@@ -2380,7 +2389,7 @@ bool Blockchain::create_block_template(block& b, const account_public_address& m
   return create_block_template(b, NULL, miner_address, diffic, height, expected_reward, ex_nonce, seed_height, seed_hash);
 }
 //------------------------------------------------------------------
-bool Blockchain::get_miner_data(uint8_t& major_version, uint64_t& height, crypto::hash& prev_id, crypto::hash& seed_hash, difficulty_type& difficulty, uint64_t& median_weight, uint64_t& already_generated_coins, std::vector<tx_block_template_backlog_entry>& tx_backlog)
+bool Blockchain::get_miner_data(uint8_t& major_version, uint64_t& height, crypto::hash& prev_id, crypto::hash& seed_hash, difficulty_type& difficulty, uint64_t& median_weight, vns_supply_t& already_generated_coins, std::vector<tx_block_template_backlog_entry>& tx_backlog)
 {
   prev_id = m_db->top_block_hash(&height);
   ++height;
@@ -2542,11 +2551,16 @@ bool Blockchain::handle_alternative_block(const block& b, const crypto::hash& id
     const uint64_t prev_height = alt_chain.size() ? prev_data.height : m_db->get_block_height(b.prev_id);
     bei.height = prev_height + 1;
     uint64_t block_reward = get_outs_money_amount(b.miner_tx);
-    const uint64_t prev_generated_coins = alt_chain.size() ? prev_data.already_generated_coins : m_db->get_block_already_generated_coins(prev_height);
-    {
-      const vns_supply_t sum = prev_generated_coins + (vns_supply_t)block_reward;
-      bei.already_generated_coins = (sum > VNS_MAX_SUPPLY_ATOMIC) ? VNS_MAX_SUPPLY_ATOMIC : sum;
-    }
+    const vns_supply_t prev_generated_coins =
+        alt_chain.size()
+            ? prev_data.already_generated_coins
+            : m_db->get_block_already_generated_coins(prev_height);
+
+    const vns_supply_t sum =
+        prev_generated_coins + static_cast<vns_supply_t>(block_reward);
+
+    bei.already_generated_coins =
+        sum > VNS_MAX_SUPPLY_ATOMIC ? VNS_MAX_SUPPLY_ATOMIC : sum;
 
     // verify that the block's timestamp is within the acceptable range
     // (not earlier than the median of the last X blocks)
@@ -7061,7 +7075,7 @@ leave:
     return false;
   }
 
-  MINFO("+++++ BLOCK SUCCESSFULLY ADDED" << std::endl << "id:\t" << id << std::endl << "PoW:\t" << proof_of_work << std::endl << "HEIGHT " << new_height-1 << ", difficulty:\t" << current_diffic << std::endl << "block reward: " << print_money(fee_summary + base_reward) << "(" << print_money(base_reward) << " + " << print_money(fee_summary) << "), coinbase_weight: " << coinbase_weight << ", cumulative weight: " << cumulative_block_weight << ", " << block_processing_time << "(" << target_calculating_time << "/" << longhash_calculating_time << ")ms");
+  MINFO("+++++ BLOCK SUCCESSFULLY ADDED" << std::endl << "id:\t" << id << std::endl << "PoW:\t" << proof_of_work << std::endl << "HEIGHT " << new_height-1 << ", difficulty:\t" << current_diffic << std::endl << "block subsidy: " << print_money(base_reward) << " (transaction fees burned: " << print_money(fee_summary) << "), coinbase_weight: " << coinbase_weight << ", cumulative weight: " << cumulative_block_weight << ", " << block_processing_time << "(" << target_calculating_time << "/" << longhash_calculating_time << ")ms");
   if(m_show_time_stats)
   {
     MINFO("Height: " << new_height << " coinbase weight: " << coinbase_weight << " cumm: "

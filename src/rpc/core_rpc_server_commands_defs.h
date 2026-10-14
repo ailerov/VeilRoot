@@ -1018,7 +1018,9 @@ namespace cryptonote
       std::string seed_hash;
       std::string difficulty;
       uint64_t median_weight;
-      uint64_t already_generated_coins;
+      // Full 128-bit cumulative supply as a decimal string; the low
+      // 64 bits alone cannot represent the 20,000,000 VNS cap.
+      std::string already_generated_coins;
 
       struct tx_backlog_entry
       {

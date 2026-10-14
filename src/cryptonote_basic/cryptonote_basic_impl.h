@@ -84,6 +84,9 @@ namespace cryptonote {
   bool get_block_reward(size_t median_weight, size_t current_block_weight,
                         vns_supply_t already_generated_coins,
                         uint64_t &reward, uint8_t version);
+
+  // Decimal string for the full 128-bit cumulative-supply value.
+  std::string vns_supply_to_decimal(vns_supply_t value);
   const crypto::public_key& get_burn_public_spend_key();
   bool is_burn_output(const txout_to_key& out);
   uint8_t get_account_address_checksum(const public_address_outer_blob& bl);
