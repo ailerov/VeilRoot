@@ -267,7 +267,7 @@ namespace cryptonote
       uint64_t height; //!< the height of the block in the blockchain
       uint64_t block_cumulative_weight; //!< the weight of the block
       difficulty_type cumulative_difficulty; //!< the accumulated difficulty after that block
-      uint64_t already_generated_coins; //!< the total coins minted after that block
+      vns_supply_t already_generated_coins; //!< the total coins minted after that block
     };
 
     /**
@@ -2077,7 +2077,7 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
      *
      * @return false if anything is found wrong with the miner transaction, otherwise true
      */
-    bool validate_miner_transaction(const block& b, size_t cumulative_block_weight, uint64_t fee, uint64_t& base_reward, uint64_t already_generated_coins, bool &partial_block_reward, uint8_t version);
+    bool validate_miner_transaction(const block& b, size_t cumulative_block_weight, uint64_t fee, uint64_t& base_reward, vns_supply_t already_generated_coins, bool &partial_block_reward, uint8_t version);
 
     // BEGIN_VNS_TREASURY_INPUT
     bool validate_treasury_input(const txin_treasury& input, const transaction& tx, uint64_t height, uint8_t hf_version) const;
@@ -2274,7 +2274,7 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
      * @param prev_id hash of new blockchain tip
      * @param already_generated_coins total coins mined by the network so far
      */
-    void send_miner_notifications(uint64_t height, const crypto::hash &seed_hash, const crypto::hash &prev_id, uint64_t already_generated_coins);
+    void send_miner_notifications(uint64_t height, const crypto::hash &seed_hash, const crypto::hash &prev_id, vns_supply_t already_generated_coins);
   };
 
   // Free function declarations for the extracted DKG bootstrap pieces.

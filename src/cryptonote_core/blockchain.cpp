@@ -1855,7 +1855,7 @@ bool Blockchain::prevalidate_miner_transaction(const block& b, uint64_t height, 
 }
 //------------------------------------------------------------------
 // This function validates the miner transaction reward
-bool Blockchain::validate_miner_transaction(const block& b, size_t cumulative_block_weight, uint64_t fee, uint64_t& base_reward, uint64_t already_generated_coins, bool &partial_block_reward, uint8_t version)
+bool Blockchain::validate_miner_transaction(const block& b, size_t cumulative_block_weight, uint64_t fee, uint64_t& base_reward, vns_supply_t already_generated_coins, bool &partial_block_reward, uint8_t version)
 {
   LOG_PRINT_L3("Blockchain::" << __func__);
   //validate reward
@@ -1889,7 +1889,10 @@ bool Blockchain::validate_miner_transaction(const block& b, size_t cumulative_bl
     current_treasury_ratio = governance().get_governance_parameter(governance_parameter::treasury_ratio, m_db->height());
     treasury_reward = base_reward * current_treasury_ratio / 100;
   }
-  uint64_t expected_miner_amount = base_reward - treasury_reward + fee;
+  // Transaction fees are burned, not paid to miners. The expected
+  // miner payment is the subsidy portion only.
+  uint64_t expected_miner_amount = base_reward - treasury_reward;
+  (void)expected_miner_amount;
   // ---------- END VNS TREASURY EMISSION ----------
 
   // ---------- VNS_VERIFY_TREASURY_OUTPUT ----------
@@ -2077,7 +2080,7 @@ bool Blockchain::create_block_template(block& b, const crypto::hash *from_block,
 {
   LOG_PRINT_L3("Blockchain::" << __func__);
   size_t median_weight;
-  uint64_t already_generated_coins;
+  vns_supply_t already_generated_coins;
   uint64_t pool_cookie;
 
   seed_hash = crypto::null_hash;
@@ -2438,7 +2441,9 @@ bool Blockchain::build_alt_chain(const crypto::hash &prev_id, std::list<block_ex
       bei.block_cumulative_weight = data.cumulative_weight;
       bei.cumulative_difficulty = data.cumulative_difficulty_high;
       bei.cumulative_difficulty = (bei.cumulative_difficulty << 64) + data.cumulative_difficulty_low;
-      bei.already_generated_coins = data.already_generated_coins;
+      bei.already_generated_coins =
+          ((vns_supply_t)data.already_generated_coins_hi << 64)
+          | (vns_supply_t)data.already_generated_coins;
       timestamps.push_back(bei.bl.timestamp);
       alt_chain.push_front(std::move(bei));
       found = m_db->get_alt_block(bei.bl.prev_id, &data, &blob);
@@ -2538,7 +2543,10 @@ bool Blockchain::handle_alternative_block(const block& b, const crypto::hash& id
     bei.height = prev_height + 1;
     uint64_t block_reward = get_outs_money_amount(b.miner_tx);
     const uint64_t prev_generated_coins = alt_chain.size() ? prev_data.already_generated_coins : m_db->get_block_already_generated_coins(prev_height);
-    bei.already_generated_coins = (block_reward < (MONEY_SUPPLY - prev_generated_coins)) ? prev_generated_coins + block_reward : MONEY_SUPPLY;
+    {
+      const vns_supply_t sum = prev_generated_coins + (vns_supply_t)block_reward;
+      bei.already_generated_coins = (sum > VNS_MAX_SUPPLY_ATOMIC) ? VNS_MAX_SUPPLY_ATOMIC : sum;
+    }
 
     // verify that the block's timestamp is within the acceptable range
     // (not earlier than the median of the last X blocks)
@@ -2703,7 +2711,10 @@ bool Blockchain::handle_alternative_block(const block& b, const crypto::hash& id
     data.cumulative_weight = bei.block_cumulative_weight;
     data.cumulative_difficulty_low = (bei.cumulative_difficulty & 0xffffffffffffffff).convert_to<uint64_t>();
     data.cumulative_difficulty_high = ((bei.cumulative_difficulty >> 64) & 0xffffffffffffffff).convert_to<uint64_t>();
-    data.already_generated_coins = bei.already_generated_coins;
+    data.already_generated_coins =
+        (uint64_t)(bei.already_generated_coins & (vns_supply_t)0xffffffffffffffffULL);
+    data.already_generated_coins_hi =
+        (uint64_t)(bei.already_generated_coins >> 64);
         // ---------- VNS ADDITION START ----------
     // Validate domain registrations in this alternative block
     std::vector<transaction> alt_txs;
@@ -6065,7 +6076,7 @@ bool Blockchain::check_fee(size_t tx_weight, uint64_t fee) const
   const uint8_t version = get_current_hard_fork_version();
 
   uint64_t median = 0;
-  uint64_t already_generated_coins = 0;
+  vns_supply_t already_generated_coins = 0;
   uint64_t base_reward = 0;
   if (version >= HF_VERSION_DYNAMIC_FEE)
   {
@@ -6178,7 +6189,7 @@ void Blockchain::get_dynamic_base_fee_estimate_2021_scaling(uint64_t grace_block
 
   const uint64_t Mnw = std::min(Msw_effective_short_term_median, 50 * Mlw_penalty_free_zone_for_wallet);
 
-  uint64_t already_generated_coins = db_height ? m_db->get_block_already_generated_coins(db_height - 1) : 0;
+  vns_supply_t already_generated_coins = db_height ? m_db->get_block_already_generated_coins(db_height - 1) : 0;
   uint64_t base_reward;
   if (!get_block_reward(m_current_block_cumul_weight_limit / 2, 1, already_generated_coins, base_reward, version))
   {
@@ -6219,7 +6230,7 @@ uint64_t Blockchain::get_dynamic_base_fee_estimate(uint64_t grace_blocks) const
   if(median <= min_block_weight)
     median = min_block_weight;
 
-  uint64_t already_generated_coins = db_height ? m_db->get_block_already_generated_coins(db_height - 1) : 0;
+  vns_supply_t already_generated_coins = db_height ? m_db->get_block_already_generated_coins(db_height - 1) : 0;
   uint64_t base_reward;
   if (!get_block_reward(m_current_block_cumul_weight_limit / 2, 1, already_generated_coins, base_reward, version))
   {
@@ -6947,7 +6958,7 @@ leave:
 
     TIME_MEASURE_START(vmt);
     uint64_t base_reward = 0;
-    uint64_t already_generated_coins = blockchain_height ? m_db->get_block_already_generated_coins(blockchain_height - 1) : 0;
+    vns_supply_t already_generated_coins = blockchain_height ? m_db->get_block_already_generated_coins(blockchain_height - 1) : 0;
     if(!validate_miner_transaction(bl, cumulative_block_weight, fee_summary, base_reward, already_generated_coins, bvc.m_partial_block_reward, m_hardfork->get_current_version()))
     {
       MERROR_VER("Block with id: " << id << " has incorrect miner transaction");
@@ -6957,9 +6968,9 @@ leave:
     }
 
     // Fee burning: only base_reward increases total supply (fees are burned)
-    already_generated_coins += base_reward;
-    if (already_generated_coins > MONEY_SUPPLY)
-        already_generated_coins = MONEY_SUPPLY;
+    already_generated_coins += (vns_supply_t)base_reward;
+    if (already_generated_coins > VNS_MAX_SUPPLY_ATOMIC)
+        already_generated_coins = VNS_MAX_SUPPLY_ATOMIC;
     MINFO("Block at height " << blockchain_height << " adds " << print_money(base_reward) << " to supply (fees burned)");
 
     TIME_MEASURE_FINISH(vmt);
@@ -8393,7 +8404,9 @@ std::vector<std::pair<Blockchain::block_extended_info,std::vector<crypto::hash>>
       bei.block_cumulative_weight = data.cumulative_weight;
       bei.cumulative_difficulty = data.cumulative_difficulty_high;
       bei.cumulative_difficulty = (bei.cumulative_difficulty << 64) + data.cumulative_difficulty_low;
-      bei.already_generated_coins = data.already_generated_coins;
+      bei.already_generated_coins =
+          ((vns_supply_t)data.already_generated_coins_hi << 64)
+          | (vns_supply_t)data.already_generated_coins;
       alt_blocks.insert(std::make_pair(cryptonote::get_block_hash(bei.bl), std::move(bei)));
     }
     else
@@ -8593,7 +8606,7 @@ void Blockchain::cache_block_template(const block &b, const cryptonote::account_
   m_btc_valid = true;
 }
 
-void Blockchain::send_miner_notifications(uint64_t height, const crypto::hash &seed_hash, const crypto::hash &prev_id, uint64_t already_generated_coins)
+void Blockchain::send_miner_notifications(uint64_t height, const crypto::hash &seed_hash, const crypto::hash &prev_id, vns_supply_t already_generated_coins)
 {
   if (m_miner_notifiers.empty())
     return;

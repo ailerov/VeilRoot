@@ -81,28 +81,78 @@ namespace cryptonote {
   }
   //-----------------------------------------------------------------------------------------------
   constexpr uint64_t TREASURY_ACCOUNT_ID = 9223372036854775807ULL;
-  constexpr double BASE_BLOCK_REWARD = 0.65;
-  constexpr double TREASURY_SPLIT = 0.18;
   constexpr uint32_t TARGET_BLOCK_TIME = 120;
   constexpr uint32_t RING_SIZE = 16;
   inline bool is_vns_active(network_type nettype) { return nettype == VNS; }
-  bool get_block_reward(size_t median_weight, size_t current_block_weight, uint64_t already_generated_coins, uint64_t &reward, uint8_t version) {
-  // Fixed block reward of 0.65 VNS in atomic units
-  const uint64_t FIXED_REWARD = 650000000000; // 0.65 * 10^12
 
-  // Hard cap of 20 million VNS
-  const uint64_t MAX_SUPPLY = 20000000ULL * COIN; // 20 million * 10^12
+  // Fixed-reward emission with Monero's block-weight penalty under an
+  // explicitly activated hard-fork version.
+  //
+  // The nominal subsidy is VNS_BLOCK_SUBSIDY (0.65 VNS, exactly
+  // (COIN * 65) / 100 atomic units). Cumulative generated supply is a
+  // vns_supply_t (unsigned 128-bit) because the hard cap,
+  // 20,000,000 * 10^12, does not fit in uint64_t.
+  //
+  // `version` gates the block-weight penalty. Below
+  // HF_VERSION_VNS_WEIGHT_PENALTY, the historical flat subsidy is
+  // returned unchanged, so old blocks validate exactly as before.
+  bool get_block_reward(size_t median_weight, size_t current_block_weight,
+                        vns_supply_t already_generated_coins,
+                        uint64_t &reward, uint8_t version)
+  {
+    reward = 0;
 
-  // Check if adding the fixed reward would exceed the maximum supply
-  if (already_generated_coins + FIXED_REWARD > MAX_SUPPLY) {
-    reward = MAX_SUPPLY - already_generated_coins;
-    return reward > 0; // Return false if no more coins can be generated
+    // A persisted cumulative-supply value above the cap is impossible
+    // on a chain that followed the rules; reject it rather than
+    // wrapping.
+    if (already_generated_coins > VNS_MAX_SUPPLY_ATOMIC)
+      return false;
+
+    const vns_supply_t remaining =
+        VNS_MAX_SUPPLY_ATOMIC - already_generated_coins;
+
+    // Subsidy is clamped to whatever remains. When the cap is reached,
+    // base_reward is zero and the block is still valid.
+    const uint64_t base_reward =
+        remaining < (vns_supply_t)VNS_BLOCK_SUBSIDY
+            ? (uint64_t)remaining
+            : VNS_BLOCK_SUBSIDY;
+
+    // Below the activation version, the historical flat reward is
+    // returned. Do not apply the block-weight penalty retroactively.
+    if (version < HF_VERSION_VNS_WEIGHT_PENALTY)
+    {
+      reward = base_reward;
+      return true;
+    }
+
+    const size_t min_zone = get_min_block_weight(version);
+    const size_t median = std::max(median_weight, min_zone);
+    if (median > std::numeric_limits<size_t>::max() / 2)
+      return false;
+    if (current_block_weight > 2 * median)
+      return false;
+
+    if (current_block_weight <= median)
+    {
+      reward = base_reward;
+      return true;
+    }
+
+    // Monero quadratic penalty:
+    //   reward = base_reward *
+    //            (2 * median - weight) * weight / (median^2)
+    // computed in wide arithmetic so an intermediate product cannot
+    // overflow.
+    const vns_supply_t numerator =
+        (vns_supply_t)base_reward *
+        (vns_supply_t)current_block_weight *
+        (vns_supply_t)(2 * median - current_block_weight);
+    const vns_supply_t denominator =
+        (vns_supply_t)median * (vns_supply_t)median;
+    reward = (uint64_t)(numerator / denominator);
+    return true;
   }
-
-  // Set reward to fixed value
-  reward = FIXED_REWARD;
-  return true;
-   }
 
   const crypto::public_key& get_burn_public_spend_key() {
     return crypto::null_pkey;

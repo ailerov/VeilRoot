@@ -79,7 +79,11 @@ namespace cryptonote {
   /************************************************************************/
   size_t get_min_block_weight(uint8_t version);
   size_t get_max_tx_size();
-  bool get_block_reward(size_t median_weight, size_t current_block_weight, uint64_t already_generated_coins, uint64_t &reward, uint8_t version);
+  // Cumulative supply is passed as vns_supply_t. The value returned in
+  // `reward` is always in atomic units.
+  bool get_block_reward(size_t median_weight, size_t current_block_weight,
+                        vns_supply_t already_generated_coins,
+                        uint64_t &reward, uint8_t version);
   const crypto::public_key& get_burn_public_spend_key();
   bool is_burn_output(const txout_to_key& out);
   uint8_t get_account_address_checksum(const public_address_outer_blob& bl);

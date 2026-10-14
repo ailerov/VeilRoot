@@ -179,10 +179,21 @@
 #define VNS_TREASURY_SPLIT_PERCENT              18
 #define VNS_BASE_REGISTRATION_FEE               0.1
 #define VNS_FEE_TIER_MULTIPLIER                 10
+
+// Fixed nominal block subsidy: 0.65 VNS = 650,000,000,000 atomic units.
+// Defined as an integer expression so there is no floating-point
+// rounding and no truncation.
+constexpr uint64_t VNS_BLOCK_SUBSIDY = (COIN * 65) / 100;
+
+// Wide cumulative-supply type. 20,000,000 VNS at 10^12 atomic units
+// per VNS is 2*10^19, which does not fit in uint64_t. Cumulative
+// generated supply is tracked in this type end-to-end.
+using vns_supply_t = unsigned __int128;
+
+constexpr vns_supply_t VNS_MAX_SUPPLY_ATOMIC =
+    (vns_supply_t)VNS_MAX_SUPPLY * (vns_supply_t)COIN;
+
 constexpr uint64_t VNS_DOMAIN_FEE_BURN_HEIGHT = 50000;
-#define VNS_DYNAMIC_REWARD_STAKED_ADJ           0.12
-#define VNS_DYNAMIC_REWARD_BURN_ADJ             0.08
-#define VNS_CENTER_BURN_RATE                    10.0
 #define VNS_BRIDGE_POOL_SIZE                    5000000ULL
 #define VNS_HEARTBEAT_INTERVAL                  21600
 #define VNS_HEALTH_THRESHOLD                    0.95
@@ -217,6 +228,11 @@ constexpr uint64_t VNS_DOMAIN_FEE_BURN_HEIGHT = 50000;
 #define HF_VERSION_VIEW_TAGS                    15
 #define HF_VERSION_2021_SCALING                 15
 #define HF_VERSION_DAO_V2                       20
+// Block-weight penalty activation. Not present in any mainnet fork
+// table entry yet; the reward is flat until the coordinated consensus
+// fork that activates this version. Historical validation (versions
+// below this constant) must remain unchanged.
+#define HF_VERSION_VNS_WEIGHT_PENALTY           21
 
 #define PER_KB_FEE_QUANTIZATION_DECIMALS        8
 #define CRYPTONOTE_SCALING_2021_FEE_ROUNDING_PLACES 2
@@ -295,10 +311,6 @@ namespace config
         return 1; // fallback
     }
     // END_VNS_RING_SIZE_FROM_VERSION
-    inline uint64_t get_vns_dynamic_reward(uint64_t staked_pct, uint64_t burn_pct)
-{
-    return VNS_BASE_BLOCK_REWARD * (1 + 0.12 * ((staked_pct - 50) / 100.0) + 0.08 * ((burn_pct - 10) / 100.0));
-}
   uint64_t const CRYPTONOTE_PUBLIC_SUBADDRESS_BASE58_PREFIX = 142;
   uint16_t const P2P_DEFAULT_PORT = 28080;
   uint16_t const RPC_DEFAULT_PORT = 28081;

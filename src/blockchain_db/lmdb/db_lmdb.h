@@ -341,7 +341,7 @@ public:
 
   virtual void correct_block_cumulative_difficulties(const uint64_t& start_height, const std::vector<difficulty_type>& new_cumulative_difficulties);
 
-  virtual uint64_t get_block_already_generated_coins(const uint64_t& height) const;
+  virtual vns_supply_t get_block_already_generated_coins(const uint64_t& height) const;
 
   virtual uint64_t get_block_long_term_weight(const uint64_t& height) const;
 
@@ -427,7 +427,7 @@ public:
                             , size_t block_weight
                             , uint64_t long_term_block_weight
                             , const difficulty_type& cumulative_difficulty
-                            , const uint64_t& coins_generated
+                            , const vns_supply_t& coins_generated
                             , const std::vector<std::pair<transaction, blobdata>>& txs
                             , const std::vector<proposal_execution_record>& execution_records = {}
                             , uint64_t fee_summary = 0
@@ -715,7 +715,7 @@ private:
                 , size_t block_weight
                 , uint64_t long_term_block_weight
                 , const difficulty_type& cumulative_difficulty
-                , const uint64_t& coins_generated
+                , const vns_supply_t& coins_generated
                 , uint64_t num_rct_outs
                 , const crypto::hash& block_hash
                 );
@@ -788,6 +788,7 @@ private:
 
   // migrate from DB version 4 to 5
   void migrate_4_5();
+  void migrate_5_6();
 
   void cleanup_batch();
 

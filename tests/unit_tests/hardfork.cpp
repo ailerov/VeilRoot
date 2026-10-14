@@ -51,7 +51,7 @@ public:
                         , size_t block_weight
                         , uint64_t long_term_block_weight
                         , const difficulty_type& cumulative_difficulty
-                        , const uint64_t& coins_generated
+                        , const vns_supply_t& coins_generated
                         , uint64_t num_rct_outs
                         , const crypto::hash& blk_hash
                         ) override {

@@ -394,7 +394,12 @@ struct alt_block_data_t
   uint64_t cumulative_weight;
   uint64_t cumulative_difficulty_low;
   uint64_t cumulative_difficulty_high;
-  uint64_t already_generated_coins;
+  // Cumulative generated supply, split into two 64-bit limbs because
+  // the 20,000,000 VNS cap at 10^12 atomic units per VNS is a 65-bit
+  // value. Records written before the schema bump have the high limb
+  // zero (see BlockchainLMDB::migrate_5_6).
+  uint64_t already_generated_coins;      // low limb
+  uint64_t already_generated_coins_hi;   // high limb
 };
 
 /**
@@ -652,7 +657,7 @@ private:
                 , size_t block_weight
                 , uint64_t long_term_block_weight
                 , const difficulty_type& cumulative_difficulty
-                , const uint64_t& coins_generated
+                , const vns_supply_t& coins_generated
                 , uint64_t num_rct_outs
                 , const crypto::hash& blk_hash
                 ) = 0;
@@ -1110,7 +1115,7 @@ public:
                             , size_t block_weight
                             , uint64_t long_term_block_weight
                             , const difficulty_type& cumulative_difficulty
-                            , const uint64_t& coins_generated
+                            , const vns_supply_t& coins_generated
                             , const std::vector<std::pair<transaction, blobdata>>& txs
                             , const std::vector<proposal_execution_record>& execution_records = {}
                             , uint64_t fee_summary = 0
@@ -1317,7 +1322,7 @@ public:
    *
    * @return the already generated coins
    */
-  virtual uint64_t get_block_already_generated_coins(const uint64_t& height) const = 0;
+  virtual vns_supply_t get_block_already_generated_coins(const uint64_t& height) const = 0;
 
   /**
    * @brief fetch a block's long term weight
