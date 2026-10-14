@@ -467,9 +467,12 @@ TEST(node_server, bind_same_p2p_port)
     cryptonote::core::init_options(desc_options);
     Server::init_options(desc_options);
 
-    const char *argv[2] = {nullptr, nullptr};
+    const char* argv[] = {
+        "unit_tests",
+        "--network-privacy-mode=mixed"
+    };
     boost::program_options::variables_map vm;
-    boost::program_options::store(boost::program_options::parse_command_line(1, argv, desc_options), vm);
+    boost::program_options::store(boost::program_options::parse_command_line(2, argv, desc_options), vm);
 
     /*
     Reason for choosing '127.0.0.2' as the IP:
@@ -1297,11 +1300,12 @@ TEST(node_server, race_condition)
   protocol_t protocol{};
   node_server_t node_server(protocol);
   protocol.set_p2p_endpoint(&node_server);
-  node_server.init(
+  ASSERT_TRUE(node_server.init(
     [&dir]{
       options_t options;
       boost::program_options::store(
         boost::program_options::command_line_parser({
+          "--network-privacy-mode=mixed",
           "--p2p-bind-ip=127.0.0.1",
           "--p2p-bind-port=48080",
           "--out-peers=0",
@@ -1320,7 +1324,7 @@ TEST(node_server, race_condition)
       );
       return options;
     }()
-  );
+  ));
   worker_t worker([&]{
     node_server.run();
   });

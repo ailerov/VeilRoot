@@ -27,6 +27,8 @@
 
 #include "gtest/gtest.h"
 
+#include <chrono>
+#include <condition_variable>
 #include <map>
 #include <stdexcept>
 #include <memory>
@@ -47,10 +49,31 @@ namespace {
 
 struct routed_network
 {
-    std::mutex mu;
+    std::mutex              mu;
+    std::condition_variable msg_cv;
+    size_t                  msg_count = 0;
 
     std::map<crypto::public_key, dkg_p2p_runner*> runners_by_pk;
     std::map<uint32_t, dkg_p2p_runner*>          runners_by_id;
+
+    // Bump the delivery counter and wake any waiter. Called from the
+    // sender's thread whenever it emits a message (send_to or
+    // broadcast), which is what the startup-race regression needs to
+    // observe.
+    void note_message_locked()
+    {
+        ++msg_count;
+        msg_cv.notify_all();
+    }
+
+    bool wait_for_message(size_t at_least, uint32_t timeout_ms)
+    {
+        std::unique_lock<std::mutex> lk(mu);
+        return msg_cv.wait_for(
+            lk,
+            std::chrono::milliseconds(timeout_ms),
+            [&] { return msg_count >= at_least; });
+    }
 
     void register_runner(
         uint32_t id,
@@ -106,6 +129,11 @@ struct routed_network
             if (!m.deserialize(buf))
                 return false;
 
+            {
+                std::lock_guard<std::mutex> lk(mu);
+                note_message_locked();
+            }
+
             target->on_message(m);
             return true;
         };
@@ -124,6 +152,11 @@ struct routed_network
 
             const uint32_t sender =
                 m.hdr.sender_id;
+
+            {
+                std::lock_guard<std::mutex> lk(mu);
+                note_message_locked();
+            }
 
             std::vector<dkg_p2p_runner*> targets;
 
@@ -313,6 +346,18 @@ struct distributed_run
     std::vector<std::unique_ptr<dkg_p2p_runner>> runners;
     routed_network                  net;
     dao_vss_group                   vss;
+
+    // Member destruction order is the reverse of declaration order,
+    // which would free `vss` and `net` before `runners`. Both are
+    // referenced by running workers: impl::vss is a non-owning
+    // pointer and each callback captures &net. A worker that has not
+    // exited would dereference freed memory. Stopping every runner
+    // in the destructor body, before any member is destroyed, makes
+    // the teardown deterministic.
+    ~distributed_run()
+    {
+        for (auto& r : runners) if (r) r->stop();
+    }
 };
 
 bool run_n_party(uint32_t n, uint32_t timeout_s,
@@ -417,6 +462,85 @@ TEST(dao_dkg_distributed, three_party_nodes_agree_on_public_key_record)
     expect_public_fields_agree(run.results, 3);
 
     for (uint32_t i = 0; i < 3; ++i)
+        EXPECT_FALSE(run.results[i].local_secret_share.empty());
+}
+
+// ---------------------------------------------------------------------
+// Ordered-startup regression: the startup race.
+//
+// dkg_p2p_runner must accept an inbound message before its own start()
+// has been called. The transport is created in the constructor for
+// exactly this reason: committee members start independently, and
+// runner 1 can emit its first broadcast before runner 2 has started.
+//
+// This test makes the race deterministic: start only runner 1, wait
+// until it has emitted at least one message, then start the rest.
+// Without the constructor-transport fix, the first broadcast is
+// dropped by runner 2 and runner 3 (their on_message() returns silently
+// because transport is null), and the ceremony stalls until the phase
+// timeout.
+// ---------------------------------------------------------------------
+TEST(dao_dkg_distributed, ordered_startup_no_lost_messages)
+{
+    const uint32_t n = 3;
+
+    distributed_run run;
+    run.sks.resize(n);
+    run.pks.resize(n);
+    for (uint32_t i = 0; i < n; ++i)
+        crypto::generate_keys(run.pks[i], run.sks[i]);
+
+    dkg_config cfg;
+    cfg.committee_size = n;
+    cfg.threshold      = dao_dkg_expected_threshold(n);
+    ASSERT_NE(cfg.threshold, 0u);
+    cfg.epoch          = 1;
+    cfg.k              = 60;
+    cfg.target_N_bits  = 128;
+    cfg.security_bits  = 32;
+    cfg.qproof_rounds  = DAO_DKG_QPROOF_ROUNDS_TEST;
+    cfg.max_attempts   = 2000;
+    cfg.phase_timeout_seconds = 120;
+    cfg.test_seed      = FIXED_TEST_CANDIDATE_SEED_3;
+    cfg.member_ids     = run.pks;
+
+    const uint32_t required_bits = dao_dkg_required_vss_bits(
+        cfg.k, cfg.target_N_bits, cfg.security_bits);
+    ASSERT_TRUE(dao_vss_group_generate(run.vss, required_bits));
+
+    run.results.resize(n);
+    for (uint32_t i = 0; i < n; ++i) {
+        dkg_config node_cfg = cfg;
+        node_cfg.local_party_id =
+            dao_dkg_party_index_for(cfg.member_ids, run.pks[i]);
+        ASSERT_NE(node_cfg.local_party_id, 0u);
+        auto cb = run.net.callbacks_for_self();
+        run.runners.emplace_back(
+            new dkg_p2p_runner(node_cfg, run.vss, cb));
+    }
+    for (uint32_t i = 0; i < n; ++i) {
+        run.net.register_runner(i + 1, run.pks[i], run.runners[i].get());
+    }
+
+    // Start only runner 1, then wait for its first emitted message
+    // before starting the others. This is the exact ordering that
+    // dropped a message before the transport was created in the
+    // constructor.
+    ASSERT_TRUE(run.runners[0]->start());
+    ASSERT_TRUE(run.net.wait_for_message(1, 30000))
+        << "runner 1 did not emit a message within 30s";
+
+    for (uint32_t i = 1; i < n; ++i)
+        ASSERT_TRUE(run.runners[i]->start());
+
+    for (uint32_t i = 0; i < n; ++i) {
+        ASSERT_TRUE(run.runners[i]->wait(run.results[i], 240));
+        ASSERT_TRUE(run.results[i].ok);
+    }
+
+    expect_public_fields_agree(run.results, n);
+
+    for (uint32_t i = 0; i < n; ++i)
         EXPECT_FALSE(run.results[i].local_secret_share.empty());
 }
 

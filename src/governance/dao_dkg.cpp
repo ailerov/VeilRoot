@@ -6601,6 +6601,7 @@ struct dkg_p2p_runner::impl
 
     std::unique_ptr<dkg_p2p_transport_local> transport;
     std::unique_ptr<dkg_party>               party;
+    bool                                     has_started = false;
 
     std::thread                     worker;
     std::atomic<bool>               stop_flag{false};
@@ -8230,6 +8231,11 @@ dkg_p2p_runner::dkg_p2p_runner(const dkg_config& cfg,
     p_->cfg = cfg;
     p_->vss = &vss;
     p_->cb  = cb;
+
+    // Must exist before start(): the network can deliver messages
+    // to this runner while other committee members are starting.
+    p_->transport.reset(
+        new dkg_p2p_transport_local(p_->cfg.member_ids, p_->cb));
 }
 
 dkg_p2p_runner::~dkg_p2p_runner()
@@ -8254,8 +8260,14 @@ bool dkg_p2p_runner::start()
         SHA256(buf.data(), buf.size(), p_->committee_id_hash);
     }
 
-    p_->transport.reset(
-        new dkg_p2p_transport_local(p_->cfg.member_ids, p_->cb));
+    // The constructor prepares the transport so early messages can
+    // queue. Recreate it only when this runner instance is explicitly
+    // restarted after a previous start/stop cycle.
+    if (p_->has_started)
+    {
+        p_->transport.reset(
+            new dkg_p2p_transport_local(p_->cfg.member_ids, p_->cb));
+    }
 
     p_->party = dkg_party_create(p_->cfg.local_party_id,
                                  p_->cfg.committee_size,
@@ -8358,6 +8370,7 @@ bool dkg_p2p_runner::start()
     p_->finished_flag.store(false);
 
     p_->worker = std::thread([this]() { p_->run(); });
+    p_->has_started = true;
     return true;
 }
 
