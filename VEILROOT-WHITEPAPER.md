@@ -14,7 +14,7 @@ The Domain Name System (DNS), governed by ICANN, represents a critical central p
 
 The system introduces a novel "health check" mechanism where domain validity is contingent upon continuous proof of relay operation, creating a self-regulating namespace resistant to squatting. With user-defined extensions in the format `[domain]..[extension]` and a dynamic, tiered registration fee structure (starting at 0.1 VNS and scaling x10 per tier up to 10,000 VNS for premium entities), VNS establishes a parallel root namespace free from central control, surveillance, or personal data exposure.
 
-The network confirms a 20,000,000 VNS maximum supply, an 18% locked treasury split, and a dynamic reward formula that adjusts ±15%±15% based on bridge utilization and fee burn rates.
+VNS has a fixed block subsidy of 0.65 VNS, an 18% treasury allocation, a maximum minted supply of 20,000,000 VNS, and transaction fees are burned rather than paid to miners or treasury. The bridge is a 1:1 VNS swap mechanism and does not affect block-subsidy calculation.
 
 ---
 
@@ -112,7 +112,7 @@ The transfer signature is verified against the **current** on-chain registrant k
 
 The VNS blockchain embeds a fully permissionless DAO that controls the treasury and adjusts system parameters. Governance is implemented through on-chain proposals with homomorphic threshold-decrypted voting to ensure maximum privacy.
 
-**Treasury Lock:** The 18% block reward (0.117 VNS/block) is sent to a special `tx_out_type_treasury` output. These outputs are consensus-locked – they cannot be spent unless accompanied by a valid DAO execution transaction that references a passed proposal.
+**Treasury Lock:** The 18% treasury share of the fixed block subsidy (0.117 VNS/block) is sent to a special `tx_out_type_treasury` output. These outputs are consensus-locked – they cannot be spent unless accompanied by a valid DAO execution transaction that references a passed proposal.
 
 **Proposal System:**
 
@@ -405,13 +405,13 @@ When a user attempts to register a domain `label..extension`:
 | Consensus | RandomX | CPU-friendly, ASIC-resistant |
 | Block Time | 120 seconds (2 min) | Balance between finality and overhead VNS technical roadmap V5.pdf |
 | Ring Size | 16 | Strong anonymity with Bulletproofs+ |
-| Max Supply | 20,000,000 VNS | Confirmed; allows room for bridge minting & tail emission |
-| Base Block Reward | 0.65 VNS/block | Slightly above Monero's 0.6 XMR to bootstrap bridge & treasury |
-| Treasury Split | 18% (0.117 VNS/block) | LOCKED to `treasury_account_id`; accumulates unspendable tokens until DAO vote |
-| Miner Split | 82% (0.533 VNS/block) | Sustains CPU mining profitability under dynamic fees |
-| Dynamic Reward Formula | `0.65 × [1 + 0.12×(StakedPct−50%) + 0.08×(BurnRatePct−10%)]` | Adjusts ±15% based on bridge pool utilization & dynamic fee burn |
-| Annual Treasury Emission | ~31,000 VNS/year | Sufficient to fund grants & developer compensation without draining the locked pool |
-| Annual Miner Emission | ~140,000 VNS/year | Matches XMR mining yield; scales with block size & priority fees |
+| Max Supply | 20,000,000 VNS | Hard cap on total minted VNS |
+| Base Block Subsidy | 0.65 VNS/block | Fixed subsidy, clamped to remaining supply |
+| Treasury Split | 18% of subsidy | Locked treasury output |
+| Miner Split | 82% of subsidy | Remaining subsidy paid to miner |
+| Transaction Fees | 100% burned | Never added to miner or treasury payout |
+| Annual Treasury Emission | ~30,748 VNS/year before cap | 18% of fixed annual subsidy |
+| Annual Miner Emission | ~140,072 VNS/year before cap | 82% of fixed annual subsidy |
 | Registration Fee | 0.1 - 10,000 VNS | Tiered by institutional demand (burned) |
 | Extension Fee | 10 - 10,000 VNS | Scaled by demand and governance rules |
 
@@ -552,7 +552,7 @@ VNS deployment follows a structured, file-verified progression aligned with the 
 
 | Phase | Timeline | Key Deliverables | Technical Implementation & Files |
 |---|---|---|---|
-| **1: Foundation** | Months 0–6 | Fork Monero v0.18, strip financial features, implement domain opcodes, launch testnet with CPU mining | `src/cryptonote_config.h`, `blockchain.cpp`, `miner.cpp`. Set `VNS_MAX_SUPPLY=20M`, implement 18% treasury routing, dynamic reward formula. |
+| **1: Foundation** | Months 0–6 | Fork Monero v0.18, strip financial features, implement domain opcodes, launch testnet with CPU mining | `src/cryptonote_config.h`, `blockchain.cpp`, `miner.cpp`. Set `VNS_MAX_SUPPLY=20M`, implement 18% treasury routing, fixed block subsidy. |
 | **2: Bridge & Fee Dynamics** | Months 6–12 | Implement 1:1 XMR↔VNS pool, dynamic burn logic, staker reward distribution | `wallet_bridge.cpp`, `bridge_pool.h`, `fee_tiers.cpp`, `burn_address.h` |
 | **3: DAO Governance** | Months 12–18 | Stake-age voting, double-dot namespace validation, health-based expiry, DAO-controlled tier changes | `dao_voting.cpp`, `namespace_parser.cpp`, `health_scoring.cpp` |
 | **4: Client Tooling & Mainnet** | Months 18–24 | GUI wallet integration, Tor routing, bridge toggle, mainnet genesis bootstrap | `wallet2.cpp`, `resolver_daemon.cpp`, `nostr_connector.ts`, `genesis_block.dat` |
@@ -581,7 +581,7 @@ The system requires no ongoing funding:
 
 ## 9.3 Treasury Lock Mechanism
 
-Minted treasury VNS are cryptographically locked to a dedicated `treasury_account_id`. They accumulate in the treasury vault, remaining unspendable and nontransferable until a positive DAO vote explicitly approves grants, payments, or unlocks. The treasury remains the sole, reliable funding source for contributors and developers, with ~31,000 VNS emitted annually.
+Minted treasury VNS are cryptographically locked to a dedicated `treasury_account_id`. They accumulate in the treasury vault, remaining unspendable and nontransferable until a positive DAO vote explicitly approves grants, payments, or unlocks. The treasury remains the sole, reliable funding source for contributors and developers, with ~30,748 VNS emitted annually before the supply cap.
 
 ### 9.3.1 Regulatory Considerations
 
@@ -624,7 +624,7 @@ VeilRoot Name System (VNS) presents a complete reimagining of Internet naming in
 - **True Decentralization:** No central authority, no trusted third parties.
 - **Dynamic Validity:** Domains live only while actively maintained.
 - **Permissionless Innovation:** Anyone can create extensions and governance models.
-- **Economic Efficiency:** A transparent, tiered registration model starting at 0.1 VNS and scaling x10 per tier up to 10,000 VNS, aligning cost with institutional value without speculative volatility. Refined by the technical roadmap, the confirmed 20,000,000 VNS max supply, 18% locked treasury, and dynamic bridge-driven fee burns ensure long-term treasury sustainability and deflationary alignment.
+- **Economic Efficiency:** A transparent, tiered registration model starting at 0.1 VNS and scaling x10 per tier up to 10,000 VNS, aligning cost with institutional value without speculative volatility. Refined by the technical roadmap, the confirmed 20,000,000 VNS max supply, the 18% locked treasury, and across-the-board transaction-fee burning ensure long-term treasury sustainability and deflationary alignment.
 
 The double-dot namespace provides a ***clean break from ICANN's*** hierarchical control while remaining intuitive for end users. The health check mechanism solves the squatting problem without artificial fees. And the Monero-derived privacy blockchain ensures that registration leaves no forensic trace.
 
@@ -632,7 +632,7 @@ The double-dot namespace provides a ***clean break from ICANN's*** hierarchical 
 
 # References
 
-1. **VeilRoot Name System Technical Roadmap V5.** (Confirms supply, reward formula, treasury split, bridge mechanics, and implementation files).
+1. **VeilRoot Name System Technical Roadmap V5.** (Confirms supply, fixed block subsidy, treasury split, bridge mechanics, and implementation files).
 2. **VeilRoot Name System Technical White Paper v1.1.-1.3** (Core architecture, health checks, namespace, use cases, security).
 3. **Monero Foundation.** "Monero: What It Means, How It Works, and Features." 2024.
 4. **Spaces Protocol.** "Fabric: An open DHT network for Nostr and Spaces." NPM. 2025.
