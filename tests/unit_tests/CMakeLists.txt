@@ -32,6 +32,7 @@ set(unit_tests_sources
   address_from_url.cpp
   base58.cpp
   blockchain_db.cpp
+  db_migration.cpp
   block_queue.cpp
   block_reward.cpp
   dao_consensus.cpp

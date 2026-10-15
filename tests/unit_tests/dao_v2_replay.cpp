@@ -51,6 +51,7 @@
 #include "governance/vote_utils.h"
 #include "crypto/crypto-ops.h"
 #include "cryptonote_config.h"
+#include <functional>
 #include <iostream>
 #include <ctime>
 #include "crypto/crypto.h"
@@ -154,7 +155,11 @@ bool construct_block_here(
     const account_base& miner_acc,
     uint64_t height,
     const std::vector<transaction>& extra_txs,
-    block& out)
+    block& out,
+    // Optional hook run after the coinbase is built but before PoW is
+    // solved. Used by tests that need to tamper with the block and
+    // still produce a PoW-valid result.
+    const std::function<void(block&)>& modifier = {})
 {
     std::cerr << "[cbh] enter height=" << height << "\n";
 
@@ -226,6 +231,9 @@ bool construct_block_here(
     blk.tx_hashes.clear();
     for (const auto& tx : extra_txs)
         blk.tx_hashes.push_back(cryptonote::get_transaction_hash(tx));
+
+    if (modifier)
+        modifier(blk);
 
     auto gbh = [&bc_storage](
         const block& b,
@@ -1401,6 +1409,120 @@ TEST(DaoV2Replay, DuplicateV2VoteNullifierRejected)
     }
 }
 
+
+
+// ---------------------------------------------------------------------
+// Coinbase overpayment.
+//
+// A block whose coinbase pays more than the permitted fixed subsidy
+// must be rejected. Overpayment by a single atomic unit is enough.
+// ---------------------------------------------------------------------
+TEST(DaoV2Replay, CoinbaseOverpaymentRejected)
+{
+    using namespace cryptonote;
+
+    boost::filesystem::path base =
+        boost::filesystem::temp_directory_path() /
+        boost::filesystem::unique_path("vr_replay_overpay_%%%%-%%%%");
+
+    ReplayNode a;
+    ASSERT_TRUE(a.init((base / "a").string()));
+
+    account_base miner_acc;
+    miner_acc.generate();
+
+    // Mine a couple of clean blocks so we are past the genesis.
+    for (int i = 0; i < 3; ++i) {
+        const uint64_t h = a.core->get_current_blockchain_height();
+        block empty;
+        ASSERT_TRUE(construct_block_here(a, miner_acc, h, {}, empty));
+        cryptonote::blobdata bb = cryptonote::block_to_blob(empty);
+        block_verification_context bvc{};
+        pool_supplement e{};
+        ASSERT_TRUE(a.core->handle_single_incoming_block(
+            bb, &empty, bvc, e, false));
+        ASSERT_FALSE(bvc.m_verifivation_failed);
+    }
+
+    // Build a block whose coinbase pays one atomic unit too much. The
+    // modifier runs before the PoW nonce is solved, so the block hash
+    // is still valid; only the sum check inside
+    // validate_miner_transaction() should reject it.
+    const uint64_t h = a.core->get_current_blockchain_height();
+    block bad;
+    ASSERT_TRUE(construct_block_here(
+        a, miner_acc, h, {}, bad,
+        [](block& b) {
+            // First vout is the miner payout in the treasury-fork
+            // layout used by construct_miner_tx().
+            ASSERT_FALSE(b.miner_tx.vout.empty());
+            b.miner_tx.vout[0].amount += 1;
+        }));
+
+    cryptonote::blobdata bb = cryptonote::block_to_blob(bad);
+    block_verification_context bvc{};
+    pool_supplement e{};
+    // handle_single_incoming_block() returns true when the block was
+    // processed, regardless of acceptance; the verdict is in bvc.
+    (void)a.core->handle_single_incoming_block(bb, &bad, bvc, e, false);
+    EXPECT_TRUE(bvc.m_verifivation_failed);
+    EXPECT_FALSE(bvc.m_added_to_main_chain);
+
+    boost::filesystem::remove_all(base);
+}
+
+// ---------------------------------------------------------------------
+// Coinbase underpayment.
+//
+// A block whose coinbase pays less than the permitted subsidy must
+// also be rejected, so that the recorded increase in supply always
+// matches the actual coinbase outputs.
+// ---------------------------------------------------------------------
+TEST(DaoV2Replay, CoinbaseUnderpaymentRejected)
+{
+    using namespace cryptonote;
+
+    boost::filesystem::path base =
+        boost::filesystem::temp_directory_path() /
+        boost::filesystem::unique_path("vr_replay_underpay_%%%%-%%%%");
+
+    ReplayNode a;
+    ASSERT_TRUE(a.init((base / "a").string()));
+
+    account_base miner_acc;
+    miner_acc.generate();
+
+    for (int i = 0; i < 3; ++i) {
+        const uint64_t h = a.core->get_current_blockchain_height();
+        block empty;
+        ASSERT_TRUE(construct_block_here(a, miner_acc, h, {}, empty));
+        cryptonote::blobdata bb = cryptonote::block_to_blob(empty);
+        block_verification_context bvc{};
+        pool_supplement e{};
+        ASSERT_TRUE(a.core->handle_single_incoming_block(
+            bb, &empty, bvc, e, false));
+        ASSERT_FALSE(bvc.m_verifivation_failed);
+    }
+
+    const uint64_t h = a.core->get_current_blockchain_height();
+    block bad;
+    ASSERT_TRUE(construct_block_here(
+        a, miner_acc, h, {}, bad,
+        [](block& b) {
+            ASSERT_FALSE(b.miner_tx.vout.empty());
+            ASSERT_GE(b.miner_tx.vout[0].amount, 1u);
+            b.miner_tx.vout[0].amount -= 1;
+        }));
+
+    cryptonote::blobdata bb = cryptonote::block_to_blob(bad);
+    block_verification_context bvc{};
+    pool_supplement e{};
+    (void)a.core->handle_single_incoming_block(bb, &bad, bvc, e, false);
+    EXPECT_TRUE(bvc.m_verifivation_failed);
+    EXPECT_FALSE(bvc.m_added_to_main_chain);
+
+    boost::filesystem::remove_all(base);
+}
 
 // ---------------------------------------------------------------------
 // Reshare trigger.

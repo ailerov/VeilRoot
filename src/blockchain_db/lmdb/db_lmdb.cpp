@@ -10074,14 +10074,16 @@ void BlockchainLMDB::migrate_5_6()
   // struct gained a high limb. Alternate blocks are transient: they
   // are only useful for a reorg onto a chain the node has already
   // seen, and any node that re-announces one will repopulate the
-  // table. Drop the table rather than reinterpreting old records.
+  // table. Empty the table rather than delete it: deleting it
+  // invalidates the DBI handle, which callers such as
+  // get_alt_block_count() use after migration.
   do {
     result = mdb_txn_begin(m_env, NULL, 0, txn);
     if (result)
       throw0(DB_ERROR(lmdb_error("Failed to create a transaction for the db: ", result).c_str()));
-    result = mdb_drop(txn, m_alt_blocks, 1);
+    result = mdb_drop(txn, m_alt_blocks, 0);
     if (result)
-      throw0(DB_ERROR(lmdb_error("Failed to drop alt_blocks table: ", result).c_str()));
+      throw0(DB_ERROR(lmdb_error("Failed to empty alt_blocks table: ", result).c_str()));
     txn.commit();
   } while(0);
 

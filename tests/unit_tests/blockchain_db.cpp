@@ -578,6 +578,43 @@ TYPED_TEST(BlockchainDBTest, DaoV2OutcomeRoundTrip)
   ASSERT_NO_THROW(this->m_db->close());
 }
 
+
+TYPED_TEST(BlockchainDBTest, WideSupplyRoundTrip)
+{
+  // Cumulative generated supply above UINT64_MAX must survive storage
+  // and read-back. 20,000,000 VNS at 10^12 atomic units per VNS is a
+  // 65-bit value; the DB record carries it as two 64-bit limbs.
+  boost::filesystem::path tempPath =
+      boost::filesystem::temp_directory_path() /
+      boost::filesystem::unique_path();
+  std::string dirPath = tempPath.string();
+  this->set_prefix(dirPath);
+
+  ASSERT_NO_THROW(this->m_db->open(dirPath));
+  this->init_hard_fork();
+
+  const vns_supply_t wide_supply =
+      (static_cast<vns_supply_t>(1) << 64) + 12345;
+
+  {
+    db_wtxn_guard guard(this->m_db);
+    ASSERT_NO_THROW(this->m_db->add_block(
+        this->m_blocks[0], t_sizes[0], t_sizes[0], t_diffs[0],
+        wide_supply, this->m_txs[0]));
+  }
+
+  EXPECT_EQ(wide_supply,
+            this->m_db->get_block_already_generated_coins(0));
+
+  // Reopen and confirm persistence.
+  ASSERT_NO_THROW(this->m_db->close());
+  ASSERT_NO_THROW(this->m_db->open(dirPath));
+  EXPECT_EQ(wide_supply,
+            this->m_db->get_block_already_generated_coins(0));
+
+  this->get_filenames();
+}
+
 TYPED_TEST(BlockchainDBTest, AddBlock)
 {
 
