@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 #include <rapidjson/document.h>
 #include <rapidjson/writer.h>
+#include <cstring>
 #include <vector>
 
 #include "byte_stream.h"
@@ -52,10 +53,30 @@ namespace test
             if (!cryptonote::find_tx_extra_field_by_type(extra_fields, key_field))
                 throw std::runtime_error{"invalid transaction"};
 
+            // VeilRoot's construct_miner_tx() emits a miner output and a
+            // treasury output. Only the outputs that actually belong to
+            // `from` can be spent by `from`; attempting to spend the
+            // treasury output would be rejected by the key-image helper.
+            crypto::key_derivation our_derivation;
+            if (!crypto::generate_key_derivation(
+                    key_field.pub_key, from.m_view_secret_key, our_derivation))
+                throw std::runtime_error{"invalid transaction"};
+
             for (auto const input : boost::adaptors::index(source.vout))
             {
-                source_amount += input.value().amount;
+                if (input.value().target.type() != typeid(cryptonote::txout_to_key))
+                    continue;
                 auto const& key = boost::get<cryptonote::txout_to_key>(input.value().target);
+
+                crypto::public_key expected{};
+                if (!crypto::derive_public_key(
+                        our_derivation, input.index(),
+                        from.m_account_address.m_spend_public_key, expected))
+                    continue;
+                if (std::memcmp(&expected, &key.key, sizeof(expected)) != 0)
+                    continue;
+
+                source_amount += input.value().amount;
 
                 actual_sources.push_back(
                     {{}, 0, key_field.pub_key, {}, std::size_t(input.index()), input.value().amount, rct, rct::identity()}
