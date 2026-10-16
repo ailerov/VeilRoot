@@ -396,6 +396,7 @@ TEST(ban, file_banlist)
   boost::program_options::variables_map vm;
   boost::program_options::store(
     boost::program_options::command_line_parser({
+      "--network-privacy-mode=mixed",
       "--data-dir",
       node_dir.string(),
       "--ban-list",
