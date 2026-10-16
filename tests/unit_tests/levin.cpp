@@ -2431,6 +2431,86 @@ TEST_F(levin_notify, noise_stem)
     }
 }
 
+// VeilRoot addition: when noise is active on a non-public zone, the
+// transaction is delivered via the fluff mechanism to *inbound* peers
+// only. This covers the VeilRoot-added fluff_notify{..., true} dispatch
+// in levin_notify.cpp. Ordinary (non-noise) i2p fluff remains
+// outbound-only, which the private_fluff_* tests assert.
+TEST_F(levin_notify, noise_fluff_to_inbound_only)
+{
+    // Notifier must exist before connections are added, so each
+    // connection's handshake registers its context with the zone.
+    std::shared_ptr<cryptonote::levin::notify> notifier_ptr =
+        make_notifier(2048, /*is_public=*/false, /*pad_txs=*/false);
+    auto &notifier = *notifier_ptr;
+
+    for (unsigned count = 0; count < 10; ++count)
+        add_connection(count % 2 == 0);
+
+    // Create the covert noise channels and register them. Without this
+    // the noise branch of send_txs() is not entered.
+    notifier.new_out_connection();
+    io_service_.restart();
+    ASSERT_LT(0u, io_service_.poll());
+    {
+        const auto status = notifier.get_status();
+        ASSERT_TRUE(status.has_noise);
+        ASSERT_TRUE(status.connections_filled);
+        ASSERT_TRUE(status.has_outgoing);
+    }
+
+    std::vector<cryptonote::blobdata> txs(1);
+    txs[0].resize(3000, 'r');
+
+    const boost::uuids::uuid incoming_id = random_generator_();
+
+    EXPECT_TRUE(notifier.send_txs(txs, incoming_id, cryptonote::relay_method::fluff));
+
+    io_service_.restart();
+    ASSERT_LT(0u, io_service_.poll());
+
+    notifier.run_stems();
+
+    notifier.run_fluff();
+    io_service_.restart();
+    ASSERT_LT(0u, io_service_.poll());
+
+    // Consume the relay event so TearDown passes.
+    (void)events_.take_relayed(cryptonote::relay_method::fluff);
+
+    // Process one connection at a time and classify the notifications
+    // it produced. This distinguishes inbound from outbound delivery,
+    // which a flat notification count cannot.
+    std::size_t inbound_fluff = 0;
+    std::size_t outbound_fluff = 0;
+    for (auto context = contexts_.begin(); context != contexts_.end(); ++context)
+    {
+        const bool is_incoming = ((context - contexts_.begin()) % 2 == 0);
+        context->process_send_queue();
+        while (receiver_.notified_size() > 0)
+        {
+            auto notification =
+                receiver_.get_notification<cryptonote::NOTIFY_NEW_TRANSACTIONS>().second;
+            EXPECT_EQ(txs, notification.txs);
+            EXPECT_TRUE(notification._.empty());
+            if (notification.dandelionpp_fluff)
+            {
+                if (is_incoming)
+                    ++inbound_fluff;
+                else
+                    ++outbound_fluff;
+            }
+        }
+    }
+
+    // The noise-path fluff dispatch targets inbound peers only. Five
+    // inbound connections, zero outbound. With the ordinary
+    // (only_inbound = false) semantics the split would be inverted,
+    // which is exactly the Monero outbound-only behaviour.
+    EXPECT_EQ(5u, inbound_fluff);
+    EXPECT_EQ(0u, outbound_fluff);
+}
+
 TEST_F(levin_notify, command_max_bytes)
 {
     static constexpr int ping_command = nodetool::COMMAND_PING::ID;

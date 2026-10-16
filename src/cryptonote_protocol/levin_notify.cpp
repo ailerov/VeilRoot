@@ -447,7 +447,9 @@ namespace levin
         {
           auto &id = e.first;
           auto &context = e.second;
-          if (source != id && (zone->nzone == epee::net_utils::zone::public_ || !only_inbound || context.m_is_income))
+          if (source != id &&
+              (zone->nzone == epee::net_utils::zone::public_ ||
+               (only_inbound ? context.m_is_income : !context.m_is_income)))
           {
             if (context.fluff_txs.empty())
               context.flush_time = now + (context.m_is_income ? in_duration() : out_duration());
