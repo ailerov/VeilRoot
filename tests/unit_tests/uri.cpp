@@ -29,9 +29,10 @@
 #include "gtest/gtest.h"
 #include "wallet/wallet2.h"
 
-#define TEST_ADDRESS "9tTLtauaEKSj7xoVXytVH32R1pLZBk4VV4mZFGEh4wkXhDWqw1soPyf3fGixf1kni31VznEZkWNEza9d5TvjWwq5PaohYHC"
-#define TEST_INTEGRATED_ADDRESS "A4A1uPj4qaxj7xoVXytVH32R1pLZBk4VV4mZFGEh4wkXhDWqw1soPyf3fGixf1kni31VznEZkWNEza9d5TvjWwq5acaPMJfMbn3ReTsBpp"
-// included payment id: <f612cac0b6cb1cda>
+// VeilRoot testnet address (base58 prefix 153), not Monero's prefix 53.
+#define TEST_ADDRESS "SbMuCsmA4W9Mx1eEBBATC63YYcFaYzPA3FpqPiGYTVEJi4FY1HExdSMN1dTrEmNMW8H4Fii88FSS2D7QYUMDj86Q1E1kCEqRz"
+// VeilRoot testnet integrated address (base58 prefix 154).
+#define TEST_INTEGRATED_ADDRESS "Sm4aDgaefmfMx1eEBBATC63YYcFaYzPA3FpqPiGYTVEJi4FY1HExdSMN1dTrEmNMW8H4Fii88FSS2D7QYUMDj86Q5NWVhxBjeJE2UVFQ7xGr"
 
 #define PARSE_URI(uri, expected) \
   std::string address, payment_id, recipient_name, description, error; \
@@ -40,6 +41,8 @@
   tools::wallet2 w(cryptonote::TESTNET); \
   bool ret = w.parse_uri(uri, address, payment_id, amount, description, recipient_name, unknown_parameters, error); \
   ASSERT_EQ(ret, expected);
+
+
 
 TEST(uri, empty_string)
 {

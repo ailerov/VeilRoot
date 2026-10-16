@@ -35,6 +35,7 @@
 #include "gtest/gtest.h"
 
 #include <cstdint>
+#include <iostream>
 
 static const struct
 {
@@ -43,23 +44,24 @@ static const struct
 } test_addresses[] =
 {
   {
-    "9uvjbU54ZJb8j7Dcq1h3F1DnBRkxXdYUX4pbJ7mE3ghM8uF3fKzqRKRNAKYZXcNLqMg7MxjVVD2wKC2PALUwEveGSC3YSWD",
+    "SbLjsyaoAApRnY5UAw3sMZLTExBSCLvpCAP8sdPuPhJ2BjfsUoBes3eGUJx2fZf7S8Fsa7urJ7LamRTt4uucAtqk1wiMYN47e",
     "2dd6e34a234c3e8b5d29a371789e4601e96dee4ea6f7ef79224d1a2d91164c01"
   },
   {
-    "9ywDBAyDbb6QKFiZxDJ4hHZqZEQXXCR5EaYNcndUpqPDeE7rEgs6neQdZnhcDrWbURYK8xUjhuG2mVjJdmknrZbcG7NnbaB",
+    "SbMeYrGRSic1Fz3USjnSYJcb771AkkNmqgmoAiHAu5713pewPFyAA9wcmemSiYxWtqcvARA3r4L6QUD7VXodxC7n2WQRqYsLK",
     "fac47aecc948ce9d3531aa042abb18235b1df632087c55a361b632ffdd6ede0c"
   },
   {
-    "9t6Hn946u3eah5cuncH1hB5hGzsTUoevtf4SY7MHN5NgJZh2SFWsyVt3vUhuHyRKyrCQvr71Lfc1AevG3BXE11PQFoXDtD8",
+    "SbLKmDnM7Xc6emvHeethY1JkPzMHbAAHjQ4hH3zpo5JZBwZX8UxmjPjQG8tyg5HJaKVK6eWHENbPA4fKPw9eEkG71JgfRY1Vf",
     "bbd3175ef9fd9f5eefdc43035f882f74ad14c4cf1799d8b6f9001bc197175d02"
   },
   {
-    "9zmAWoNyNPbgnYSm3nJNpAKHm6fCcs3MR94gBWxp9MCDUiMUhyYFfyQETUDLPF7DP6ZsmNo6LRxwPP9VmhHNxKrER9oGigT",
+    "SbMqQznsfomUFcmoSBScYXdhie6sp2b4zaV5VLHFFJv488jRD62zgYcYzzJWeSz2MP1J9g6kDTDNr674CVuWFy1o2JcQ1hEhv",
     "f2efae45bef1917a7430cda8fcffc4ee010e3178761aa41d4628e23b1fe2d501"
   },
   {
-    "9ue8NJMg3WzKxTtmjeXzWYF5KmU6dC7LHEt9wvYdPn2qMmoFUa8hJJHhSHvJ46UEwpDyy5jSboNMRaDBKwU54NT42YcNUp5",
+    // Not exercised by any current multisig test (max participants is 4).
+    "",
     "a4cef54ed3fd61cd78a2ceb82ecf85a903ad2db9a86fb77ff56c35c56016280a"
   }
 };
