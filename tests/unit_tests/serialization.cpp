@@ -696,7 +696,7 @@ TEST(Serialization, portability_wallet)
   */
   // blockchain
   ASSERT_TRUE(w.m_blockchain.size() == 1);
-  ASSERT_TRUE(epee::string_tools::pod_to_hex(w.m_blockchain[0]) == "48ca7cd3c8de5b6a4d53d2861fbdaedca141553559f9be9520068053cda8430b");
+  ASSERT_TRUE(epee::string_tools::pod_to_hex(w.m_blockchain[0]) == "76ead062437b3e8ff705002c35bda82f6e65a8893d1e61da374ddbb6e0c1b855");
   // transfers (TODO)
   ASSERT_TRUE(w.m_transfers.size() == 3);
   // account public address

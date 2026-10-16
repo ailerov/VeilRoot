@@ -335,6 +335,9 @@ TEST(verRctNonSemanticsSimple, serializable_sig_changes)
     SERIALIZABLE_SIG_CHANGES_SUBTEST(p.CLSAGs[0].s[15][31] ^= 69)
     SERIALIZABLE_SIG_CHANGES_SUBTEST(p.CLSAGs[0].c1[0] /= 3)
     SERIALIZABLE_SIG_CHANGES_SUBTEST(p.CLSAGs[0].D[0] /= 3)
+    // VeilRoot: clsag::I is serialized (FIELD(I) in rct::clsag) because
+    // the DAO V2 vote proof carries its nullifier there.
+    SERIALIZABLE_SIG_CHANGES_SUBTEST(p.CLSAGs[0].I[14]++)
     SERIALIZABLE_SIG_CHANGES_SUBTEST(p.pseudoOuts.push_back({}))
 
     // Uncomment line below to sanity check SERIALIZABLE_SIG_CHANGES_SUBTEST
@@ -351,11 +354,18 @@ TEST(verRctNonSemanticsSimple, unserializable_sig_changes)
 {
     // Hello, future visitors. If this unit test fails, then congrats! ::do_serialize(rctSig) became
     // better at uniquely representing rctSig.
+    //
+    // VeilRoot note: this list is Monero's. VeilRoot serializes
+    // clsag::I through the default field serializer (FIELD(I) in
+    // rct::clsag), because the DAO V2 vote proof stores its
+    // proposal-scoped nullifier there and the verifier compares it
+    // against the wire nullifier after deserialization. Modifying I
+    // therefore DOES change the do_serialize() output, so that case is
+    // asserted in serializable_sig_changes() instead.
     const cryptonote::transaction tx = expand_transaction_from_bin_file_and_pubkeys
         (tx1_file_name, tx1_input_pubkeys);
     const rct::rctSig& original_sig = tx.rct_signatures;
 
-    UNSERIALIZABLE_SIG_CHANGES_SUBTEST(p.CLSAGs[0].I[14]++)
     UNSERIALIZABLE_SIG_CHANGES_SUBTEST(p.bulletproofs_plus[0].V.push_back({}))
     UNSERIALIZABLE_SIG_CHANGES_SUBTEST(p.bulletproofs_plus[0].V[1][31]--)
 
