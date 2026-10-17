@@ -129,12 +129,13 @@ struct routed_network
             if (!m.deserialize(buf))
                 return false;
 
+            target->on_message(m);
+
             {
                 std::lock_guard<std::mutex> lk(mu);
                 note_message_locked();
             }
 
-            target->on_message(m);
             return true;
         };
 
@@ -152,11 +153,6 @@ struct routed_network
 
             const uint32_t sender =
                 m.hdr.sender_id;
-
-            {
-                std::lock_guard<std::mutex> lk(mu);
-                note_message_locked();
-            }
 
             std::vector<dkg_p2p_runner*> targets;
 
@@ -183,6 +179,11 @@ struct routed_network
 
             for (auto* target : targets)
                 target->on_message(m);
+
+            {
+                std::lock_guard<std::mutex> lk(mu);
+                note_message_locked();
+            }
         };
 
         return cb;
