@@ -174,6 +174,23 @@ bool load_txt_records_from_dns(std::vector<std::string> &records, const std::vec
 
 std::vector<std::string> parse_dns_public(const char *s);
 
+/**
+ * @brief Validates a root DS trust-anchor file.
+ *
+ * Accepts only the restricted format documented in dns_utils.cpp:
+ * one '. IN DS <tag> <algorithm> <digest-type> <digest-hex>' record
+ * per line, with ';' comments and blank lines permitted. The whole file
+ * is rejected if any non-comment line is malformed, or if no record is
+ * present.
+ *
+ * @param path  absolute path to the anchor file
+ * @param error set to a human-readable reason on failure
+ * @return true if the file is syntactically valid
+ */
+bool validate_dnssec_trust_anchor_file(
+    const std::string& path,
+    std::string& error);
+
 }  // namespace tools::dns_utils
 
 }  // namespace tools

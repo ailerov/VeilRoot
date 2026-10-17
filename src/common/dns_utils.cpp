@@ -30,16 +30,23 @@
 // check local first (in the event of static or in-source compilation of libunbound)
 #include "unbound.h"
 
+#include <algorithm>
+#include <atomic>
+#include <cctype>
 #include <deque>
+#include <fstream>
 #include <set>
+#include <sstream>
 #include <stdlib.h>
 #include "include_base_utils.h"
 #include "common/threadpool.h"
 #include "crypto/crypto.h"
 #include <boost/thread/mutex.hpp>
 #include <boost/algorithm/string/join.hpp>
+#include <boost/filesystem.hpp>
 #include <boost/optional.hpp>
 #include <boost/utility/string_ref.hpp>
+#include "common/util.h"
 using namespace epee;
 
 #undef MONERO_DEFAULT_LOG_CATEGORY
@@ -232,9 +239,24 @@ private:
 
 typedef class scoped_ptr<ub_result,ub_resolve_free> ub_result_ptr;
 
+namespace
+{
+// libunbound return codes used by this file. The ub_ctx_err enum that
+// names them was introduced in Unbound 1.16; the Linux build links
+// against 1.13.x, whose header does not define it. The numeric values
+// are documented in the libunbound API and have been stable since the
+// original release.
+constexpr int VNS_UB_NOERROR  = 0;   // success
+constexpr int VNS_UB_INITFAIL = -7;  // deferred initialisation failed
+} // anonymous namespace
+
 struct DNSResolverData
 {
   ub_ctx* m_ub_context;
+  // False when trust-anchor loading failed. Lookups are then refused
+  // rather than executed with incomplete trust configuration. Atomic
+  // because the singleton resolver can be used from multiple threads.
+  std::atomic<bool> m_anchors_ok{false};
 };
 
 // work around for bug https://www.nlnetlabs.nl/bugs-script/show_bug.cgi?id=515 needed for it to compile on e.g. Debian 7
@@ -248,14 +270,96 @@ public:
     char *str;
 };
 
-static void add_anchors(ub_ctx *ctx)
+static bool add_anchors(ub_ctx *ctx)
 {
-  const char * const *ds = ::get_builtin_ds();
+  if (!ctx)
+  {
+    MERROR("Cannot load DNSSEC trust anchors: Unbound context is null");
+    return false;
+  }
+
+  const char* const override_path = std::getenv("DNSSEC_TRUST_ANCHOR_FILE");
+  const bool explicit_override = override_path != nullptr && *override_path != '\0';
+
+  // An explicitly configured path must be absolute. A relative path
+  // would resolve against the daemon's working directory, which is not
+  // something an operator can rely on.
+  if (explicit_override && !boost::filesystem::path(override_path).is_absolute())
+  {
+    MERROR("DNSSEC_TRUST_ANCHOR_FILE must be an absolute path: "
+           << override_path);
+    return false;
+  }
+
+  const boost::filesystem::path anchor_path =
+      explicit_override
+          ? boost::filesystem::path(override_path)
+          : boost::filesystem::path(::tools::get_default_data_dir()) / "dns_anchors";
+
+  boost::system::error_code ec;
+  const bool file_exists = boost::filesystem::exists(anchor_path, ec);
+
+  // exists(p, ec) sets ec to "no such file or directory" when the path
+  // is simply absent. That is the expected case for a node that has
+  // not installed an operator anchor file, and must fall through to the
+  // compiled-anchor fallback. Only a genuine I/O or permission error is
+  // fatal here.
+  if (ec &&
+      ec.value() != boost::system::errc::no_such_file_or_directory)
+  {
+    MERROR("Cannot check DNSSEC trust-anchor file " << anchor_path.string()
+           << ": " << ec.message());
+    return false;
+  }
+
+  if (file_exists)
+  {
+    std::string validation_error;
+
+    if (!tools::dns_utils::validate_dnssec_trust_anchor_file(
+            anchor_path.string(), validation_error))
+    {
+      MERROR("Invalid DNSSEC trust-anchor file: " << validation_error);
+      return false;
+    }
+
+    const std::string path = anchor_path.string();
+    const int rc = ub_ctx_add_ta_file(ctx, path.c_str());
+
+    if (rc != VNS_UB_NOERROR)
+    {
+      MERROR("Failed to load DNSSEC trust anchors from " << path
+             << ": " << ub_strerror(rc));
+      return false;
+    }
+
+    MINFO("Loaded DNSSEC trust anchors from " << path);
+    return true;
+  }
+
+  if (explicit_override)
+  {
+    MERROR("DNSSEC_TRUST_ANCHOR_FILE is configured, but the file "
+           << anchor_path.string() << " does not exist");
+    return false;
+  }
+
+  // Backwards-compatible fallback: compiled anchors are used when the
+  // operator-managed default file has not been installed.
+  const char* const* ds = ::get_builtin_ds();
   while (*ds)
   {
-    MINFO("adding trust anchor: " << *ds);
-    ub_ctx_add_ta(ctx, string_copy(*ds++));
+    const char* const anchor = *ds++;
+    const int rc = ub_ctx_add_ta(ctx, string_copy(anchor));
+    if (rc != VNS_UB_NOERROR)
+    {
+      MERROR("Failed to register built-in DNSSEC trust anchor: "
+             << ub_strerror(rc));
+      return false;
+    }
+    MINFO("Added built-in DNSSEC trust anchor: " << anchor);
   }
+  return true;
 }
 
 DNSResolver::DNSResolver() : m_data(new DNSResolverData())
@@ -293,7 +397,13 @@ DNSResolver::DNSResolver() : m_data(new DNSResolverData())
     ub_ctx_hosts(m_data->m_ub_context, NULL);
   }
 
-  add_anchors(m_data->m_ub_context);
+  m_data->m_anchors_ok.store(add_anchors(m_data->m_ub_context),
+                             std::memory_order_release);
+  if (!m_data->m_anchors_ok.load(std::memory_order_acquire))
+  {
+    MERROR("DNSSEC trust-anchor initialization failed; DNS lookups will fail closed");
+    return;
+  }
 
   if (!DNS_PUBLIC)
   {
@@ -308,7 +418,13 @@ DNSResolver::DNSResolver() : m_data(new DNSResolverData())
       MINFO("Failed to verify DNSSEC record from " << probe_hostname << ", falling back to TCP with well known DNSSEC resolvers");
       ub_ctx_delete(m_data->m_ub_context);
       m_data->m_ub_context = ub_ctx_create();
-      add_anchors(m_data->m_ub_context);
+      m_data->m_anchors_ok.store(add_anchors(m_data->m_ub_context),
+                                 std::memory_order_release);
+      if (!m_data->m_anchors_ok.load(std::memory_order_acquire))
+      {
+        MERROR("DNSSEC trust-anchor initialization failed on fallback; DNS lookups will fail closed");
+        return;
+      }
       for (const auto &ip: DEFAULT_DNS_PUBLIC_ADDR)
         ub_ctx_set_fwd(m_data->m_ub_context, string_copy(ip));
       ub_ctx_set_option(m_data->m_ub_context, string_copy("do-udp:"), string_copy("no"));
@@ -335,13 +451,36 @@ std::vector<std::string> DNSResolver::get_record(const std::string& url, int rec
   dnssec_available = false;
   dnssec_valid = false;
 
+  if (!m_data ||
+      !m_data->m_ub_context ||
+      !m_data->m_anchors_ok.load(std::memory_order_acquire))
+  {
+    return addresses;
+  }
+
   // destructor takes care of cleanup
   ub_result_ptr result;
 
   MDEBUG("Performing DNSSEC " << get_record_name(record_type) << " record query for " << url);
 
-  // call DNS resolver, blocking.  if return value not zero, something went wrong
-  if (!ub_resolve(m_data->m_ub_context, string_copy(url.c_str()), record_type, DNS_CLASS_IN, &result))
+  // call DNS resolver, blocking.
+  const int rc = ub_resolve(m_data->m_ub_context, string_copy(url.c_str()),
+                            record_type, DNS_CLASS_IN, &result);
+
+  if (rc != VNS_UB_NOERROR)
+  {
+    if (rc == VNS_UB_INITFAIL)
+    {
+      // Deferred initialization failed: the configured anchors are not
+      // usable by this Unbound build. Invalidate the flag so lookups
+      // fail closed from here on.
+      m_data->m_anchors_ok.store(false, std::memory_order_release);
+    }
+
+    MERROR("DNSSEC resolver failure for " << url << ": " << ub_strerror(rc));
+    return addresses;
+  }
+
   {
     dnssec_available = (result->secure || result->bogus);
     dnssec_valid = result->secure && !result->bogus;
@@ -419,6 +558,204 @@ DNSResolver DNSResolver::create()
 
 namespace dns_utils
 {
+
+namespace
+{
+std::string uppercase_ascii(std::string value)
+{
+    std::transform(
+        value.begin(), value.end(), value.begin(),
+        [](unsigned char c)
+        {
+            return static_cast<char>(std::toupper(c));
+        });
+
+    return value;
+}
+
+bool parse_decimal_bounded(
+    const std::string& token,
+    unsigned int maximum,
+    unsigned int& value)
+{
+    if (token.empty())
+        return false;
+
+    unsigned int parsed = 0;
+
+    for (const unsigned char c : token)
+    {
+        if (c < '0' || c > '9')
+            return false;
+
+        const unsigned int digit = c - '0';
+
+        // Check before multiplying to avoid integer overflow.
+        if (parsed > maximum / 10 ||
+            (parsed == maximum / 10 &&
+             digit > maximum % 10))
+        {
+            return false;
+        }
+
+        parsed = parsed * 10 + digit;
+    }
+
+    value = parsed;
+    return true;
+}
+
+bool is_hex_string(const std::string& value)
+{
+    if (value.empty())
+        return false;
+
+    for (const unsigned char c : value)
+    {
+        if (!((c >= '0' && c <= '9') ||
+              (c >= 'a' && c <= 'f') ||
+              (c >= 'A' && c <= 'F')))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+} // anonymous namespace
+
+bool validate_dnssec_trust_anchor_file(
+    const std::string& path,
+    std::string& error)
+{
+    std::ifstream input(path.c_str());
+
+    if (!input)
+    {
+        error = "cannot open trust-anchor file: " + path;
+        return false;
+    }
+
+    bool found_record = false;
+    std::size_t line_number = 0;
+    std::string line;
+
+    while (std::getline(input, line))
+    {
+        ++line_number;
+
+        if (line.size() > 4096)
+        {
+            error = path + ":" + std::to_string(line_number) +
+                    ": line exceeds 4096 bytes";
+            return false;
+        }
+
+        // DNS master-file comment syntax.
+        const std::size_t comment = line.find(';');
+
+        if (comment != std::string::npos)
+            line.erase(comment);
+
+        std::istringstream stream(line);
+        std::vector<std::string> fields;
+        std::string field;
+
+        while (stream >> field)
+            fields.push_back(field);
+
+        if (fields.empty())
+            continue;
+
+        // Strict root DS grammar:
+        // . IN DS <key-tag> <algorithm> <digest-type> <digest-hex>
+        if (fields.size() != 7 ||
+            fields[0] != "." ||
+            uppercase_ascii(fields[1]) != "IN" ||
+            uppercase_ascii(fields[2]) != "DS")
+        {
+            error = path + ":" + std::to_string(line_number) +
+                    ": expected '. IN DS <key-tag> <algorithm> "
+                    "<digest-type> <digest-hex>'";
+            return false;
+        }
+
+        unsigned int key_tag = 0;
+        unsigned int algorithm = 0;
+        unsigned int digest_type = 0;
+
+        if (!parse_decimal_bounded(fields[3], 65535, key_tag))
+        {
+            error = path + ":" + std::to_string(line_number) +
+                    ": invalid DS key tag";
+            return false;
+        }
+
+        if (!parse_decimal_bounded(fields[4], 255, algorithm) ||
+            algorithm == 0)
+        {
+            error = path + ":" + std::to_string(line_number) +
+                    ": invalid DNSKEY algorithm";
+            return false;
+        }
+
+        if (!parse_decimal_bounded(fields[5], 255, digest_type))
+        {
+            error = path + ":" + std::to_string(line_number) +
+                    ": invalid DS digest type";
+            return false;
+        }
+
+        std::size_t expected_hex_chars = 0;
+
+        switch (digest_type)
+        {
+            case 1:
+                expected_hex_chars = 40; // SHA-1
+                break;
+
+            case 2:
+                expected_hex_chars = 64; // SHA-256
+                break;
+
+            case 4:
+                expected_hex_chars = 96; // SHA-384
+                break;
+
+            default:
+                error = path + ":" + std::to_string(line_number) +
+                        ": unsupported DS digest type";
+                return false;
+        }
+
+        const std::string& digest = fields[6];
+
+        if (digest.size() != expected_hex_chars ||
+            !is_hex_string(digest))
+        {
+            error = path + ":" + std::to_string(line_number) +
+                    ": invalid DS digest length or hexadecimal data";
+            return false;
+        }
+
+        found_record = true;
+    }
+
+    if (input.bad())
+    {
+        error = "I/O error reading trust-anchor file: " + path;
+        return false;
+    }
+
+    if (!found_record)
+    {
+        error = "trust-anchor file contains no DS records: " + path;
+        return false;
+    }
+
+    error.clear();
+    return true;
+}
 
 //-----------------------------------------------------------------------
 // TODO: parse the string in a less stupid way, probably with regex

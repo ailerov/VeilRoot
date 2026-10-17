@@ -28,10 +28,87 @@
 
 #include <iostream>
 #include <vector>
+#include <cstdlib>
+#include <fstream>
+#include <string>
+
+#include <boost/filesystem.hpp>
 
 #include "gtest/gtest.h"
 
 #include "common/dns_utils.h"
+
+namespace {
+
+#ifdef _WIN32
+static void vr_set_env(const char* name, const char* value)
+{
+  _putenv_s(name, value ? value : "");
+}
+static void vr_unset_env(const char* name)
+{
+  _putenv_s(name, "");
+}
+#else
+static void vr_set_env(const char* name, const char* value)
+{
+  if (value) setenv(name, value, 1);
+  else unsetenv(name);
+}
+static void vr_unset_env(const char* name)
+{
+  unsetenv(name);
+}
+#endif
+
+class scoped_env
+{
+public:
+  scoped_env(const char* name, const char* value) : name_(name)
+  {
+    const char* old = std::getenv(name);
+    if (old) { had_old_ = true; old_ = old; }
+    vr_set_env(name, value);
+  }
+  ~scoped_env()
+  {
+    if (had_old_) vr_set_env(name_.c_str(), old_.c_str());
+    else vr_unset_env(name_.c_str());
+  }
+private:
+  std::string name_;
+  bool had_old_ = false;
+  std::string old_;
+};
+
+class temp_anchor_file
+{
+public:
+  explicit temp_anchor_file(const std::string& contents)
+  {
+    path_ = boost::filesystem::temp_directory_path() /
+            boost::filesystem::unique_path("vr_dns_anchor_%%%%-%%%%");
+    std::ofstream out(path_.string().c_str());
+    out << contents;
+  }
+  ~temp_anchor_file()
+  {
+    boost::system::error_code ec;
+    boost::filesystem::remove(path_, ec);
+  }
+  std::string string() const { return path_.string(); }
+private:
+  boost::filesystem::path path_;
+};
+
+static const char* const VALID_KSK_2024 =
+  "; VeilRoot DNSSEC root trust anchors\n"
+  ". IN DS 38696 8 2 683D2D0ACB8C9B712A1948B27F741219298D0A450D612C483AF444A4C0FB2B16\n";
+
+static const char* const VALID_KSK_2017 =
+  ". IN DS 20326 8 2 E06D44B80B8F1D39A95C0B0D7C65D08458E880409BBC683457104237C7F8EC8D\n";
+
+}  // anonymous namespace
 
 TEST(DNSResolver, IPv4Success)
 {
@@ -178,3 +255,316 @@ TEST(DNS_PUBLIC, invalid_ip_num5) { EXPECT_TRUE(tools::dns_utils::parse_dns_publ
 TEST(DNS_PUBLIC, invalid_ip_4_missing) { EXPECT_TRUE(tools::dns_utils::parse_dns_public("tcp://3.4..7").empty()); }
 TEST(DNS_PUBLIC, valid_ip_lo) { EXPECT_TRUE(is_equal("127.0.0.1", tools::dns_utils::parse_dns_public("tcp://127.0.0.1"))); }
 TEST(DNS_PUBLIC, valid_ip) { EXPECT_TRUE(is_equal("3.4.5.6", tools::dns_utils::parse_dns_public("tcp://3.4.5.6"))); }
+// ==================================================================
+// VeilRoot DNSSEC trust-anchor file tests.
+//
+// Parser tests are fully deterministic: they operate on temporary
+// files created and removed by the test itself, and never make a
+// network request.
+//
+// The fail-closed resolver tests are also network-free: the anchor
+// file is rejected during resolver construction, before the DNS
+// probe, so get_ipv4() returns empty without a packet being sent.
+//
+// ValidAnchorFileOverride requires network DNS, exactly like the
+// existing DNSSECSuccess test.
+// ==================================================================
+
+TEST(DNSSECTrustAnchorParser, AcceptsValidKSK2024)
+{
+  const temp_anchor_file f(VALID_KSK_2024);
+  std::string error;
+  EXPECT_TRUE(tools::dns_utils::validate_dnssec_trust_anchor_file(
+      f.string(), error)) << error;
+  EXPECT_TRUE(error.empty());
+}
+
+TEST(DNSSECTrustAnchorParser, AcceptsMultipleRecords)
+{
+  const std::string contents = std::string(VALID_KSK_2017) + VALID_KSK_2024;
+  const temp_anchor_file f(contents);
+  std::string error;
+  EXPECT_TRUE(tools::dns_utils::validate_dnssec_trust_anchor_file(
+      f.string(), error)) << error;
+}
+
+TEST(DNSSECTrustAnchorParser, AcceptsCommentsAndBlankLines)
+{
+  const temp_anchor_file f(
+      "; full-line comment\n"
+      "\n"
+      "  ; indented comment\n"
+      ". IN DS 38696 8 2 683D2D0ACB8C9B712A1948B27F741219298D0A450D612C483AF444A4C0FB2B16 ; trailing\n"
+      "\n");
+  std::string error;
+  EXPECT_TRUE(tools::dns_utils::validate_dnssec_trust_anchor_file(
+      f.string(), error)) << error;
+}
+
+TEST(DNSSECTrustAnchorParser, AcceptsSha1Digest)
+{
+  const temp_anchor_file f(
+      ". IN DS 12345 8 1 0123456789ABCDEF0123456789ABCDEF01234567\n");
+  std::string error;
+  EXPECT_TRUE(tools::dns_utils::validate_dnssec_trust_anchor_file(
+      f.string(), error)) << error;
+}
+
+TEST(DNSSECTrustAnchorParser, AcceptsSha384Digest)
+{
+  // SHA-384 DS records carry exactly 96 hex characters (48 bytes).
+  const std::string digest(96, 'A');
+  const temp_anchor_file f(
+      ". IN DS 12345 8 4 " + digest + "\n");
+  std::string error;
+  EXPECT_TRUE(tools::dns_utils::validate_dnssec_trust_anchor_file(
+      f.string(), error)) << error;
+}
+
+TEST(DNSSECTrustAnchorParser, AcceptsLowercaseTokens)
+{
+  const temp_anchor_file f(
+      ". in ds 38696 8 2 683d2d0acb8c9b712a1948b27f741219298d0a450d612c483af444a4c0fb2b16\n");
+  std::string error;
+  EXPECT_TRUE(tools::dns_utils::validate_dnssec_trust_anchor_file(
+      f.string(), error)) << error;
+}
+
+TEST(DNSSECTrustAnchorParser, RejectsGarbage)
+{
+  const temp_anchor_file f("this is not a DS record\n");
+  std::string error;
+  EXPECT_FALSE(tools::dns_utils::validate_dnssec_trust_anchor_file(
+      f.string(), error));
+  EXPECT_FALSE(error.empty());
+}
+
+TEST(DNSSECTrustAnchorParser, RejectsEmptyFile)
+{
+  const temp_anchor_file f("");
+  std::string error;
+  EXPECT_FALSE(tools::dns_utils::validate_dnssec_trust_anchor_file(
+      f.string(), error));
+  EXPECT_FALSE(error.empty());
+}
+
+TEST(DNSSECTrustAnchorParser, RejectsCommentsOnly)
+{
+  const temp_anchor_file f("; nothing but comments\n\n");
+  std::string error;
+  EXPECT_FALSE(tools::dns_utils::validate_dnssec_trust_anchor_file(
+      f.string(), error));
+  EXPECT_FALSE(error.empty());
+}
+
+TEST(DNSSECTrustAnchorParser, RejectsMissingFile)
+{
+  std::string error;
+  EXPECT_FALSE(tools::dns_utils::validate_dnssec_trust_anchor_file(
+      "/nonexistent/vr_dns_anchor_should_not_exist", error));
+  EXPECT_FALSE(error.empty());
+}
+
+TEST(DNSSECTrustAnchorParser, RejectsTruncatedDigest)
+{
+  const temp_anchor_file f(". IN DS 38696 8 2 683D2D0A\n");
+  std::string error;
+  EXPECT_FALSE(tools::dns_utils::validate_dnssec_trust_anchor_file(
+      f.string(), error));
+  EXPECT_FALSE(error.empty());
+}
+
+TEST(DNSSECTrustAnchorParser, RejectsInvalidHex)
+{
+  const temp_anchor_file f(
+      ". IN DS 38696 8 2 ZZZZ2D0ACB8C9B712A1948B27F741219298D0A450D612C483AF444A4C0FB2B16\n");
+  std::string error;
+  EXPECT_FALSE(tools::dns_utils::validate_dnssec_trust_anchor_file(
+      f.string(), error));
+  EXPECT_FALSE(error.empty());
+}
+
+TEST(DNSSECTrustAnchorParser, RejectsWrongLengthSha384Digest)
+{
+  // 128 hex characters: valid hex, wrong length for SHA-384.
+  const std::string digest(128, 'A');
+  const temp_anchor_file f(
+      ". IN DS 12345 8 4 " + digest + "\n");
+  std::string error;
+  EXPECT_FALSE(tools::dns_utils::validate_dnssec_trust_anchor_file(
+      f.string(), error));
+  EXPECT_FALSE(error.empty());
+}
+
+TEST(DNSSECTrustAnchorParser, RejectsWrongLengthSha1Digest)
+{
+  // SHA-1 requires 40 hex characters; 64 must be rejected.
+  const std::string digest(64, 'A');
+  const temp_anchor_file f(
+      ". IN DS 12345 8 1 " + digest + "\n");
+  std::string error;
+  EXPECT_FALSE(tools::dns_utils::validate_dnssec_trust_anchor_file(
+      f.string(), error));
+  EXPECT_FALSE(error.empty());
+}
+
+TEST(DNSSECTrustAnchorParser, RejectsUnsupportedDigestType)
+{
+  const temp_anchor_file f(
+      ". IN DS 38696 8 3 683D2D0ACB8C9B712A1948B27F741219298D0A450D612C483AF444A4C0FB2B16\n");
+  std::string error;
+  EXPECT_FALSE(tools::dns_utils::validate_dnssec_trust_anchor_file(
+      f.string(), error));
+  EXPECT_FALSE(error.empty());
+}
+
+TEST(DNSSECTrustAnchorParser, RejectsNonRootOwner)
+{
+  const temp_anchor_file f(
+      "example.com. IN DS 38696 8 2 683D2D0ACB8C9B712A1948B27F741219298D0A450D612C483AF444A4C0FB2B16\n");
+  std::string error;
+  EXPECT_FALSE(tools::dns_utils::validate_dnssec_trust_anchor_file(
+      f.string(), error));
+}
+
+TEST(DNSSECTrustAnchorParser, RejectsWrongClass)
+{
+  const temp_anchor_file f(
+      ". CH DS 38696 8 2 683D2D0ACB8C9B712A1948B27F741219298D0A450D612C483AF444A4C0FB2B16\n");
+  std::string error;
+  EXPECT_FALSE(tools::dns_utils::validate_dnssec_trust_anchor_file(
+      f.string(), error));
+}
+
+TEST(DNSSECTrustAnchorParser, RejectsWrongType)
+{
+  const temp_anchor_file f(
+      ". IN DNSKEY 38696 8 2 683D2D0ACB8C9B712A1948B27F741219298D0A450D612C483AF444A4C0FB2B16\n");
+  std::string error;
+  EXPECT_FALSE(tools::dns_utils::validate_dnssec_trust_anchor_file(
+      f.string(), error));
+}
+
+TEST(DNSSECTrustAnchorParser, RejectsKeyTagOutOfRange)
+{
+  const temp_anchor_file f(
+      ". IN DS 65536 8 2 683D2D0ACB8C9B712A1948B27F741219298D0A450D612C483AF444A4C0FB2B16\n");
+  std::string error;
+  EXPECT_FALSE(tools::dns_utils::validate_dnssec_trust_anchor_file(
+      f.string(), error));
+}
+
+TEST(DNSSECTrustAnchorParser, RejectsZeroAlgorithm)
+{
+  const temp_anchor_file f(
+      ". IN DS 38696 0 2 683D2D0ACB8C9B712A1948B27F741219298D0A450D612C483AF444A4C0FB2B16\n");
+  std::string error;
+  EXPECT_FALSE(tools::dns_utils::validate_dnssec_trust_anchor_file(
+      f.string(), error));
+}
+
+TEST(DNSSECTrustAnchorParser, RejectsWholeFileOnOneBadLine)
+{
+  const std::string contents =
+      "; comment\n"
+      ". IN DS 38696 8 2 683D2D0ACB8C9B712A1948B27F741219298D0A450D612C483AF444A4C0FB2B16\n"
+      "this line is garbage\n";
+  const temp_anchor_file f(contents);
+  std::string error;
+  EXPECT_FALSE(tools::dns_utils::validate_dnssec_trust_anchor_file(
+      f.string(), error));
+  EXPECT_FALSE(error.empty());
+}
+
+TEST(DNSSECTrustAnchorParser, RejectsHashCommentSyntax)
+{
+  // '#' is not a DNS master-file comment delimiter.
+  const std::string contents =
+      "# this is not a comment\n"
+      ". IN DS 38696 8 2 683D2D0ACB8C9B712A1948B27F741219298D0A450D612C483AF444A4C0FB2B16\n";
+  const temp_anchor_file f(contents);
+  std::string error;
+  EXPECT_FALSE(tools::dns_utils::validate_dnssec_trust_anchor_file(
+      f.string(), error));
+}
+
+// ------------------------------------------------------------------
+// Resolver integration: env-var driven anchor file selection.
+// Uses create() so the environment is read at construction time.
+// ------------------------------------------------------------------
+
+TEST(DNSResolver, ValidAnchorFileOverride)
+{
+  const temp_anchor_file f(VALID_KSK_2024);
+  scoped_env env("DNSSEC_TRUST_ANCHOR_FILE", f.string().c_str());
+
+  tools::DNSResolver resolver = tools::DNSResolver::create();
+  bool avail = false, valid = false;
+  auto ips = resolver.get_ipv4("example.com", avail, valid);
+  // Requires network DNS, same dependency as DNSResolver.DNSSECSuccess.
+  EXPECT_LE(1u, ips.size());
+  EXPECT_TRUE(avail);
+  EXPECT_TRUE(valid);
+}
+
+TEST(DNSResolver, GarbageAnchorFileFailsClosed)
+{
+  const temp_anchor_file f("this is not a DS record\n");
+  scoped_env env("DNSSEC_TRUST_ANCHOR_FILE", f.string().c_str());
+
+  tools::DNSResolver resolver = tools::DNSResolver::create();
+  bool avail = true, valid = true;
+  auto ips = resolver.get_ipv4("example.com", avail, valid);
+  EXPECT_EQ(0u, ips.size());
+  EXPECT_FALSE(avail);
+  EXPECT_FALSE(valid);
+}
+
+TEST(DNSResolver, MissingExplicitAnchorFileFailsClosed)
+{
+  scoped_env env("DNSSEC_TRUST_ANCHOR_FILE",
+                 "/nonexistent/vr_dns_anchor_should_not_exist");
+
+  tools::DNSResolver resolver = tools::DNSResolver::create();
+  bool avail = true, valid = true;
+  auto ips = resolver.get_ipv4("example.com", avail, valid);
+  EXPECT_EQ(0u, ips.size());
+  EXPECT_FALSE(avail);
+  EXPECT_FALSE(valid);
+}
+
+TEST(DNSResolver, RelativeAnchorFileOverrideFailsClosed)
+{
+  scoped_env env("DNSSEC_TRUST_ANCHOR_FILE", "relative/path/dns_anchors");
+
+  tools::DNSResolver resolver = tools::DNSResolver::create();
+  bool avail = true, valid = true;
+  auto ips = resolver.get_ipv4("example.com", avail, valid);
+  EXPECT_EQ(0u, ips.size());
+  EXPECT_FALSE(avail);
+  EXPECT_FALSE(valid);
+}
+
+TEST(DNSResolver, OverrideScopeIsClearedOnExit)
+{
+  // Failing override must not leak to the next construction.
+  {
+    const temp_anchor_file f("garbage\n");
+    scoped_env env("DNSSEC_TRUST_ANCHOR_FILE", f.string().c_str());
+    tools::DNSResolver r = tools::DNSResolver::create();
+    bool a = true, v = true;
+    auto ips = r.get_ipv4("example.invalid", a, v);
+    EXPECT_EQ(0u, ips.size());
+  }
+
+  // After the scope ends, a fresh resolver must construct with the
+  // compiled-anchor fallback. localhost comes from /etc/hosts and is
+  // independent of DNSSEC anchor state, so it is a deterministic
+  // "resolver is functional" check.
+  tools::DNSResolver resolver = tools::DNSResolver::create();
+  bool a = false, v = false;
+  auto ips = resolver.get_ipv4("localhost", a, v);
+  EXPECT_EQ(1u, ips.size());
+  if (ips.size() == 1)
+    EXPECT_EQ("127.0.0.1", ips[0]);
+}
