@@ -104,8 +104,14 @@ get_builtin_ds(void)
 {
   static const char * const ds[] =
   {
-    ". IN DS 19036 8 2 49AAC11D7B6F6446702E54A1607371607A1A41855200FD2CE1CDDE32F24E8FB5\n",
+    // KSK-2017. Still published in the root DNSKEY RRset during the
+    // 2024-2026 rollover transition; retained for chain building.
     ". IN DS 20326 8 2 E06D44B80B8F1D39A95C0B0D7C65D08458E880409BBC683457104237C7F8EC8D\n",
+    // KSK-2024 (key tag 38696). Pre-published on 2025-01-11; became the
+    // sole key signing the root DNSKEY RRset on 2026-10-11. Without this
+    // anchor, DNSSEC validation of any signed record fails with
+    // "signature missing ... while building chain of trust".
+    ". IN DS 38696 8 2 683D2D0ACB8C9B712A1948B27F741219298D0A450D612C483AF444A4C0FB2B16\n",
     NULL
   };
   return ds;
