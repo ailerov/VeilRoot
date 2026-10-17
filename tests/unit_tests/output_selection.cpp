@@ -138,7 +138,25 @@ TEST(select_outputs, density)
   static const size_t NPICKS = 1000000;
   std::vector<uint64_t> offsets;
 
-  MKOFFSETS(300000, 1 + (crypto::rand<size_t>() & 0x1f));
+  // Deterministic pseudo-random density fixture. The production gamma
+  // picker is stochastic by design; only the synthetic chain histogram
+  // is fixed here, so this test cannot flake under load.
+  uint64_t n_outs = 0;
+  uint64_t fixture_rng = 0xD1B54A32D192ED03ULL;
+
+  for (size_t i = 0; i < 300000; ++i)
+  {
+    fixture_rng =
+        fixture_rng * 6364136223846793005ULL
+        + 1442695040888963407ULL;
+
+    const uint64_t density =
+        1 + ((fixture_rng >> 59) & 0x1f);
+
+    n_outs += density;
+    offsets.push_back(n_outs);
+  }
+
   tools::gamma_picker picker(offsets);
 
   std::vector<int> picks(/*n_outs*/offsets.size(), 0);
