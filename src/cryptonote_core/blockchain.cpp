@@ -8823,7 +8823,7 @@ select_dao_v2_tally_committee(const dao_tally_key_record& key_rec,
 // canonical state only when a DKG key-activation transaction is
 // applied to a block. See apply_dao_v2_dkg_activation.
 bool persist_dao_v2_dkg_result(BlockchainDB& db,
-                               uint32_t epoch,
+                               uint32_t ceremony_id,
                                const dkg_result& res,
                                uint32_t local_id)
 {
@@ -8840,7 +8840,7 @@ bool persist_dao_v2_dkg_result(BlockchainDB& db,
       return false;
     }
     try {
-      db.add_dao_local_share(epoch, local_id, packed);
+      db.add_dao_local_share(ceremony_id, local_id, packed);
     } catch (const std::exception& e) {
       MERROR("persist_dao_v2_dkg_result: local share persist failed: "
              << e.what());
@@ -9032,7 +9032,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     }
     // END_VNS_DAO_V2_RESHARE_ROUTE
 
-    auto it = m_dao_v2_dkg_runners.find(m.hdr.epoch);
+    auto it = m_dao_v2_dkg_runners.find(1u);  // bootstrap ceremony
     if (it == m_dao_v2_dkg_runners.end()) {
       // No ceremony running for this DKG run. Silent: peers may be
       // ahead of us.
@@ -9080,19 +9080,19 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     if (act.version != 1) return;
     if (act.attestations.size() != 1) return;
 
-    const uint32_t epoch = m.hdr.epoch;
+    const uint32_t ceremony_id = 1u;  // bootstrap ceremony
 
     dao::dao_tally_key_record local_rec;
     uint64_t local_sel_h = 0;
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
-      auto it = m_dao_v2_local_records.find(epoch);
+      auto it = m_dao_v2_local_records.find(ceremony_id);
       if (it == m_dao_v2_local_records.end()) {
         // We did not participate in this DKG ceremony. Silent.
         return;
       }
       local_rec   = it->second;
-      local_sel_h = m_dao_v2_local_selection_height[epoch];
+      local_sel_h = m_dao_v2_local_selection_height[ceremony_id];
     }
 
     if (act.selection_height != local_sel_h) {
@@ -9152,38 +9152,38 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
-      auto& accum = m_dao_v2_key_ready_attestations[epoch];
+      auto& accum = m_dao_v2_key_ready_attestations[ceremony_id];
       if (accum.count(att.member_index) == 0)
         accum[att.member_index] = att;
     }
 
-    (void)try_submit_pending_dao_v2_key_activation(epoch);
+    (void)try_submit_pending_dao_v2_key_activation(ceremony_id);
   }
 
   // BEGIN_VNS_DAO_V2_KEY_READY_SUBMIT_HELPER
   bool Blockchain::try_submit_pending_dao_v2_key_activation(
-      uint32_t epoch)
+      uint32_t ceremony_id)
   {
     dao::dao_dkg_key_activation full;
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
-      auto rec_it = m_dao_v2_local_records.find(epoch);
+      auto rec_it = m_dao_v2_local_records.find(ceremony_id);
       if (rec_it == m_dao_v2_local_records.end()) return false;
-      if (m_dao_v2_key_ready_submitted.count(epoch) > 0) return false;
+      if (m_dao_v2_key_ready_submitted.count(ceremony_id) > 0) return false;
 
-      auto acc_it = m_dao_v2_key_ready_attestations.find(epoch);
+      auto acc_it = m_dao_v2_key_ready_attestations.find(ceremony_id);
       if (acc_it == m_dao_v2_key_ready_attestations.end()) return false;
       if (acc_it->second.size() < rec_it->second.threshold) return false;
 
       full.version          = 1;
-      full.selection_height = m_dao_v2_local_selection_height[epoch];
+      full.selection_height = m_dao_v2_local_selection_height[ceremony_id];
       full.record           = rec_it->second;
       // std::map iterates in ascending member_index order, which the
       // serializer requires.
       for (const auto& kv : acc_it->second)
         full.attestations.push_back(kv.second);
 
-      m_dao_v2_key_ready_submitted[epoch] = true;
+      m_dao_v2_key_ready_submitted[ceremony_id] = true;
     }
 
     // Already canonical: another node's activation block landed.
@@ -9192,16 +9192,16 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       try {
         if (m_db->get_dao_tally_key(existing)) {
           std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
-          m_dao_v2_key_ready_attestations.erase(epoch);
+          m_dao_v2_key_ready_attestations.erase(ceremony_id);
           return true;
         }
       } catch (...) {}
     }
 
     transaction tx;
-    if (!build_dao_v2_dkg_activation_tx(epoch, std::move(full), tx)) {
+    if (!build_dao_v2_dkg_activation_tx(ceremony_id, std::move(full), tx)) {
       std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
-      m_dao_v2_key_ready_submitted.erase(epoch);
+      m_dao_v2_key_ready_submitted.erase(ceremony_id);
       return false;
     }
 
@@ -9210,18 +9210,18 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     if (!m_tx_pool.add_tx(tx, tvc, relay_method::local, true,
                           hf_version, hf_version)) {
       std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
-      m_dao_v2_key_ready_submitted.erase(epoch);
-      MWARNING("key_ready: mempool rejected activation tx for epoch "
-               << epoch);
+      m_dao_v2_key_ready_submitted.erase(ceremony_id);
+      MWARNING("key_ready: mempool rejected activation tx for ceremony_id "
+               << ceremony_id);
       return false;
     }
-    MINFO("key_ready: activation tx submitted for epoch " << epoch);
+    MINFO("key_ready: activation tx submitted for ceremony_id " << ceremony_id);
     return true;
   }
   // END_VNS_DAO_V2_KEY_READY_SUBMIT_HELPER
 
   bool Blockchain::build_dao_v2_dkg_activation_tx(
-      uint32_t /*epoch*/,
+      uint32_t /*ceremony_id*/,
       dao::dao_dkg_key_activation act,
       transaction& tx_out)
   {
@@ -9330,12 +9330,12 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 // Root participant subset R is the top T_root bootstrap shareholders
 // by the same canonical ranking used to select the tally committee.
 // Deterministic across nodes.
-    void Blockchain::queue_dao_v2_dkg_result(uint32_t epoch,
+    void Blockchain::queue_dao_v2_dkg_result(uint32_t ceremony_id,
                                           dao::dkg_result result)
   {
     std::lock_guard<std::mutex> lock(m_dao_v2_dkg_result_mutex);
     m_pending_dao_v2_dkg_results.push_back(
-        pending_dao_v2_dkg_result{epoch, std::move(result)});
+        pending_dao_v2_dkg_result{ceremony_id, std::move(result)});
   }
 
   bool Blockchain::process_pending_dao_v2_dkg_results()
@@ -9349,7 +9349,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
     for (auto& item : pending) {
       if (!item.result.ok) {
-        MWARNING("DAO V2 DKG epoch " << item.epoch << ": result not ok");
+        MWARNING("DAO V2 DKG ceremony_id " << item.ceremony_id << ": result not ok");
         continue;
       }
       // Derive this node's committee index from the accepted record
@@ -9357,7 +9357,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       // but does not require the runner to still be alive.
       crypto::public_key self_pk{};
       if (!crypto::secret_key_to_public_key(m_node_privkey, self_pk)) {
-        MWARNING("DAO V2 DKG epoch " << item.epoch
+        MWARNING("DAO V2 DKG ceremony_id " << item.ceremony_id
                  << ": cannot derive node pubkey");
         continue;
       }
@@ -9373,7 +9373,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
         }
       }
       if (local_id == 0 || item.result.local_secret_share.empty()) {
-        MWARNING("DAO V2 DKG epoch " << item.epoch
+        MWARNING("DAO V2 DKG ceremony_id " << item.ceremony_id
                  << ": this node is not in the accepted committee or "
                     "has no local share");
         continue;
@@ -9383,15 +9383,15 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       try {
         m_db->block_wtxn_start();
       } catch (const std::exception& e) {
-        MWARNING("DAO V2 DKG epoch " << item.epoch
+        MWARNING("DAO V2 DKG ceremony_id " << item.ceremony_id
                  << ": failed to start write txn: " << e.what());
         continue;
       }
 
-      if (!dao::persist_dao_v2_dkg_result(*m_db, item.epoch,
+      if (!dao::persist_dao_v2_dkg_result(*m_db, item.ceremony_id,
                                           item.result, local_id)) {
         try { m_db->block_wtxn_abort(); } catch (...) {}
-        MWARNING("DAO V2 DKG epoch " << item.epoch
+        MWARNING("DAO V2 DKG ceremony_id " << item.ceremony_id
                  << ": persistence failed");
         continue;
       }
@@ -9402,12 +9402,12 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       try {
         m_db->block_wtxn_stop();
       } catch (const std::exception& e) {
-        MWARNING("DAO V2 DKG epoch " << item.epoch
+        MWARNING("DAO V2 DKG ceremony_id " << item.ceremony_id
                  << ": commit failed: " << e.what());
         continue;
       }
 
-      MINFO("DAO V2 DKG epoch " << item.epoch
+      MINFO("DAO V2 DKG ceremony_id " << item.ceremony_id
             << ": local share persisted (key record pending activation)");
 
       // BEGIN_VNS_DAO_V2_KEY_READY_EMIT
@@ -9419,7 +9419,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       {
         crypto::public_key self_pk{};
         if (!crypto::secret_key_to_public_key(m_node_privkey, self_pk)) {
-          MWARNING("DAO V2 DKG epoch " << item.epoch
+          MWARNING("DAO V2 DKG ceremony_id " << item.ceremony_id
                    << ": cannot derive node pubkey for attestation");
           continue;
         }
@@ -9428,7 +9428,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
         try {
           genesis_hash = m_db->get_block_hash_from_height(0);
         } catch (...) {
-          MWARNING("DAO V2 DKG epoch " << item.epoch
+          MWARNING("DAO V2 DKG ceremony_id " << item.ceremony_id
                    << ": genesis hash unavailable");
           continue;
         }
@@ -9457,20 +9457,21 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
         {
           std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
-          m_dao_v2_local_records[item.epoch] = item.result.record;
-          m_dao_v2_local_selection_height[item.epoch] =
+          m_dao_v2_local_records[item.ceremony_id] = item.result.record;
+          m_dao_v2_local_selection_height[item.ceremony_id] =
               item.result.selection_height;
-          m_dao_v2_key_ready_attestations[item.epoch][local_id] = att;
+          m_dao_v2_key_ready_attestations[item.ceremony_id][local_id] = att;
         }
 
         if (m_dao_v2_dkg_send) {
           dao::dkg_msg m;
-          m.hdr.epoch        = item.epoch;
+          std::memcpy(m.hdr.committee_id_hash,
+                      item.result.record.committee_id_hash.data(), 32);
           m.hdr.type         = dao::dkg_msg_type::key_record_ready;
           m.hdr.sender_id    = local_id;
           m.hdr.recipient_id = 0;
           if (!act.serialize(m.bytes_a)) {
-            MWARNING("DAO V2 DKG epoch " << item.epoch
+            MWARNING("DAO V2 DKG ceremony_id " << item.ceremony_id
                      << ": activation serialize failed");
           } else {
             std::vector<uint8_t> wire;
@@ -9486,21 +9487,21 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
     // Retry any pending activation submissions on this owner cycle.
     {
-      std::vector<uint32_t> epochs;
+      std::vector<uint32_t> ceremony_ids;
       {
         std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
         for (const auto& kv : m_dao_v2_local_records)
-          epochs.push_back(kv.first);
+          ceremony_ids.push_back(kv.first);
       }
-      for (uint32_t e : epochs)
-        (void)try_submit_pending_dao_v2_key_activation(e);
+      for (uint32_t id : ceremony_ids)
+        (void)try_submit_pending_dao_v2_key_activation(id);
     }
     return true;
   }
 
-    bool Blockchain::bootstrap_dao_v2_dkg(uint32_t epoch)
+    bool Blockchain::bootstrap_dao_v2_dkg(uint32_t ceremony_id)
   {
-    if (m_dao_v2_dkg_runners.count(epoch) > 0)
+    if (m_dao_v2_dkg_runners.count(ceremony_id) > 0)
       return true;   // already running
 
     // The bootstrap DKG must run over the complete eligible
@@ -9556,43 +9557,43 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       return false;
     }
 
-    if (!start_dao_v2_dkg(epoch, shareholders, *vss_holder,
+    if (!start_dao_v2_dkg(ceremony_id, shareholders, *vss_holder,
                           target_N_bits, qproof_rounds)) {
       // Not in committee is not an error.
-      MINFO("bootstrap_dao_v2_dkg: runner not started for epoch " << epoch);
+      MINFO("bootstrap_dao_v2_dkg: runner not started for ceremony_id " << ceremony_id);
       return false;
     }
 
-    m_dao_v2_dkg_vss.emplace(epoch, std::move(vss_holder));
+    m_dao_v2_dkg_vss.emplace(ceremony_id, std::move(vss_holder));
 
     // Watcher: waits for the runner to finish, then persists the
     // outcome. Runs on its own thread so the caller is not blocked.
     auto* self = this;
-    m_dao_v2_dkg_watchers.emplace(epoch, std::thread(
-        [self, epoch, selection_height]() {
-      auto it = self->m_dao_v2_dkg_runners.find(epoch);
+    m_dao_v2_dkg_watchers.emplace(ceremony_id, std::thread(
+        [self, ceremony_id, selection_height]() {
+      auto it = self->m_dao_v2_dkg_runners.find(ceremony_id);
       if (it == self->m_dao_v2_dkg_runners.end()) return;
       dao::dkg_result res;
       if (!it->second->wait(res, 0)) {
-        MWARNING("DAO V2 DKG epoch " << epoch << ": ceremony failed");
+        MWARNING("DAO V2 DKG ceremony_id " << ceremony_id << ": ceremony failed");
         return;
       }
       res.selection_height = selection_height;
-      self->queue_dao_v2_dkg_result(epoch, std::move(res));
+      self->queue_dao_v2_dkg_result(ceremony_id, std::move(res));
     }));
 
     return true;
   }
 
     bool Blockchain::start_dao_v2_dkg_for_committee(
-      uint32_t epoch,
+      uint32_t ceremony_id,
       const std::vector<crypto::public_key>& committee,
       const dao::dao_vss_group& vss,
       uint32_t target_N_bits,
       uint32_t qproof_rounds)
   {
-    if (m_dao_v2_dkg_runners.count(epoch) > 0) {
-      MWARNING("start_dao_v2_dkg: epoch " << epoch << " already running");
+    if (m_dao_v2_dkg_runners.count(ceremony_id) > 0) {
+      MWARNING("start_dao_v2_dkg: ceremony_id " << ceremony_id << " already running");
       return false;
     }
     if (!m_dao_v2_dkg_send) {
@@ -9610,8 +9611,8 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
         dao::dao_dkg_party_index_for(committee, self_pk);
     if (local_id == 0) {
       // This node is not part of this committee. Not an error.
-      MINFO("start_dao_v2_dkg: node is not in committee for epoch "
-            << epoch);
+      MINFO("start_dao_v2_dkg: node is not in committee for ceremony_id "
+            << ceremony_id);
       return false;
     }
 
@@ -9623,7 +9624,6 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     dao::dkg_config cfg;
     cfg.committee_size = static_cast<uint32_t>(committee.size());
     cfg.threshold      = threshold;
-    cfg.epoch          = epoch;
     cfg.member_ids     = committee;
     cfg.local_party_id = local_id;
     cfg.k              = dao::DAO_DKG_K_BITS_PROD;
@@ -9658,12 +9658,12 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
     auto runner = std::make_unique<dao::dkg_p2p_runner>(cfg, vss, cb);
     if (!runner->start()) {
-      MWARNING("start_dao_v2_dkg: runner start failed for epoch " << epoch);
+      MWARNING("start_dao_v2_dkg: runner start failed for ceremony_id " << ceremony_id);
       return false;
     }
 
-    m_dao_v2_dkg_runners.emplace(epoch, std::move(runner));
-    MINFO("start_dao_v2_dkg: runner started for epoch " << epoch
+    m_dao_v2_dkg_runners.emplace(ceremony_id, std::move(runner));
+    MINFO("start_dao_v2_dkg: runner started for ceremony_id " << ceremony_id
           << " n=" << committee.size()
           << " t=" << threshold
           << " local_id=" << local_id);
@@ -9671,13 +9671,13 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
   }
 
   bool Blockchain::start_dao_v2_dkg(
-      uint32_t epoch,
+      uint32_t ceremony_id,
       const std::vector<crypto::public_key>& committee,
       const dao::dao_vss_group& vss,
       uint32_t target_N_bits,
       uint32_t qproof_rounds)
   {
-    return start_dao_v2_dkg_for_committee(epoch, committee, vss,
+    return start_dao_v2_dkg_for_committee(ceremony_id, committee, vss,
                                           target_N_bits, qproof_rounds);
   }
   // END_VNS_DAO_V2_DKG

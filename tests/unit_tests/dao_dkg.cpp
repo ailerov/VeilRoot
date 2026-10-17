@@ -505,9 +505,9 @@ TEST(dao_range, round_trip_small)
     ASSERT_NE(C, nullptr);
 
     dao_range_proof proof;
-    ASSERT_TRUE(dao_range_prove(grp, 1, 7, DAO_RANGE_VALUE_TAG_BETA,
+    ASSERT_TRUE(dao_range_prove(grp, 7, DAO_RANGE_VALUE_TAG_BETA,
                                 x, rho, C, 160, proof));
-    EXPECT_TRUE(dao_range_verify(grp, 1, 7, DAO_RANGE_VALUE_TAG_BETA,
+    EXPECT_TRUE(dao_range_verify(grp, 7, DAO_RANGE_VALUE_TAG_BETA,
                                  C, proof));
 
     BN_free(x); BN_free(rho); BN_free(C);
@@ -527,9 +527,9 @@ TEST(dao_range, round_trip_boundary_zero)
     BIGNUM* C = make_commitment(grp, x, rho, ctx.ctx);
 
     dao_range_proof proof;
-    ASSERT_TRUE(dao_range_prove(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA,
+    ASSERT_TRUE(dao_range_prove(grp, 1, DAO_RANGE_VALUE_TAG_BETA,
                                 x, rho, C, 160, proof));
-    EXPECT_TRUE(dao_range_verify(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA,
+    EXPECT_TRUE(dao_range_verify(grp, 1, DAO_RANGE_VALUE_TAG_BETA,
                                  C, proof));
 
     BN_free(x); BN_free(rho); BN_free(C);
@@ -551,9 +551,9 @@ TEST(dao_range, round_trip_boundary_max)
     BIGNUM* C = make_commitment(grp, x, rho, ctx.ctx);
 
     dao_range_proof proof;
-    ASSERT_TRUE(dao_range_prove(grp, 1, 1, DAO_RANGE_VALUE_TAG_R,
+    ASSERT_TRUE(dao_range_prove(grp, 1, DAO_RANGE_VALUE_TAG_R,
                                 x, rho, C, 160, proof));
-    EXPECT_TRUE(dao_range_verify(grp, 1, 1, DAO_RANGE_VALUE_TAG_R,
+    EXPECT_TRUE(dao_range_verify(grp, 1, DAO_RANGE_VALUE_TAG_R,
                                  C, proof));
 
     BN_free(x); BN_free(rho); BN_free(C);
@@ -574,7 +574,7 @@ TEST(dao_range, reject_value_above_bound)
     BIGNUM* C = make_commitment(grp, x, rho, ctx.ctx);
 
     dao_range_proof proof;
-    EXPECT_FALSE(dao_range_prove(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA,
+    EXPECT_FALSE(dao_range_prove(grp, 1, DAO_RANGE_VALUE_TAG_BETA,
                                  x, rho, C, 160, proof));
 
     BN_free(x); BN_free(rho); BN_free(C);
@@ -597,11 +597,11 @@ TEST(dao_range, reject_wrong_commitment)
     BIGNUM* C2   = make_commitment(grp, x2, rho2, ctx.ctx);
 
     dao_range_proof proof;
-    ASSERT_TRUE(dao_range_prove(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA,
+    ASSERT_TRUE(dao_range_prove(grp, 1, DAO_RANGE_VALUE_TAG_BETA,
                                 x, rho, C, 160, proof));
 
-    EXPECT_TRUE (dao_range_verify(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA, C,  proof));
-    EXPECT_FALSE(dao_range_verify(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA, C2, proof));
+    EXPECT_TRUE (dao_range_verify(grp, 1, DAO_RANGE_VALUE_TAG_BETA, C,  proof));
+    EXPECT_FALSE(dao_range_verify(grp, 1, DAO_RANGE_VALUE_TAG_BETA, C2, proof));
 
     BN_free(x); BN_free(rho); BN_free(C);
     BN_free(x2); BN_free(rho2); BN_free(C2);
@@ -620,13 +620,12 @@ TEST(dao_range, reject_wrong_domain)
     BIGNUM* C   = make_commitment(grp, x, rho, ctx.ctx);
 
     dao_range_proof proof;
-    ASSERT_TRUE(dao_range_prove(grp, 1, 5, DAO_RANGE_VALUE_TAG_BETA,
+    ASSERT_TRUE(dao_range_prove(grp, 5, DAO_RANGE_VALUE_TAG_BETA,
                                 x, rho, C, 160, proof));
 
-    EXPECT_TRUE (dao_range_verify(grp, 1, 5, DAO_RANGE_VALUE_TAG_BETA, C, proof));
-    EXPECT_FALSE(dao_range_verify(grp, 2, 5, DAO_RANGE_VALUE_TAG_BETA, C, proof));
-    EXPECT_FALSE(dao_range_verify(grp, 1, 6, DAO_RANGE_VALUE_TAG_BETA, C, proof));
-    EXPECT_FALSE(dao_range_verify(grp, 1, 5, DAO_RANGE_VALUE_TAG_R,    C, proof));
+    EXPECT_TRUE (dao_range_verify(grp, 5, DAO_RANGE_VALUE_TAG_BETA, C, proof));
+    EXPECT_FALSE(dao_range_verify(grp, 6, DAO_RANGE_VALUE_TAG_BETA, C, proof));
+    EXPECT_FALSE(dao_range_verify(grp, 5, DAO_RANGE_VALUE_TAG_R,    C, proof));
 
     BN_free(x); BN_free(rho); BN_free(C);
 }
@@ -644,32 +643,32 @@ TEST(dao_range, reject_tampered_proof)
     BIGNUM* C   = make_commitment(grp, x, rho, ctx.ctx);
 
     dao_range_proof proof;
-    ASSERT_TRUE(dao_range_prove(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA,
+    ASSERT_TRUE(dao_range_prove(grp, 1, DAO_RANGE_VALUE_TAG_BETA,
                                 x, rho, C, 160, proof));
-    ASSERT_TRUE(dao_range_verify(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA, C, proof));
+    ASSERT_TRUE(dao_range_verify(grp, 1, DAO_RANGE_VALUE_TAG_BETA, C, proof));
 
     // Flip a byte in bit commitment 0.
     proof.bit_commitments[0][0] ^= 0x01;
-    EXPECT_FALSE(dao_range_verify(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA, C, proof));
+    EXPECT_FALSE(dao_range_verify(grp, 1, DAO_RANGE_VALUE_TAG_BETA, C, proof));
     proof.bit_commitments[0][0] ^= 0x01;
 
     // Flip a byte in bit proof 3 response z_1.
     proof.bit_proofs[3].z_1[0] ^= 0x01;
-    EXPECT_FALSE(dao_range_verify(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA, C, proof));
+    EXPECT_FALSE(dao_range_verify(grp, 1, DAO_RANGE_VALUE_TAG_BETA, C, proof));
     proof.bit_proofs[3].z_1[0] ^= 0x01;
 
     // Flip a byte in the link proof response.
     proof.link_z[0] ^= 0x01;
-    EXPECT_FALSE(dao_range_verify(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA, C, proof));
+    EXPECT_FALSE(dao_range_verify(grp, 1, DAO_RANGE_VALUE_TAG_BETA, C, proof));
     proof.link_z[0] ^= 0x01;
 
     // Flip a byte in the link A.
     proof.link_a[0] ^= 0x01;
-    EXPECT_FALSE(dao_range_verify(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA, C, proof));
+    EXPECT_FALSE(dao_range_verify(grp, 1, DAO_RANGE_VALUE_TAG_BETA, C, proof));
     proof.link_a[0] ^= 0x01;
 
     // Sanity: unmodified still verifies.
-    EXPECT_TRUE(dao_range_verify(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA, C, proof));
+    EXPECT_TRUE(dao_range_verify(grp, 1, DAO_RANGE_VALUE_TAG_BETA, C, proof));
 
     BN_free(x); BN_free(rho); BN_free(C);
 }
@@ -687,7 +686,7 @@ TEST(dao_range, serialize_round_trip)
     BIGNUM* C   = make_commitment(grp, x, rho, ctx.ctx);
 
     dao_range_proof proof;
-    ASSERT_TRUE(dao_range_prove(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA,
+    ASSERT_TRUE(dao_range_prove(grp, 1, DAO_RANGE_VALUE_TAG_BETA,
                                 x, rho, C, 160, proof));
 
     std::vector<uint8_t> enc;
@@ -699,7 +698,7 @@ TEST(dao_range, serialize_round_trip)
     EXPECT_EQ(dec.bit_commitments.size(), proof.bit_commitments.size());
     EXPECT_EQ(dec.bit_proofs.size(), proof.bit_proofs.size());
 
-    EXPECT_TRUE(dao_range_verify(grp, 1, 1, DAO_RANGE_VALUE_TAG_BETA, C, dec));
+    EXPECT_TRUE(dao_range_verify(grp, 1, DAO_RANGE_VALUE_TAG_BETA, C, dec));
 
     BN_free(x); BN_free(rho); BN_free(C);
 }
@@ -716,7 +715,6 @@ dkg_msg make_test_msg(uint32_t candidate_id, uint32_t phase, uint32_t round,
 {
     dkg_msg m;
     m.hdr.version      = 1;
-    m.hdr.epoch        = 1;
     m.hdr.candidate_id = candidate_id;
     m.hdr.sender_id    = sender_id;
     m.hdr.recipient_id = recipient_id;
@@ -757,7 +755,6 @@ dkg_msg make_leaf_for(const dkg_msg& original)
 
     dkg_msg leaf;
     leaf.hdr.version = original.hdr.version;
-    leaf.hdr.epoch = original.hdr.epoch;
     leaf.hdr.candidate_id = original.hdr.candidate_id;
     std::memcpy(leaf.hdr.committee_id_hash,
                 original.hdr.committee_id_hash,

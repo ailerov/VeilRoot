@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <iostream>
 #include <deque>
 #include <functional>
 #include <limits>
@@ -167,16 +168,15 @@ void E_to_bytes(const BIGNUM* E, std::vector<uint8_t>& out)
 }
 
 // Canonical V-commitment hash used both by the committer and by the
-// driver's reveal verification. Binds epoch, party id, and the
-// big-endian bytes of r_i.
-void compute_v_commit(uint32_t epoch, uint32_t party_id,
+// driver's reveal verification. Binds party id and the big-endian
+// bytes of r_i.
+void compute_v_commit(uint32_t party_id,
                       const std::vector<uint8_t>& r_bytes,
                       std::vector<uint8_t>& digest_out)
 {
     std::vector<uint8_t> buf;
     const char* dom = "DAO_DKG_V1";
     buf.insert(buf.end(), dom, dom + 10);
-    for (int i = 0; i < 4; ++i) buf.push_back((epoch >> (8*i)) & 0xff);
     for (int i = 0; i < 4; ++i) buf.push_back((party_id >> (8*i)) & 0xff);
     buf.insert(buf.end(), r_bytes.begin(), r_bytes.end());
     digest_out.assign(32, 0);
@@ -292,7 +292,6 @@ bool dkg_msg::serialize(std::vector<uint8_t>& out) const
 {
     out.clear();
     out.push_back(hdr.version);
-    push_u32(out, hdr.epoch);
     push_u32(out, hdr.candidate_id);
     out.insert(out.end(),
                std::begin(hdr.committee_id_hash),
@@ -319,7 +318,6 @@ bool dkg_msg::deserialize(const std::vector<uint8_t>& in)
     if (in.size() < 4) return false;
     hdr.version = in[off++];
     if (hdr.version != 1) return false;
-    if (!pull_u32(in, off, hdr.epoch)) return false;
     if (!pull_u32(in, off, hdr.candidate_id)) return false;
     if (off + 32 > in.size()) return false;
     std::memcpy(hdr.committee_id_hash, in.data() + off, 32);
@@ -1014,7 +1012,6 @@ bool dao_range_proof::deserialize(const std::vector<uint8_t>& in)
 }
 
 bool dao_range_prove(const dao_vss_group& grp,
-                     uint32_t epoch,
                      uint32_t party_id,
                      uint32_t value_tag,
                      const BIGNUM* x,
@@ -1133,7 +1130,6 @@ bool dao_range_prove(const dao_vss_group& grp,
         std::vector<uint8_t> input;
         static const char DOM_BIT[] = "VeilRoot-DAO-DKG-RANGE-BIT-V1";
         input.insert(input.end(), DOM_BIT, DOM_BIT + sizeof(DOM_BIT) - 1);
-        append_u32be(input, epoch);
         append_u32be(input, party_id);
         append_u32be(input, value_tag);
         append_bn_fixed(input, C_x, P_bytes);
@@ -1187,7 +1183,6 @@ bool dao_range_prove(const dao_vss_group& grp,
     std::vector<uint8_t> link_input;
     static const char DOM_LINK[] = "VeilRoot-DAO-DKG-RANGE-LINK-V1";
     link_input.insert(link_input.end(), DOM_LINK, DOM_LINK + sizeof(DOM_LINK) - 1);
-    append_u32be(link_input, epoch);
     append_u32be(link_input, party_id);
     append_u32be(link_input, value_tag);
     append_bn_fixed(link_input, C_x, P_bytes);
@@ -1215,7 +1210,6 @@ bool dao_range_prove(const dao_vss_group& grp,
 }
 
 bool dao_range_verify(const dao_vss_group& grp,
-                      uint32_t epoch,
                       uint32_t party_id,
                       uint32_t value_tag,
                       const BIGNUM* C_x,
@@ -1256,7 +1250,6 @@ bool dao_range_verify(const dao_vss_group& grp,
         std::vector<uint8_t> input;
         static const char DOM_BIT[] = "VeilRoot-DAO-DKG-RANGE-BIT-V1";
         input.insert(input.end(), DOM_BIT, DOM_BIT + sizeof(DOM_BIT) - 1);
-        append_u32be(input, epoch);
         append_u32be(input, party_id);
         append_u32be(input, value_tag);
         append_bn_fixed(input, C_x, P_bytes);
@@ -1323,7 +1316,6 @@ bool dao_range_verify(const dao_vss_group& grp,
     std::vector<uint8_t> link_input;
     static const char DOM_LINK[] = "VeilRoot-DAO-DKG-RANGE-LINK-V1";
     link_input.insert(link_input.end(), DOM_LINK, DOM_LINK + sizeof(DOM_LINK) - 1);
-    append_u32be(link_input, epoch);
     append_u32be(link_input, party_id);
     append_u32be(link_input, value_tag);
     append_bn_fixed(link_input, C_x, P_bytes);
@@ -1929,11 +1921,10 @@ class dkg_party
 {
 public:
     dkg_party(uint32_t party_id, uint32_t committee_size,
-              uint32_t threshold, uint32_t epoch)
+              uint32_t threshold)
         : party_id_(party_id),
           committee_size_(committee_size),
-          threshold_(threshold),
-          epoch_(epoch)
+          threshold_(threshold)
     {
         shares_p_received_.assign(committee_size + 1, nullptr);
         shares_q_received_.assign(committee_size + 1, nullptr);
@@ -2080,7 +2071,6 @@ private:
     uint32_t party_id_;
     uint32_t committee_size_;
     uint32_t threshold_;
-    uint32_t epoch_;
     uint32_t candidate_id_ = 0;
     uint8_t  committee_id_hash_[32] = {};
 
@@ -2267,7 +2257,6 @@ bool make_transcript_leaf(const dkg_msg& original, dkg_msg& leaf)
 
     leaf = dkg_msg{};
     leaf.hdr.version = original.hdr.version;
-    leaf.hdr.epoch = original.hdr.epoch;
     leaf.hdr.candidate_id = original.hdr.candidate_id;
     std::memcpy(leaf.hdr.committee_id_hash,
                 original.hdr.committee_id_hash,
@@ -2314,7 +2303,6 @@ dkg_msg dkg_party::make_header(dkg_msg_type type, uint32_t recipient,
 {
     dkg_msg m;
     m.hdr.version      = 1;
-    m.hdr.epoch        = epoch_;
     m.hdr.candidate_id = candidate_id_;
     std::memcpy(m.hdr.committee_id_hash, committee_id_hash_, 32);
     m.hdr.sender_id    = party_id_;
@@ -2868,7 +2856,6 @@ bool dkg_party::start_phase(uint32_t phase, uint32_t k,
 
 bool dkg_party::handle_message(const dkg_msg& m)
 {
-    if (m.hdr.epoch != epoch_) return false;
     if (m.hdr.candidate_id != candidate_id_) return false;
     if (std::memcmp(m.hdr.committee_id_hash, committee_id_hash_, 32) != 0)
         return false;
@@ -3311,10 +3298,10 @@ bool dkg_party::do_beta_R_generate()
     dao_range_proof beta_range;
     dao_range_proof dr_range;
     bool proofs_ok =
-        dao_range_prove(*vss_group_, epoch_, party_id_,
+        dao_range_prove(*vss_group_, party_id_,
                         DAO_RANGE_VALUE_TAG_BETA,
                         beta_i_, beta_blinding, C_beta, beta_bits, beta_range) &&
-        dao_range_prove(*vss_group_, epoch_, party_id_,
+        dao_range_prove(*vss_group_, party_id_,
                         DAO_RANGE_VALUE_TAG_R,
                         delta_R, dr_blinding, C_dr, dr_bits, dr_range);
 
@@ -3724,11 +3711,11 @@ bool dkg_party::do_compute_theta_share()
     {
         dao_theta_mul_proof mul_proof;
         dao_theta_open_proof open_proof;
-        if (!dao_theta_mul_prove(*vss_group_, epoch_, candidate_id_, party_id_,
+        if (!dao_theta_mul_prove(*vss_group_, candidate_id_, party_id_,
                                  N_candidate_, C_phi_i, C_beta_i_,
                                  beta_share_, r_beta_i, k_prod, C_prod,
                                  mul_proof)) goto done;
-        if (!dao_theta_open_prove(*vss_group_, epoch_, candidate_id_, party_id_,
+        if (!dao_theta_open_prove(*vss_group_, candidate_id_, party_id_,
                                   C_theta_i, theta_share_, r_theta,
                                   open_proof)) goto done;
 
@@ -3849,7 +3836,7 @@ bool dkg_party::do_v_commit()
     BN_bn2bin(v_r_i_, rbytes.data());
 
     std::vector<uint8_t> digest;
-    compute_v_commit(epoch_, party_id_, rbytes, digest);
+    compute_v_commit(party_id_, rbytes, digest);
 
     dkg_msg m = make_header(dkg_msg_type::v_commit, 0, 11, 0);
     m.tag32 = party_id_;
@@ -4022,11 +4009,10 @@ bool party_get_lambda_share(const dkg_party& p, BIGNUM* out);
 
 std::unique_ptr<dkg_party> dkg_party_create(uint32_t party_id,
                                             uint32_t committee_size,
-                                            uint32_t threshold,
-                                            uint32_t epoch)
+                                            uint32_t threshold)
 {
     return std::unique_ptr<dkg_party>(
-        new dkg_party(party_id, committee_size, threshold, epoch));
+        new dkg_party(party_id, committee_size, threshold));
 }
 
 // -------------------------------------------------------------------
@@ -4172,7 +4158,6 @@ static void fs_sha256_to_bn(const std::vector<uint8_t>& buf, BIGNUM* out)
 
 bool dao_theta_mul_prove(
     const dao_vss_group& grp,
-    uint32_t epoch,
     uint32_t candidate_id,
     uint32_t party_id,
     const BIGNUM* N,
@@ -4223,7 +4208,6 @@ bool dao_theta_mul_prove(
     std::vector<uint8_t> buf;
     const char* dom = "VeilRoot-DAO-DKG-THETA-MUL-V1";
     buf.insert(buf.end(), dom, dom + std::strlen(dom));
-    fs_append_u32be(buf, epoch);
     fs_append_u32be(buf, candidate_id);
     fs_append_u32be(buf, party_id);
     fs_append_bn_len_pref(buf, N);
@@ -4279,7 +4263,6 @@ bool dao_theta_mul_prove(
 
 bool dao_theta_mul_verify(
     const dao_vss_group& grp,
-    uint32_t epoch,
     uint32_t candidate_id,
     uint32_t party_id,
     const BIGNUM* N,
@@ -4316,7 +4299,6 @@ bool dao_theta_mul_verify(
     std::vector<uint8_t> buf;
     const char* dom = "VeilRoot-DAO-DKG-THETA-MUL-V1";
     buf.insert(buf.end(), dom, dom + std::strlen(dom));
-    fs_append_u32be(buf, epoch);
     fs_append_u32be(buf, candidate_id);
     fs_append_u32be(buf, party_id);
     fs_append_bn_len_pref(buf, N);
@@ -4377,7 +4359,6 @@ bool dao_theta_mul_verify(
 
 bool dao_theta_open_prove(
     const dao_vss_group& grp,
-    uint32_t epoch,
     uint32_t candidate_id,
     uint32_t party_id,
     const BIGNUM* C_theta_i,
@@ -4415,7 +4396,6 @@ bool dao_theta_open_prove(
     std::vector<uint8_t> buf;
     const char* dom = "VeilRoot-DAO-DKG-THETA-OPEN-V1";
     buf.insert(buf.end(), dom, dom + std::strlen(dom));
-    fs_append_u32be(buf, epoch);
     fs_append_u32be(buf, candidate_id);
     fs_append_u32be(buf, party_id);
     fs_append_bn_len_pref(buf, grp.P);
@@ -4461,7 +4441,6 @@ bool dao_theta_open_prove(
 
 bool dao_theta_open_verify(
     const dao_vss_group& grp,
-    uint32_t epoch,
     uint32_t candidate_id,
     uint32_t party_id,
     const BIGNUM* C_theta_i,
@@ -4489,7 +4468,6 @@ bool dao_theta_open_verify(
     std::vector<uint8_t> buf;
     const char* dom = "VeilRoot-DAO-DKG-THETA-OPEN-V1";
     buf.insert(buf.end(), dom, dom + std::strlen(dom));
-    fs_append_u32be(buf, epoch);
     fs_append_u32be(buf, candidate_id);
     fs_append_u32be(buf, party_id);
     fs_append_bn_len_pref(buf, grp.P);
@@ -4789,11 +4767,10 @@ bool choose_g_bar(const BIGNUM* N, BIGNUM* out)
 }
 
 // Deterministic g_bar derivation. Every committee node computes the
-// same value from (N, epoch, committee_id_hash), which is required for
+// same value from (N, committee_id_hash), which is required for
 // the distributed ceremony: g_bar is public data, so no party needs to
 // broadcast it and no party can force a different value.
 bool choose_g_bar_deterministic(const BIGNUM* N,
-                                uint32_t epoch,
                                 const uint8_t committee_id_hash[32],
                                 BIGNUM* out)
 {
@@ -4805,7 +4782,6 @@ bool choose_g_bar_deterministic(const BIGNUM* N,
     for (uint32_t counter = 0; counter < 65536; ++counter) {
         std::vector<uint8_t> buf;
         buf.insert(buf.end(), dom, dom + std::strlen(dom));
-        for (int i = 0; i < 4; ++i) buf.push_back((epoch >> (8*i)) & 0xff);
         buf.insert(buf.end(), committee_id_hash, committee_id_hash + 32);
 
         std::vector<uint8_t> nb(BN_num_bytes(N));
@@ -5050,7 +5026,7 @@ bool dkg_run_with_transport(const dkg_config& cfg,
     }
 
     // Compute committee_id_hash = SHA-256(
-    //     domain || epoch || ordered member public keys )
+    //     domain || ordered member public keys )
     uint8_t committee_id_hash[32] = {};
     {
         std::vector<uint8_t> buf;
@@ -5065,7 +5041,7 @@ bool dkg_run_with_transport(const dkg_config& cfg,
     std::vector<std::unique_ptr<dkg_party>> parties;
     parties.reserve(cfg.committee_size);
     for (uint32_t i = 1; i <= cfg.committee_size; ++i) {
-        auto p = dkg_party_create(i, cfg.committee_size, cfg.threshold, cfg.epoch);
+        auto p = dkg_party_create(i, cfg.committee_size, cfg.threshold);
         if (!p) return false;
         p->attach_transport(transports[i - 1].get());
         p->set_committee_id_hash(committee_id_hash);
@@ -5239,7 +5215,6 @@ bool dkg_run_with_transport(const dkg_config& cfg,
         {
             dkg_msg mN;
             mN.hdr.version = 1;
-            mN.hdr.epoch = cfg.epoch;
             mN.hdr.candidate_id = attempt;
             std::memcpy(mN.hdr.committee_id_hash, committee_id_hash, 32);
             mN.hdr.sender_id = 0;
@@ -5269,7 +5244,6 @@ bool dkg_run_with_transport(const dkg_config& cfg,
         for (auto& p : parties) {
             dkg_msg m;
             m.hdr.version = 1;
-            m.hdr.epoch = cfg.epoch;
             m.hdr.candidate_id = attempt;
             std::memcpy(m.hdr.committee_id_hash, committee_id_hash, 32);
             m.hdr.sender_id = 0;
@@ -5467,7 +5441,6 @@ bool dkg_run_with_transport(const dkg_config& cfg,
     const BIGNUM* N = accepted_N;
 
     out.candidate_accepted = true;
-    out.epoch = cfg.epoch;
 
     // ---------------------------------------------------------------
     // Phases 6-13: threshold key derivation (§5)
@@ -5558,7 +5531,7 @@ bool dkg_run_with_transport(const dkg_config& cfg,
                     ? DAO_RANGE_VALUE_TAG_BETA
                     : DAO_RANGE_VALUE_TAG_R;
 
-                const bool ok = dao_range_verify(vss, cfg.epoch, j,
+                const bool ok = dao_range_verify(vss, j,
                                                  value_tag, C_bn, proof);
                 BN_free(C_bn);
                 if (!ok) {
@@ -5718,10 +5691,10 @@ bool dkg_run_with_transport(const dkg_config& cfg,
                     }
 
                     const bool mvok = dao_theta_mul_verify(
-                        vss, cfg.epoch, out.candidate_attempts, j, N,
+                        vss, out.candidate_attempts, j, N,
                         C_phi_i, C_beta_i, C_prod_msgs[j], mul_proofs[j]);
                     const bool ovok = dao_theta_open_verify(
-                        vss, cfg.epoch, out.candidate_attempts, j,
+                        vss, out.candidate_attempts, j,
                         C_theta_msgs[j], theta_shares[j], open_proofs[j]);
                     BN_free(C_beta_i); BN_free(C_phi_i);
 
@@ -5901,7 +5874,7 @@ bool dkg_run_with_transport(const dkg_config& cfg,
                     if (revealed[j]) continue;   // duplicate broadcast fan-out
 
                     std::vector<uint8_t> recomputed;
-                    compute_v_commit(cfg.epoch, j, m.bytes_a, recomputed);
+                    compute_v_commit(j, m.bytes_a, recomputed);
                     if (recomputed != v_commits[j]) {
                         reveals_ok = false; break;
                     }
@@ -6629,6 +6602,7 @@ struct dkg_p2p_runner::impl
 
     uint32_t phase_timeout_s = 120;   // overwritten from cfg in start()
 
+
     // ---- runner-control helpers ----
 
     static bool is_runner_decision(const dkg_msg& m)
@@ -6643,7 +6617,6 @@ struct dkg_p2p_runner::impl
     {
         dkg_msg m;
         m.hdr.version = 1;
-        m.hdr.epoch = cfg.epoch;
         m.hdr.candidate_id = party->current_candidate_id();
         std::memcpy(m.hdr.committee_id_hash,
                     committee_id_hash,
@@ -6669,7 +6642,6 @@ struct dkg_p2p_runner::impl
     {
         dkg_msg m;
         m.hdr.version = 1;
-        m.hdr.epoch = cfg.epoch;
         m.hdr.candidate_id = party->current_candidate_id();
         std::memcpy(m.hdr.committee_id_hash,
                     committee_id_hash,
@@ -7096,7 +7068,6 @@ struct dkg_p2p_runner::impl
     {
         dkg_msg m;
         m.hdr.version = 1;
-        m.hdr.epoch = cfg.epoch;
         m.hdr.candidate_id = party->current_candidate_id();
         std::memcpy(m.hdr.committee_id_hash, committee_id_hash, 32);
         m.hdr.sender_id = 0;
@@ -7573,7 +7544,6 @@ bool dkg_p2p_runner::impl::run_trial_division_factor(uint32_t selector,
 void dkg_p2p_runner::impl::run()
 {
     result = dkg_result{};
-    result.epoch = cfg.epoch;
 
     const uint32_t n = cfg.committee_size;
 
@@ -7615,7 +7585,7 @@ void dkg_p2p_runner::impl::run()
             g_bar = BN_new();
             if (!g_bar) break;
 
-            if (!choose_g_bar_deterministic(N, cfg.epoch,
+            if (!choose_g_bar_deterministic(N,
                                             committee_id_hash, g_bar)) {
                 BN_free(g_bar);
                 break;
@@ -7803,7 +7773,7 @@ bool dkg_p2p_runner::impl::run_key_phases(const BIGNUM* N)
                 if (!proof.deserialize(m.bytes_a)) { BN_free(C_bn); return false; }
                 const uint32_t value_tag = is_beta ? DAO_RANGE_VALUE_TAG_BETA
                                                    : DAO_RANGE_VALUE_TAG_R;
-                const bool ok = dao_range_verify(*vss, cfg.epoch, j,
+                const bool ok = dao_range_verify(*vss, j,
                                                  value_tag, C_bn, proof);
                 BN_free(C_bn);
                 if (!ok) return false;
@@ -7928,10 +7898,10 @@ bool dkg_p2p_runner::impl::run_key_phases(const BIGNUM* N)
                     }
 
                     const bool mvok = dao_theta_mul_verify(
-                        *vss, cfg.epoch, result.candidate_attempts, j, N,
+                        *vss, result.candidate_attempts, j, N,
                         C_phi_i, C_beta_i, C_prod_msgs[j], mul_proofs[j]);
                     const bool ovok = dao_theta_open_verify(
-                        *vss, cfg.epoch, result.candidate_attempts, j,
+                        *vss, result.candidate_attempts, j,
                         C_theta_msgs[j], theta_shares[j], open_proofs[j]);
                     BN_free(C_beta_i); BN_free(C_phi_i);
                     if (!mvok || !ovok) { proofs_ok = false; break; }
@@ -8078,7 +8048,7 @@ bool dkg_p2p_runner::impl::run_key_phases(const BIGNUM* N)
                 if (m.bytes_a.empty()) { reveals_ok = false; break; }
                 if (revealed[j]) continue;
                 std::vector<uint8_t> recomputed;
-                compute_v_commit(cfg.epoch, j, m.bytes_a, recomputed);
+                compute_v_commit(j, m.bytes_a, recomputed);
                 if (recomputed != v_commits[j]) { reveals_ok = false; break; }
                 revealed[j] = 1;
             }
@@ -8099,7 +8069,6 @@ bool dkg_p2p_runner::impl::run_key_phases(const BIGNUM* N)
         {
             dkg_msg m;
             m.hdr.version = 1;
-            m.hdr.epoch = cfg.epoch;
             m.hdr.candidate_id = party->current_candidate_id();
             std::memcpy(m.hdr.committee_id_hash, committee_id_hash, 32);
             m.hdr.sender_id = me;
@@ -8271,8 +8240,7 @@ bool dkg_p2p_runner::start()
 
     p_->party = dkg_party_create(p_->cfg.local_party_id,
                                  p_->cfg.committee_size,
-                                 p_->cfg.threshold,
-                                 p_->cfg.epoch);
+                                 p_->cfg.threshold);
     if (!p_->party) return false;
 
     p_->party->attach_transport(p_->transport.get());
@@ -8416,11 +8384,6 @@ bool dkg_p2p_runner::running() const
 bool dkg_p2p_runner::finished() const
 {
     return p_ && p_->finished_flag.load();
-}
-
-uint32_t dkg_p2p_runner::epoch() const
-{
-    return p_ ? p_->cfg.epoch : 0;
 }
 
 uint32_t dkg_p2p_runner::local_party_id() const

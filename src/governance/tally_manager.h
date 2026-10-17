@@ -3,7 +3,7 @@
 //
 // Automatic V2 tally engine. Mirrors the V1 handle_decryption_share /
 // finalize_tally pattern: committee members publish threshold shares
-// over the P2P layer, every node validates them, and once the epoch
+// over the P2P layer, every node validates them, and once the
 // threshold is reached the outcome is combined and written to
 // consensus state automatically. No user action, no transaction, no
 // external submitter.

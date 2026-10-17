@@ -67,7 +67,6 @@ bool run_dkg_3(dkg_result& out)
     cfg.committee_size = 3;
     cfg.threshold      = dao_dkg_expected_threshold(3);
     cfg.member_ids     = pks;
-    cfg.epoch          = 1;
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
     cfg.security_bits  = 32;

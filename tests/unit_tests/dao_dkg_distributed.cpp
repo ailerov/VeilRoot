@@ -376,7 +376,6 @@ bool run_n_party(uint32_t n, uint32_t timeout_s,
     cfg.committee_size = n;
     cfg.threshold      = dao_dkg_expected_threshold(n);
     if (cfg.threshold == 0) return false;
-    cfg.epoch          = 1;
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
     cfg.security_bits  = 32;
@@ -495,7 +494,6 @@ TEST(dao_dkg_distributed, ordered_startup_no_lost_messages)
     cfg.committee_size = n;
     cfg.threshold      = dao_dkg_expected_threshold(n);
     ASSERT_NE(cfg.threshold, 0u);
-    cfg.epoch          = 1;
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
     cfg.security_bits  = 32;

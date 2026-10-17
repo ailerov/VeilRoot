@@ -2174,16 +2174,16 @@ public:
     // ---------- VNS PROPOSALS END ----------
 
     // ---------- VNS DAO TALLY KEYS START ----------
-    // Historical key-epoch records are retained. The active epoch
+    // The single active
     // pointer is a separate singleton in tally_state.
     //
-    // A "tally key" record names the stable Paillier public key epoch
+    // A "tally key" record names the stable Paillier public key
     // and its BOOTSTRAP SHAREHOLDER SET. It does not name the
     // temporary tally committee; that committee is derived from
     // canonical state at a proposal's voting end and stored in a
     // dao_tally_session record.
     // There is one stable DKG key record per network. It is not
-    // epoch-scoped. All proposals, votes and shares bind to it by
+    // All proposals, votes and shares bind to it by
     // key_id (32 bytes) carried inside the record itself.
     virtual void add_dao_tally_key(const dao::dao_tally_key_record& record) = 0;
     virtual bool get_dao_tally_key(dao::dao_tally_key_record& record) const = 0;
@@ -2221,7 +2221,7 @@ public:
     // ---------- VNS DAO LOCAL SHARE START ----------
     // Per-node persistent store for this node's own DKG secret share.
     // Each node has its own LMDB; nothing here is consensus state.
-    // Key: epoch (4 BE) || member_index (4 BE).
+    // Key: share_set_id (4 BE) || member_index (4 BE).
     virtual void add_dao_local_share(uint32_t share_set_id,
                                      uint32_t member_index,
                                      const std::vector<uint8_t>& share_blob) = 0;
@@ -2232,7 +2232,7 @@ public:
                                         uint32_t member_index) = 0;
 
     // Persist a share-set record. Keyed by monotone share_set_id.
-    // share_set_id is NOT a public-key epoch: the stable Paillier key
+    // share_set_id is NOT a public-key identifier: the stable Paillier key
     // does not change when the share set changes.
     virtual void add_dao_share_set(uint64_t share_set_id,
                                    const dao::dao_share_set_record& record) = 0;

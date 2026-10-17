@@ -72,7 +72,6 @@ transaction make_v1_vote_tx(const crypto::hash& pid,
 }
 
 transaction make_v2_vote_tx(const crypto::hash& pid,
-                            uint64_t epoch,
                             uint64_t height,
                             size_t n_inputs = 0)
 {
@@ -190,8 +189,7 @@ protected:
     }
 
     void store_proposal(GovernanceDB& gov, const crypto::hash& pid,
-                        uint64_t sub, uint64_t end,
-                        uint64_t tally_key_epoch = 0)
+                        uint64_t sub, uint64_t end)
     {
         proposal_record rec;
         std::memset(&rec, 0, sizeof(rec));
@@ -206,7 +204,7 @@ protected:
         gov.store_proposal(rec);
     }
 
-    void store_tally_key(uint32_t epoch, uint64_t activation_height)
+    void store_tally_key(uint64_t activation_height)
     {
         dao::dao_tally_key_record rec;
         rec.version = 1;
@@ -276,7 +274,7 @@ TEST_F(DispatchFixture, V1AcceptedBeforeActivation)
 
     crypto::hash pid = h(0xAA);
     crypto::hash nf  = h(0xBB);
-    store_proposal(gov, pid, 1, 2000, /*epoch=*/0);
+    store_proposal(gov, pid, 1, 2000);
 
     // Height 1000 is below the activation override (10000): V1 is live.
     // 1000 - 1 >= 720 so the age factor is positive.
@@ -295,8 +293,8 @@ TEST_F(DispatchFixture, V1RejectedAfterActivation)
 
     crypto::hash pid = h(0xAA);
     crypto::hash nf  = h(0xBB);
-    store_proposal(gov, pid, 1, 2000, /*epoch=*/1);
-    store_tally_key(1, /*activation=*/1);
+    store_proposal(gov, pid, 1, 2000);
+    store_tally_key(/*activation=*/1);
 
     // Height 10000 is at the network activation override: V1 is off.
     transaction tx = make_v1_vote_tx(pid, nf);
@@ -313,10 +311,10 @@ TEST_F(DispatchFixture, V2RejectedBeforeActivation)
     VoteManager vm(gov, params);
 
     crypto::hash pid = h(0xAA);
-    store_proposal(gov, pid, 1, 200, /*epoch=*/1);
-    store_tally_key(1, /*activation=*/1);
+    store_proposal(gov, pid, 1, 200);
+    store_tally_key(/*activation=*/1);
 
-    transaction tx = make_v2_vote_tx(pid, /*epoch=*/1, /*height=*/10);
+    transaction tx = make_v2_vote_tx(pid, /*height=*/10);
     // Below the network activation override (10000): V2 rejects outright.
     EXPECT_EQ(vm.process_vote(tx, 10, false), vote_result::invalid_format);
 }
@@ -328,12 +326,12 @@ TEST_F(DispatchFixture, V2AfterActivationReachesVerifier)
     VoteManager vm(gov, params);
 
     crypto::hash pid = h(0xAA);
-    store_proposal(gov, pid, 1, 20000, /*epoch=*/1);
-    store_tally_key(1, /*activation=*/1);
+    store_proposal(gov, pid, 1, 20000);
+    store_tally_key(/*activation=*/1);
 
     // Height 10000 is at the network activation override: V2 is live
     // and reaches the verifier. Empty inputs fail at step 7.
-    transaction tx = make_v2_vote_tx(pid, /*epoch=*/1, /*height=*/10000,
+    transaction tx = make_v2_vote_tx(pid, /*height=*/10000,
                                     /*n_inputs=*/0);
     vote_result r;
     { db_wtxn_guard g(m_db); r = vm.process_vote(tx, 10000, false); }

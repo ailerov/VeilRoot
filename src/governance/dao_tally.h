@@ -5,7 +5,7 @@
 // verifiable object that carries:
 //   - the three aggregate ciphertexts (E_W, E_S, E_B),
 //   - the partial decryptions published by a threshold-sized subset of
-//     the epoch's committee,
+//     the tally committee,
 //   - the corresponding partial-decryption proofs.
 //
 // Verification recombines the shares per Nishide-Sakurai, recovers
@@ -42,7 +42,7 @@ crypto::hash dao_aggregate_ciphertext_hash(
 
 // A partial-decryption set for one aggregate. Member indices and
 // partials must be the same length and in the same order. Each entry
-// corresponds to one member of the epoch's committee.
+// corresponds to one member of the tally committee.
 struct dao_partial_set
 {
     std::vector<uint32_t>                    member_indices;

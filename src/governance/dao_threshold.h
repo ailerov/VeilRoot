@@ -81,7 +81,7 @@ bool dao_threshold_partial_decrypt(const PaillierPublicKey& pk,
 //     C = prod_{i in S} c_i^(2 * mu_i) mod N^2
 //
 // `subset` and `partials` must be in the same order. `threshold` is the
-// epoch threshold T, which for a committee of size n is ceil(n / 2)
+// threshold T, which for a committee of size n is ceil(n / 2)
 // (see dao_dkg_expected_threshold). The subset size must be >= T. The
 // result is a canonical 512-byte ciphertext that, given valid partial
 // decryptions from any T-member subset, equals
@@ -97,7 +97,7 @@ bool dao_threshold_combine(const PaillierPublicKey& pk,
 //     M = L(C) * (-4 * Delta^2 * theta_prime)^(-1) mod N
 //
 // where L(x) = (x - 1) / N. `theta_prime` is the public normalization
-// parameter of the current key epoch. The negative sign and the Delta^2
+// parameter of the stable key. The negative sign and the Delta^2
 // factor are part of the dealer-free construction's correctness
 // derivation and are not optional. Do NOT substitute the ordinary
 // Paillier mu here.

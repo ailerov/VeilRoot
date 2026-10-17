@@ -16,7 +16,7 @@
 // The end-to-end activation replay test builds a DKG activation
 // transaction on Node A, feeds the containing block to a freshly
 // initialised Node B, and asserts that B reconstructs the key record
-// and the active epoch from chain state alone. It then replays the
+// and the active key record from chain state alone. It then replays the
 // tally-result block on B and asserts both nodes carry identical
 // outcomes, and that no block contains a private share.
 
@@ -322,7 +322,7 @@ TEST(DaoV2Replay, NodeBReceivesBlockOneFromNodeA)
 // Node B (which does not).
 //
 // The rejection reason is captured by the validator's diagnostics. The
-// expectation is "key record missing for epoch 1" — the DKG public key
+// expectation is "key record missing" — the DKG public key
 // record is local-only state today, so a syncing node cannot validate
 // any tally result.
 // ------------------------------------------------------------------
@@ -424,7 +424,6 @@ TEST(DaoV2Replay, NodeBReconstructsKeyRecordFromActivationBlock)
     cfg.committee_size = 3;
     cfg.threshold      = dao_dkg_expected_threshold(3);
     cfg.member_ids     = committee_pks;
-    cfg.epoch          = 1;
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
     cfg.security_bits  = 32;
@@ -579,7 +578,7 @@ TEST(DaoV2Replay, NodeBReconstructsKeyRecordFromActivationBlock)
         EXPECT_FALSE(bvc.m_verifivation_failed);
     }
 
-    // Both nodes now reconstruct the key record and the active epoch
+    // Both nodes now reconstruct the key record and the active
     // by replaying the activation block alone.
     ASSERT_TRUE(adb.get_dao_tally_key(key_rec_a));
     ASSERT_TRUE(bdb.get_dao_tally_key(key_rec_b));
@@ -871,7 +870,6 @@ bool build_v2_vote_fixture(V2VoteFixture& fx, const std::string& tag)
     cfg.committee_size = 3;
     cfg.threshold      = dao_dkg_expected_threshold(3);
     cfg.member_ids     = cps;
-    cfg.epoch          = 1;
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
     cfg.security_bits  = 32;
@@ -1594,7 +1592,6 @@ TEST(DaoV2Replay, ReshareTriggerFiresWhenEligibleSetGrows)
     cfg.committee_size = 3;
     cfg.threshold      = dao_dkg_expected_threshold(3);
     cfg.member_ids     = committee_pks;
-    cfg.epoch          = 1;
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
     cfg.security_bits  = 32;
@@ -1741,7 +1738,6 @@ TEST(DaoV2Replay, ReshareCompletesAcrossTwoNodes)
     cfg.committee_size = 3;
     cfg.threshold      = dao_dkg_expected_threshold(3);
     cfg.member_ids     = c_pks;
-    cfg.epoch          = 1;
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
     cfg.security_bits  = 32;
@@ -1975,7 +1971,6 @@ TEST(DaoV2Replay, ReshareNewMemberReceivesShare)
     cfg.committee_size = 3;
     cfg.threshold      = dao_dkg_expected_threshold(3);
     cfg.member_ids     = bpks;
-    cfg.epoch          = 1;
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
     cfg.security_bits  = 32;

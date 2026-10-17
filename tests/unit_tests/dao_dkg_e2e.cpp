@@ -75,7 +75,6 @@ TEST(dao_dkg_e2e, sixteen_party_128bit_with_oracle)
     cfg.committee_size = DAO_DKG_COMMITTEE_SIZE;
     cfg.threshold      = DAO_DKG_THRESHOLD;
     cfg.member_ids     = test_member_ids(cfg.committee_size);
-    cfg.epoch          = 1;
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
     cfg.security_bits  = 32;
@@ -216,7 +215,6 @@ TEST(dao_dkg_e2e, decryption_roundtrip)
     cfg.committee_size = DAO_DKG_COMMITTEE_SIZE;
     cfg.threshold      = DAO_DKG_THRESHOLD;
     cfg.member_ids     = test_member_ids(cfg.committee_size);
-    cfg.epoch          = 1;
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
     cfg.security_bits  = 32;
@@ -459,7 +457,6 @@ TEST(dao_dkg_e2e, DISABLED_sixteen_party_128bit_randomized_smoke)
     cfg.committee_size = DAO_DKG_COMMITTEE_SIZE;
     cfg.threshold      = DAO_DKG_THRESHOLD;
     cfg.member_ids     = test_member_ids(cfg.committee_size);
-    cfg.epoch          = 1;
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
     cfg.security_bits  = 32;
@@ -500,7 +497,6 @@ TEST(dao_dkg_e2e, tampered_range_proof_aborts)
     cfg.committee_size = DAO_DKG_COMMITTEE_SIZE;
     cfg.threshold      = DAO_DKG_THRESHOLD;
     cfg.member_ids     = test_member_ids(cfg.committee_size);
-    cfg.epoch          = 1;
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
     cfg.security_bits  = 32;
@@ -544,7 +540,6 @@ TEST(dao_dkg_e2e, tampered_theta_proof_aborts)
     cfg.committee_size = DAO_DKG_COMMITTEE_SIZE;
     cfg.threshold      = DAO_DKG_THRESHOLD;
     cfg.member_ids     = test_member_ids(cfg.committee_size);
-    cfg.epoch          = 1;
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
     cfg.security_bits  = 32;
@@ -598,7 +593,6 @@ TEST(dao_dkg_e2e, three_party_2of3_with_oracle)
     cfg.committee_size = N3;
     cfg.threshold      = T3;
     cfg.member_ids     = test_member_ids(N3);
-    cfg.epoch          = 1;
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
     cfg.security_bits  = 32;

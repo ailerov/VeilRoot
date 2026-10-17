@@ -1376,7 +1376,7 @@ namespace cryptonote
   // assignment. Does not route through construct_tx_with_tx_key, which
   // enforces MAX_TX_EXTRA_SIZE.
   bool build_dao_v2_dkg_activation_tx(
-      uint32_t epoch,
+      uint32_t ceremony_id,
       dao::dao_dkg_key_activation act,
       transaction& tx_out);
 
@@ -1384,7 +1384,7 @@ namespace cryptonote
   // record and verified attestations, and submit it to the mempool.
   // Retains attestations on failure so the blockchain-owner
   // maintenance path can retry. Never installs the key locally.
-  bool try_submit_pending_dao_v2_key_activation(uint32_t epoch);
+  bool try_submit_pending_dao_v2_key_activation(uint32_t ceremony_id);
 
   // Recognise a DAO V2 tally-result transaction: zero vin, zero vout,
   // RCTTypeNull, exactly one governance payload of type tally_result.
@@ -1464,7 +1464,7 @@ namespace cryptonote
   // deterministically, spawns the runner, and starts a watcher that
   // persists the outcome when the ceremony finishes. Idempotent: a
   // second call while the ceremony is running is a no-op.
-  bool bootstrap_dao_v2_dkg(uint32_t epoch);
+  bool bootstrap_dao_v2_dkg(uint32_t ceremony_id);
 
   // Lifecycle hook called from the daemon idle loop. Runs the DKG
   // once when the node has eligible records and no key record exists
@@ -1490,7 +1490,7 @@ namespace cryptonote
   // Producer side. Called once from the bootstrap path. Spawns the
   // runner for the current committee. Fails if a runner is already
   // running.
-  bool start_dao_v2_dkg(uint32_t epoch,
+  bool start_dao_v2_dkg(uint32_t ceremony_id,
                         const std::vector<crypto::public_key>& committee,
                         const dao::dao_vss_group& vss,
                         uint32_t target_N_bits,
@@ -1500,7 +1500,7 @@ namespace cryptonote
   // party id, builds cfg and callbacks, spawns the runner, and stores
   // it. `start_dao_v2_dkg` is a thin forwarder.
   bool start_dao_v2_dkg_for_committee(
-      uint32_t epoch,
+      uint32_t ceremony_id,
       const std::vector<crypto::public_key>& committee,
       const dao::dao_vss_group& vss,
       uint32_t target_N_bits,
@@ -1509,7 +1509,7 @@ namespace cryptonote
   // Called from the DKG watcher thread when a ceremony finishes.
   // Enqueues the result; the DB write happens on the blockchain owner
   // thread via process_pending_dao_v2_dkg_results().
-  void queue_dao_v2_dkg_result(uint32_t epoch, dao::dkg_result result);
+  void queue_dao_v2_dkg_result(uint32_t ceremony_id, dao::dkg_result result);
 
   // Owner-thread persistence. Consumes the pending queue and writes
   // each result under the caller's write transaction.
@@ -1809,7 +1809,7 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     // blockchain owner thread.
     struct pending_dao_v2_dkg_result
     {
-        uint32_t epoch = 0;
+        uint32_t ceremony_id = 0;
         dao::dkg_result result;
     };
     mutable std::mutex m_dao_v2_dkg_result_mutex;
@@ -2312,7 +2312,7 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
   // wait() and passes the captured result plus this node's committee
   // index. No DB write occurs on a DKG worker thread.
   bool persist_dao_v2_dkg_result(BlockchainDB& db,
-                                 uint32_t epoch,
+                                 uint32_t ceremony_id,
                                  const dkg_result& result,
                                  uint32_t local_party_id);
 

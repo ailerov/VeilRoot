@@ -5671,7 +5671,7 @@ bool wallet_rpc_server::on_vote(const wallet_rpc::COMMAND_RPC_VOTE::request& req
 
     if (height >= config::DAO_V2_ACTIVATION_HEIGHT)
     {
-        // V2: fetch the proposal's tally key epoch and build the
+        // V2: fetch the proposal's tally key and build the
         // four-channel ballot.
         result = m_wallet->create_vote_v2_tx(
             proposal_id, direction, req.priority);

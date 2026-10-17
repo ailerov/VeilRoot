@@ -325,7 +325,7 @@ bool dao_reshare_vss_deal(
         }
 
         dao_range_proof rp;
-        if (!dao_range_prove(grp, link_ctx.share_set_id,
+        if (!dao_range_prove(grp,
                               link_ctx.original_index,
                               k + 1, xs[k], rho, D_x,
                               DAO_RESHARE_COEFF_BITS + 1, rp)) {
@@ -464,7 +464,6 @@ bool dao_reshare_vss_verify(
             dao_range_proof rp;
             if (!rp.deserialize(coeff_proofs.range_proofs[k]) ||
                 !dao_range_verify(grp,
-                                   link_ctx.share_set_id,
                                    link_ctx.original_index,
                                    k + 1,
                                    D_x, rp)) {

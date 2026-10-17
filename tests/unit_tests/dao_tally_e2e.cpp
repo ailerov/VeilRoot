@@ -59,7 +59,6 @@ bool run_three_party_dkg(dkg_result& out)
     cfg.committee_size = 3;
     cfg.threshold      = 2;
     cfg.member_ids     = e2e_member_ids(3);
-    cfg.epoch          = 1;
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
     cfg.security_bits  = 32;

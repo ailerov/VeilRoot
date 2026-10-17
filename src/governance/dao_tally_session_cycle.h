@@ -22,9 +22,9 @@ struct dao_tally_session
 {
     uint32_t                          version = 1;
 
-    // Bootstrap DKG key epoch the proposal's votes were encrypted
+    // Bootstrap DKG key the proposal's votes were encrypted
     // under. Not a per-proposal key. Every proposal in a DAO shares
-    // the same bootstrap key epoch.
+    // the same bootstrap key.
     uint32_t                          share_epoch = 0;
 
     crypto::hash                      proposal_id;
@@ -49,7 +49,7 @@ struct dao_tally_session
     // For each entry in committee_members, the 1-based index of the
     // same node within the bootstrap key record's committee_members.
     // This is the index used to look up the node's bootstrap DKG
-    // share and the V_K_i recorded in the key epoch. It is not the
+    // share and the V_K_i recorded in the stable key record. It is not the
     // position inside the temporary committee.
     std::vector<uint32_t>             committee_global_indices;
 

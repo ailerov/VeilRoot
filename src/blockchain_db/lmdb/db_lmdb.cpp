@@ -1729,11 +1729,12 @@ void BlockchainLMDB::open(const std::string& filename, const int db_flags)
   // END_VNS_DAO_VOTE
 
   // BEGIN_VNS_TALLY_KEYS
-  // tally_keys: uint32 epoch (big-endian) -> serialized dao_tally_key_record.
-  // Default memcmp comparator gives correct numeric ordering for the
-  // fixed-width big-endian key.
+  // tally_keys: singleton key TALLY_KEY_SINGLETON_KEY -> serialized
+  // dao_tally_key_record. There is exactly one stable key record per
+  // network.
   lmdb_db_open(txn, LMDB_TALLY_KEYS, MDB_CREATE, m_tally_keys, "Failed to open db handle for tally_keys");
-  // tally_state: singleton. Key = 0x45 ('E'), value = 4-byte BE current epoch.
+  // tally_state: singleton. Key = 0x45 ('E'), value = 4-byte BE current
+  // share set id.
   lmdb_db_open(txn, LMDB_TALLY_STATE, MDB_CREATE, m_tally_state, "Failed to open db handle for tally_state");
   lmdb_db_open(txn, LMDB_DAO_SHARE_SETS, MDB_CREATE, m_dao_share_sets, "Failed to open db handle for dao_share_sets");
   // END_VNS_TALLY_KEYS
@@ -1757,7 +1758,7 @@ void BlockchainLMDB::open(const std::string& filename, const int db_flags)
   // END_VNS_DAO_V2_OUTCOMES
 
   // BEGIN_VNS_DAO_LOCAL_SHARES
-  // 8-byte BE key (epoch || member_index), default memcmp comparator.
+  // 8-byte BE key (share_set_id || member_index), default memcmp comparator.
   lmdb_db_open(txn, LMDB_DAO_LOCAL_SHARES, MDB_CREATE, m_dao_local_shares, "Failed to open db handle for dao_local_shares");
   // END_VNS_DAO_LOCAL_SHARES
 
@@ -3317,21 +3318,7 @@ bool BlockchainLMDB::get_proposal_record(const crypto::hash& proposal_id, propos
 
 // BEGIN_VNS_TALLY_KEYS
 namespace {
-void encode_epoch_be(uint32_t epoch, unsigned char out[4])
-{
-  out[0] = static_cast<unsigned char>((epoch >> 24) & 0xff);
-  out[1] = static_cast<unsigned char>((epoch >> 16) & 0xff);
-  out[2] = static_cast<unsigned char>((epoch >>  8) & 0xff);
-  out[3] = static_cast<unsigned char>((epoch      ) & 0xff);
-}
-uint32_t decode_epoch_be(const unsigned char* in)
-{
-  return (static_cast<uint32_t>(in[0]) << 24)
-       | (static_cast<uint32_t>(in[1]) << 16)
-       | (static_cast<uint32_t>(in[2]) <<  8)
-       |  static_cast<uint32_t>(in[3]);
-}
-constexpr unsigned char TALLY_STATE_EPOCH_KEY = 0x45; // 'E'
+constexpr unsigned char TALLY_KEY_SINGLETON_KEY = 0x45; // 'E'
 } // namespace
 
 void BlockchainLMDB::add_dao_tally_key(const dao::dao_tally_key_record& record)
@@ -3344,7 +3331,7 @@ void BlockchainLMDB::add_dao_tally_key(const dao::dao_tally_key_record& record)
     throw0(DB_ERROR("Failed to serialize dao_tally_key_record"));
 
   lmdb_cursor_guard cur(m_write_txn->m_txn, m_tally_keys);
-  unsigned char kbuf[1] = { TALLY_STATE_EPOCH_KEY };
+  unsigned char kbuf[1] = { TALLY_KEY_SINGLETON_KEY };
   MDB_val k = { sizeof(kbuf), kbuf };
   MDB_val v = { blob.size(), blob.empty() ? nullptr : (void*)blob.data() };
   int result = mdb_cursor_put(cur.get(), &k, &v, MDB_NODUPDATA);
@@ -3362,7 +3349,7 @@ bool BlockchainLMDB::get_dao_tally_key(dao::dao_tally_key_record& record) const
   TXN_PREFIX_RDONLY();
   RCURSOR(tally_keys)
 
-  unsigned char kbuf[1] = { TALLY_STATE_EPOCH_KEY };
+  unsigned char kbuf[1] = { TALLY_KEY_SINGLETON_KEY };
   MDB_val k = { sizeof(kbuf), kbuf };
   MDB_val v;
   int result = mdb_cursor_get(m_cur_tally_keys, &k, &v, MDB_SET);
@@ -3385,7 +3372,7 @@ void BlockchainLMDB::remove_dao_tally_key()
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
   lmdb_cursor_guard cur(m_write_txn->m_txn, m_tally_keys);
-  unsigned char kbuf[1] = { TALLY_STATE_EPOCH_KEY };
+  unsigned char kbuf[1] = { TALLY_KEY_SINGLETON_KEY };
   MDB_val k = { sizeof(kbuf), kbuf };
   int result = mdb_cursor_get(cur.get(), &k, NULL, MDB_SET);
   if (result == MDB_SUCCESS)
@@ -3790,10 +3777,10 @@ void BlockchainLMDB::set_current_dao_share_set_id(uint64_t share_set_id)
 
 // BEGIN_VNS_DAO_LOCAL_SHARES
 namespace {
-void local_share_encode_key(uint32_t epoch, uint32_t idx, unsigned char out[8])
+void local_share_encode_key(uint32_t share_set_id, uint32_t idx, unsigned char out[8])
 {
-  for (int i = 0; i < 4; ++i) out[i]     = (epoch >> (8*(3-i))) & 0xff;
-  for (int i = 0; i < 4; ++i) out[4 + i] = (idx   >> (8*(3-i))) & 0xff;
+  for (int i = 0; i < 4; ++i) out[i]     = (share_set_id >> (8*(3-i))) & 0xff;
+  for (int i = 0; i < 4; ++i) out[4 + i] = (idx          >> (8*(3-i))) & 0xff;
 }
 } // namespace
 
@@ -3854,21 +3841,21 @@ void BlockchainLMDB::remove_dao_local_share(uint32_t share_set_id, uint32_t memb
 
 // BEGIN_VNS_DAO_LOCAL_DYNAMIC_SHARES
 namespace {
-void local_dynamic_share_encode_key(uint32_t share_epoch, unsigned char out[4])
+void local_dynamic_share_encode_key(uint32_t share_set_id, unsigned char out[4])
 {
-  for (int i = 0; i < 4; ++i) out[i] = (share_epoch >> (8*(3-i))) & 0xff;
+  for (int i = 0; i < 4; ++i) out[i] = (share_set_id >> (8*(3-i))) & 0xff;
 }
 } // namespace
 
 void BlockchainLMDB::add_dao_local_dynamic_share(
-    uint32_t share_epoch,
+    uint32_t share_set_id,
     const std::vector<uint8_t>& share_blob)
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
   lmdb_cursor_guard cur(m_write_txn->m_txn, m_dao_local_dynamic_shares);
   unsigned char kbuf[4];
-  local_dynamic_share_encode_key(share_epoch, kbuf);
+  local_dynamic_share_encode_key(share_set_id, kbuf);
   MDB_val k = { sizeof(kbuf), kbuf };
   MDB_val v = { share_blob.size(),
                 share_blob.empty() ? nullptr : (void*)share_blob.data() };
@@ -3880,7 +3867,7 @@ void BlockchainLMDB::add_dao_local_dynamic_share(
 }
 
 bool BlockchainLMDB::get_dao_local_dynamic_share(
-    uint32_t share_epoch,
+    uint32_t share_set_id,
     std::vector<uint8_t>& share_blob) const
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
@@ -3888,7 +3875,7 @@ bool BlockchainLMDB::get_dao_local_dynamic_share(
   TXN_PREFIX_RDONLY();
   RCURSOR(dao_local_dynamic_shares)
   unsigned char kbuf[4];
-  local_dynamic_share_encode_key(share_epoch, kbuf);
+  local_dynamic_share_encode_key(share_set_id, kbuf);
   MDB_val k = { sizeof(kbuf), kbuf };
   MDB_val v;
   int result = mdb_cursor_get(m_cur_dao_local_dynamic_shares, &k, &v, MDB_SET);
@@ -3901,13 +3888,13 @@ bool BlockchainLMDB::get_dao_local_dynamic_share(
   return true;
 }
 
-void BlockchainLMDB::remove_dao_local_dynamic_share(uint32_t share_epoch)
+void BlockchainLMDB::remove_dao_local_dynamic_share(uint32_t share_set_id)
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
   lmdb_cursor_guard cur(m_write_txn->m_txn, m_dao_local_dynamic_shares);
   unsigned char kbuf[4];
-  local_dynamic_share_encode_key(share_epoch, kbuf);
+  local_dynamic_share_encode_key(share_set_id, kbuf);
   MDB_val k = { sizeof(kbuf), kbuf };
   int result = mdb_cursor_get(cur.get(), &k, NULL, MDB_SET);
   if (result == MDB_SUCCESS)

@@ -187,7 +187,7 @@ TEST_F(DaoBootstrapIntegration, BootstrapStartsRunnerForThisCommittee)
 
     ASSERT_TRUE(m_core->get_blockchain_storage().bootstrap_dao_v2_dkg(1));
 
-    // A runner for epoch 1 now exists. It cannot complete without
+    // A runner for the bootstrap ceremony now exists. It cannot complete without
     // peers; teardown stops it via ~Blockchain.
     SUCCEED();
 }
@@ -195,11 +195,11 @@ TEST_F(DaoBootstrapIntegration, BootstrapStartsRunnerForThisCommittee)
 
 // ------------------------------------------------------------------
 // Activation chain: DKG result queued -> drained on owner thread ->
-// epoch active -> new proposals bind to it.
+// key record active -> new proposals bind to it.
 //
 // The DKG itself runs on three offline runners (the same construction
 // the bootstrap unit test uses), so this test isolates the persistence
-// and epoch-activation path in Blockchain.
+// and key-activation path in Blockchain.
 // ------------------------------------------------------------------
 
 namespace {
@@ -254,7 +254,7 @@ struct act_network
 
 } // namespace
 
-TEST_F(DaoBootstrapIntegration, ActivationChainBindsEpochAfterPersistence)
+TEST_F(DaoBootstrapIntegration, ActivationChainBindsKeyRecordAfterPersistence)
 {
     // The integration node's identity is already installed in LMDB.
     // Build a committee whose first entry is this node, then run three
@@ -278,7 +278,6 @@ TEST_F(DaoBootstrapIntegration, ActivationChainBindsEpochAfterPersistence)
         dkg_config cfg;
         cfg.committee_size = 3;
         cfg.threshold      = dao_dkg_expected_threshold(3);
-        cfg.epoch          = 1;
         cfg.member_ids     = committee;
         cfg.local_party_id = i + 1;
         cfg.test_seed      = 0x5645494C52544F33ULL;   // 3-party fixed
@@ -312,7 +311,7 @@ TEST_F(DaoBootstrapIntegration, ActivationChainBindsEpochAfterPersistence)
     EXPECT_EQ(rec.committee_size, 3u);
     EXPECT_EQ(rec.threshold, 2u);
 
-    // Epoch activated.
+    // Key record activated.
     
     // Local share stored under this node's committee index.
     std::vector<uint8_t> share;
@@ -358,7 +357,6 @@ TEST(DaoThresholdSubsetInvariance, SameCiphertextFromAnySubset)
     dkg_config cfg;
     cfg.committee_size = 3;
     cfg.threshold      = dao_dkg_expected_threshold(3);
-    cfg.epoch          = 1;
     cfg.member_ids     = committee;
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
@@ -505,7 +503,6 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxValidatedAndApplied)
     cfg.committee_size = 3;
     cfg.threshold      = dao_dkg_expected_threshold(3);
     cfg.member_ids     = committee_pks;
-    cfg.epoch          = 1;
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
     cfg.security_bits  = 32;
@@ -745,7 +742,6 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxRolledBackByReorg)
     cfg.committee_size = 3;
     cfg.threshold      = dao_dkg_expected_threshold(3);
     cfg.member_ids     = committee_pks;
-    cfg.epoch          = 1;
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
     cfg.security_bits  = 32;
@@ -1055,7 +1051,6 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxRejectionBoundaries)
     cfg.committee_size = 3;
     cfg.threshold      = dao_dkg_expected_threshold(3);
     cfg.member_ids     = committee_pks;
-    cfg.epoch          = 1;
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
     cfg.security_bits  = 32;
@@ -1343,7 +1338,6 @@ TEST_F(DaoBootstrapIntegration, TallyResultReconstructableFromChainState)
     cfg.committee_size = 3;
     cfg.threshold      = dao_dkg_expected_threshold(3);
     cfg.member_ids     = committee_pks;
-    cfg.epoch          = 1;
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
     cfg.security_bits  = 32;
@@ -1507,9 +1501,9 @@ TEST_F(DaoBootstrapIntegration, TallyResultReconstructableFromChainState)
 // ------------------------------------------------------------------
 // Test J — bootstrap DKG share persists across a full tally cycle.
 //
-// The stable Paillier key epoch belongs to the DAO, not to a proposal.
+// The stable Paillier key belongs to the DAO, not to a proposal.
 // A completed tally result must leave the bootstrap share in place so
-// the same key epoch can serve the next proposal.
+// the same key can serve the next proposal.
 // ------------------------------------------------------------------
 TEST_F(DaoBootstrapIntegration, BootstrapSharePersistsAfterTally)
 {
@@ -1561,7 +1555,6 @@ TEST_F(DaoBootstrapIntegration, BootstrapSharePersistsAfterTally)
     cfg.committee_size = 3;
     cfg.threshold      = dao_dkg_expected_threshold(3);
     cfg.member_ids     = committee_pks;
-    cfg.epoch          = 1;
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
     cfg.security_bits  = 32;
@@ -1709,7 +1702,7 @@ TEST_F(DaoBootstrapIntegration, BootstrapSharePersistsAfterTally)
     EXPECT_EQ(share_before, share_after);
 
     // The public key record also persists — it belongs to the DAO for
-    // the lifetime of the key epoch, not to a single proposal.
+    // the lifetime of the key, not to a single proposal.
     dao::dao_tally_key_record key_after;
     ASSERT_TRUE(bc.get_db().get_dao_tally_key(key_after));
     EXPECT_EQ(key_after.N, key_rec.N);
@@ -1782,7 +1775,6 @@ TEST_F(DaoBootstrapIntegration, OutOfCommitteeShareholderShareAccepted)
     cfg.committee_size = 3;
     cfg.threshold      = dao_dkg_expected_threshold(3);
     cfg.member_ids     = committee_pks;
-    cfg.epoch          = 1;
     cfg.k              = 60;
     cfg.target_N_bits  = 128;
     cfg.security_bits  = 32;

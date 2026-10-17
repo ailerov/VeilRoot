@@ -216,12 +216,13 @@ TEST_F(DaoV2Bootstrap, ThreeEligibleNodesSelectAndComplete2of3DKG)
         dkg_config cfg;
         cfg.committee_size = 3;
         cfg.threshold      = dao_dkg_expected_threshold(3);
-        cfg.epoch          = 1;
         cfg.member_ids     = expected;
         cfg.local_party_id = i + 1;
         cfg.test_seed      = FIXED_TEST_CANDIDATE_SEED_3;
         cfg.target_N_bits  = 128;
-        cfg.phase_timeout_seconds = 600;
+        // DIAGNOSTIC ONLY: reduced from 600 to expose the intermittent
+        // full-suite failure faster. Revert before committing.
+        cfg.phase_timeout_seconds = 30;
 
         auto cb = net.callbacks_for_self();
         runners.emplace_back(new dkg_p2p_runner(cfg, vss, cb));
@@ -340,7 +341,6 @@ TEST_F(DaoV2Bootstrap, RepeatedWaitReturnsSameResult)
         dkg_config cfg;
         cfg.committee_size = 3;
         cfg.threshold      = dao_dkg_expected_threshold(3);
-        cfg.epoch          = 1;
         cfg.member_ids     = committee;
         cfg.local_party_id = i + 1;
         cfg.test_seed      = FIXED_TEST_CANDIDATE_SEED_3;
@@ -402,7 +402,6 @@ TEST_F(DaoV2Bootstrap, StopOnIdleRunnerReturnsPromptly)
     dkg_config cfg;
     cfg.committee_size = 3;
     cfg.threshold      = dao_dkg_expected_threshold(3);
-    cfg.epoch          = 1;
     cfg.member_ids     = committee;
     cfg.local_party_id = 1;
     cfg.test_seed      = FIXED_TEST_CANDIDATE_SEED_3;

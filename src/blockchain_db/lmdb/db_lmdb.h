@@ -617,7 +617,7 @@ public:
   virtual void remove_vote_nullifier(const crypto::hash& proposal_id, const crypto::hash& nullifier) override;
   virtual void remove_all_vote_nullifiers(const crypto::hash& proposal_id) override;
 
-  // Tally-key storage: stable Paillier public-key epoch and its
+  // Tally-key storage: stable Paillier public key and its
   // bootstrap shareholder set. Not the temporary tally committee.
   virtual void add_dao_tally_key(const dao::dao_tally_key_record& record) override;
   virtual bool get_dao_tally_key(dao::dao_tally_key_record& record) const override;

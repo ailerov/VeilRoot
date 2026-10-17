@@ -118,7 +118,6 @@ uint32_t dao_dkg_required_vss_bits(uint32_t k_bits,
 
 enum class dkg_msg_type : uint8_t
 {
-    epoch_start              = 0x01,
     phase_complete           = 0x02,
     dkg_abort                = 0x03,
 
@@ -242,9 +241,8 @@ struct dao_range_proof
 struct dkg_msg_header
 {
     uint8_t  version      = 1;
-    uint32_t epoch        = 0;
-    uint32_t candidate_id = 0;              // monotone within epoch
-    uint8_t  committee_id_hash[32] = {};    // H(domain || epoch || member ids)
+    uint32_t candidate_id = 0;              // monotone within ceremony
+    uint8_t  committee_id_hash[32] = {};    // H(domain || member ids)
     uint32_t sender_id    = 0;              // 1..committee_size
     uint32_t recipient_id = 0;              // 0 = broadcast
     uint32_t phase        = 0;
@@ -404,7 +402,6 @@ bool dao_vss_verify_share(const dao_vss_group& grp,
 
 bool dao_theta_mul_prove(
     const dao_vss_group& grp,
-    uint32_t epoch,
     uint32_t candidate_id,
     uint32_t party_id,
     const BIGNUM* N,
@@ -418,7 +415,6 @@ bool dao_theta_mul_prove(
 
 bool dao_theta_mul_verify(
     const dao_vss_group& grp,
-    uint32_t epoch,
     uint32_t candidate_id,
     uint32_t party_id,
     const BIGNUM* N,
@@ -429,7 +425,6 @@ bool dao_theta_mul_verify(
 
 bool dao_theta_open_prove(
     const dao_vss_group& grp,
-    uint32_t epoch,
     uint32_t candidate_id,
     uint32_t party_id,
     const BIGNUM* C_theta_i,
@@ -439,7 +434,6 @@ bool dao_theta_open_prove(
 
 bool dao_theta_open_verify(
     const dao_vss_group& grp,
-    uint32_t epoch,
     uint32_t candidate_id,
     uint32_t party_id,
     const BIGNUM* C_theta_i,
@@ -452,7 +446,6 @@ bool dao_theta_open_verify(
 // ====================================================================
 
 bool dao_range_prove(const dao_vss_group& grp,
-                     uint32_t epoch,
                      uint32_t party_id,
                      uint32_t value_tag,
                      const BIGNUM* x,
@@ -462,7 +455,6 @@ bool dao_range_prove(const dao_vss_group& grp,
                      dao_range_proof& proof_out);
 
 bool dao_range_verify(const dao_vss_group& grp,
-                      uint32_t epoch,
                       uint32_t party_id,
                       uint32_t value_tag,
                       const BIGNUM* C_x,
@@ -526,7 +518,7 @@ bool dao_partial_decryption_verify(const PaillierPublicKey& pk,
 // ====================================================================
 // Public tally-key record
 //
-// This record describes the STABLE public Paillier key epoch and the
+// This record describes the single stable public Paillier key and the
 // BOOTSTRAP SHAREHOLDER SET that generated it. It does NOT describe
 // the temporary tally committee. The temporary tally committee is
 // selected at a proposal's voting end as a subset of this bootstrap
@@ -553,7 +545,7 @@ bool dao_partial_decryption_verify(const PaillierPublicKey& pk,
 // resharing produces a new share set without changing N, V, or theta.
 //
 // share_set_id is a monotone uint64 used to bind protocol messages
-// and prevent replay. It is not a key epoch; the public key does not
+// and prevent replay. The public key does not
 // rotate when the share set changes.
 //
 // committee_members are 32-byte node public keys in canonical order.
@@ -582,7 +574,7 @@ struct dao_tally_key_record
     std::vector<uint8_t> committee_id_hash;   // 32 bytes; bootstrap shareholder set hash
 
     // Ordered bootstrap shareholder public keys. Exactly committee_size
-    // entries. Together with the epoch and the domain string this is
+    // entries. Together with the domain string this is
     // what committee_id_hash commits to. Not the temporary tally
     // committee.
     std::vector<std::vector<uint8_t>> committee_members;  // 32 bytes each
@@ -660,8 +652,8 @@ crypto::hash dao_dkg_activation_digest(
     const dao_tally_key_record& record);
 
 // Local share envelope. The share is stored together with the
-// key_id of the record it belongs to, so a share for an epoch-1
-// record cannot be used against a later epoch-1 record produced by a
+// key_id of the record it belongs to, so a share for one
+// record cannot be used against a later record produced by a
 // different DKG. A share must never be consumed without the caller
 // supplying the exact key_id it is expected to belong to.
 //
@@ -685,14 +677,12 @@ class dkg_party;
 
 std::unique_ptr<dkg_party> dkg_party_create(uint32_t party_id,
                                             uint32_t committee_size,
-                                            uint32_t threshold,
-                                            uint32_t epoch);
+                                            uint32_t threshold);
 
 struct dkg_result
 {
     bool                 ok                       = false;
     bool                 candidate_accepted       = false;
-    uint32_t             epoch                    = 0;
     uint64_t             selection_height         = 0;
     std::vector<uint8_t> N;
     std::vector<uint8_t> theta;
@@ -735,12 +725,11 @@ struct dkg_config
     // dao_dkg_expected_threshold(committee_size).
     uint32_t committee_size = DAO_DKG_MAX_COMMITTEE_SIZE;
     uint32_t threshold      = DAO_DKG_THRESHOLD;
-    uint32_t epoch          = 1;
 
     // Ordered committee member public keys. Must contain exactly
     // committee_size distinct entries. The canonical committee_id_hash
-    // is SHA256(domain || epoch || ordered member keys). A real
-    // committee is never identified merely by indexes 1..n.
+    // is SHA256(domain || ordered member keys). A real committee is
+    // never identified merely by indexes 1..n.
     std::vector<crypto::public_key> member_ids;
 
     uint32_t k              = 60;
@@ -809,7 +798,7 @@ dkg_inproc_network dkg_make_inproc_network(uint32_t n,
 // lagrange_interpolate_zero, theta_tilde mod N, gcd(theta,N)==1,
 // V derivation) are replicated locally on every node, because they are
 // deterministic functions of the broadcast message stream. Two honest
-// nodes with the same cfg.epoch, cfg.committee_size, cfg.member_ids,
+// nodes with the same cfg.committee_size, cfg.member_ids,
 // and vss group parameters therefore produce byte-identical key
 // records from the same message set.
 //
@@ -872,7 +861,6 @@ public:
 
     bool running()  const;
     bool finished() const;
-    uint32_t epoch() const;
     uint32_t local_party_id() const;
     const dkg_config* config() const;
 
@@ -894,7 +882,7 @@ bool dkg_run_distributed(const dkg_config& cfg,
 //
 // A node's persistent identity is its public key (loaded from LMDB by
 // Blockchain::init via committee_privkey). Committee membership is an
-// epoch-local list of ordered public keys. The local party index in a
+// ceremony-local list of ordered public keys. The local party index in a
 // DKG ceremony is derived by matching the node's own public key
 // against the ordered list. Returns 0 if the node is not in the list.
 //

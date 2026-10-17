@@ -44,7 +44,7 @@ struct dao_v2_vote_source
 //
 // direction: 0 = YES, 1 = NO.
 //
-// paillier_modulus: 256-byte big-endian Paillier N of the epoch.
+// paillier_modulus: 256-byte big-endian Paillier N of the stable key.
 //
 // Returns false if the input set is empty or malformed.
 bool build_dao_v2_vote(
