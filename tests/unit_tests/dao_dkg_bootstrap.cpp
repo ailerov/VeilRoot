@@ -222,7 +222,7 @@ TEST_F(DaoV2Bootstrap, ThreeEligibleNodesSelectAndComplete2of3DKG)
         cfg.target_N_bits  = 128;
         // DIAGNOSTIC ONLY: reduced from 600 to expose the intermittent
         // full-suite failure faster. Revert before committing.
-        cfg.phase_timeout_seconds = 30;
+        cfg.phase_timeout_seconds = 600;
 
         auto cb = net.callbacks_for_self();
         runners.emplace_back(new dkg_p2p_runner(cfg, vss, cb));
