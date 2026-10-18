@@ -187,10 +187,26 @@ constexpr uint64_t VNS_BLOCK_SUBSIDY = (COIN * 65) / 100;
 // Wide cumulative-supply type. 20,000,000 VNS at 10^12 atomic units
 // per VNS is 2*10^19, which does not fit in uint64_t. Cumulative
 // generated supply is tracked in this type end-to-end.
+#if defined(__SIZEOF_INT128__)
 using vns_supply_t = unsigned __int128;
 
 constexpr vns_supply_t VNS_MAX_SUPPLY_ATOMIC =
     (vns_supply_t)VNS_MAX_SUPPLY * (vns_supply_t)COIN;
+#else
+// 32-bit targets (e.g. armv7l Raspberry Pi) have no __int128.
+// Use Boost.Multiprecision for the wide cumulative-supply type.
+// VNS_MAX_SUPPLY_ATOMIC stays available as a macro so every existing
+// call site is unchanged.
+#include <boost/multiprecision/cpp_int.hpp>
+using vns_supply_t = boost::multiprecision::uint128_t;
+
+inline vns_supply_t vns_max_supply_atomic_impl()
+{
+    return (vns_supply_t)VNS_MAX_SUPPLY * (vns_supply_t)COIN;
+}
+
+#define VNS_MAX_SUPPLY_ATOMIC (vns_max_supply_atomic_impl())
+#endif
 
 constexpr uint64_t VNS_DOMAIN_FEE_BURN_HEIGHT = 50000;
 #define VNS_BRIDGE_POOL_SIZE                    5000000ULL
