@@ -286,7 +286,7 @@ namespace config
 #ifdef VEILROOT_DAO_DKG_TESTING
     uint64_t const DAO_V2_ACTIVATION_HEIGHT = 10000;
 #else
-    uint64_t const DAO_V2_ACTIVATION_HEIGHT = 75000;
+    uint64_t const DAO_V2_ACTIVATION_HEIGHT = 82000;
 #endif
 
     inline bool dao_v2_active(uint64_t block_height)

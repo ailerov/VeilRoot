@@ -41,7 +41,7 @@ const hardfork_t mainnet_hard_forks[] = {
   { HF_VERSION_MIN_MIXIN_4, 50000, 0, 1780743998 + 50000 * 120 },
   // version 20 (DAO V2) from height 75000: committee-eligible
   // registration, distributed DKG, automatic tally
-  { HF_VERSION_DAO_V2, 75000, 0, 1780743998 + 75000 * 120 },
+  { HF_VERSION_DAO_V2, 82000, 0, 1780743998 + 82000 * 120 },
   // version 7 (ring size 3) from height 100000
   { HF_VERSION_MIN_MIXIN_6, 100000, 0, 1780743998 + 100000 * 120 },
   // version 8 (ring size 5) from height 200000
