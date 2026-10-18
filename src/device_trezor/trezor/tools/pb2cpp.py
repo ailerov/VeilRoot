@@ -181,7 +181,11 @@ def main():
     parser = argparse.ArgumentParser()
     # fmt: off
     parser.add_argument("proto", nargs="+", help="Protobuf definition files")
-    parser.add_argument("-o", "--out-dir", help="Directory for generated source code")
+    parser.add_argument(
+        "-o", "--out-dir",
+        required=True,
+        help="Directory for generated source code",
+    )
     parser.add_argument("-n", "--namespace", default=None, help="Message namespace")
     parser.add_argument("-I", "--protoc-include", action="append", help="protoc include path")
     parser.add_argument("-P", "--protobuf-module", default="protobuf", help="Name of protobuf module")

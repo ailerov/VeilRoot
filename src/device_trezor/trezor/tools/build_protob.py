@@ -6,13 +6,24 @@ import argparse
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("-d", "--debug-msg", default=False, action="store_const", const=True, help="Build debug messages")
+parser.add_argument(
+    "-d", "--debug-msg",
+    default=False,
+    action="store_const",
+    const=True,
+    help="Build debug messages",
+)
+parser.add_argument(
+    "-o", "--out-dir",
+    required=True,
+    help="Directory for generated protobuf source and header files",
+)
 args = parser.parse_args()
 
 CWD = os.path.dirname(os.path.realpath(__file__))
 ROOT_DIR = os.path.abspath(os.path.join(CWD, "..", "..", "..", ".."))
 TREZOR_COMMON = os.path.join(ROOT_DIR, "external", "trezor-common")
-TREZOR_MESSAGES = os.path.join(CWD, "..", "messages")
+TREZOR_MESSAGES = os.path.abspath(args.out_dir)
 
 # check for existence of the submodule directory
 common_defs = os.path.join(TREZOR_COMMON, "defs")

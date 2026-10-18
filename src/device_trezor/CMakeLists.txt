@@ -26,18 +26,21 @@
 # STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF
 # THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+set(TREZOR_GENERATED_MESSAGES_DIR
+    "${CMAKE_BINARY_DIR}/trezor_generated/messages")
+
 set(TREZOR_PROTOB_H
-        trezor/messages/messages.pb.h
-        trezor/messages/messages-common.pb.h
-        trezor/messages/messages-management.pb.h
-        trezor/messages/messages-monero.pb.h
+    "${TREZOR_GENERATED_MESSAGES_DIR}/messages.pb.h"
+    "${TREZOR_GENERATED_MESSAGES_DIR}/messages-common.pb.h"
+    "${TREZOR_GENERATED_MESSAGES_DIR}/messages-management.pb.h"
+    "${TREZOR_GENERATED_MESSAGES_DIR}/messages-monero.pb.h"
 )
 
 set(TREZOR_PROTOB_CPP
-        trezor/messages/messages.pb.cc
-        trezor/messages/messages-common.pb.cc
-        trezor/messages/messages-management.pb.cc
-        trezor/messages/messages-monero.pb.cc
+    "${TREZOR_GENERATED_MESSAGES_DIR}/messages.pb.cc"
+    "${TREZOR_GENERATED_MESSAGES_DIR}/messages-common.pb.cc"
+    "${TREZOR_GENERATED_MESSAGES_DIR}/messages-management.pb.cc"
+    "${TREZOR_GENERATED_MESSAGES_DIR}/messages-monero.pb.cc"
 )
 
 set(trezor_headers
@@ -68,8 +71,12 @@ if(DEVICE_TREZOR_READY)
     message(STATUS "Trezor support enabled")
 
     if(USE_DEVICE_TREZOR_DEBUG)
-        list(APPEND trezor_headers trezor/debug_link.hpp trezor/messages/messages-debug.pb.h)
-        list(APPEND trezor_sources trezor/debug_link.cpp trezor/messages/messages-debug.pb.cc)
+        list(APPEND trezor_headers
+            trezor/debug_link.hpp
+            "${TREZOR_GENERATED_MESSAGES_DIR}/messages-debug.pb.h")
+        list(APPEND trezor_sources
+            trezor/debug_link.cpp
+            "${TREZOR_GENERATED_MESSAGES_DIR}/messages-debug.pb.cc")
         message(STATUS "Trezor debugging enabled")
     endif()
 

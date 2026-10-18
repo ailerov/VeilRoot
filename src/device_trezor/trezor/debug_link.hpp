@@ -31,7 +31,7 @@
 #define MONERO_DEBUG_LINK_H
 
 #include "transport.hpp"
-#include "messages/messages-debug.pb.h"
+#include <messages/messages-debug.pb.h>
 #include <type_traits>
 
 

@@ -28,13 +28,13 @@
 //
 
 #include "messages_map.hpp"
-#include "messages/messages.pb.h"
-#include "messages/messages-common.pb.h"
-#include "messages/messages-management.pb.h"
-#include "messages/messages-monero.pb.h"
+#include <messages/messages.pb.h>
+#include <messages/messages-common.pb.h>
+#include <messages/messages-management.pb.h>
+#include <messages/messages-monero.pb.h>
 
 #ifdef WITH_TREZOR_DEBUGGING
-#include "messages/messages-debug.pb.h"
+#include <messages/messages-debug.pb.h>
 #endif
 
 using namespace std;

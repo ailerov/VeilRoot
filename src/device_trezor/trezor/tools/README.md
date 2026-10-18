@@ -37,7 +37,8 @@ The minimal Python versions are 2.7 and 3.4
 
 ```bash
 cd src/device_trezor/trezor
-python tools/build_protob.py
+python tools/build_protob.py \
+    --out-dir /absolute/path/to/build/trezor_generated/messages
 ```
 
 The messages regeneration is done also automatically via cmake.

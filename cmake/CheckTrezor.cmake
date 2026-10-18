@@ -118,14 +118,32 @@ endif()
 
 # Try to build protobuf messages
 if(Protobuf_FOUND AND USE_DEVICE_TREZOR AND TREZOR_PYTHON AND Protobuf_COMPILE_TEST_PASSED)
+    # Keep generated protobuf files inside this build directory.
+    # Linux and MinGW therefore use independent output directories
+    # and cannot overwrite each other's generated headers.
+    set(TREZOR_GENERATED_ROOT
+        "${CMAKE_BINARY_DIR}/trezor_generated")
+    set(TREZOR_GENERATED_MESSAGES_DIR
+        "${TREZOR_GENERATED_ROOT}/messages")
     set(ENV{PROTOBUF_INCLUDE_DIRS} "${Protobuf_INCLUDE_DIR}")
     set(ENV{PROTOBUF_PROTOC_EXECUTABLE} "${Protobuf_PROTOC_EXECUTABLE}")
     set(TREZOR_PROTOBUF_PARAMS "")
     if (USE_DEVICE_TREZOR_DEBUG)
-        set(TREZOR_PROTOBUF_PARAMS "--debug")
+        list(APPEND TREZOR_PROTOBUF_PARAMS "--debug-msg")
     endif()
     
-    execute_process(COMMAND ${TREZOR_PYTHON} tools/build_protob.py ${TREZOR_PROTOBUF_PARAMS} WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}/../src/device_trezor/trezor RESULT_VARIABLE RET OUTPUT_VARIABLE OUT ERROR_VARIABLE ERR)
+    execute_process(
+        COMMAND
+            "${TREZOR_PYTHON}"
+            tools/build_protob.py
+            ${TREZOR_PROTOBUF_PARAMS}
+            --out-dir "${TREZOR_GENERATED_MESSAGES_DIR}"
+        WORKING_DIRECTORY
+            "${CMAKE_CURRENT_LIST_DIR}/../src/device_trezor/trezor"
+        RESULT_VARIABLE RET
+        OUTPUT_VARIABLE OUT
+        ERROR_VARIABLE ERR
+    )
     if(RET)
         message(WARNING "Trezor protobuf messages could not be regenerated (err=${RET}, python ${PYTHON})."
                 "OUT: ${OUT}, ERR: ${ERR}."
@@ -133,6 +151,9 @@ if(Protobuf_FOUND AND USE_DEVICE_TREZOR AND TREZOR_PYTHON AND Protobuf_COMPILE_T
     else()
         message(STATUS "Trezor protobuf messages regenerated out: \"${OUT}.\"")
         set(DEVICE_TREZOR_READY 1)
+        # Required for includes such as <messages/messages.pb.h>.
+        # Put this directory before source-tree include directories.
+        include_directories(BEFORE "${TREZOR_GENERATED_ROOT}")
         add_definitions(-DDEVICE_TREZOR_READY=1)
         add_definitions(-DPROTOBUF_INLINE_NOT_IN_HEADERS=0)
 

@@ -48,7 +48,7 @@
 #include <absl/strings/string_view.h>
 #endif
 
-#include "messages/messages.pb.h"
+#include <messages/messages.pb.h>
 
 namespace hw {
 namespace trezor {
