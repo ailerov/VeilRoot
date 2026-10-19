@@ -4844,11 +4844,11 @@ bool core_rpc_server::on_publish_service_descriptor(const COMMAND_RPC_PUBLISH_SE
                 vns_supply_t minted = blockchain.get_db().get_block_already_generated_coins(rec.voting_end_height);
                 uint64_t treasury = blockchain.get_db().get_treasury_balance();
                 uint64_t burned = blockchain.get_db().get_total_burned_fees();
-                uint64_t circulating = (minted > treasury + burned) ? (minted - treasury - burned) : 0;
+                vns_supply_t circulating = (minted > treasury + burned) ? (minted - treasury - burned) : 0;
                 governance_params gp;
                 if (!blockchain.get_governance_params(gp))
                     gp = governance_params::default_params();
-                uint64_t required_quorum = circulating * gp.voting_quorum_percent / 100;
+                vns_supply_t required_quorum = circulating * gp.voting_quorum_percent / 100;
                 entry.quorum_met = (participating >= required_quorum);
             }
         }
@@ -4974,11 +4974,11 @@ bool core_rpc_server::on_publish_service_descriptor(const COMMAND_RPC_PUBLISH_SE
         vns_supply_t minted = blockchain.get_db().get_block_already_generated_coins(rec.voting_end_height);
         uint64_t treasury = blockchain.get_db().get_treasury_balance();
         uint64_t burned = blockchain.get_db().get_total_burned_fees();
-        uint64_t circulating = (minted > treasury + burned) ? (minted - treasury - burned) : 0;
+        vns_supply_t circulating = (minted > treasury + burned) ? (minted - treasury - burned) : 0;
         governance_params gp;
         if (!blockchain.get_governance_params(gp))
           gp = governance_params::default_params();
-        uint64_t required_quorum = circulating * gp.voting_quorum_percent / 100;
+        vns_supply_t required_quorum = circulating * gp.voting_quorum_percent / 100;
         res.quorum_met = (participating >= required_quorum);
         res.tally_passed = blockchain.governance().is_proposal_passed(yes_w, no_w, yes_b, no_b, rec.voting_end_height);
         res.proposal_status = res.tally_passed ? "passed" : "rejected";

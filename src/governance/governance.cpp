@@ -97,15 +97,15 @@ bool GovernanceManager::is_proposal_passed(uint64_t yes_weight, uint64_t no_weig
     // Cap the height to the current DB height to avoid future-block errors
     uint64_t effective_height = std::min(voting_end_height, m_db.height());
 
-    uint64_t minted = m_db.get_block_already_generated_coins(effective_height);
+    vns_supply_t minted = m_db.get_block_already_generated_coins(effective_height);
     uint64_t treasury = m_db.get_treasury_balance();
     uint64_t burned = m_db.get_total_burned_fees();
-    uint64_t circulating = (minted > treasury + burned) ? (minted - treasury - burned) : 0;
+    vns_supply_t circulating = (minted > treasury + burned) ? (minted - treasury - burned) : 0;
 
     governance_params gp;
     if (!m_db.get_governance_params(gp))
         gp = governance_params::default_params();
-    uint64_t required_quorum = circulating * gp.voting_quorum_percent / 100;
+    vns_supply_t required_quorum = circulating * gp.voting_quorum_percent / 100;
 
     bool quorum_met = (yes_balance + no_balance) >= required_quorum;
     bool majority_met = (yes_weight > no_weight);

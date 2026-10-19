@@ -111,10 +111,10 @@ bool LifecycleManager::is_quorum_met(uint64_t yes_b, uint64_t no_b, uint64_t vot
     uint64_t participating = yes_b + no_b;
     // Cap height to current DB height to avoid out-of-range exceptions
     uint64_t effective_height = std::min(voting_end_height, m_db.height());
-    uint64_t minted = m_db.get_block_already_generated_coins(effective_height);
+    vns_supply_t minted = m_db.get_block_already_generated_coins(effective_height);
     uint64_t treasury = m_db.get_treasury_balance();
     uint64_t burned = m_db.get_total_burned_fees();
-    uint64_t circulating = (minted > treasury + burned) ? (minted - treasury - burned) : 0;
+    vns_supply_t circulating = (minted > treasury + burned) ? (minted - treasury - burned) : 0;
     uint64_t quorum = circulating * m_params.voting_quorum_percent / 100;
     return participating >= quorum;
 }
