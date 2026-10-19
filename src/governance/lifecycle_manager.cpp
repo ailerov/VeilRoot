@@ -115,7 +115,7 @@ bool LifecycleManager::is_quorum_met(uint64_t yes_b, uint64_t no_b, uint64_t vot
     uint64_t treasury = m_db.get_treasury_balance();
     uint64_t burned = m_db.get_total_burned_fees();
     vns_supply_t circulating = (minted > treasury + burned) ? (minted - treasury - burned) : 0;
-    uint64_t quorum = circulating * m_params.voting_quorum_percent / 100;
+    vns_supply_t quorum = circulating * m_params.voting_quorum_percent / 100;
     return participating >= quorum;
 }
 
