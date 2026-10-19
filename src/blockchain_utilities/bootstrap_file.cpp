@@ -125,7 +125,7 @@ bool BootstrapFile::initialize_file(uint64_t first_block, uint64_t last_block)
   *m_raw_data_file << blob;
 
   bootstrap::file_info bfi;
-  bfi.major_version = 1;
+  bfi.major_version = 2;
   bfi.minor_version = 0;
   bfi.header_size = header_size;
 
@@ -239,7 +239,7 @@ void BootstrapFile::write_block(block& block)
   {
     size_t block_weight = m_blockchain_storage->get_db().get_block_weight(block_height);
     difficulty_type cumulative_difficulty = m_blockchain_storage->get_db().get_block_cumulative_difficulty(block_height);
-    uint64_t coins_generated = m_blockchain_storage->get_db().get_block_already_generated_coins(block_height);
+    vns_supply_t coins_generated = m_blockchain_storage->get_db().get_block_already_generated_coins(block_height);
 
     bp.block_weight = block_weight;
     bp.cumulative_difficulty = cumulative_difficulty;

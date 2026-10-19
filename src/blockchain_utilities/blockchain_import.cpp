@@ -395,6 +395,7 @@ int import_from_file(cryptonote::core& core, const std::string& import_file_path
       bool res;
       if (major_version == 0)
       {
+        // Legacy version 0: uint64 cumulative difficulty and supply.
         bootstrap::block_package_1 bp1;
         res = ::serialization::parse_binary(str1, bp1);
         if (res)
@@ -406,8 +407,30 @@ int import_from_file(cryptonote::core& core, const std::string& import_file_path
           bp.coins_generated = bp1.coins_generated;
         }
       }
-      else
+      else if (major_version == 1)
+      {
+        // Version 1: 128-bit cumulative difficulty but uint64 supply.
+        bootstrap::block_package_v1 bp1;
+        res = ::serialization::parse_binary(str1, bp1);
+        if (res)
+        {
+          bp.block = std::move(bp1.block);
+          bp.txs = std::move(bp1.txs);
+          bp.block_weight = bp1.block_weight;
+          bp.cumulative_difficulty = bp1.cumulative_difficulty;
+          bp.coins_generated = bp1.coins_generated;
+        }
+      }
+      else if (major_version == 2)
+      {
+        // Version 2: full-width cumulative generated supply.
         res = ::serialization::parse_binary(str1, bp);
+      }
+      else
+      {
+        throw std::runtime_error(
+            "Unsupported bootstrap file major version");
+      }
       if (!res)
         throw std::runtime_error("Error in deserialization of chunk");
 
@@ -482,7 +505,7 @@ int import_from_file(cryptonote::core& core, const std::string& import_file_path
 
           size_t block_weight;
           difficulty_type cumulative_difficulty;
-          uint64_t coins_generated;
+          vns_supply_t coins_generated = 0;
 
           block_weight = bp.block_weight;
           cumulative_difficulty = bp.cumulative_difficulty;

@@ -83,7 +83,9 @@ namespace cryptonote
       END_SERIALIZE()
     };
 
-    struct block_package
+    // Version 1 bootstrap layout. Keep this byte-compatible with
+    // bootstrap files whose file_info.major_version is 1.
+    struct block_package_v1
     {
       cryptonote::block block;
       std::vector<transaction> txs;
@@ -97,6 +99,47 @@ namespace cryptonote
         VARINT_FIELD(block_weight)
         FIELD(cumulative_difficulty)
         VARINT_FIELD(coins_generated)
+      END_SERIALIZE()
+    };
+
+    // Version 2 stores cumulative generated supply using two uint64
+    // varints: high limb first, then low limb. This preserves the full
+    // vns_supply_t range on platforms without native __int128.
+    struct block_package
+    {
+      cryptonote::block block;
+      std::vector<transaction> txs;
+      size_t block_weight;
+      difficulty_type cumulative_difficulty;
+      vns_supply_t coins_generated;
+
+      BEGIN_SERIALIZE()
+        FIELD(block)
+        FIELD(txs)
+        VARINT_FIELD(block_weight)
+        FIELD(cumulative_difficulty)
+
+        uint64_t generated_hi = 0;
+        uint64_t generated_lo = 0;
+
+        if (W)
+        {
+          generated_hi = static_cast<uint64_t>(coins_generated >> 64);
+          generated_lo = static_cast<uint64_t>(coins_generated);
+        }
+
+        ar.serialize_varint(generated_hi);
+        if (!ar.good()) return false;
+
+        ar.serialize_varint(generated_lo);
+        if (!ar.good()) return false;
+
+        if (!W)
+        {
+          coins_generated = generated_hi;
+          coins_generated <<= 64;
+          coins_generated |= generated_lo;
+        }
       END_SERIALIZE()
     };
 
