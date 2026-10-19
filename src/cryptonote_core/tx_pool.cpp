@@ -143,6 +143,25 @@ namespace cryptonote
   {
     const bool kept_by_block = (tx_relay == relay_method::block);
 
+    // DAO V2 replaces the legacy input-based V1 vote format.
+    // Reject V1 votes at mempool admission once V2 is active so they
+    // cannot enter the pool and later be mined as tally-inert
+    // transactions. Block-reprocessing behaviour is unchanged.
+    if (!kept_by_block &&
+        m_blockchain.dao_v2_active_or_test_override(
+            m_blockchain.get_current_blockchain_height()) &&
+        is_vote_tx(tx))
+    {
+      LOG_PRINT_L1(
+          "Rejecting legacy V1 DAO vote: DAO V2 is active; "
+          "the wallet must submit a V2 vote transaction");
+
+      tvc.m_verifivation_failed = true;
+      tvc.m_invalid_input = true;
+      tvc.m_no_drop_offense = true;
+      return false;
+    }
+
     // this should already be called with that lock, but let's make it explicit for clarity
     CRITICAL_REGION_LOCAL(m_transactions_lock);
 

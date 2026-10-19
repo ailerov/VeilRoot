@@ -17372,6 +17372,7 @@ wallet2::vote_tx_result wallet2::create_vote_v2_tx(
     }
   }
   const uint64_t vote_height = chain_height + 1;
+  result.vote_height = vote_height;
 
   COMMAND_RPC_GET_PROPOSAL::request prop_req = AUTO_VAL_INIT(prop_req);
   COMMAND_RPC_GET_PROPOSAL::response prop_res = AUTO_VAL_INIT(prop_res);

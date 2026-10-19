@@ -1523,6 +1523,51 @@ TEST(DaoV2Replay, CoinbaseUnderpaymentRejected)
 }
 
 // ---------------------------------------------------------------------
+// Legacy V1 vote rejection at mempool admission.
+//
+// Once DAO V2 is active (via the fixture's forced-active override), an
+// input-based V1 vote carries no vote_v2 payload, is not reachable
+// through any handler, and would be mined as a tally-inert transaction.
+// The mempool must refuse it outright.
+// ---------------------------------------------------------------------
+TEST(DaoV2Replay, LegacyV1VoteRejectedInMempoolWhenV2Active)
+{
+    using namespace cryptonote;
+
+    V2VoteFixture fx;
+    ASSERT_TRUE(build_v2_vote_fixture(fx, "v1reject"));
+
+    // Build the legacy V1 shape: a single txin_vns_vote input, empty
+    // vout, RCTTypeNull, no vote_v2 payload in extra.
+    transaction v1_tx{};
+    v1_tx.version     = 2;
+    v1_tx.unlock_time = 0;
+    {
+        txin_vns_vote vin{};
+        vin.amount = 1000000000000ULL;
+        vin.key_offsets = {0, 0};
+        std::memset(vin.k_image.data, 0xAA, sizeof(vin.k_image.data));
+        vin.ring_sig.s.resize(2);
+        v1_tx.vin.push_back(vin);
+    }
+    v1_tx.rct_signatures = rct::rctSig{};
+    v1_tx.rct_signatures.type = rct::RCTTypeNull;
+
+    const cryptonote::blobdata vb = tx_to_blob(v1_tx);
+    tx_verification_context tvc{};
+    EXPECT_FALSE(fx.node->core->handle_incoming_tx(
+        vb, tvc, relay_method::local, false));
+    EXPECT_TRUE(tvc.m_verifivation_failed);
+    EXPECT_TRUE(tvc.m_invalid_input);
+
+    std::vector<crypto::hash> pool_hashes;
+    fx.node->core->get_pool_transaction_hashes(pool_hashes);
+    const crypto::hash id = get_transaction_hash(v1_tx);
+    EXPECT_EQ(std::find(pool_hashes.begin(), pool_hashes.end(), id),
+              pool_hashes.end());
+}
+
+// ---------------------------------------------------------------------
 // Reshare trigger.
 //
 // The eligible set must at all times be covered by the current share

@@ -1379,7 +1379,31 @@ bool core_rpc_server::on_send_raw_tx_json(const COMMAND_RPC_SEND_RAW_TX::request
         if ((res.double_spend = tvc.m_double_spend))
           add_reason(reason, "double spend");
         if ((res.invalid_input = tvc.m_invalid_input))
-          add_reason(reason, "invalid input");
+        {
+          cryptonote::transaction rejected_tx;
+          const bool legacy_v1_vote_after_v2 =
+              m_core.get_blockchain_storage()
+                  .dao_v2_active_or_test_override(
+                      m_core.get_blockchain_storage()
+                          .get_current_blockchain_height()) &&
+              cryptonote::parse_and_validate_tx_from_blob(
+                  tx_blob, rejected_tx) &&
+              !rejected_tx.vin.empty() &&
+              rejected_tx.vin[0].type() ==
+                  typeid(cryptonote::txin_vns_vote);
+
+          if (legacy_v1_vote_after_v2)
+          {
+            add_reason(
+                reason,
+                "legacy V1 DAO vote rejected: DAO V2 is active; "
+                "update the wallet and resubmit the vote");
+          }
+          else
+          {
+            add_reason(reason, "invalid input");
+          }
+        }
         if ((res.invalid_output = tvc.m_invalid_output))
           add_reason(reason, "invalid output");
         if ((res.too_big = tvc.m_too_big))

@@ -1285,6 +1285,8 @@ private:
       std::string tx_hash;
       std::string tx_blob;   // hex‑encoded transaction for sendrawtransaction
       std::string error;
+      // Designated vote height for V2 votes; 0 for V1 votes.
+      uint64_t vote_height = 0;
     };
     vote_tx_result create_vote_tx(
         const crypto::hash &proposal_id,

@@ -62,6 +62,8 @@
 #include "cryptonote_protocol/cryptonote_protocol_handler.h"
 #include "simplewallet.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
+#include "cryptonote_config.h"
+#include "ringct/rctTypes.h"
 #include "storages/http_abstract_invoke.h"
 #include "rpc/core_rpc_server_commands_defs.h"
 #include "rpc/rpc_payment_signature.h"
@@ -79,6 +81,7 @@
 #include "common/domain_utils.h"
 #include "governance/governance_params.h"
 #include "governance/parameter_update.h"
+#include "governance/vote_utils.h"
 #include "serialization/binary_utils.h"
 #include "span.h"
 #include "cryptonote_basic/cryptonote_basic_impl.h"
@@ -12435,31 +12438,135 @@ bool simple_wallet::vote(const std::vector<std::string> &args)
       return true;
     }
 
-    tools::wallet2::vote_tx_result result = m_wallet->create_vote_tx(
-        proposal_id, direction, m_wallet->get_default_priority());
+    // Determine DAO V2 activation from the connected daemon's actual chain height.
+    // Fail closed: never risk submitting a V1 vote if the height is unavailable.
+    std::string height_error;
+    const uint64_t daemon_height =
+        m_wallet->get_daemon_blockchain_height(height_error);
 
-    if (!result.tx_hash.empty() && !result.tx_blob.empty())
+    if (!height_error.empty())
     {
-      // Submit the vote transaction directly, without reserving or spending any UTXO
+      fail_msg_writer()
+          << tr("Cannot determine DAO V2 activation from the connected daemon: ")
+          << height_error
+          << tr(". Vote was not submitted.");
+      return true;
+    }
+
+    const bool dao_v2_active = config::dao_v2_active(daemon_height);
+
+    tools::wallet2::vote_tx_result result =
+        dao_v2_active
+            ? m_wallet->create_vote_v2_tx(
+                  proposal_id, direction, m_wallet->get_default_priority())
+            : m_wallet->create_vote_tx(
+                  proposal_id, direction, m_wallet->get_default_priority());
+
+    if (!result.error.empty())
+    {
+      fail_msg_writer() << tr("Failed to create vote: ") << result.error;
+      return true;
+    }
+
+    if (result.tx_hash.empty() || result.tx_blob.empty())
+    {
+      fail_msg_writer()
+          << tr("Failed to create vote: builder returned an empty transaction.");
+      return true;
+    }
+
+    // V2 shape check, run before every submission attempt.
+    auto v2_shape_ok = [](const std::string& tx_blob_hex) -> bool {
+      std::string vote_blob;
+      cryptonote::transaction vote_tx;
+      if (!epee::string_tools::parse_hexstr_to_binbuff(tx_blob_hex, vote_blob))
+        return false;
+      if (!cryptonote::parse_and_validate_tx_from_blob(vote_blob, vote_tx))
+        return false;
+      if (!cryptonote::is_dao_v2_vote_tx(vote_tx))
+        return false;
+      if (vote_tx.unlock_time != 0)
+        return false;
+      if (vote_tx.rct_signatures.type != rct::RCTTypeNull)
+        return false;
+      return true;
+    };
+
+    if (dao_v2_active && !v2_shape_ok(result.tx_blob))
+    {
+      fail_msg_writer()
+          << tr("Refusing to submit vote: DAO V2 is active, but the built "
+                "transaction does not have the required V2 shape. "
+                "No transaction was sent.");
+      return true;
+    }
+
+    auto submit_once = [&](const std::string& tx_blob_hex,
+                           const std::string& tx_hash_hex,
+                           std::string& reason_out,
+                           std::string& status_out) -> bool {
       cryptonote::COMMAND_RPC_SEND_RAW_TX::request req;
       cryptonote::COMMAND_RPC_SEND_RAW_TX::response res;
-      req.tx_as_hex = result.tx_blob;
+      req.tx_as_hex = tx_blob_hex;
       req.do_not_relay = false;
       req.do_sanity_checks = true;
 
-      bool success = m_wallet->invoke_http_json("/sendrawtransaction", req, res);
+      const bool success = m_wallet->invoke_http_json("/sendrawtransaction", req, res);
+
       if (success && res.status == CORE_RPC_STATUS_OK)
       {
-        success_msg_writer() << tr("Vote submitted. Transaction ID: ") << result.tx_hash;
+        success_msg_writer()
+            << tr("Vote accepted by daemon mempool. Transaction ID: ")
+            << tx_hash_hex;
+        if (res.not_relayed)
+          message_writer()
+              << tr("Warning: the daemon accepted the vote but did not relay it.");
+        return true;
       }
-      else
+
+      reason_out = res.reason;
+      status_out = res.status;
+      return false;
+    };
+
+    std::string reason, status;
+    bool submitted = submit_once(result.tx_blob, result.tx_hash, reason, status);
+
+    // One bounded retry when a V2 vote became stale before admission.
+    if (!submitted && dao_v2_active && result.vote_height > 0)
+    {
+      std::string err2;
+      const uint64_t now_h = m_wallet->get_daemon_blockchain_height(err2);
+      if (err2.empty() && now_h >= result.vote_height)
       {
-        fail_msg_writer() << tr("Failed to submit vote transaction to daemon");
+        message_writer()
+            << tr("Vote designated for height ") << result.vote_height
+            << tr(" was not accepted; chain is now at ") << now_h
+            << tr(". Rebuilding and retrying once.");
+
+        tools::wallet2::vote_tx_result retry =
+            m_wallet->create_vote_v2_tx(
+                proposal_id, direction, m_wallet->get_default_priority());
+
+        if (retry.error.empty() &&
+            !retry.tx_hash.empty() &&
+            !retry.tx_blob.empty() &&
+            v2_shape_ok(retry.tx_blob))
+        {
+          reason.clear();
+          status.clear();
+          submitted = submit_once(retry.tx_blob, retry.tx_hash, reason, status);
+        }
       }
     }
-    else
+
+    if (!submitted)
     {
-      fail_msg_writer() << tr("Failed to create vote: ") << result.error;
+      fail_msg_writer() << tr("Vote was not accepted by the daemon.");
+      if (!reason.empty())
+        fail_msg_writer() << tr("Reason: ") << reason;
+      else if (!status.empty())
+        fail_msg_writer() << tr("Daemon status: ") << status;
     }
   }
   catch (const std::exception &e)
