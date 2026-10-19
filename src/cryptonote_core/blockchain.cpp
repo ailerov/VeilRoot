@@ -8676,7 +8676,7 @@ uint64_t Blockchain::get_stake_age_weight(uint64_t amount, uint64_t unlock_heigh
                                        current_height);
 }
 
-uint64_t Blockchain::get_total_stake_age_weighted_supply(uint64_t height) const
+vns_supply_t Blockchain::get_total_stake_age_weighted_supply(uint64_t height) const
 {
   // Quorum denominator = total minted supply at the given height.
   // Fees are burned (only base rewards increase the supply), so

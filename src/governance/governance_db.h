@@ -113,7 +113,7 @@ public:
 
     // BEGIN_VNS_PROPOSAL_PASSING
     uint64_t height() const;
-    uint64_t get_block_already_generated_coins(uint64_t height) const;
+    vns_supply_t get_block_already_generated_coins(uint64_t height) const;
     uint64_t get_total_burned_fees() const;
     // END_VNS_PROPOSAL_PASSING
 

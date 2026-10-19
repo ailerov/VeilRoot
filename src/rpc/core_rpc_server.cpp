@@ -4841,7 +4841,7 @@ bool core_rpc_server::on_publish_service_descriptor(const COMMAND_RPC_PUBLISH_SE
                 entry.proposal_status = entry.tally_passed ? "passed" : "rejected";
 
                 uint64_t participating = yes_b + no_b;
-                uint64_t minted = blockchain.get_db().get_block_already_generated_coins(rec.voting_end_height);
+                vns_supply_t minted = blockchain.get_db().get_block_already_generated_coins(rec.voting_end_height);
                 uint64_t treasury = blockchain.get_db().get_treasury_balance();
                 uint64_t burned = blockchain.get_db().get_total_burned_fees();
                 uint64_t circulating = (minted > treasury + burned) ? (minted - treasury - burned) : 0;
@@ -4971,7 +4971,7 @@ bool core_rpc_server::on_publish_service_descriptor(const COMMAND_RPC_PUBLISH_SE
     if (current_height > rec.voting_end_height)
     {
         uint64_t participating = yes_b + no_b;
-        uint64_t minted = blockchain.get_db().get_block_already_generated_coins(rec.voting_end_height);
+        vns_supply_t minted = blockchain.get_db().get_block_already_generated_coins(rec.voting_end_height);
         uint64_t treasury = blockchain.get_db().get_treasury_balance();
         uint64_t burned = blockchain.get_db().get_total_burned_fees();
         uint64_t circulating = (minted > treasury + burned) ? (minted - treasury - burned) : 0;

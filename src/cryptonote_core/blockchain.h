@@ -1555,7 +1555,7 @@ namespace cryptonote
   void process_pending_heartbeats();
   bool verify_merkle_proof(const crypto::hash& leaf, uint64_t leaf_index, const std::vector<crypto::hash>& siblings, const crypto::hash& block_hash) const;
   uint64_t get_stake_age_weight(uint64_t amount, uint64_t unlock_height, uint64_t current_height) const;
-  uint64_t get_total_stake_age_weighted_supply(uint64_t height) const;
+  vns_supply_t get_total_stake_age_weighted_supply(uint64_t height) const;
   // ---------- VNS ADDITION END ----------
 
   nostr_client& get_nostr_client() { return *m_nostr_client; }

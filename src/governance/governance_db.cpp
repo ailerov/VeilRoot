@@ -318,7 +318,7 @@ uint64_t GovernanceDB::height() const
     return m_db.height();
 }
 
-uint64_t GovernanceDB::get_block_already_generated_coins(uint64_t h) const
+vns_supply_t GovernanceDB::get_block_already_generated_coins(uint64_t h) const
 {
     return m_db.get_block_already_generated_coins(h);
 }
