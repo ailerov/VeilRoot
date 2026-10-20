@@ -1468,9 +1468,31 @@ namespace cryptonote
   bool bootstrap_dao_v2_dkg(uint32_t ceremony_id);
 
   // Lifecycle hook called from the daemon idle loop. Runs the DKG
-  // once when the node has eligible records and no key record exists
-  // yet. No-op otherwise.
+  // once when this node has seen at least DAO_DKG_MIN_COMMITTEE_SIZE
+  // ready peers and no key record exists yet. No-op otherwise. The
+  // readiness roster is built from P2P announcements; it no longer
+  // depends on the wallet registration table.
   void maybe_bootstrap_dao_v2_dkg();
+
+  // Genesis hash accessor used by node_ready signing and verification.
+  bool get_dao_v2_genesis_hash(crypto::hash& out) const;
+
+  // Readiness lifecycle. Called from the daemon idle loop, throttled.
+  // Emits a signed node_ready announcement on the DKG transport.
+  void maybe_announce_dao_v2_node_ready();
+
+  // Readiness receiver. Called from handle_dao_v2_dkg_msg for
+  // dkg_msg_type::node_ready before any runner lookup, so peers that
+  // announce while a ceremony is not running are still recorded.
+  void handle_dao_v2_node_ready(const crypto::public_key& sender,
+                                const dao::dkg_msg& m);
+
+#ifdef VEILROOT_DAO_DKG_TESTING
+  // Test-only accessors for the readiness roster. Not compiled into
+  // production builds.
+  size_t get_dao_v2_ready_peer_count_for_test() const;
+  bool has_dao_v2_ready_peer_for_test(const crypto::public_key& pk) const;
+#endif
   // Lifecycle hook called from the daemon idle loop. Drains any
   // results queued by the DKG watcher threads onto this owner thread.
   void maybe_process_dao_v2_dkg_results();
@@ -1778,6 +1800,16 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
 
     // BEGIN_VNS_DECRYPTION_STATE
     crypto::secret_key m_node_privkey;
+
+    // Transient ready-node roster. Keyed by node pubkey, value is the
+    // steady-clock timestamp in seconds since epoch at which the last
+    // valid announcement was received. Never persisted to LMDB.
+    mutable std::mutex m_dao_v2_ready_mutex;
+    std::map<crypto::public_key, uint64_t> m_dao_v2_ready_peers;
+
+    // Throttle for our own announcement. Set to 0 to force an announce
+    // on the next on_idle tick.
+    uint64_t m_dao_v2_last_announce_time = 0;
     std::map<crypto::hash, std::map<crypto::public_key, std::pair<rct::key, rct::key>>> m_decryption_shares;
 
     // BEGIN_VNS_DAO_V2_TALLY_SHARE

@@ -173,6 +173,12 @@ enum class dkg_msg_type : uint8_t
     share_set_finalize         = 0x83,
     share_set_complete         = 0x84,
 
+    // Node readiness announcement. Sent from every daemon periodically
+    // and on receipt of another node's announcement, so that no single
+    // missed broadcast can hide a ready node. Payload is a signature
+    // over H(domain || genesis_hash || sender_pubkey) by the sender.
+    node_ready                 = 0x85,
+
     // Dynamic tally-share Reset (separate ceremony from DKG).
     reshare_start            = 0x74,
     reshare_commit           = 0x75,

@@ -134,51 +134,79 @@ TEST_F(DaoBootstrapIntegration, PersistentNodeIdentityInstalled)
     EXPECT_EQ(recovered_pub, m_node_pub);
 }
 
+namespace {
+
+// Sign and deliver a node_ready announcement for (sec, pub). The
+// digest matches Blockchain::compute_dao_v2_node_ready_digest.
+void deliver_node_ready(core& c,
+                        const crypto::hash& genesis,
+                        const crypto::public_key& pk,
+                        const crypto::secret_key& sk)
+{
+    const char* domain = "VeilRoot-DAO-DKG-NODE-READY-V1";
+    std::vector<uint8_t> msg;
+    const size_t dlen = std::strlen(domain);
+    msg.insert(msg.end(), domain, domain + dlen);
+    msg.insert(msg.end(), genesis.data, genesis.data + 32);
+    msg.insert(msg.end(), pk.data, pk.data + 32);
+
+    crypto::hash digest{};
+    crypto::cn_fast_hash(msg.data(), msg.size(), digest);
+
+    crypto::signature sig{};
+    crypto::generate_signature(digest, pk, sk, sig);
+
+    dao::dkg_msg m;
+    m.hdr.type         = dao::dkg_msg_type::node_ready;
+    m.hdr.recipient_id = 0;
+    m.bytes_a.resize(sizeof(crypto::signature));
+    std::memcpy(m.bytes_a.data(), &sig, sizeof(crypto::signature));
+
+    std::vector<uint8_t> wire;
+    ASSERT_TRUE(m.serialize(wire));
+    std::string payload(wire.begin(), wire.end());
+
+    c.get_blockchain_storage().handle_dao_v2_dkg_msg(pk, payload);
+}
+
+}  // namespace
+
 TEST_F(DaoBootstrapIntegration, BootstrapStartsRunnerForThisCommittee)
 {
-    // Install three eligible records: this node plus two decoys. The
-    // selector returns them in weight order, and start_dao_v2_dkg
-    // derives local_party_id from m_node_privkey against that order.
-    auto& db = m_core->get_blockchain_storage().get_db();
+    // The bootstrap gate is the ready-node roster, built from signed
+    // P2P announcements. Deliver three: this node plus two decoys.
+    // The roster path exercises real signing, real routing through
+    // handle_dao_v2_dkg_msg, and real signature verification.
+    crypto::hash genesis{};
+    ASSERT_TRUE(m_core->get_blockchain_storage()
+                    .get_dao_v2_genesis_hash(genesis));
 
-    committee_eligible_record self_rec{};
-    self_rec.node_pubkey = m_node_pub;
-    self_rec.amount = 3000000;
-    self_rec.unlock_height = 0;
-    self_rec.stake_age_weight = 0;
+    // This node's own key is inside the daemon, not directly reachable
+    // from the test. Use two decoys plus this node's public key with
+    // a signing key we install via set_node_key — the roster is keyed
+    // by public key, and handle_dao_v2_node_ready binds to the
+    // sender argument, so the decoys can sign with their own keys.
+    //
+    // Self is not needed to reach MIN=3: three decoys are sufficient
+    // for the gate. The runner will then find this node is not in the
+    // roster, which is the "not in committee" path — bootstrap returns
+    // false but the gate has passed. To exercise the "runner started"
+    // branch, self must be in the roster, so sign self with a
+    // test-installed node key.
 
-    crypto::key_image self_ki{};
-    std::memset(self_ki.data, 0, sizeof(self_ki.data));
-    self_ki.data[0] = 1;
+    crypto::public_key self_pk{};
+    crypto::secret_key self_new_sk{};
+    crypto::generate_keys(self_pk, self_new_sk);
+    m_core->set_node_key(self_new_sk);
 
-    {
-        db_wtxn_guard g(&db);
-        db.add_committee_eligible(self_ki, self_rec);
-    }
+    deliver_node_ready(*m_core, genesis, self_pk, self_new_sk);
 
-    for (uint32_t i = 1; i <= 2; ++i) {
+    for (int i = 0; i < 2; ++i) {
         crypto::public_key dummy;
-        crypto::secret_key dummy_sec;
-        crypto::generate_keys(dummy, dummy_sec);
-
-        committee_eligible_record rec{};
-        rec.node_pubkey = dummy;
-        rec.amount = 2000000 - i * 100000;
-        rec.unlock_height = 0;
-        rec.stake_age_weight = 0;
-
-        crypto::key_image ki{};
-        std::memset(ki.data, 0, sizeof(ki.data));
-        ki.data[0] = static_cast<uint8_t>(i + 1);
-
-        db_wtxn_guard g(&db);
-        db.add_committee_eligible(ki, rec);
+        crypto::secret_key dummy_sk;
+        crypto::generate_keys(dummy, dummy_sk);
+        deliver_node_ready(*m_core, genesis, dummy, dummy_sk);
     }
-
-    // Selector sees all three.
-    auto sel = dao::select_dao_v2_committee(db, 3, 1000000ULL);
-    ASSERT_EQ(sel.size(), 3u);
-    EXPECT_EQ(sel[0].first, m_node_pub);
 
     // install the P2P send callback so bootstrap does not bail on a
     // missing callback.
@@ -190,6 +218,125 @@ TEST_F(DaoBootstrapIntegration, BootstrapStartsRunnerForThisCommittee)
     // A runner for the bootstrap ceremony now exists. It cannot complete without
     // peers; teardown stops it via ~Blockchain.
     SUCCEED();
+}
+
+
+TEST_F(DaoBootstrapIntegration, NodeReadyRecordsValidAnnouncement)
+{
+    crypto::hash genesis{};
+    ASSERT_TRUE(m_core->get_blockchain_storage()
+                    .get_dao_v2_genesis_hash(genesis));
+
+    crypto::public_key a_pk;
+    crypto::secret_key a_sk;
+    crypto::generate_keys(a_pk, a_sk);
+
+    deliver_node_ready(*m_core, genesis, a_pk, a_sk);
+
+    auto& bs = m_core->get_blockchain_storage();
+    EXPECT_TRUE(bs.has_dao_v2_ready_peer_for_test(a_pk));
+    EXPECT_EQ(1u, bs.get_dao_v2_ready_peer_count_for_test());
+}
+
+TEST_F(DaoBootstrapIntegration, NodeReadyRejectsInvalidSignature)
+{
+    crypto::hash genesis{};
+    ASSERT_TRUE(m_core->get_blockchain_storage()
+                    .get_dao_v2_genesis_hash(genesis));
+
+    crypto::public_key a_pk;
+    crypto::secret_key a_sk;
+    crypto::generate_keys(a_pk, a_sk);
+
+    crypto::public_key b_pk;
+    crypto::secret_key b_sk;
+    crypto::generate_keys(b_pk, b_sk);
+
+    deliver_node_ready(*m_core, genesis, a_pk, a_sk);
+    ASSERT_TRUE(m_core->get_blockchain_storage()
+                    .has_dao_v2_ready_peer_for_test(a_pk));
+
+    // Forged: signature is over A's digest, but the message arrives
+    // claiming sender=B. The handler computes the digest over B, so
+    // signature verification against B's public key fails.
+    std::vector<uint8_t> msg;
+    const char* domain = "VeilRoot-DAO-DKG-NODE-READY-V1";
+    const size_t dlen = std::strlen(domain);
+    msg.insert(msg.end(), domain, domain + dlen);
+    msg.insert(msg.end(), genesis.data, genesis.data + 32);
+    msg.insert(msg.end(), a_pk.data, a_pk.data + 32);
+    crypto::hash digest{};
+    crypto::cn_fast_hash(msg.data(), msg.size(), digest);
+    crypto::signature sig{};
+    crypto::generate_signature(digest, a_pk, a_sk, sig);
+
+    dao::dkg_msg forged;
+    forged.hdr.type         = dao::dkg_msg_type::node_ready;
+    forged.hdr.recipient_id = 0;
+    forged.bytes_a.resize(sizeof(crypto::signature));
+    std::memcpy(forged.bytes_a.data(), &sig, sizeof(crypto::signature));
+    std::vector<uint8_t> wire;
+    ASSERT_TRUE(forged.serialize(wire));
+    std::string payload(wire.begin(), wire.end());
+    m_core->get_blockchain_storage().handle_dao_v2_dkg_msg(b_pk, payload);
+
+    auto& bs = m_core->get_blockchain_storage();
+    EXPECT_TRUE(bs.has_dao_v2_ready_peer_for_test(a_pk));
+    EXPECT_FALSE(bs.has_dao_v2_ready_peer_for_test(b_pk));
+    EXPECT_EQ(1u, bs.get_dao_v2_ready_peer_count_for_test());
+}
+
+TEST_F(DaoBootstrapIntegration, BootstrapGateRequiresThreeReadyNodes)
+{
+    crypto::hash genesis{};
+    ASSERT_TRUE(m_core->get_blockchain_storage()
+                    .get_dao_v2_genesis_hash(genesis));
+
+    m_core->get_blockchain_storage().set_dao_v2_dkg_send(
+        [](const std::string&) -> bool { return true; });
+
+    // 0 ready: bootstrap refuses.
+    EXPECT_FALSE(m_core->get_blockchain_storage().bootstrap_dao_v2_dkg(1));
+
+    // 1 ready (self): still refuses.
+    deliver_node_ready(*m_core, genesis, m_node_pub, m_node_sec);
+    EXPECT_FALSE(m_core->get_blockchain_storage().bootstrap_dao_v2_dkg(1));
+
+    // 2 ready: still refuses.
+    crypto::public_key a_pk;
+    crypto::secret_key a_sk;
+    crypto::generate_keys(a_pk, a_sk);
+    deliver_node_ready(*m_core, genesis, a_pk, a_sk);
+    EXPECT_FALSE(m_core->get_blockchain_storage().bootstrap_dao_v2_dkg(1));
+
+    // 3 ready: gate passes and a runner starts.
+    crypto::public_key b_pk;
+    crypto::secret_key b_sk;
+    crypto::generate_keys(b_pk, b_sk);
+    deliver_node_ready(*m_core, genesis, b_pk, b_sk);
+    EXPECT_TRUE(m_core->get_blockchain_storage().bootstrap_dao_v2_dkg(1));
+}
+
+TEST_F(DaoBootstrapIntegration, AnnounceIsThrottled)
+{
+    crypto::hash genesis{};
+    ASSERT_TRUE(m_core->get_blockchain_storage()
+                    .get_dao_v2_genesis_hash(genesis));
+
+    int sent = 0;
+    m_core->get_blockchain_storage().set_dao_v2_dkg_send(
+        [&sent](const std::string&) -> bool { ++sent; return true; });
+
+    m_core->get_blockchain_storage().maybe_announce_dao_v2_node_ready();
+    EXPECT_EQ(1, sent);
+
+    // Second call within the throttle window does not emit.
+    m_core->get_blockchain_storage().maybe_announce_dao_v2_node_ready();
+    EXPECT_EQ(1, sent);
+
+    // The first announce also recorded self in the roster.
+    EXPECT_EQ(1u,
+        m_core->get_blockchain_storage().get_dao_v2_ready_peer_count_for_test());
 }
 
 

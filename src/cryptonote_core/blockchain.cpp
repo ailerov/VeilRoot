@@ -9017,6 +9017,13 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     }
     // END_VNS_DAO_V2_KEY_READY_ROUTE
 
+    // BEGIN_VNS_DAO_V2_NODE_READY_ROUTE
+    if (m.hdr.type == dao::dkg_msg_type::node_ready) {
+      handle_dao_v2_node_ready(member, m);
+      return;
+    }
+    // END_VNS_DAO_V2_NODE_READY_ROUTE
+
     // BEGIN_VNS_DAO_V2_RESHARE_ROUTE
     // Reshare messages are carried inside a DKG envelope so that the
     // existing P2P transport routes them without a new wire type.
@@ -9284,21 +9291,168 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       }
     }
 
-    // Select bootstrap shareholders from the currently eligible set.
-    // This is the initial share custodian set, not the tally committee.
-    // get_current_blockchain_height() returns the DB height (count),
-    // not the height index of the last committed block.
-    const uint64_t chain_height = get_current_blockchain_height();
-    if (chain_height == 0) return;
-    const uint64_t selection_height = chain_height - 1;
-    rebuild_committee_eligible_list(selection_height);
-    if (m_committee_eligible_sorted.size() <
-        dao::DAO_DKG_MIN_COMMITTEE_SIZE)
-      return;
+    // The bootstrap gate is the ready-node roster, not the wallet
+    // registration table. Roster entries are dropped when stale, so a
+    // node that has gone silent does not hold a ceremony open.
+    {
+      std::lock_guard<std::mutex> lk(m_dao_v2_ready_mutex);
+      constexpr uint64_t k_ready_ttl_s = 30 * 60;
+      const uint64_t now = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::seconds>(
+              std::chrono::steady_clock::now().time_since_epoch()).count());
+      for (auto it = m_dao_v2_ready_peers.begin();
+           it != m_dao_v2_ready_peers.end(); ) {
+        if (now > it->second && now - it->second > k_ready_ttl_s)
+          it = m_dao_v2_ready_peers.erase(it);
+        else
+          ++it;
+      }
+      if (m_dao_v2_ready_peers.size() <
+          dao::DAO_DKG_MIN_COMMITTEE_SIZE)
+        return;
+    }
 
     // Not a bootstrap shareholder is fine — other nodes will run it.
     (void)bootstrap_dao_v2_dkg(bootstrap_ceremony_id);
   }
+
+  // BEGIN_VNS_DAO_V2_NODE_READY
+
+  namespace {
+    constexpr const char* DAO_NODE_READY_DOMAIN =
+        "VeilRoot-DAO-DKG-NODE-READY-V1";
+    constexpr uint64_t    DAO_NODE_READY_ANNOUNCE_INTERVAL_S = 60;
+  }
+
+  bool Blockchain::get_dao_v2_genesis_hash(crypto::hash& out) const
+  {
+    try {
+      out = m_db->get_block_hash_from_height(0);
+      return true;
+    } catch (...) {
+      return false;
+    }
+  }
+
+  static void compute_dao_v2_node_ready_digest(
+      const crypto::hash& genesis,
+      const crypto::public_key& pk,
+      crypto::hash& out)
+  {
+    std::vector<uint8_t> msg;
+    const size_t dom_len = std::strlen(DAO_NODE_READY_DOMAIN);
+    msg.reserve(dom_len + 32 + 32);
+    msg.insert(msg.end(), DAO_NODE_READY_DOMAIN,
+               DAO_NODE_READY_DOMAIN + dom_len);
+    msg.insert(msg.end(), genesis.data, genesis.data + 32);
+    msg.insert(msg.end(), pk.data, pk.data + 32);
+    crypto::cn_fast_hash(msg.data(), msg.size(), out);
+  }
+
+  void Blockchain::maybe_announce_dao_v2_node_ready()
+  {
+    if (!m_dao_v2_dkg_send) return;
+
+    // All-zero m_node_privkey means the node key is not initialised
+    // yet (startup before open()). Wait for the next tick.
+    {
+      bool all_zero = true;
+      for (size_t i = 0; i < sizeof(m_node_privkey.data); ++i)
+        if (m_node_privkey.data[i] != 0) { all_zero = false; break; }
+      if (all_zero) return;
+    }
+
+    const uint64_t now = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    if (m_dao_v2_last_announce_time != 0 &&
+        now < m_dao_v2_last_announce_time +
+              DAO_NODE_READY_ANNOUNCE_INTERVAL_S)
+      return;
+
+    crypto::hash genesis{};
+    if (!get_dao_v2_genesis_hash(genesis)) return;
+
+    crypto::public_key self_pk{};
+    if (!crypto::secret_key_to_public_key(m_node_privkey, self_pk)) return;
+
+    crypto::hash digest{};
+    compute_dao_v2_node_ready_digest(genesis, self_pk, digest);
+
+    crypto::signature sig{};
+    crypto::generate_signature(digest, self_pk, m_node_privkey, sig);
+
+    dao::dkg_msg m;
+    m.hdr.type         = dao::dkg_msg_type::node_ready;
+    m.hdr.recipient_id = 0;
+    m.bytes_a.resize(sizeof(crypto::signature));
+    std::memcpy(m.bytes_a.data(), &sig, sizeof(crypto::signature));
+
+    std::vector<uint8_t> wire;
+    if (!m.serialize(wire)) return;
+    std::string payload(wire.begin(), wire.end());
+    if (!m_dao_v2_dkg_send(payload)) return;
+
+    m_dao_v2_last_announce_time = now;
+    // Record ourselves so a single-node network can reach the gate if
+    // it ever grows to MIN without needing a peer announcement first.
+    std::lock_guard<std::mutex> lk(m_dao_v2_ready_mutex);
+    m_dao_v2_ready_peers[self_pk] = now;
+  }
+
+  void Blockchain::handle_dao_v2_node_ready(
+      const crypto::public_key& sender, const dao::dkg_msg& m)
+  {
+    if (m.bytes_a.size() != sizeof(crypto::signature)) {
+      MWARNING("node_ready: wrong signature length");
+      return;
+    }
+    crypto::hash genesis{};
+    if (!get_dao_v2_genesis_hash(genesis)) return;
+
+    crypto::hash digest{};
+    compute_dao_v2_node_ready_digest(genesis, sender, digest);
+
+    crypto::signature sig{};
+    std::memcpy(&sig, m.bytes_a.data(), sizeof(crypto::signature));
+    if (!crypto::check_signature(digest, sender, sig)) {
+      MWARNING("node_ready: bad signature from " << sender);
+      return;
+    }
+
+    // Bind the announced key to the authenticated sender: the sender
+    // is the pubkey the P2P connection authenticated as, and the
+    // digest is bound to that same pubkey, so a peer cannot announce
+    // on behalf of another node.
+    const uint64_t now = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    {
+      std::lock_guard<std::mutex> lk(m_dao_v2_ready_mutex);
+      m_dao_v2_ready_peers[sender] = now;
+    }
+
+    // Reply so a peer that announced before we were listening still
+    // learns we are ready without waiting for the next periodic tick.
+    m_dao_v2_last_announce_time = 0;
+  }
+
+#ifdef VEILROOT_DAO_DKG_TESTING
+  size_t Blockchain::get_dao_v2_ready_peer_count_for_test() const
+  {
+    std::lock_guard<std::mutex> lk(m_dao_v2_ready_mutex);
+    return m_dao_v2_ready_peers.size();
+  }
+
+  bool Blockchain::has_dao_v2_ready_peer_for_test(
+      const crypto::public_key& pk) const
+  {
+    std::lock_guard<std::mutex> lk(m_dao_v2_ready_mutex);
+    return m_dao_v2_ready_peers.count(pk) > 0;
+  }
+#endif
+
+  // END_VNS_DAO_V2_NODE_READY
 
   void Blockchain::maybe_process_dao_v2_dkg_results()
   {
@@ -9504,16 +9658,33 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     if (m_dao_v2_dkg_runners.count(ceremony_id) > 0)
       return true;   // already running
 
-    // The bootstrap DKG must run over the complete eligible
-    // shareholder set: every node that would be eligible to hold a
-    // DKG share. Selecting only the top-N here was
-    // the bug: it turned the bootstrap DKG shareholder set into the
-    // first tally committee.
+    // The bootstrap DKG runs over the ready-node roster: every daemon
+    // that has announced a valid node_ready and whose announcement has
+    // not expired. Order is lexicographic on the 32-byte pubkey so every
+    // node derives the same committee list and the same member indices.
     const uint64_t chain_height = get_current_blockchain_height();
     if (chain_height == 0) return false;
     const uint64_t selection_height = chain_height - 1;
-    const auto shareholders_sorted =
-        dao::select_dao_v2_dkg_shareholders(*m_db, selection_height);
+
+    std::vector<std::pair<crypto::public_key, uint64_t>> shareholders_sorted;
+    {
+      std::lock_guard<std::mutex> lk(m_dao_v2_ready_mutex);
+      constexpr uint64_t k_ready_ttl_s = 30 * 60;
+      const uint64_t now = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::seconds>(
+              std::chrono::steady_clock::now().time_since_epoch()).count());
+      for (const auto& kv : m_dao_v2_ready_peers) {
+        if (now > kv.second && now - kv.second > k_ready_ttl_s) continue;
+        shareholders_sorted.emplace_back(kv.first, 0);
+      }
+    }
+    std::sort(shareholders_sorted.begin(), shareholders_sorted.end(),
+              [](const auto& a, const auto& b) {
+                return std::memcmp(a.first.data, b.first.data,
+                                   sizeof(a.first.data)) < 0;
+              });
+    if (shareholders_sorted.size() > dao::DAO_DKG_MAX_COMMITTEE_SIZE)
+      shareholders_sorted.resize(dao::DAO_DKG_MAX_COMMITTEE_SIZE);
 
     if (shareholders_sorted.size() < dao::DAO_DKG_MIN_COMMITTEE_SIZE) {
       MWARNING("bootstrap_dao_v2_dkg: not enough eligible shareholders");

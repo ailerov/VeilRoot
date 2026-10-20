@@ -1665,6 +1665,7 @@ namespace cryptonote
     m_diff_recalc_interval.do_call(boost::bind(&core::recalculate_difficulties, this));
     m_dao_v2_dkg_interval.do_call([this]() -> bool {
       m_blockchain_storage.maybe_process_dao_v2_dkg_results();
+      m_blockchain_storage.maybe_announce_dao_v2_node_ready();
       m_blockchain_storage.maybe_bootstrap_dao_v2_dkg();
       m_blockchain_storage.maybe_maintain_dao_v2_share_set();
       return true;
