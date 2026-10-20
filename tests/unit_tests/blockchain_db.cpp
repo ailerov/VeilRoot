@@ -32,6 +32,9 @@
 #include <iostream>
 #include <chrono>
 #include <thread>
+#include <cstring>
+
+#include <lmdb.h>
 
 #include "gtest/gtest.h"
 
@@ -152,6 +155,275 @@ std::string h2b(const std::string& s)
   }
   return result;
 }
+
+struct migration_test_block_info_v5
+{
+  uint64_t bi_height;
+  uint64_t bi_timestamp;
+  uint64_t bi_coins;
+  uint64_t bi_weight;
+  uint64_t bi_diff_lo;
+  uint64_t bi_diff_hi;
+  crypto::hash bi_hash;
+  uint64_t bi_cum_rct;
+  uint64_t bi_long_term_block_weight;
+};
+
+struct migration_test_block_info_v6
+{
+  uint64_t bi_height;
+  uint64_t bi_timestamp;
+  uint64_t bi_coins;
+  uint64_t bi_coins_hi;
+  uint64_t bi_weight;
+  uint64_t bi_diff_lo;
+  uint64_t bi_diff_hi;
+  crypto::hash bi_hash;
+  uint64_t bi_cum_rct;
+  uint64_t bi_long_term_block_weight;
+};
+
+static_assert(
+    sizeof(migration_test_block_info_v5) == 96,
+    "Version-5 block_info layout must be 96 bytes");
+
+static_assert(
+    sizeof(migration_test_block_info_v6) == 104,
+    "Version-6 block_info layout must be 104 bytes");
+
+static int migration_test_compare_block_info_height(
+    const MDB_val *a, const MDB_val *b)
+{
+  uint64_t height_a = 0;
+  uint64_t height_b = 0;
+
+  std::memcpy(&height_a, a->mv_data, sizeof(height_a));
+  std::memcpy(&height_b, b->mv_data, sizeof(height_b));
+
+  return height_a < height_b ? -1 : height_a > height_b ? 1 : 0;
+}
+
+static bool migration_test_downgrade_block_info_to_v5(
+    const std::string& db_path,
+    std::string& error)
+{
+  MDB_env *env = nullptr;
+  MDB_txn *txn = nullptr;
+  MDB_cursor *cursor = nullptr;
+  MDB_dbi block_info_dbi = 0;
+  MDB_dbi properties_dbi = 0;
+
+  std::vector<migration_test_block_info_v5> legacy_records;
+
+  const unsigned int block_info_flags =
+      MDB_INTEGERKEY | MDB_DUPSORT | MDB_DUPFIXED;
+
+  auto cleanup = [&]()
+  {
+    if (cursor != nullptr)
+    {
+      mdb_cursor_close(cursor);
+      cursor = nullptr;
+    }
+
+    if (txn != nullptr)
+    {
+      mdb_txn_abort(txn);
+      txn = nullptr;
+    }
+
+    if (env != nullptr)
+    {
+      mdb_env_close(env);
+      env = nullptr;
+    }
+  };
+
+  auto fail_message = [&](const std::string& message) -> bool
+  {
+    error = message;
+    cleanup();
+    return false;
+  };
+
+  auto fail_rc = [&](const std::string& operation, int rc) -> bool
+  {
+    return fail_message(
+        operation + ": " + mdb_strerror(rc) +
+        " (LMDB error " + std::to_string(rc) + ")");
+  };
+
+  int rc = mdb_env_create(&env);
+  if (rc != MDB_SUCCESS)
+    return fail_rc("mdb_env_create", rc);
+
+  rc = mdb_env_set_maxdbs(env, 128);
+  if (rc != MDB_SUCCESS)
+    return fail_rc("mdb_env_set_maxdbs", rc);
+
+  rc = mdb_env_open(env, db_path.c_str(), 0, 0644);
+  if (rc != MDB_SUCCESS)
+    return fail_rc("mdb_env_open", rc);
+
+  rc = mdb_txn_begin(env, nullptr, 0, &txn);
+  if (rc != MDB_SUCCESS)
+    return fail_rc("begin block_info read transaction", rc);
+
+  rc = mdb_dbi_open(
+      txn, "block_info", block_info_flags, &block_info_dbi);
+  if (rc != MDB_SUCCESS)
+    return fail_rc("open version-6 block_info", rc);
+
+  rc = mdb_set_dupsort(
+      txn, block_info_dbi, migration_test_compare_block_info_height);
+  if (rc != MDB_SUCCESS)
+    return fail_rc("set block_info duplicate comparator", rc);
+
+  rc = mdb_cursor_open(txn, block_info_dbi, &cursor);
+  if (rc != MDB_SUCCESS)
+    return fail_rc("open block_info cursor", rc);
+
+  MDB_val key{};
+  MDB_val value{};
+
+  rc = mdb_cursor_get(cursor, &key, &value, MDB_FIRST);
+
+  while (rc == MDB_SUCCESS)
+  {
+    if (value.mv_size != sizeof(migration_test_block_info_v6))
+    {
+      return fail_message(
+          "Unexpected version-6 block_info record size: " +
+          std::to_string(value.mv_size));
+    }
+
+    migration_test_block_info_v6 current{};
+    std::memcpy(&current, value.mv_data, sizeof(current));
+
+    if (current.bi_coins_hi != 0)
+    {
+      return fail_message(
+          "Cannot downgrade test record: bi_coins_hi is nonzero");
+    }
+
+    migration_test_block_info_v5 legacy{};
+    legacy.bi_height = current.bi_height;
+    legacy.bi_timestamp = current.bi_timestamp;
+    legacy.bi_coins = current.bi_coins;
+    legacy.bi_weight = current.bi_weight;
+    legacy.bi_diff_lo = current.bi_diff_lo;
+    legacy.bi_diff_hi = current.bi_diff_hi;
+    legacy.bi_hash = current.bi_hash;
+    legacy.bi_cum_rct = current.bi_cum_rct;
+    legacy.bi_long_term_block_weight =
+        current.bi_long_term_block_weight;
+
+    legacy_records.push_back(legacy);
+
+    rc = mdb_cursor_get(cursor, &key, &value, MDB_NEXT);
+  }
+
+  if (rc != MDB_NOTFOUND)
+    return fail_rc("iterate block_info records", rc);
+
+  mdb_cursor_close(cursor);
+  cursor = nullptr;
+
+  mdb_txn_abort(txn);
+  txn = nullptr;
+
+  if (legacy_records.size() != 1)
+  {
+    return fail_message(
+        "Expected exactly one block_info record before migration; found " +
+        std::to_string(legacy_records.size()));
+  }
+
+  rc = mdb_txn_begin(env, nullptr, 0, &txn);
+  if (rc != MDB_SUCCESS)
+    return fail_rc("begin block_info replacement transaction", rc);
+
+  rc = mdb_dbi_open(
+      txn, "block_info", block_info_flags, &block_info_dbi);
+  if (rc != MDB_SUCCESS)
+    return fail_rc("reopen block_info before replacement", rc);
+
+  rc = mdb_drop(txn, block_info_dbi, 1);
+  if (rc != MDB_SUCCESS)
+    return fail_rc("drop version-6 block_info", rc);
+
+  {
+    MDB_txn *committing_txn = txn;
+    txn = nullptr;
+    rc = mdb_txn_commit(committing_txn);
+  }
+
+  if (rc != MDB_SUCCESS)
+    return fail_rc("commit block_info deletion", rc);
+
+  mdb_dbi_close(env, block_info_dbi);
+  block_info_dbi = 0;
+
+  rc = mdb_txn_begin(env, nullptr, 0, &txn);
+  if (rc != MDB_SUCCESS)
+    return fail_rc("begin version-5 reconstruction transaction", rc);
+
+  rc = mdb_dbi_open(
+      txn,
+      "block_info",
+      block_info_flags | MDB_CREATE,
+      &block_info_dbi);
+  if (rc != MDB_SUCCESS)
+    return fail_rc("create version-5 block_info", rc);
+
+  rc = mdb_set_dupsort(
+      txn, block_info_dbi, migration_test_compare_block_info_height);
+  if (rc != MDB_SUCCESS)
+    return fail_rc("set version-5 block_info comparator", rc);
+
+  uint64_t zero_key = 0;
+  MDB_val record_key{sizeof(zero_key), &zero_key};
+
+  for (auto& legacy : legacy_records)
+  {
+    MDB_val record_value{sizeof(legacy), &legacy};
+
+    rc = mdb_put(
+        txn, block_info_dbi, &record_key, &record_value, 0);
+
+    if (rc != MDB_SUCCESS)
+      return fail_rc("write version-5 block_info record", rc);
+  }
+
+  rc = mdb_dbi_open(txn, "properties", 0, &properties_dbi);
+  if (rc != MDB_SUCCESS)
+    return fail_rc("open properties DBI", rc);
+
+  char version_key[] = "version";
+  uint32_t version = 5;
+
+  MDB_val property_key{sizeof(version_key), version_key};
+  MDB_val property_value{sizeof(version), &version};
+
+  rc = mdb_put(
+      txn, properties_dbi, &property_key, &property_value, 0);
+  if (rc != MDB_SUCCESS)
+    return fail_rc("set schema version to 5", rc);
+
+  {
+    MDB_txn *committing_txn = txn;
+    txn = nullptr;
+    rc = mdb_txn_commit(committing_txn);
+  }
+
+  if (rc != MDB_SUCCESS)
+    return fail_rc("commit version-5 reconstruction", rc);
+
+  cleanup();
+  error.clear();
+  return true;
+}
+
 
 template <typename T>
 class BlockchainDBTest : public testing::Test
@@ -662,6 +934,121 @@ TYPED_TEST(BlockchainDBTest, AddBlock)
 
     ASSERT_HASH_EQ(h, get_transaction_hash(tx));
   }
+}
+
+TEST(BlockchainDBMigration, V5ToV6AllowsImmediateBlockAppend)
+{
+  namespace fs = boost::filesystem;
+
+  const fs::path temp_path =
+      fs::temp_directory_path() / fs::unique_path();
+  const std::string db_path = temp_path.string();
+
+  struct TempDirCleanup
+  {
+    fs::path path;
+
+    ~TempDirCleanup()
+    {
+      boost::system::error_code ec;
+      fs::remove_all(path, ec);
+    }
+  } temp_cleanup{temp_path};
+
+  BlockchainLMDB db;
+
+  ASSERT_NO_THROW(db.open(db_path));
+
+  block block0;
+  block block1;
+  const blobdata block0_blob = h2b(t_blocks.at(0));
+  const blobdata block1_blob = h2b(t_blocks.at(1));
+
+  ASSERT_TRUE(
+      parse_and_validate_block_from_blob(block0_blob, block0));
+  ASSERT_TRUE(
+      parse_and_validate_block_from_blob(block1_blob, block1));
+
+  auto parse_transactions =
+      [](const std::vector<std::string>& encoded,
+         std::vector<std::pair<transaction, blobdata>>& parsed) -> bool
+      {
+        for (const auto& hex : encoded)
+        {
+          const blobdata tx_blob = h2b(hex);
+          transaction tx;
+
+          if (!parse_and_validate_tx_from_blob(tx_blob, tx))
+            return false;
+
+          parsed.emplace_back(tx, tx_blob);
+        }
+
+        return true;
+      };
+
+  std::vector<std::pair<transaction, blobdata>> block0_txs;
+  std::vector<std::pair<transaction, blobdata>> block1_txs;
+
+  ASSERT_TRUE(parse_transactions(t_transactions.at(0), block0_txs));
+  ASSERT_TRUE(parse_transactions(t_transactions.at(1), block1_txs));
+
+  HardFork hardfork_before_migration(db, 1, 0);
+  hardfork_before_migration.init();
+  db.set_hard_fork(&hardfork_before_migration);
+
+  {
+    db_wtxn_guard guard(&db);
+
+    ASSERT_NO_THROW(
+        db.add_block(
+            std::make_pair(block0, block0_blob),
+            t_sizes.at(0),
+            t_sizes.at(0),
+            t_diffs.at(0),
+            t_coins.at(0),
+            block0_txs));
+  }
+
+  ASSERT_EQ(1u, db.height());
+  ASSERT_TRUE(db.block_exists(get_block_hash(block0)));
+  ASSERT_NO_THROW(db.close());
+
+  std::string downgrade_error;
+  ASSERT_TRUE(
+      migration_test_downgrade_block_info_to_v5(
+          db_path, downgrade_error))
+      << downgrade_error;
+
+  ASSERT_NO_THROW(db.open(db_path));
+  ASSERT_EQ(1u, db.height());
+  ASSERT_TRUE(db.block_exists(get_block_hash(block0)));
+
+  HardFork hardfork_after_migration(db, 1, 0);
+  hardfork_after_migration.init();
+  db.set_hard_fork(&hardfork_after_migration);
+
+  {
+    db_wtxn_guard guard(&db);
+
+    ASSERT_NO_THROW(
+        db.add_block(
+            std::make_pair(block1, block1_blob),
+            t_sizes.at(1),
+            t_sizes.at(1),
+            t_diffs.at(1),
+            t_coins.at(1),
+            block1_txs));
+  }
+
+  EXPECT_EQ(2u, db.height());
+  EXPECT_TRUE(db.block_exists(get_block_hash(block1)));
+
+  block stored_block1;
+  ASSERT_NO_THROW(stored_block1 = db.get_block_from_height(1));
+  EXPECT_TRUE(compare_blocks(block1, stored_block1));
+
+  ASSERT_NO_THROW(db.close());
 }
 
 TYPED_TEST(BlockchainDBTest, RetrieveBlockData)

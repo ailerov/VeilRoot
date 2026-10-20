@@ -9650,10 +9650,35 @@ void BlockchainLMDB::migrate_2_3()
       throw0(DB_ERROR(lmdb_error("Failed to delete old block_info table: ", result).c_str()));
 
     RENAME_DB("block_infn");
-    mdb_dbi_close(m_env, m_block_info);
 
-    lmdb_db_open(txn, "block_info", MDB_INTEGERKEY | MDB_CREATE | MDB_DUPSORT | MDB_DUPFIXED, m_block_info, "Failed to open db handle for block_infn");
-    mdb_set_dupsort(txn, m_block_info, compare_uint64);
+    // Commit the database drop/rename before closing the temporary DBI.
+    // LMDB warns against closing a DBI while a transaction has modified
+    // its database.
+    txn.commit();
+  } while(0);
+
+  // The rename is committed and there is no active write transaction.
+  // Close the old handle before reopening the final database name.
+  mdb_dbi_close(m_env, m_block_info);
+
+  do
+  {
+    result = mdb_txn_begin(m_env, NULL, 0, txn);
+    if (result)
+      throw0(DB_ERROR(lmdb_error(
+          "Failed to create a transaction for the db: ", result).c_str()));
+
+    lmdb_db_open(
+        txn,
+        "block_info",
+        MDB_INTEGERKEY | MDB_CREATE | MDB_DUPSORT | MDB_DUPFIXED,
+        m_block_info,
+        "Failed to reopen block_info after migration");
+
+    if ((result = mdb_set_dupsort(txn, m_block_info, compare_uint64)))
+      throw0(DB_ERROR(lmdb_error(
+          "Failed to configure block_info comparator after migration: ",
+          result).c_str()));
 
     txn.commit();
   } while(0);
@@ -9809,10 +9834,35 @@ void BlockchainLMDB::migrate_3_4()
       throw0(DB_ERROR(lmdb_error("Failed to delete old block_info table: ", result).c_str()));
 
     RENAME_DB("block_infn");
-    mdb_dbi_close(m_env, m_block_info);
 
-    lmdb_db_open(txn, "block_info", MDB_INTEGERKEY | MDB_CREATE | MDB_DUPSORT | MDB_DUPFIXED, m_block_info, "Failed to open db handle for block_infn");
-    mdb_set_dupsort(txn, m_block_info, compare_uint64);
+    // Commit the database drop/rename before closing the temporary DBI.
+    // LMDB warns against closing a DBI while a transaction has modified
+    // its database.
+    txn.commit();
+  } while(0);
+
+  // The rename is committed and there is no active write transaction.
+  // Close the old handle before reopening the final database name.
+  mdb_dbi_close(m_env, m_block_info);
+
+  do
+  {
+    result = mdb_txn_begin(m_env, NULL, 0, txn);
+    if (result)
+      throw0(DB_ERROR(lmdb_error(
+          "Failed to create a transaction for the db: ", result).c_str()));
+
+    lmdb_db_open(
+        txn,
+        "block_info",
+        MDB_INTEGERKEY | MDB_CREATE | MDB_DUPSORT | MDB_DUPFIXED,
+        m_block_info,
+        "Failed to reopen block_info after migration");
+
+    if ((result = mdb_set_dupsort(txn, m_block_info, compare_uint64)))
+      throw0(DB_ERROR(lmdb_error(
+          "Failed to configure block_info comparator after migration: ",
+          result).c_str()));
 
     txn.commit();
   } while(0);
@@ -9935,10 +9985,35 @@ void BlockchainLMDB::migrate_4_5()
       throw0(DB_ERROR(lmdb_error("Failed to delete old block_info table: ", result).c_str()));
 
     RENAME_DB("block_infn");
-    mdb_dbi_close(m_env, m_block_info);
 
-    lmdb_db_open(txn, "block_info", MDB_INTEGERKEY | MDB_CREATE | MDB_DUPSORT | MDB_DUPFIXED, m_block_info, "Failed to open db handle for block_infn");
-    mdb_set_dupsort(txn, m_block_info, compare_uint64);
+    // Commit the database drop/rename before closing the temporary DBI.
+    // LMDB warns against closing a DBI while a transaction has modified
+    // its database.
+    txn.commit();
+  } while(0);
+
+  // The rename is committed and there is no active write transaction.
+  // Close the old handle before reopening the final database name.
+  mdb_dbi_close(m_env, m_block_info);
+
+  do
+  {
+    result = mdb_txn_begin(m_env, NULL, 0, txn);
+    if (result)
+      throw0(DB_ERROR(lmdb_error(
+          "Failed to create a transaction for the db: ", result).c_str()));
+
+    lmdb_db_open(
+        txn,
+        "block_info",
+        MDB_INTEGERKEY | MDB_CREATE | MDB_DUPSORT | MDB_DUPFIXED,
+        m_block_info,
+        "Failed to reopen block_info after v5-to-v6 migration");
+
+    if ((result = mdb_set_dupsort(txn, m_block_info, compare_uint64)))
+      throw0(DB_ERROR(lmdb_error(
+          "Failed to configure block_info comparator after v5-to-v6 migration: ",
+          result).c_str()));
 
     txn.commit();
   } while(0);
@@ -10049,10 +10124,35 @@ void BlockchainLMDB::migrate_5_6()
       throw0(DB_ERROR(lmdb_error("Failed to delete old block_info table: ", result).c_str()));
 
     RENAME_DB("block_infn");
-    mdb_dbi_close(m_env, m_block_info);
 
-    lmdb_db_open(txn, "block_info", MDB_INTEGERKEY | MDB_CREATE | MDB_DUPSORT | MDB_DUPFIXED, m_block_info, "Failed to open db handle for block_infn");
-    mdb_set_dupsort(txn, m_block_info, compare_uint64);
+    // Commit the database drop/rename before closing the temporary DBI.
+    // LMDB warns against closing a DBI while a transaction has modified
+    // its database.
+    txn.commit();
+  } while(0);
+
+  // The rename is committed and there is no active write transaction.
+  // Close the old handle before reopening the final database name.
+  mdb_dbi_close(m_env, m_block_info);
+
+  do
+  {
+    result = mdb_txn_begin(m_env, NULL, 0, txn);
+    if (result)
+      throw0(DB_ERROR(lmdb_error(
+          "Failed to create a transaction for the db: ", result).c_str()));
+
+    lmdb_db_open(
+        txn,
+        "block_info",
+        MDB_INTEGERKEY | MDB_CREATE | MDB_DUPSORT | MDB_DUPFIXED,
+        m_block_info,
+        "Failed to reopen block_info after v5-to-v6 migration");
+
+    if ((result = mdb_set_dupsort(txn, m_block_info, compare_uint64)))
+      throw0(DB_ERROR(lmdb_error(
+          "Failed to configure block_info comparator after v5-to-v6 migration: ",
+          result).c_str()));
 
     txn.commit();
   } while(0);
