@@ -62,8 +62,7 @@ public:
     bool produce_local_share(
         const crypto::hash& proposal_id,
         const dao::dao_tally_key_record& key_rec,
-        const dao::dao_share_set_record& share_set,
-        uint32_t share_set_position,
+        uint32_t key_record_position,
         dao::dao_v2_tally_share& share_out);
 
 private:

@@ -55,11 +55,11 @@ struct dao_partial_set
 
 struct dao_tally_certificate
 {
-    static constexpr uint8_t WIRE_VERSION = 3;
+    static constexpr uint8_t WIRE_VERSION = 5;
 
     crypto::hash         proposal_id;
     uint64_t             vote_end_height = 0;
-    uint64_t             share_set_id    = 0;
+    std::vector<uint8_t> key_id;  // 32 bytes; binds to stable tally key
     crypto::hash         aggregate_ciphertext_hash;
 
     dao_partial_set      W;
@@ -90,12 +90,12 @@ struct dao_tally_certificate
 // a user-submitted object.
 struct dao_v2_outcome_record
 {
-    static constexpr uint8_t WIRE_VERSION = 2;
+    static constexpr uint8_t WIRE_VERSION = 3;
 
-    crypto::hash proposal_id;
-    uint64_t     vote_end_height = 0;
-    uint64_t     share_set_id    = 0;
-    crypto::hash aggregate_ciphertext_hash;
+    crypto::hash         proposal_id;
+    uint64_t             vote_end_height = 0;
+    std::vector<uint8_t> key_id;  // 32 bytes; stable tally key
+    crypto::hash         aggregate_ciphertext_hash;
 
     dao_u128     yes_weight          = 0;
     dao_u128     no_weight           = 0;
@@ -146,7 +146,6 @@ bool dao_synthesize_bootstrap_share_set(
 // dao_verify_tally_certificate to recompute them.
 bool dao_build_tally_certificate(
     const dao_tally_key_record& key_rec,
-    const dao_share_set_record& share_set,
     const crypto::hash& proposal_id,
     uint64_t vote_end_height,
     const std::vector<uint8_t>& E_W,
@@ -161,7 +160,7 @@ bool dao_build_tally_certificate(
 // supply snapshot at the proposal's voting-end height.
 //
 // Checks, in order:
-//   1. proposal_id, vote_end_height, share_set_id match the inputs.
+//   1. proposal_id, vote_end_height, key_id match the inputs.
 //   2. aggregate_ciphertext_hash matches SHA-256 over E_W, E_S, E_B.
 //   3. Every partial set has >= key_rec.threshold entries.
 //   4. Every member index is in 1..committee_size and unique.
@@ -175,7 +174,6 @@ bool dao_build_tally_certificate(
 // evaluation fields are overwritten with the recomputed values.
 bool dao_verify_tally_certificate(
     const dao_tally_key_record& key_rec,
-    const dao_share_set_record& share_set,
     const dao_supply_snapshot&  supply_at_vote_end,
     uint32_t                    quorum_percent,
     const std::vector<uint8_t>& E_W,

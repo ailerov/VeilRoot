@@ -807,7 +807,7 @@ TYPED_TEST(BlockchainDBTest, DaoV2OutcomeRoundTrip)
   dao::dao_v2_outcome_record rec;
   std::memset(rec.proposal_id.data, 0x77, 32);
   rec.vote_end_height = 60000;
-  rec.share_set_id = 1;
+  rec.key_id.assign(32, 0x11);
   std::memset(rec.aggregate_ciphertext_hash.data, 0x88, 32);
   rec.yes_weight          = 1000;
   rec.no_weight           = 200;

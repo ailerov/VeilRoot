@@ -237,7 +237,7 @@ bool dao_tally_certificate::serialize(std::vector<uint8_t>& out) const
     out.insert(out.end(), proposal_id.data,
                proposal_id.data + sizeof(proposal_id.data));
     push_u64(out, vote_end_height);
-    push_u64(out, share_set_id);
+    push_vec(out, key_id);
     out.insert(out.end(), aggregate_ciphertext_hash.data,
                aggregate_ciphertext_hash.data + 32);
 
@@ -266,11 +266,11 @@ bool dao_tally_certificate::serialize(std::vector<uint8_t>& out) const
 bool dao_tally_certificate::deserialize(const std::vector<uint8_t>& in)
 {
     size_t off = 0;
-    if (in.size() < 1 + 32 + 8 + 8 + 32) return false;
+    if (in.size() < 1 + 32 + 8 + 32) return false;
     if (in[off++] != WIRE_VERSION) return false;
     std::memcpy(proposal_id.data, in.data() + off, 32); off += 32;
     if (!pull_u64(in, off, vote_end_height)) return false;
-    if (!pull_u64(in, off, share_set_id)) return false;
+    if (!pull_vec(in, off, key_id)) return false;
     std::memcpy(aggregate_ciphertext_hash.data, in.data() + off, 32); off += 32;
 
     std::vector<uint8_t> w, s, b;
@@ -307,7 +307,7 @@ bool dao_v2_outcome_record::serialize(std::vector<uint8_t>& out) const
     push_u8(out, WIRE_VERSION);
     out.insert(out.end(), proposal_id.data, proposal_id.data + 32);
     push_u64(out, vote_end_height);
-    push_u64(out, share_set_id);
+    push_vec(out, key_id);
     out.insert(out.end(), aggregate_ciphertext_hash.data,
                aggregate_ciphertext_hash.data + 32);
     push_u128(out, yes_weight);
@@ -323,11 +323,11 @@ bool dao_v2_outcome_record::serialize(std::vector<uint8_t>& out) const
 bool dao_v2_outcome_record::deserialize(const std::vector<uint8_t>& in)
 {
     size_t off = 0;
-    if (in.size() < 1 + 32 + 8 + 8 + 32) return false;
+    if (in.size() < 1 + 32 + 8 + 32) return false;
     if (in[off++] != WIRE_VERSION) return false;
     std::memcpy(proposal_id.data, in.data() + off, 32); off += 32;
     if (!pull_u64(in, off, vote_end_height)) return false;
-    if (!pull_u64(in, off, share_set_id)) return false;
+    if (!pull_vec(in, off, key_id)) return false;
     std::memcpy(aggregate_ciphertext_hash.data, in.data() + off, 32); off += 32;
     if (!pull_u128(in, off, yes_weight)) return false;
     if (!pull_u128(in, off, no_weight)) return false;
@@ -431,7 +431,6 @@ bool dao_synthesize_bootstrap_share_set(
 
 bool dao_build_tally_certificate(
     const dao_tally_key_record& key_rec,
-    const dao_share_set_record& share_set,
     const crypto::hash& proposal_id,
     uint64_t vote_end_height,
     const std::vector<uint8_t>& E_W,
@@ -445,19 +444,22 @@ bool dao_build_tally_certificate(
     if (E_W.size() != PAILLIER_CT_BYTES) return false;
     if (E_S.size() != PAILLIER_CT_BYTES) return false;
     if (E_B.size() != PAILLIER_CT_BYTES) return false;
-    if (!valid_share_set(key_rec, share_set)) return false;
+    if (key_rec.key_id.size() != 32) return false;
+    if (key_rec.committee_members.empty()) return false;
+    if (key_rec.threshold == 0) return false;
+    if (key_rec.V_K_i.size() != key_rec.committee_members.size()) return false;
 
     PaillierPublicKey pk;
     if (!pk.deserialize_modulus(key_rec.N)) return false;
 
     const uint32_t n = static_cast<uint32_t>(
-        share_set.committee_members.size());
+        key_rec.committee_members.size());
 
     auto check_set = [&](const dao_partial_set& s,
                          const std::vector<uint8_t>& c) -> bool {
         if (s.member_indices.size() != s.partials.size()) return false;
         if (s.proofs.size() != s.partials.size()) return false;
-        if (s.member_indices.size() < share_set.threshold) return false;
+        if (s.member_indices.size() < key_rec.threshold) return false;
         std::vector<uint32_t> seen;
         for (size_t i = 0; i < s.member_indices.size(); ++i) {
             uint32_t m = s.member_indices[i];
@@ -467,7 +469,7 @@ bool dao_build_tally_certificate(
             if (s.partials[i].size() != PAILLIER_CT_BYTES) return false;
             if (s.proofs[i].member_index != m) return false;
             if (!dao_partial_decryption_verify(
-                    pk, key_rec.V, share_set.VK_i[m-1], m,
+                    pk, key_rec.V, key_rec.V_K_i[m-1], m,
                     c, s.partials[i], s.proofs[i]))
                 return false;
         }
@@ -481,7 +483,7 @@ bool dao_build_tally_certificate(
     cert_out = dao_tally_certificate{};
     cert_out.proposal_id = proposal_id;
     cert_out.vote_end_height = vote_end_height;
-    cert_out.share_set_id = share_set.share_set_id;
+    cert_out.key_id = key_rec.key_id;
     cert_out.aggregate_ciphertext_hash =
         dao_aggregate_ciphertext_hash(E_W, E_S, E_B);
     cert_out.W = W_set;
@@ -498,7 +500,7 @@ bool dao_build_tally_certificate(
                        BIGNUM* m_out) -> bool {
         std::vector<uint8_t> C;
         if (!dao_threshold_combine(pk, s.member_indices, s.partials,
-                                   share_set.threshold, C))
+                                   key_rec.threshold, C))
             return false;
         return dao_threshold_finalize(pk, C, theta, m_out);
     };
@@ -524,7 +526,6 @@ bool dao_build_tally_certificate(
 
 bool dao_verify_tally_certificate(
     const dao_tally_key_record& key_rec,
-    const dao_share_set_record& share_set,
     const dao_supply_snapshot&  supply_at_vote_end,
     uint32_t                    quorum_percent,
     const std::vector<uint8_t>& E_W,
@@ -532,8 +533,14 @@ bool dao_verify_tally_certificate(
     const std::vector<uint8_t>& E_B,
     dao_tally_certificate&      cert)
 {
-    if (cert.share_set_id != share_set.share_set_id) return false;
-    if (!valid_share_set(key_rec, share_set)) return false;
+    if (key_rec.key_id.size() != 32) return false;
+    if (cert.key_id.size() != 32) return false;
+    if (std::memcmp(cert.key_id.data(), key_rec.key_id.data(), 32) != 0)
+        return false;
+    if (key_rec.committee_members.empty()) return false;
+    if (key_rec.threshold == 0) return false;
+    if (key_rec.V_K_i.size() != key_rec.committee_members.size())
+        return false;
     if (cert.vote_end_height != supply_at_vote_end.height) return false;
 
     if (E_W.size() != PAILLIER_CT_BYTES) return false;
@@ -548,13 +555,13 @@ bool dao_verify_tally_certificate(
     if (!pk.deserialize_modulus(key_rec.N)) return false;
 
     const uint32_t n = static_cast<uint32_t>(
-        share_set.committee_members.size());
+        key_rec.committee_members.size());
 
     auto verify_set = [&](const dao_partial_set& s,
                           const std::vector<uint8_t>& c) -> bool {
         if (s.member_indices.size() != s.partials.size()) return false;
         if (s.proofs.size() != s.partials.size()) return false;
-        if (s.member_indices.size() < share_set.threshold) return false;
+        if (s.member_indices.size() < key_rec.threshold) return false;
         std::vector<uint32_t> seen;
         for (size_t i = 0; i < s.member_indices.size(); ++i) {
             uint32_t m = s.member_indices[i];
@@ -564,7 +571,7 @@ bool dao_verify_tally_certificate(
             if (s.partials[i].size() != PAILLIER_CT_BYTES) return false;
             if (s.proofs[i].member_index != m) return false;
             if (!dao_partial_decryption_verify(
-                    pk, key_rec.V, share_set.VK_i[m-1], m,
+                    pk, key_rec.V, key_rec.V_K_i[m-1], m,
                     c, s.partials[i], s.proofs[i]))
                 return false;
         }
@@ -585,7 +592,7 @@ bool dao_verify_tally_certificate(
                        BIGNUM* m_out) -> bool {
         std::vector<uint8_t> C;
         if (!dao_threshold_combine(pk, s.member_indices, s.partials,
-                                   share_set.threshold, C))
+                                   key_rec.threshold, C))
             return false;
         return dao_threshold_finalize(pk, C, theta, m_out);
     };
@@ -601,7 +608,6 @@ bool dao_verify_tally_certificate(
         return false;
     }
 
-    // Compare recovered plaintexts to the certificate's claims.
     dao_u128 W_rec = bn_to_u128(mW);
     bool s_neg_rec = false;
     dao_u128 S_abs_rec = 0;
@@ -613,21 +619,12 @@ bool dao_verify_tally_certificate(
     if (S_abs_rec != cert.S_abs) { BN_free(mW); BN_free(mS); BN_free(mB); BN_free(theta); return false; }
     if (B_rec != cert.B_total) { BN_free(mW); BN_free(mS); BN_free(mB); BN_free(theta); return false; }
 
-    // Structural checks on W_total and S_total.
-    // W_MAX = 20,000,000 VNS * 10^12 atomic * 12 = 2.4e20.
-    // Constructed by multiplication to avoid unsigned long long
-    // integer-literal overflow (the literal does not fit in ULL).
     const dao_u128 W_MAX =
         dao_u128(240000000ULL) * dao_u128(1000000000000ULL);
     if (W_rec > W_MAX) { BN_free(mW); BN_free(mS); BN_free(mB); BN_free(theta); return false; }
     if (S_abs_rec > W_rec) { BN_free(mW); BN_free(mS); BN_free(mB); BN_free(theta); return false; }
     if (((W_rec + S_abs_rec) & 1) != 0) { BN_free(mW); BN_free(mS); BN_free(mB); BN_free(theta); return false; }
-    // Parity check: (W + S) even where S = ±S_abs.
-    // If s_negative then W + S = W - S_abs; parity of W - S_abs == parity of W + S_abs.
-    // So the check on (W_rec + S_abs_rec) even is correct.
 
-    // YES_weight = (W + S) / 2, NO_weight = (W - S) / 2.
-    // S = +S_abs or -S_abs. Both parities already checked above.
     dao_u128 YES = cert.s_negative
         ? (W_rec - S_abs_rec) / 2
         : (W_rec + S_abs_rec) / 2;

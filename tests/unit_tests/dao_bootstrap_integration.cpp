@@ -1353,10 +1353,11 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxRejectionBoundaries)
     EXPECT_TRUE (bc.validate_dao_v2_tally_result_tx(valid_tx, VOTE_END + 1));
     EXPECT_TRUE (bc.validate_dao_v2_tally_result_tx(valid_tx, VOTE_END + 2));
 
-    // ---- Case 4: wrong share_set_id ----
+    // ---- Case 4: wrong key_id ----
     {
         auto c = base_cert;
-        c.share_set_id = 999;
+        if (c.key_id.empty()) c.key_id.assign(32, 0);
+        c.key_id[0] ^= 0xFF;
         transaction tx;
         ASSERT_TRUE(rebuild_tx_with_cert(valid_tx, c, tx));
         EXPECT_FALSE(bc.validate_dao_v2_tally_result_tx(tx, VOTE_END + 1));

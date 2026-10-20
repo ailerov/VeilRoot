@@ -111,25 +111,14 @@ bool TallyManager::build_tally_result_transaction(
     if (!m_db.get_dao_supply_snapshot(prop.voting_end_height, snap))
         return false;
 
-    dao::dao_share_set_record share_set;
-    {
-        uint64_t sid = m_db.get_current_dao_share_set_id();
-        if (sid == 0 || !m_db.get_dao_share_set(sid, share_set))
-            return false;
-        if (share_set.key_id.size() != key_rec.key_id.size() ||
-            std::memcmp(share_set.key_id.data(),
-                        key_rec.key_id.data(), 32) != 0)
-            return false;
-    }
-
     dao::dao_tally_certificate cert;
     if (!dao::dao_build_tally_certificate(
-            key_rec, share_set, proposal_id, prop.voting_end_height,
+            key_rec, proposal_id, prop.voting_end_height,
             agg.aggregate_E_W, agg.aggregate_E_S, agg.aggregate_E_B,
             W_set, S_set, B_set, cert))
         return false;
     if (!dao::dao_verify_tally_certificate(
-            key_rec, share_set, snap, m_params.voting_quorum_percent,
+            key_rec, snap, m_params.voting_quorum_percent,
             agg.aggregate_E_W, agg.aggregate_E_S, agg.aggregate_E_B, cert))
         return false;
 
@@ -164,26 +153,25 @@ bool TallyManager::build_tally_result_transaction(
 bool TallyManager::produce_local_share(
     const crypto::hash& proposal_id,
     const dao::dao_tally_key_record& key_rec,
-    const dao::dao_share_set_record& share_set,
-    uint32_t share_set_position,
+    uint32_t key_record_position,
     dao::dao_v2_tally_share& share_out)
 {
     proposal_record prop;
     if (!m_db.get_proposal_record(proposal_id, prop)) return false;
 
-    if (share_set_position < 1 ||
-        share_set_position > share_set.committee_members.size())
+    if (key_record_position < 1 ||
+        key_record_position > key_rec.committee_members.size())
+        return false;
+    if (key_rec.key_id.size() != 32) return false;
+    if (key_rec.V_K_i.size() != key_rec.committee_members.size())
         return false;
 
-    // Local share for this member's position in the current share
-    // set. Before resharing the current set is the bootstrap set
-    // (id 1); afterwards it is the reshared set.
     const uint64_t share_set_id = m_db.get_current_dao_share_set_id();
     if (share_set_id == 0) return false;
     std::vector<uint8_t> packed_blob;
     if (!m_db.get_dao_local_share(
             static_cast<uint32_t>(share_set_id),
-            share_set_position, packed_blob))
+            key_record_position, packed_blob))
         return false;
     std::vector<uint8_t> sk_blob;
     if (!dao::dao_unpack_local_share(packed_blob, key_rec.key_id, sk_blob)) {
@@ -210,7 +198,7 @@ bool TallyManager::produce_local_share(
     share_out.proposal_id     = proposal_id;
     share_out.vote_end_height = prop.voting_end_height;
     share_out.tally_key_id    = key_rec.key_id;
-    share_out.member_index    = share_set_position;
+    share_out.member_index    = key_record_position;
     share_out.aggregate_ciphertext_hash =
         dao::dao_aggregate_ciphertext_hash(agg.aggregate_E_W,
                                            agg.aggregate_E_S,
@@ -223,13 +211,10 @@ bool TallyManager::produce_local_share(
         if (!dao_threshold_partial_decrypt(pk, c, sk, ci)) return false;
         BIGNUM* r = BN_new();
         if (!dao_dkg_sample_r(pk, r)) { BN_free(r); return false; }
-        // Bind the proof to the current share set's VK for this
-        // position. After resharing, this is the reshared VK, not the
-        // bootstrap one.
         const std::vector<uint8_t>& vk =
-            share_set.VK_i[share_set_position - 1];
+            key_rec.V_K_i[key_record_position - 1];
         const bool ok = dao_partial_decryption_prove(
-            pk, key_rec.V, vk, share_set_position,
+            pk, key_rec.V, vk, key_record_position,
             c, ci, sk, r, proof_out);
         BN_free(r);
         if (!ok) return false;

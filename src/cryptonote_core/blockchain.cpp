@@ -10423,34 +10423,45 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
                 << " threshold " << session.threshold);
         }
 
-        // Look up this node's position in the current share set. This
-        // is what the verifier will use, so the producer must use it
-        // too.
-        const uint64_t cur_sid = m_db->get_current_dao_share_set_id();
-        if (cur_sid == 0) return true;
-        dao::dao_share_set_record share_set;
-        if (!m_db->get_dao_share_set(cur_sid, share_set)) return true;
+        // Tally uses the stable bootstrap DKG shares. The temporary
+        // committee selects who participates; the verifier checks
+        // partials against key_rec.V_K_i. No per-event reshare is
+        // required, and this node must be a bootstrap shareholder.
+        if (key_rec.key_id.size() != 32) return true;
+        if (key_rec.threshold == 0) return true;
+        if (key_rec.V_K_i.size() != key_rec.committee_members.size())
+          return true;
 
-        uint32_t share_set_position = 0;
-        for (size_t i = 0; i < share_set.committee_members.size(); ++i) {
-          const auto& km = share_set.committee_members[i];
+        // The whitepaper requires threshold cryptography; a committee
+        // smaller than the stable threshold cannot decrypt. Do not
+        // lower the threshold — skip.
+        if (committee.members.size() < key_rec.threshold) {
+          MINFO("V2 tally: selected committee ("
+                << committee.members.size() << ") < stable threshold ("
+                << key_rec.threshold << "); proposal " << pid
+                << " remains untallied");
+          return true;
+        }
+
+        uint32_t key_record_position = 0;
+        for (size_t i = 0; i < key_rec.committee_members.size(); ++i) {
+          const auto& km = key_rec.committee_members[i];
           if (km.size() != sizeof(self_pk.data)) continue;
           if (std::memcmp(km.data(), self_pk.data,
                           sizeof(self_pk.data)) == 0) {
-            share_set_position = static_cast<uint32_t>(i) + 1;
+            key_record_position = static_cast<uint32_t>(i) + 1;
             break;
           }
         }
-        if (share_set_position == 0) return true;
+        if (key_record_position == 0) return true;
 
         cryptonote::TallyManager tm(*m_db, m_governance_params);
         dao::dao_v2_tally_share share;
-        if (!tm.produce_local_share(pid, key_rec, share_set, share_set_position, share))
+        if (!tm.produce_local_share(pid, key_rec, key_record_position, share))
           return true;
 
         MINFO("V2 tally: producing share for proposal " << pid
-              << " share_set_pos " << share_set_position
-              << " share_set_id " << cur_sid);
+              << " key_record_pos " << key_record_position);
         m_dao_v2_tally_broadcast(share);
         return true;
       });
@@ -10594,23 +10605,8 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     // certificate, the partial-decryption proofs, the threshold, the
     // aggregate and the recovered outcome. A validator does not need a
     // secret share to verify those.
-    dao::dao_share_set_record share_set;
-    if (cert.share_set_id == 0 ||
-        !m_db->get_dao_share_set(cert.share_set_id, share_set)) {
-      MERROR("tally-result: share set not found for id "
-             << cert.share_set_id);
-      return false;
-    }
-    if (share_set.key_id.size() != key_rec.key_id.size() ||
-        std::memcmp(share_set.key_id.data(),
-                    key_rec.key_id.data(), 32) != 0) {
-      MERROR("tally-result: share set key_id mismatch");
-      return false;
-    }
-
     if (!dao::dao_verify_tally_certificate(
             key_rec,
-            share_set,
             snap,
             m_governance_params.voting_quorum_percent,
             agg.aggregate_E_W,
@@ -10928,7 +10924,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       dao::dao_v2_outcome_record out;
       out.proposal_id               = cert.proposal_id;
       out.vote_end_height           = cert.vote_end_height;
-      out.share_set_id              = cert.share_set_id;
+      out.key_id                    = cert.key_id;
       out.aggregate_ciphertext_hash = cert.aggregate_ciphertext_hash;
       out.yes_weight                = cert.YES_weight;
       out.no_weight                 = cert.NO_weight;
