@@ -10212,9 +10212,11 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
         dao::dao_tally_session session;
         bool have_session = false;
-        try {
-          have_session = m_db->get_dao_tally_session(pid, session);
-        } catch (...) { have_session = false; }
+        auto sit = m_dao_v2_tally_sessions.find(pid);
+        if (sit != m_dao_v2_tally_sessions.end()) {
+          have_session = true;
+          session = sit->second;
+        }
 
         if (!have_session) {
           session = dao::dao_tally_session{};
@@ -10244,15 +10246,10 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
           crypto::cn_fast_hash(buf.data(), buf.size(),
                                session.committee_id_hash);
 
-          try {
-            m_db->add_dao_tally_session(pid, session);
-            MINFO("V2 tally session opened: proposal " << pid
-                  << " committee " << session.committee_size
-                  << " threshold " << session.threshold);
-          } catch (const std::exception& e) {
-            MERROR("Failed to persist tally session: " << e.what());
-            return true;
-          }
+          m_dao_v2_tally_sessions[pid] = session;
+          MINFO("V2 tally session opened: proposal " << pid
+                << " committee " << session.committee_size
+                << " threshold " << session.threshold);
         }
 
         // Look up this node's position in the current share set. This
@@ -10788,6 +10785,11 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
             prop.voting_end_height + delay,
             cert.proposal_id);
       }
+
+      // Session and share buffer are per-event scratch state. Once
+      // the result is applied they have served their purpose.
+      m_dao_v2_tally_sessions.erase(cert.proposal_id);
+      m_dao_v2_tally_shares.erase(cert.proposal_id);
 
       applied = true;
       MINFO("DAO V2 tally result applied at height " << block_height

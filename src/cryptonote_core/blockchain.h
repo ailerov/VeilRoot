@@ -71,6 +71,7 @@
 #include "governance/vote_result.h"
 #include "governance/domain_policy.h"
 #include "governance/dao_tally_share.h"
+#include "governance/dao_tally_session_cycle.h"
 #include "governance/dao_dkg.h"
 #include "governance/dao_reshare_pipeline.h"
 #include <array>
@@ -1788,6 +1789,12 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     std::map<crypto::hash,
              std::map<crypto::public_key, dao::dao_v2_tally_share>>
         m_dao_v2_tally_shares;
+
+    // In-memory per-proposal tally session. Replaces the former LMDB
+    // record; nothing outside this object reads it. Cleared when the
+    // tally result is applied.
+    std::map<crypto::hash, dao::dao_tally_session>
+        m_dao_v2_tally_sessions;
 
     std::function<void(const dao::dao_v2_tally_share&)>
         m_dao_v2_tally_broadcast;
