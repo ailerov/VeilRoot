@@ -115,6 +115,31 @@ bool dao_reshare_vss_compute_vk(
     uint32_t j,
     std::vector<uint8_t>& VK_j_out);
 
+// Public verifier: checks everything dao_reshare_vss_verify checks
+// EXCEPT the final V^q_i(j) == C_0 * prod C_k^(j^k) test, which
+// requires the recipient's private share q_i_j and therefore cannot
+// be performed by a third party. Used by tally-certificate
+// verification, where the contributions are public and the shares are
+// not.
+//
+// Establishes:
+//   * every coefficient carries a valid range proof and cross-group
+//     link proof,
+//   * link_ctx.C_i0 matches the contribution's C_0,
+//   * the common-exponent link proof verifies against link_ctx,
+//   * the commitment vector is internally consistent.
+//
+// Does NOT establish that any particular q_i_j is correct; callers
+// that received a share must still use dao_reshare_vss_verify.
+bool dao_reshare_vss_verify_public(
+    const PaillierPublicKey& pk,
+    const dao_vss_group& grp,
+    const std::vector<uint8_t>& V_bytes,
+    const dao_reshare_link_context& link_ctx,
+    const dao_reshare_link_proof& link_proof,
+    const dao_reshare_vss_commitments& commits,
+    const dao_reshare_vss_coeff_proofs& coeff_proofs);
+
 } // namespace dao
 } // namespace cryptonote
 

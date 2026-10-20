@@ -597,6 +597,127 @@ bool dao_reshare_vss_verify(
     return ok;
 }
 
+bool
+dao_reshare_vss_verify_public(
+    const PaillierPublicKey& pk,
+    const dao_vss_group& grp,
+    const std::vector<uint8_t>& V_bytes,
+    const dao_reshare_link_context& link_ctx,
+    const dao_reshare_link_proof& link_proof,
+    const dao_reshare_vss_commitments& commits,
+    const dao_reshare_vss_coeff_proofs& coeff_proofs)
+{
+    if (!pk.valid() || !grp.valid()) return false;
+    if (coeff_proofs.range_commitments.size() != commits.t_new) return false;
+    if (coeff_proofs.range_proofs.size()      != commits.t_new) return false;
+    if (coeff_proofs.link_proofs.size()       != commits.t_new) return false;
+
+    // Every nonconstant coefficient carries a range proof over
+    // x_k = b_k + 2^64 in [0, 2^65) and a cross-group link proof that
+    // ties x_k to the Paillier coefficient commitment C_i,k.
+    {
+        const size_t vss_bytes = BN_num_bytes(grp.P);
+        for (uint32_t k = 0; k < commits.t_new; ++k) {
+            if (coeff_proofs.range_commitments[k].size() != vss_bytes)
+                return false;
+
+            BIGNUM* D_x = BN_bin2bn(
+                coeff_proofs.range_commitments[k].data(),
+                static_cast<int>(coeff_proofs.range_commitments[k].size()),
+                nullptr);
+            if (!D_x) return false;
+
+            dao_range_proof rp;
+            if (!rp.deserialize(coeff_proofs.range_proofs[k]) ||
+                !dao_range_verify(grp,
+                                   link_ctx.original_index,
+                                   k + 1,
+                                   D_x, rp)) {
+                BN_free(D_x);
+                return false;
+            }
+
+            dao_reshare_coeff_link_context clc;
+            clc.genesis_block_hash     = link_ctx.genesis_block_hash;
+            clc.stable_key_record_hash = link_ctx.stable_key_record_hash;
+            clc.share_set_id           = link_ctx.share_set_id;
+            clc.contributor_pubkey     = link_ctx.contributor_pubkey;
+            clc.contributor_index      = link_ctx.original_index;
+            clc.coefficient_index      = k + 1;
+            clc.C_ik                   = commits.C_k[k];
+            clc.D_x                    = coeff_proofs.range_commitments[k];
+            clc.range_proof_hash.assign(32, 0);
+            SHA256(coeff_proofs.range_proofs[k].data(),
+                   coeff_proofs.range_proofs[k].size(),
+                   clc.range_proof_hash.data());
+
+            CtxGuard g2;
+            if (!g2.ok()) { BN_free(D_x); return false; }
+            const BIGNUM* N2i = pk.N2();
+            BIGNUM* Vb = BN_bin2bn(V_bytes.data(),
+                                    static_cast<int>(V_bytes.size()),
+                                    nullptr);
+            BIGNUM* delta_bn = BN_new();
+            BN_dec2bn(&delta_bn, "20922789888000");
+            BIGNUM* scale_bn = BN_new();
+            BN_one(scale_bn);
+            BN_lshift(scale_bn, scale_bn, DAO_RESHARE_COEFF_SCALE_BITS);
+            BIGNUM* gexp = BN_new();
+            BIGNUM* Gb   = BN_new();
+            BIGNUM* Ckb  = BN_bin2bn(commits.C_k[k].data(),
+                                     static_cast<int>(commits.C_k[k].size()),
+                                     nullptr);
+            BIGNUM* half = BN_new();
+            BN_one(half);
+            BN_lshift(half, half, DAO_RESHARE_COEFF_BITS);
+            BIGNUM* Yb = BN_new();
+            const bool ok_g =
+                Vb && delta_bn && scale_bn && gexp && Gb &&
+                Ckb && half && Yb &&
+                BN_mul(gexp, delta_bn, scale_bn, g2.ctx) &&
+                BN_mod_exp(Gb, Vb, gexp, N2i, g2.ctx) &&
+                BN_mod_exp(Yb, Gb, half, N2i, g2.ctx) &&
+                BN_mod_mul(Yb, Yb, Ckb, N2i, g2.ctx);
+            if (!ok_g) {
+                BN_free(Vb); BN_free(delta_bn); BN_free(scale_bn);
+                BN_free(gexp); BN_free(Gb); BN_free(Ckb); BN_free(half);
+                BN_free(Yb); BN_free(D_x);
+                return false;
+            }
+            std::vector<uint8_t> Gbytes(PAILLIER_CT_BYTES, 0);
+            std::vector<uint8_t> Ybytes(PAILLIER_CT_BYTES, 0);
+            BN_bn2binpad(Gb, Gbytes.data(), PAILLIER_CT_BYTES);
+            BN_bn2binpad(Yb, Ybytes.data(), PAILLIER_CT_BYTES);
+            clc.G = std::move(Gbytes);
+            clc.Y = std::move(Ybytes);
+
+            BN_free(Vb); BN_free(delta_bn); BN_free(scale_bn);
+            BN_free(gexp); BN_free(Gb); BN_free(Ckb); BN_free(half);
+            BN_free(Yb);
+
+            if (!dao_reshare_coeff_link_verify(
+                    pk, grp, clc, coeff_proofs.link_proofs[k])) {
+                BN_free(D_x);
+                return false;
+            }
+            BN_free(D_x);
+        }
+    }
+
+    if (!pk.valid()) return false;
+
+    // The common-exponent proof must validate against the same C_0
+    // stored in the commitments. This rejects a swapped C_0 that
+    // belongs to a different contributor.
+    {
+        if (link_ctx.C_i0.size() != PAILLIER_CT_BYTES) return false;
+        if (link_ctx.C_i0 != commits.C_0) return false;
+        if (!dao_reshare_link_verify(link_ctx, link_proof)) return false;
+    }
+    return true;
+}
+
+
 bool dao_reshare_vss_compute_vk(
     const PaillierPublicKey& pk,
     const std::vector<uint8_t>& V_bytes,
