@@ -129,13 +129,13 @@ The VNS blockchain embeds a fully permissionless DAO that controls the treasury 
 - Each vote is a transaction containing:
   - A ring signature proving ownership of a UTXO without revealing it.
   - A Pedersen commitment to either `+weight` (yes) or `-weight` (no).
-  - The blinding factor is encrypted under a threshold public key generated via Distributed Key Generation (DKG) during network bootstrap.
+  - The blinding factor is encrypted under a threshold public key generated via Distributed Key Generation (DKG) during network bootstrap. Each daemon automatically loads or creates its stable local DKG identity on startup, retains its required local secret material, and announces readiness over the network. DKG eligibility does not require a wallet command, a wallet UTXO, or operator registration.
 - The blockchain sums all commitments homomorphically to produce an aggregate commitment representing `(Total_Yes_Weight - Total_No_Weight)`.
 
 **Tallying (Permissionless & Automated):**
 
-- At the end of the voting period, the protocol automatically selects the top 16 eligible nodes by stake-age weight (minimum weight > 0) as the tally committee.
-- These nodes collaboratively decrypt the aggregate blinding factor (using their DKG shares) and publish the plaintext totals: `Total_Yes_Weight` and `Total_No_Weight`.
+- At the end of the voting period, the protocol automatically selects between 3 and 16 ready, share-capable daemon nodes as the tally committee for that specific proposal. Membership is event-specific and is not persisted as a database record.
+- These nodes collaboratively decrypt the aggregate blinding factor using temporary per-event shares of the same stable tally key, and publish the plaintext totals: `Total_Yes_Weight` and `Total_No_Weight`. The temporary operation shares are destroyed when the operation completes; each node's underlying share remains available for subsequent operations.
 - A proposal passes if:
   1. `Total_Yes_Weight > Total_No_Weight`
   2. The total participation coins (the raw VNS amount represented by accepted votes) meets or exceeds the quorum (default: 10% of the circulating supply at the voting end height). Circulating supply is `minted_supply - treasury_balance - burned_fees`, representing VNS held by users and available for participation; it excludes locked treasury VNS and permanently burned fees. The DAO may adjust the quorum percentage via on-chain proposals.
@@ -594,7 +594,11 @@ By design, VNS:
 
 ## 9.4 Permissionless Tally & Bridge Committees
 
-The protocol selects tally and bridge committees automatically from the set of nodes that have opted in and meet the minimum stake-age weight. Selection is based on the top N by weight at the specific moment of need (e.g., at the end of a voting period for tally, or continuously for bridge signing). There are no fixed operator IDs, no whitelists, and no human-controlled keys. Any node that meets the criteria at any time can be selected; nodes that fall below the threshold are automatically replaced.
+**Automatic DKG readiness.** Each daemon automatically loads or creates its stable local DKG identity, retains its required local secret material, and announces readiness over the network. DKG eligibility does not require a wallet command, a wallet UTXO, or operator registration.
+
+**Stable tally key.** Once at least three participants are ready, the network automatically bootstraps the stable tally public key. Each participant retains only its own required secret share locally. The wallet uses the public key to construct non-consuming votes.
+
+**Temporary committees.** When a tally or other DAO operation requires a committee, the network automatically selects between 3 and 16 ready, share-capable nodes for that specific operation. Event committee membership and temporary shares are not persisted as database records. Temporary operation shares are destroyed when the operation completes; the node's underlying share remains available for subsequent operations.
 
 ## 9.5 DAO-Controlled Parameters
 

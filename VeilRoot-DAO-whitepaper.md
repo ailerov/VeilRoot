@@ -350,7 +350,9 @@ and that the final totals are subsequently recovered through threshold decryptio
 
 The blinding factor associated with voting commitments is protected by a threshold public key.
 
-The key is generated through Distributed Key Generation during network bootstrap.
+Each daemon automatically loads or creates its stable local DKG identity on startup, retains its required local secret material, and announces readiness over the network. DKG eligibility does not require a wallet command, a wallet UTXO, or operator registration.
+
+Once at least three participants are ready, the network automatically bootstraps the stable tally public key. Each participant retains only its own required secret share locally. The wallet uses the public key to construct non-consuming votes.
 
 No individual tally participant therefore possesses the complete secret necessary to decrypt the aggregate voting information.
 
@@ -362,15 +364,15 @@ This prevents the tally mechanism from degenerating into a single private decryp
 
 # 10. Permissionless Tally Committee
 
-At the end of a voting period, the protocol automatically selects the tally committee.
+At the end of a voting period, the protocol automatically selects between 3 and 16 ready, share-capable daemon nodes as the tally committee for that specific proposal.
 
-The defined default committee consists of the top **16 eligible participants/nodes by stake-age weight**, subject to the protocol's minimum eligibility requirement.
+Event committee membership and temporary shares are not persisted as database records. The selected nodes use temporary per-event shares of the same stable tally key. Temporary operation shares are destroyed when the operation completes; each node's underlying share remains available for subsequent operations.
 
 Committee membership is therefore not permanent.
 
 It is determined from protocol state at the moment when the tally is required.
 
-The broader VNS architecture applies the same principle to bridge committees: selection is automatic, based on eligibility and weight, with no permanent operator identities or whitelists.
+The broader VNS architecture applies the same principle to bridge committees: selection is automatic, based on eligibility and readiness, with no permanent operator identities or whitelists.
 
 ---
 
