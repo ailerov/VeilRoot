@@ -2888,14 +2888,26 @@ bool dkg_party::handle_message(const dkg_msg& m)
 
         case dkg_msg_type::polynomial_share: {
             const uint32_t j = m.hdr.sender_id;
-            if (j < 1 || j > committee_size_) return false;
-            if (m.bytes_a.empty() || m.bytes_b.empty() || m.bytes_c.empty())
+            if (j < 1 || j > committee_size_) {
+                std::cerr << "[dkg] poly_share reject: sender out of range j=" << j << " size=" << committee_size_ << std::endl;
                 return false;
-            if (m.bytes_d.empty() || m.vec_a.empty() || m.vec_a[0].empty())
+            }
+            if (m.bytes_a.empty() || m.bytes_b.empty() || m.bytes_c.empty()) {
+                std::cerr << "[dkg] poly_share reject: empty a/b/c j=" << j << std::endl;
                 return false;
-            if (!vss_group_ || !vss_group_->valid()) return false;
-            if (commits_p_recv_[j].C.empty() || commits_q_recv_[j].C.empty())
+            }
+            if (m.bytes_d.empty() || m.vec_a.empty() || m.vec_a[0].empty()) {
+                std::cerr << "[dkg] poly_share reject: empty d/vec_a j=" << j << std::endl;
                 return false;
+            }
+            if (!vss_group_ || !vss_group_->valid()) {
+                std::cerr << "[dkg] poly_share reject: vss_group invalid j=" << j << std::endl;
+                return false;
+            }
+            if (commits_p_recv_[j].C.empty() || commits_q_recv_[j].C.empty()) {
+                std::cerr << "[dkg] poly_share reject: commits P/Q missing j=" << j << " P_empty=" << commits_p_recv_[j].C.empty() << " Q_empty=" << commits_q_recv_[j].C.empty() << std::endl;
+                return false;
+            }
 
             BIGNUM* sp = BN_bin2bn(m.bytes_a.data(),
                                    static_cast<int>(m.bytes_a.size()), nullptr);
@@ -2912,9 +2924,15 @@ bool dkg_party::handle_message(const dkg_msg& m)
             }
 
             if (!dao_vss_verify_share(*vss_group_, commits_p_recv_[j],
-                                      committee_size_, party_id_, sp, bp) ||
-                !dao_vss_verify_share(*vss_group_, commits_q_recv_[j],
+                                      committee_size_, party_id_, sp, bp)) {
+                std::cerr << "[dkg] poly_share reject: VSS P verify failed j=" << j << " party_id=" << party_id_ << std::endl;
+                BN_free(sp); BN_free(sq); BN_free(sh);
+                BN_free(bp); BN_free(bq);
+                aborted_ = true; return false;
+            }
+            if (!dao_vss_verify_share(*vss_group_, commits_q_recv_[j],
                                       committee_size_, party_id_, sq, bq)) {
+                std::cerr << "[dkg] poly_share reject: VSS Q verify failed j=" << j << " party_id=" << party_id_ << std::endl;
                 BN_free(sp); BN_free(sq); BN_free(sh);
                 BN_free(bp); BN_free(bq);
                 aborted_ = true; return false;
@@ -7053,7 +7071,17 @@ struct dkg_p2p_runner::impl
                 continue;
             }
 
-            if (!party->handle_message(m)) return false;
+            if (!party->handle_message(m)) {
+                std::cerr << "[dkg] handle_message rejected"
+                          << " type=" << static_cast<unsigned>(m.hdr.type)
+                          << " candidate=" << m.hdr.candidate_id
+                          << " expected_candidate=" << party->current_candidate_id()
+                          << " phase=" << m.hdr.phase
+                          << " sender=" << m.hdr.sender_id
+                          << " recipient=" << m.hdr.recipient_id
+                          << std::endl;
+                return false;
+            }
 
             // Public (broadcast) DKG messages are recorded verbatim.
             // Private (targeted) messages are recorded through their
@@ -7591,7 +7619,6 @@ void dkg_p2p_runner::impl::run()
         if (!run_modulus_attempt(attempt_N)) {
             
             break;
-            std::cerr << "DKG abort: run_modulus_attempt failed, attempt=" << attempt << std::endl;
         }
 
         bool candidate_reject = false;
@@ -7604,33 +7631,27 @@ void dkg_p2p_runner::impl::run()
 
         if (!candidate_reject) {
             if (!BN_copy(accepted_N, attempt_N)) break;
-            if (!BN_copy(accepted_N, attempt_N)) { std::cerr << "DKG abort: BN_copy accepted_N failed" << std::endl; break; }
             const BIGNUM* N = accepted_N;
 
             if (!inject_to_party(dkg_msg_type::candidate_N, 3, N)) break;
-            if (!inject_to_party(dkg_msg_type::candidate_N, 3, N)) { std::cerr << "DKG abort: inject candidate_N failed" << std::endl; break; }
 
             g_bar = BN_new();
             if (!g_bar) break;
-            if (!g_bar) { std::cerr << "DKG abort: g_bar alloc failed" << std::endl; break; }
 
             if (!choose_g_bar_deterministic(N,
                                             committee_id_hash, g_bar)) {
                 BN_free(g_bar);
                 break;
             }
-                std::cerr << "DKG abort: choose_g_bar_deterministic failed" << std::endl;
             if (!inject_to_party(dkg_msg_type::biprimality_base, 3, g_bar)) {
                 BN_free(g_bar);
                 break;
             }
-                std::cerr << "DKG abort: inject biprimality_base failed" << std::endl;
 
             
             if (!run_phase_4_biprimality(N, candidate_reject)) {
                 BN_free(g_bar);
                 break;
-                std::cerr << "DKG abort: run_phase_4_biprimality failed" << std::endl;
             }
             
 
@@ -7638,14 +7659,12 @@ void dkg_p2p_runner::impl::run()
                 if (!party->do_compute_share_pq()) {
                     BN_free(g_bar);
                     break;
-                    std::cerr << "DKG abort: do_compute_share_pq failed" << std::endl;
                 }
 
                 bool reject_p = false;
                 if (!run_trial_division_factor(0, reject_p)) {
                     BN_free(g_bar);
                     break;
-                    std::cerr << "DKG abort: run_trial_division_factor(0) failed" << std::endl;
                 }
                 if (reject_p) candidate_reject = true;
 
@@ -7654,7 +7673,6 @@ void dkg_p2p_runner::impl::run()
                     if (!run_trial_division_factor(1, reject_q)) {
                         BN_free(g_bar);
                         break;
-                        std::cerr << "DKG abort: run_trial_division_factor(1) failed" << std::endl;
                     }
                     if (reject_q) candidate_reject = true;
                 }
@@ -7667,24 +7685,20 @@ void dkg_p2p_runner::impl::run()
 
         if (!send_runner_decision(5, 0, local_accept))
             break;
-            std::cerr << "DKG abort: send_runner_decision failed" << std::endl;
 
         bool global_accept = false;
         if (!wait_runner_decision(5, 0, local_accept, global_accept))
             break;
-            std::cerr << "DKG abort: wait_runner_decision failed" << std::endl;
 
         if (global_accept) {
             if (!local_accept) {
                 
                 break;
-                std::cerr << "DKG abort: local_accept=false but global_accept=true" << std::endl;
             }
 
             accepted = true;
 
             if (!BN_copy(accepted_N, attempt_N)) break;
-            if (!BN_copy(accepted_N, attempt_N)) { std::cerr << "DKG abort: BN_copy accepted_N (in accept) failed" << std::endl; break; }
 
             result.N.assign(PAILLIER_MODULUS_BYTES, 0);
             if (BN_bn2binpad(attempt_N,
@@ -7704,7 +7718,6 @@ void dkg_p2p_runner::impl::run()
     if (!accepted) {
         BN_free(accepted_N);
         result.ok = false;
-        std::cerr << "DKG abort: no candidate accepted after attempts=" << result.candidate_attempts << std::endl;
         result.candidate_accepted = false;
         {
             std::lock_guard<std::mutex> lk(done_mu);
@@ -7718,7 +7731,6 @@ void dkg_p2p_runner::impl::run()
     const BIGNUM* N = accepted_N;
     
     const bool key_ok = run_key_phases(N);
-    if (!key_ok) std::cerr << "DKG abort: run_key_phases failed" << std::endl;
     
     result.ok = key_ok;
     BN_free(accepted_N);
