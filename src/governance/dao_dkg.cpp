@@ -6618,6 +6618,13 @@ public:
         if (!m.serialize(buf)) return false;
         std::string payload(buf.begin(), buf.end());
 
+        std::cerr << "[dkg-tx] type=" << static_cast<int>(m.hdr.type)
+                  << " phase=" << m.hdr.phase
+                  << " sender=" << m.hdr.sender_id
+                  << " recip=" << m.hdr.recipient_id
+                  << " bytes=" << payload.size()
+                  << std::endl;
+
         if (m.hdr.recipient_id == 0) {
             // Peer-only broadcast, matching dkg_inproc_hub::route.
             if (cb_.broadcast) cb_.broadcast(payload);
@@ -7273,7 +7280,7 @@ bool dkg_p2p_runner::impl::run_modulus_attempt(BIGNUM* N_out)
     // Phase 2: each party forms N_i and broadcasts.
     msgs.clear();
     if (!party->start_phase(2, cfg.k, cfg.security_bits, cfg.target_N_bits)) {
-        
+        std::cerr << "[dkg] start_phase(2) failed" << std::endl;
         return false;
     }
 
@@ -7373,8 +7380,10 @@ bool dkg_p2p_runner::impl::run_phase_4_biprimality(const BIGNUM* N,
     const uint32_t n = cfg.committee_size;
 
     // Phase 4: each party publishes Q_i.
-    if (!party->start_phase(4, cfg.k, cfg.security_bits, cfg.target_N_bits))
+    if (!party->start_phase(4, cfg.k, cfg.security_bits, cfg.target_N_bits)) {
+        std::cerr << "[dkg] start_phase(4) failed" << std::endl;
         return false;
+    }
 
     std::vector<dkg_msg> msgs;
     const auto complete = [&](const std::vector<dkg_msg>& v) {
