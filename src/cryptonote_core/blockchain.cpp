@@ -9307,6 +9307,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
         else
           ++it;
       }
+      MWARNING("V2 DKG gate: roster=" << m_dao_v2_ready_peers.size());
       if (m_dao_v2_ready_peers.size() <
           dao::DAO_DKG_MIN_COMMITTEE_SIZE)
         return;
@@ -9416,6 +9417,8 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     // it ever grows to MIN without needing a peer announcement first.
     std::lock_guard<std::mutex> lk(m_dao_v2_ready_mutex);
     m_dao_v2_ready_peers[self_pk] = now;
+    MWARNING("V2 DKG announce fired, roster="
+             << m_dao_v2_ready_peers.size());
   }
 
   void Blockchain::handle_dao_v2_node_ready(
@@ -9448,6 +9451,8 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_ready_mutex);
       m_dao_v2_ready_peers[sender] = now;
+      MWARNING("V2 DKG node_ready rx from " << sender
+               << " roster=" << m_dao_v2_ready_peers.size());
     }
 
     // Reply so a peer that announced before we were listening still
