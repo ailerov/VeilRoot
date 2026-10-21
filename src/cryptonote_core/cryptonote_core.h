@@ -709,11 +709,7 @@ namespace cryptonote
      // This node's own public key, if one is set.
      bool get_node_pubkey(crypto::public_key& out) const
      {
-       bool all_zero = true;
-       for (size_t i = 0; i < sizeof(m_node_key.data); ++i)
-         if (m_node_key.data[i] != 0) { all_zero = false; break; }
-       if (all_zero) return false;
-       return crypto::secret_key_to_public_key(m_node_key, out);
+       return m_blockchain_storage.get_node_pubkey(out);
      }
 
      // Install the P2P broadcast callback onto the blockchain's tally

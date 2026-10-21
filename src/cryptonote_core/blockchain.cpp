@@ -9349,6 +9349,24 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     crypto::cn_fast_hash(msg.data(), msg.size(), out);
   }
 
+  bool Blockchain::get_node_pubkey(crypto::public_key& out) const
+  {
+    bool all_zero = true;
+    for (size_t i = 0; i < sizeof(m_node_privkey.data); ++i)
+    {
+      if (m_node_privkey.data[i] != 0)
+      {
+        all_zero = false;
+        break;
+      }
+    }
+
+    if (all_zero)
+      return false;
+
+    return crypto::secret_key_to_public_key(m_node_privkey, out);
+  }
+
   void Blockchain::maybe_announce_dao_v2_node_ready()
   {
     if (!m_dao_v2_dkg_send) return;

@@ -1326,6 +1326,7 @@ namespace cryptonote
 
   // BEGIN_VNS_DECRYPTION_METHODS
   void set_node_privkey(const crypto::secret_key& key) { m_node_privkey = key; }
+  bool get_node_pubkey(crypto::public_key& out) const;
   void handle_decryption_share(const crypto::hash& proposal_id, const crypto::public_key& member, const rct::key& partial_yes, const rct::key& partial_no);
 
   // BEGIN_VNS_DAO_V2_TALLY_SHARE
