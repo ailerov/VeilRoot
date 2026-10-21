@@ -347,6 +347,13 @@ namespace nodetool
         case cryptonote::NOTIFY_RESPONSE_GET_OBJECTS::ID:
         case cryptonote::NOTIFY_REQUEST_FLUFFY_MISSING_TX::ID:
         // END_VNS_ANON_BLOCK_SYNC
+        // BEGIN_VNS_DAO_V2_P2P
+        // DAO V2 messages must cross the Tor covert channel. Without
+        // these the readiness announcement, DKG ceremony traffic, and
+        // tally shares are silently dropped by the filter.
+        case cryptonote::NOTIFY_DAO_V2_DKG_MSG::ID:
+        case cryptonote::NOTIFY_DAO_V2_TALLY_SHARE::ID:
+        // END_VNS_DAO_V2_P2P
             return false;
         default:
             break;
