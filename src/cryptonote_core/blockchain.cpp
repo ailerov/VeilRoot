@@ -9066,16 +9066,33 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     }
     // END_VNS_DAO_V2_RESHARE_ROUTE
 
-    auto it = m_dao_v2_dkg_runners.find(1u);  // bootstrap ceremony
-    if (it == m_dao_v2_dkg_runners.end()) {
-      // No ceremony running for this DKG run. Silent: peers may be
-      // ahead of us.
-      return;
+    // Guarded lookup. If the bootstrap runner is not yet up on this
+    // node, buffer the message; it will be drained into the runner as
+    // soon as start_dao_v2_dkg_for_committee inserts it.
+    {
+      std::lock_guard<std::mutex> lk(m_dao_v2_dkg_runners_mutex);
+      auto it = m_dao_v2_dkg_runners.find(1u);
+      if (it == m_dao_v2_dkg_runners.end()) {
+        if (m_dao_v2_pending_dkg_msgs.size() >=
+            k_dao_v2_pending_dkg_msgs_cap) {
+          m_dao_v2_pending_dkg_msgs.pop_front();
+        }
+        m_dao_v2_pending_dkg_msgs.emplace_back(member, payload);
+        return;
+      }
     }
+    std::unique_ptr<dao::dkg_p2p_runner>* runner_ptr = nullptr;
+    {
+      std::lock_guard<std::mutex> lk(m_dao_v2_dkg_runners_mutex);
+      auto it = m_dao_v2_dkg_runners.find(1u);
+      if (it == m_dao_v2_dkg_runners.end()) return;
+      runner_ptr = &it->second;
+    }
+    auto& runner_ref = *runner_ptr;
 
     // Sender must match the claimed sender_id in the header, and both
     // must be a member of the committee bound by the running runner.
-    const auto* runner_cfg = it->second->config();
+    const auto* runner_cfg = runner_ref->config();
     if (!runner_cfg) return;
 
     const uint32_t claimed = m.hdr.sender_id;
@@ -9099,7 +9116,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       return;
     }
 
-    it->second->on_message(m);
+    runner_ref->on_message(m);
   }
 
   // BEGIN_VNS_DAO_V2_KEY_READY_IMPL
@@ -9883,11 +9900,26 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       return false;
     }
 
-    m_dao_v2_dkg_runners.emplace(ceremony_id, std::move(runner));
+    std::deque<std::pair<crypto::public_key, std::string>> pending;
+    {
+      std::lock_guard<std::mutex> lk(m_dao_v2_dkg_runners_mutex);
+      m_dao_v2_dkg_runners.emplace(ceremony_id, std::move(runner));
+      if (ceremony_id == 1u) {
+        pending.swap(m_dao_v2_pending_dkg_msgs);
+      }
+    }
     MINFO("start_dao_v2_dkg: runner started for ceremony_id " << ceremony_id
           << " n=" << committee.size()
           << " t=" << threshold
-          << " local_id=" << local_id);
+          << " local_id=" << local_id
+          << " pending_drained=" << pending.size());
+
+    // Re-enter the ordinary handler for each buffered envelope. The
+    // runner now exists, so these take the normal decrypt-and-route
+    // path and feed the party's phase-1 collector.
+    for (auto& kv : pending) {
+      handle_dao_v2_dkg_msg(kv.first, kv.second);
+    }
     return true;
   }
 

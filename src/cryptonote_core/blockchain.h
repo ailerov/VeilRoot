@@ -1835,6 +1835,15 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     // BEGIN_VNS_DAO_V2_DKG
     std::map<uint32_t, std::unique_ptr<dao::dkg_p2p_runner>>
         m_dao_v2_dkg_runners;
+    mutable std::mutex m_dao_v2_dkg_runners_mutex;
+    // Inbound DKG envelopes that arrived before this node's runner for
+    // ceremony 1 existed. Drained on runner creation, then cleared. A
+    // node whose idle tick lands a few seconds after its peers would
+    // otherwise drop the earliest starter's phase-1 messages and time
+    // out. Bounded to cap memory if a malformed peer floods.
+    static constexpr size_t k_dao_v2_pending_dkg_msgs_cap = 512;
+    std::deque<std::pair<crypto::public_key, std::string>>
+        m_dao_v2_pending_dkg_msgs;
     // VSS groups are owned here for the lifetime of the runner. The
     // runner holds a raw pointer to the group, so the group must
     // outlive it.
