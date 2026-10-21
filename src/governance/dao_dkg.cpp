@@ -556,12 +556,13 @@ bool dao_vss_group_generate(dao_vss_group& out, unsigned int required_order_bits
     const BIGNUM* G = nullptr;
     DH_get0_pqg(dh, &P, &Q, &G);
 
-    if (!P || !Q || !G) {
+    if (!P || !G) {
         DH_free(dh);
         return false;
     }
 
-    // Validate the structural relationship P' = (P-1)/2.
+    // OpenSSL 1.1.1 may return FFDHE named-group parameters without Q.
+    // Derive Q = (P - 1) / 2 ourselves, and validate Q when supplied.
     BIGNUM* expected_Q = BN_new();
     if (!expected_Q) { DH_free(dh); return false; }
 
@@ -572,13 +573,16 @@ bool dao_vss_group_generate(dao_vss_group& out, unsigned int required_order_bits
         return false;
     }
 
-    if (BN_cmp(expected_Q, Q) != 0) {
+    if (Q && BN_cmp(expected_Q, Q) != 0) {
         BN_free(expected_Q);
         DH_free(dh);
         return false;
     }
 
-    if (BN_num_bits(Q) < static_cast<int>(required_order_bits)) {
+    const BIGNUM* subgroup_order = Q ? Q : expected_Q;
+
+    if (BN_num_bits(subgroup_order) <
+        static_cast<int>(required_order_bits)) {
         BN_free(expected_Q);
         DH_free(dh);
         return false;
@@ -602,7 +606,7 @@ bool dao_vss_group_generate(dao_vss_group& out, unsigned int required_order_bits
             return false;
         }
         const bool g_ok =
-            BN_mod_exp(g_check, G, Q, P, guard.ctx) == 1 &&
+            BN_mod_exp(g_check, G, subgroup_order, P, guard.ctx) == 1 &&
             BN_is_one(g_check) &&
             !BN_is_one(G);
         BN_free(g_check);
@@ -632,7 +636,7 @@ bool dao_vss_group_generate(dao_vss_group& out, unsigned int required_order_bits
             return false;
     }
 
-    if (!dao_vss_derive_h(P, Q, G, group_name, h_val, guard.ctx)) {
+    if (!dao_vss_derive_h(P, subgroup_order, G, group_name, h_val, guard.ctx)) {
         BN_free(h_val);
         BN_free(expected_Q);
         DH_free(dh);
@@ -646,7 +650,7 @@ bool dao_vss_group_generate(dao_vss_group& out, unsigned int required_order_bits
     if (out.h)       BN_free(out.h);
 
     out.P       = BN_dup(P);
-    out.P_prime = BN_dup(Q);
+    out.P_prime = BN_dup(subgroup_order);
     out.g       = BN_dup(G);
     out.h       = h_val;
 
