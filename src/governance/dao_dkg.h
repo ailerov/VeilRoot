@@ -838,6 +838,9 @@ bool decrypt_dkg_private_payload(
     std::string& plaintext);
 
 bool is_dkg_private_payload(const std::string& payload);
+bool get_dkg_private_payload_recipient(
+    const std::string& envelope,
+    crypto::public_key& recipient);
 
 class dkg_p2p_runner
 {

@@ -6388,6 +6388,27 @@ bool is_dkg_private_payload(const std::string& payload)
     return dkg_private_magic_ok(payload);
 }
 
+bool get_dkg_private_payload_recipient(
+    const std::string& envelope,
+    crypto::public_key& recipient)
+{
+    recipient = {};
+
+    if (!dkg_private_magic_ok(envelope))
+        return false;
+
+    constexpr size_t recipient_offset = 4 + 1;
+    if (envelope.size() <
+        recipient_offset + sizeof(recipient.data))
+        return false;
+
+    std::memcpy(recipient.data,
+                envelope.data() + recipient_offset,
+                sizeof(recipient.data));
+
+    return crypto::check_key(recipient);
+}
+
 bool decrypt_dkg_private_payload(
     const std::string& envelope,
     const crypto::public_key& sender_pub,

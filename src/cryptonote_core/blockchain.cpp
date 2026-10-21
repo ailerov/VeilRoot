@@ -8988,12 +8988,34 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     const std::string* wire_payload = &payload;
 
     if (dao::is_dkg_private_payload(payload)) {
-      if (!dao::decrypt_dkg_private_payload(payload, member,
-                                             m_node_privkey, plaintext)) {
-        MWARNING("V2 DKG msg: targeted private payload "
-                 "decryption failed");
+      crypto::public_key envelope_recipient{};
+      crypto::public_key self_pub{};
+
+      if (!dao::get_dkg_private_payload_recipient(
+              payload, envelope_recipient)) {
+        MWARNING("V2 DKG msg: malformed targeted private envelope");
         return;
       }
+
+      if (!crypto::secret_key_to_public_key(m_node_privkey, self_pub)) {
+        MWARNING("V2 DKG msg: cannot derive local public key");
+        return;
+      }
+
+      // The outer P2P transport broadcasts envelopes to all peers.
+      // A valid envelope for another node is normal traffic, not a
+      // decryption failure. Drop silently before attempting decrypt.
+      if (std::memcmp(self_pub.data, envelope_recipient.data,
+                      sizeof(self_pub.data)) != 0)
+        return;
+
+      if (!dao::decrypt_dkg_private_payload(
+              payload, member, m_node_privkey, plaintext)) {
+        MWARNING("V2 DKG msg: decryption failed for envelope "
+                 "addressed to this node");
+        return;
+      }
+
       wire_payload = &plaintext;
     }
 
