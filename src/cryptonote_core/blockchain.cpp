@@ -9006,8 +9006,13 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       // A valid envelope for another node is normal traffic, not a
       // decryption failure. Drop silently before attempting decrypt.
       if (std::memcmp(self_pub.data, envelope_recipient.data,
-                      sizeof(self_pub.data)) != 0)
+                      sizeof(self_pub.data)) != 0) {
+        MDEBUG("V2 DKG msg: envelope for other recipient, dropping"
+               << " member=" << epee::string_tools::pod_to_hex(member));
         return;
+      }
+      MINFO("V2 DKG msg: processing targeted envelope from="
+            << epee::string_tools::pod_to_hex(member));
 
       if (!dao::decrypt_dkg_private_payload(
               payload, member, m_node_privkey, plaintext)) {

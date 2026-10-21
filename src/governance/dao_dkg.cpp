@@ -7130,7 +7130,24 @@ struct dkg_p2p_runner::impl
 
         while (!is_complete(out)) {
             if (stop_flag.load()) return false;
-            if (std::chrono::steady_clock::now() >= deadline) return false;
+            if (std::chrono::steady_clock::now() >= deadline) {
+                std::cerr << "[dkg] collect timeout phase=" << expected_phase
+                          << " round=" << expected_round
+                          << " candidate=" << current
+                          << " got(sender:type)=";
+                for (const auto& m : out)
+                    std::cerr << m.hdr.sender_id << ":"
+                              << static_cast<int>(m.hdr.type) << ",";
+                std::cerr << " pending(sender:type)=";
+                for (const auto& m : pending_messages)
+                    std::cerr << m.hdr.sender_id << ":"
+                              << static_cast<int>(m.hdr.type) << ",";
+                std::cerr << " expected=";
+                for (auto typ : expected_types)
+                    std::cerr << static_cast<int>(typ) << ",";
+                std::cerr << " me=" << party->id() << std::endl;
+                return false;
+            }
 
             dkg_msg m;
             if (transport->try_recv(m)) {
@@ -7201,6 +7218,24 @@ struct dkg_p2p_runner::impl
         return c;
     }
 
+    // Distinct nonzero sender count. exclude_sender == 0 means "count
+    // all senders" (broadcast types). exclude_sender == self means
+    // "count only other senders" (targeted types whose self-copy is
+    // stored locally, not on the wire).
+    static uint32_t count_senders(const std::vector<dkg_msg>& msgs,
+                                  dkg_msg_type t,
+                                  uint32_t exclude_sender)
+    {
+        std::set<uint32_t> s;
+        for (const auto& m : msgs) {
+            if (m.hdr.type != t) continue;
+            if (m.hdr.sender_id == 0) continue;
+            if (exclude_sender != 0 && m.hdr.sender_id == exclude_sender) continue;
+            s.insert(m.hdr.sender_id);
+        }
+        return static_cast<uint32_t>(s.size());
+    }
+
     // Construct a driver-level message (sender_id=0) and feed it to the
     // local party as if received. Used for candidate_N and
     // biprimality_base, which in the single-process driver are injected
@@ -7252,10 +7287,10 @@ bool dkg_p2p_runner::impl::run_modulus_attempt(BIGNUM* N_out)
 
     std::vector<dkg_msg> msgs;
     const auto complete_phase1 = [&](const std::vector<dkg_msg>& v) {
-        return count_type(v, dkg_msg_type::polynomial_commitment_p) >= n
-            && count_type(v, dkg_msg_type::polynomial_commitment_q) >= n
-            && count_type(v, dkg_msg_type::polynomial_commitment_h) >= n
-            && count_type(v, dkg_msg_type::polynomial_share)         >= n - 1;
+        return count_senders(v, dkg_msg_type::polynomial_commitment_p, 0) >= n
+            && count_senders(v, dkg_msg_type::polynomial_commitment_q, 0) >= n
+            && count_senders(v, dkg_msg_type::polynomial_commitment_h, 0) >= n
+            && count_senders(v, dkg_msg_type::polynomial_share, me)  >= n - 1;
     };
     const std::set<dkg_msg_type> phase1_types = {
         dkg_msg_type::polynomial_commitment_p,
@@ -7285,7 +7320,7 @@ bool dkg_p2p_runner::impl::run_modulus_attempt(BIGNUM* N_out)
     }
 
     const auto complete_phase2 = [&](const std::vector<dkg_msg>& v) {
-        return count_type(v, dkg_msg_type::bgw_product_share) >= n;
+        return count_senders(v, dkg_msg_type::bgw_product_share, 0) >= n;
     };
     const std::set<dkg_msg_type> phase2_types = {
         dkg_msg_type::bgw_product_share,
@@ -7387,7 +7422,7 @@ bool dkg_p2p_runner::impl::run_phase_4_biprimality(const BIGNUM* N,
 
     std::vector<dkg_msg> msgs;
     const auto complete = [&](const std::vector<dkg_msg>& v) {
-        return count_type(v, dkg_msg_type::biprimality_Q) >= n;
+        return count_senders(v, dkg_msg_type::biprimality_Q, 0) >= n;
     };
     const std::set<dkg_msg_type> phase4_types = {
         dkg_msg_type::biprimality_Q,
