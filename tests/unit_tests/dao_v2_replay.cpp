@@ -1565,6 +1565,130 @@ TEST(DaoV2Replay, RejectsDuplicateTreasuryExecutionInBlock)
     boost::filesystem::remove_all(base);
 }
 
+namespace {
+
+inline void write_u64_le_ready(uint8_t out[8], uint64_t v)
+{
+    for (int i = 0; i < 8; ++i)
+        out[i] = static_cast<uint8_t>((v >> (8 * i)) & 0xff);
+}
+
+dao::dkg_msg make_node_ready_msg_v2(
+    const crypto::hash& genesis,
+    const crypto::public_key& pk,
+    const crypto::secret_key& sk,
+    uint64_t height,
+    const crypto::hash& block_hash)
+{
+    const char* domain = "VeilRoot-DAO-DKG-NODE-READY-V2";
+    std::vector<uint8_t> msg;
+    msg.insert(msg.end(), domain, domain + std::strlen(domain));
+    msg.insert(msg.end(), genesis.data, genesis.data + 32);
+    msg.insert(msg.end(), pk.data, pk.data + 32);
+    uint8_t h_le[8];
+    write_u64_le_ready(h_le, height);
+    msg.insert(msg.end(), h_le, h_le + 8);
+    msg.insert(msg.end(), block_hash.data, block_hash.data + 32);
+    crypto::hash digest{};
+    crypto::cn_fast_hash(msg.data(), msg.size(), digest);
+    crypto::signature sig{};
+    crypto::generate_signature(digest, pk, sk, sig);
+
+    dao::dkg_msg m;
+    m.hdr.type         = dao::dkg_msg_type::node_ready;
+    m.hdr.recipient_id = 0;
+    m.bytes_a.resize(sizeof(crypto::signature));
+    std::memcpy(m.bytes_a.data(), &sig, sizeof(crypto::signature));
+    m.bytes_b.resize(8 + 32);
+    write_u64_le_ready(m.bytes_b.data(), height);
+    std::memcpy(m.bytes_b.data() + 8, block_hash.data, 32);
+    return m;
+}
+
+void send_ready_via_core(cryptonote::core& c,
+                         const crypto::public_key& sender,
+                         const dao::dkg_msg& m)
+{
+    std::vector<uint8_t> wire;
+    ASSERT_TRUE(m.serialize(wire));
+    std::string payload(wire.begin(), wire.end());
+    c.get_blockchain_storage().handle_dao_v2_dkg_msg(sender, payload);
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------
+// Reorg eviction: a node_ready stored at (height H, hash X) must be
+// evicted once the chain reorgs to a different hash at height H.
+// ---------------------------------------------------------------------
+TEST(DaoV2Replay, NodeReadyEvictedAfterReorg)
+{
+    boost::filesystem::path base =
+        boost::filesystem::temp_directory_path() /
+        boost::filesystem::unique_path("vr_replay_readyreorg_%%%%-%%%%");
+
+    ReplayNode a;
+    ASSERT_TRUE(a.init((base / "a").string()));
+
+    account_base miner;
+    miner.generate();
+
+    for (int i = 0; i < 2; ++i) {
+        uint64_t h = a.core->get_current_blockchain_height();
+        block b;
+        ASSERT_TRUE(construct_block_here(a, miner, h, {}, b));
+        cryptonote::blobdata bb = cryptonote::block_to_blob(b);
+        block_verification_context bvc{};
+        pool_supplement e{};
+        ASSERT_TRUE(a.core->handle_single_incoming_block(
+            bb, &b, bvc, e, false));
+        ASSERT_FALSE(bvc.m_verifivation_failed);
+    }
+
+    auto& bs = a.core->get_blockchain_storage();
+    ASSERT_EQ(bs.get_current_blockchain_height(), 3u);
+
+    crypto::hash genesis{};
+    ASSERT_TRUE(bs.get_dao_v2_genesis_hash(genesis));
+
+    const crypto::hash old_hash_at_1 = bs.get_block_id_by_height(1);
+
+    crypto::public_key peer_pk;
+    crypto::secret_key peer_sk;
+    crypto::generate_keys(peer_pk, peer_sk);
+
+    dao::dkg_msg m = make_node_ready_msg_v2(
+        genesis, peer_pk, peer_sk, 1, old_hash_at_1);
+    send_ready_via_core(*a.core, peer_pk, m);
+
+    ASSERT_TRUE(bs.has_dao_v2_ready_peer_for_test(peer_pk));
+
+    // Reorg: pop blocks 1 and 2, remine a different block at height 1.
+    bs.pop_blocks(2);
+    ASSERT_EQ(bs.get_current_blockchain_height(), 1u);
+
+    {
+        block new_b1;
+        ASSERT_TRUE(construct_block_here(
+            a, miner, 1, {}, new_b1,
+            [](block& b) { b.timestamp += 7; }));
+        cryptonote::blobdata nb = cryptonote::block_to_blob(new_b1);
+        block_verification_context bvc{};
+        pool_supplement e{};
+        ASSERT_TRUE(a.core->handle_single_incoming_block(
+            nb, &new_b1, bvc, e, false));
+        ASSERT_FALSE(bvc.m_verifivation_failed);
+    }
+
+    const crypto::hash new_hash_at_1 = bs.get_block_id_by_height(1);
+    ASSERT_NE(new_hash_at_1, old_hash_at_1);
+
+    bs.evict_stale_dao_v2_ready_peers_for_test();
+    EXPECT_FALSE(bs.has_dao_v2_ready_peer_for_test(peer_pk));
+
+    boost::filesystem::remove_all(base);
+}
+
 TEST(DaoV2Replay, CoinbaseOverpaymentRejected)
 {
     using namespace cryptonote;

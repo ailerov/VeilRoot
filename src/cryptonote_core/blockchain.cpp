@@ -9497,7 +9497,25 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
   }
   // END_VNS_DAO_V2_KEY_READY_IMPL
 
-  void Blockchain::maybe_bootstrap_dao_v2_dkg()
+  bool Blockchain::is_dao_v2_ready_peer_stale(
+    uint64_t stored_height,
+    const crypto::hash& stored_block_hash) const
+{
+  constexpr uint64_t k_ready_ttl_blocks = 15;
+  const uint64_t current_h = get_current_blockchain_height();
+  if (current_h > stored_height &&
+      current_h - stored_height > k_ready_ttl_blocks)
+    return true;
+  if (stored_height < current_h) {
+    crypto::hash canonical{};
+    try { canonical = get_block_id_by_height(stored_height); }
+    catch (...) { return true; }
+    if (canonical != stored_block_hash) return true;
+  }
+  return false;
+}
+
+void Blockchain::maybe_bootstrap_dao_v2_dkg()
   {
     // One-time bootstrap of the stable Paillier public key.
     //
@@ -9535,22 +9553,9 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     // node that has gone silent does not hold a ceremony open.
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_ready_mutex);
-      constexpr uint64_t k_ready_ttl_blocks = 15;
-      const uint64_t current_h = get_current_blockchain_height();
       for (auto it = m_dao_v2_ready_peers.begin();
            it != m_dao_v2_ready_peers.end(); ) {
-        const uint64_t stored_h = it->second.first;
-        bool stale = false;
-        if (current_h > stored_h &&
-            current_h - stored_h > k_ready_ttl_blocks)
-          stale = true;
-        else if (stored_h < current_h) {
-          crypto::hash canonical{};
-          try { canonical = get_block_id_by_height(stored_h); }
-          catch (...) { stale = true; }
-          if (!stale && canonical != it->second.second) stale = true;
-        }
-        if (stale)
+        if (is_dao_v2_ready_peer_stale(it->second.first, it->second.second))
           it = m_dao_v2_ready_peers.erase(it);
         else
           ++it;
@@ -9783,6 +9788,18 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     std::lock_guard<std::mutex> lk(m_dao_v2_ready_mutex);
     return m_dao_v2_ready_peers.count(pk) > 0;
   }
+
+  void Blockchain::evict_stale_dao_v2_ready_peers_for_test()
+  {
+    std::lock_guard<std::mutex> lk(m_dao_v2_ready_mutex);
+    for (auto it = m_dao_v2_ready_peers.begin();
+         it != m_dao_v2_ready_peers.end(); ) {
+      if (is_dao_v2_ready_peer_stale(it->second.first, it->second.second))
+        it = m_dao_v2_ready_peers.erase(it);
+      else
+        ++it;
+    }
+  }
 #endif
 
   // END_VNS_DAO_V2_NODE_READY
@@ -10002,18 +10019,9 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     std::vector<std::pair<crypto::public_key, uint64_t>> shareholders_sorted;
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_ready_mutex);
-      constexpr uint64_t k_ready_ttl_blocks = 15;
       for (const auto& kv : m_dao_v2_ready_peers) {
-        const uint64_t stored_h = kv.second.first;
-        if (chain_height > stored_h &&
-            chain_height - stored_h > k_ready_ttl_blocks)
+        if (is_dao_v2_ready_peer_stale(kv.second.first, kv.second.second))
           continue;
-        if (stored_h < chain_height) {
-          crypto::hash canonical{};
-          try { canonical = get_block_id_by_height(stored_h); }
-          catch (...) { continue; }
-          if (canonical != kv.second.second) continue;
-        }
         shareholders_sorted.emplace_back(kv.first, 0);
       }
     }

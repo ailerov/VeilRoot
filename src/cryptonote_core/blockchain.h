@@ -1475,6 +1475,11 @@ namespace cryptonote
   // depends on the wallet registration table.
   void maybe_bootstrap_dao_v2_dkg();
 
+  // Staleness predicate shared by all eviction/filter paths.
+  bool is_dao_v2_ready_peer_stale(
+      uint64_t stored_height,
+      const crypto::hash& stored_block_hash) const;
+
   // Genesis hash accessor used by node_ready signing and verification.
   bool get_dao_v2_genesis_hash(crypto::hash& out) const;
 
@@ -1493,6 +1498,8 @@ namespace cryptonote
   // production builds.
   size_t get_dao_v2_ready_peer_count_for_test() const;
   bool has_dao_v2_ready_peer_for_test(const crypto::public_key& pk) const;
+
+  void evict_stale_dao_v2_ready_peers_for_test();
 #endif
   // Lifecycle hook called from the daemon idle loop. Drains any
   // results queued by the DKG watcher threads onto this owner thread.
