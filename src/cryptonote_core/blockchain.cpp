@@ -7099,6 +7099,66 @@ leave:
   }
   // END_VNS_DAO_V2_UNCONDITIONAL_VALIDATE
 
+  // BEGIN_VNS_TREASURY_DUPLICATE_VALIDATION_PRE
+  // Block-level treasury dedup, pre-add. Two checks:
+  //   (a) the same treasury output_id cannot be consumed twice;
+  //   (b) more than one execution transaction may not reference the
+  //       same proposal_id. Without (b), two txs using distinct unspent
+  //       outputs could each deduct the same grant amount while the
+  //       proposal is still PASSED at validation time.
+  // Both must run before any state mutation so the block is rejected
+  // cleanly and m_added_to_main_chain is never set.
+  {
+    std::set<uint64_t>    block_treasury_output_ids;
+    std::set<crypto::hash> block_treasury_proposal_ids;
+    for (const auto& tx_pair : txs)
+    {
+      const transaction& tx = tx_pair.first;
+      crypto::hash tx_proposal_id = crypto::null_hash;
+      bool tx_has_treasury = false;
+      for (const auto& in : tx.vin)
+      {
+        if (in.type() != typeid(txin_treasury))
+          continue;
+
+        const auto& treas_in = boost::get<txin_treasury>(in);
+
+        if (!block_treasury_output_ids.insert(
+                treas_in.treasury_output_id).second)
+        {
+          MERROR_VER("Duplicate treasury output "
+                     << treas_in.treasury_output_id << " in block");
+          add_block_as_invalid(bl, id);
+          bvc.m_verifivation_failed = true;
+          return_txs_to_pool();
+          return false;
+        }
+
+        if (tx_has_treasury && treas_in.proposal_id != tx_proposal_id)
+        {
+          MERROR_VER("Treasury execution tx mixes proposals");
+          add_block_as_invalid(bl, id);
+          bvc.m_verifivation_failed = true;
+          return_txs_to_pool();
+          return false;
+        }
+        tx_proposal_id = treas_in.proposal_id;
+        tx_has_treasury = true;
+      }
+      if (tx_has_treasury &&
+          !block_treasury_proposal_ids.insert(tx_proposal_id).second)
+      {
+        MERROR_VER("Duplicate treasury execution for proposal "
+                   << tx_proposal_id << " in block");
+        add_block_as_invalid(bl, id);
+        bvc.m_verifivation_failed = true;
+        return_txs_to_pool();
+        return false;
+      }
+    }
+  }
+  // END_VNS_TREASURY_DUPLICATE_VALIDATION_PRE
+
     // ---------- VNS ADDITION START ----------
     // Process domain registrations in this block and reject block if any fails
     for (const auto& tx_pair : txs) {
@@ -7308,29 +7368,6 @@ leave:
   }
   // ---------- END VNS_STORE_TREASURY_OUTPUT ----------
 
-  // BEGIN_VNS_TREASURY_DUPLICATE_SPEND_VALIDATION
-  // Consensus check: the same treasury output cannot be consumed twice in one block.
-  std::set<uint64_t> block_treasury_inputs;
-  for (const auto& tx_pair : txs)
-  {
-      const transaction& tx = tx_pair.first;
-      for (const auto& in : tx.vin)
-      {
-          if (in.type() != typeid(txin_treasury))
-              continue;
-
-          const auto& treas_in = boost::get<txin_treasury>(in);
-          if (!block_treasury_inputs.insert(treas_in.treasury_output_id).second)
-          {
-              MERROR("Duplicate treasury output " << treas_in.treasury_output_id << " spent in block");
-              bvc.m_verifivation_failed = true;
-              return_txs_to_pool();
-              return false;
-          }
-      }
-  }
-  // END_VNS_TREASURY_DUPLICATE_SPEND_VALIDATION
-
   // BEGIN_VNS_TREASURY_EXECUTION_SPEND
   // Spend treasury inputs and add treasury outputs from execution transactions
   for (const auto& tx_pair : txs)
@@ -7374,6 +7411,20 @@ leave:
           if (!m_db->get_proposal_record_in_txn(first_proposal_id, exec_rec))
           {
               MERROR("Failed to get proposal record for treasury execution: " << first_proposal_id);
+              bvc.m_verifivation_failed = true;
+              return_txs_to_pool();
+              return false;
+          }
+          // Independent re-check: reject if the proposal is no longer
+          // PASSED or has already been executed. Guards against a second
+          // execution tx for the same proposal that was validated before
+          // the status transition was committed.
+          if (exec_rec.status != PROPOSAL_STATUS_PASSED || exec_rec.executed)
+          {
+              MERROR("Proposal " << first_proposal_id
+                     << " already executed or not PASSED (status="
+                     << (int)exec_rec.status
+                     << ", executed=" << (exec_rec.executed ? 1 : 0) << ")");
               bvc.m_verifivation_failed = true;
               return_txs_to_pool();
               return false;

@@ -1415,6 +1415,156 @@ TEST(DaoV2Replay, DuplicateV2VoteNullifierRejected)
 // A block whose coinbase pays more than the permitted fixed subsidy
 // must be rejected. Overpayment by a single atomic unit is enough.
 // ---------------------------------------------------------------------
+// ---------------------------------------------------------------------
+// Duplicate treasury execution for the same proposal must be rejected
+// at block level. Two individually-valid execution transactions, each
+// consuming a distinct unspent treasury output, both pointing at the
+// same PASSED proposal, must not both apply. Without this guard the
+// grant amount would be deducted twice while the proposal only
+// transitions to EXECUTED once.
+// ---------------------------------------------------------------------
+TEST(DaoV2Replay, RejectsDuplicateTreasuryExecutionInBlock)
+{
+    using namespace cryptonote;
+
+    boost::filesystem::path base =
+        boost::filesystem::temp_directory_path() /
+        boost::filesystem::unique_path("vr_replay_duptx_%%%%-%%%%");
+
+    ReplayNode a;
+    ASSERT_TRUE(a.init((base / "a").string()));
+
+    account_base miner_acc;
+    miner_acc.generate();
+
+    // Mine one block so the chain has some depth.
+    const uint64_t h0 = a.core->get_current_blockchain_height();
+    block blk0;
+    ASSERT_TRUE(construct_block_here(a, miner_acc, h0, {}, blk0));
+    {
+        cryptonote::blobdata blob0 = cryptonote::block_to_blob(blk0);
+        block_verification_context bvc0{};
+        pool_supplement e0{};
+        ASSERT_TRUE(a.core->handle_single_incoming_block(
+            blob0, &blk0, bvc0, e0, false));
+        ASSERT_FALSE(bvc0.m_verifivation_failed);
+    }
+
+    auto& bs = a.core->get_blockchain_storage();
+    BlockchainDB& db = const_cast<BlockchainDB&>(bs.get_db());
+
+    // Proposal + two treasury outputs, seeded directly.
+    crypto::hash prop_id{};
+    crypto::cn_fast_hash("vr-dup-prop", 11, prop_id);
+
+    account_base recipient;
+    recipient.generate();
+    std::string recip_str = recipient.get_public_address_str(
+        cryptonote::FAKECHAIN);
+
+    const uint64_t proposal_amount = 10000;
+    const uint64_t seed_height = h0;
+    uint64_t out_id_1 = 0, out_id_2 = 0;
+    {
+        db_wtxn_guard g(&db);
+
+        proposal_record rec{};
+        rec.proposal_id = prop_id;
+        rec.type = 0; // GRANT
+        std::strncpy(rec.recipient, recip_str.c_str(),
+                     sizeof(rec.recipient) - 1);
+        rec.amount = proposal_amount;
+        rec.voting_period_days = 7;
+        rec.submission_height = seed_height;
+        rec.voting_end_height = seed_height;
+        rec.status = PROPOSAL_STATUS_PASSED;
+        rec.status_height = seed_height;
+        rec.recipient_view_public_key =
+            recipient.get_keys().m_account_address.m_view_public_key;
+        db.add_proposal_record(prop_id, rec);
+
+        out_id_1 = db.add_treasury_output(proposal_amount, seed_height);
+        out_id_2 = db.add_treasury_output(proposal_amount, seed_height);
+    }
+
+    // Build one exec tx per output, both pointing at the same proposal.
+    auto build_exec = [&](uint64_t out_id) -> transaction {
+        transaction tx;
+        tx.version = 2;
+
+        txin_treasury in{};
+        in.proposal_id = prop_id;
+        in.treasury_output_id = out_id;
+        tx.vin.push_back(in);
+
+        crypto::secret_key txkey;
+        crypto::hash_to_scalar(prop_id.data, sizeof(prop_id), txkey);
+        crypto::public_key txkey_pub;
+        crypto::secret_key_to_public_key(txkey, txkey_pub);
+        add_tx_pub_key_to_extra(tx, txkey_pub);
+
+        crypto::key_derivation deriv;
+        crypto::generate_key_derivation(
+            recipient.get_keys().m_account_address.m_view_public_key,
+            txkey, deriv);
+
+        crypto::public_key eph_key;
+        crypto::derive_public_key(
+            deriv, 0,
+            recipient.get_keys().m_account_address.m_spend_public_key,
+            eph_key);
+
+        tx_out payment_out;
+        cryptonote::set_tx_out(proposal_amount, eph_key, false,
+                               crypto::view_tag{}, payment_out);
+        tx.vout.push_back(payment_out);
+
+        tx.rct_signatures = rct::rctSig{};
+        tx.rct_signatures.type = rct::RCTTypeNull;
+        return tx;
+    };
+
+    transaction tx1 = build_exec(out_id_1);
+    transaction tx2 = build_exec(out_id_2);
+
+    const uint64_t apply_height = bs.get_current_blockchain_height();
+    {
+        tx_verification_context tvc1{}, tvc2{};
+        uint64_t muh1 = 0, muh2 = 0;
+        crypto::hash mui1{}, mui2{};
+        EXPECT_TRUE(bs.check_tx_inputs(
+            tx1, muh1, mui1, tvc1, false, apply_height));
+        EXPECT_TRUE(bs.check_tx_inputs(
+            tx2, muh2, mui2, tvc2, false, apply_height));
+    }
+
+    block bad_block;
+    std::vector<transaction> both{ tx1, tx2 };
+    ASSERT_TRUE(construct_block_here(
+        a, miner_acc, apply_height, both, bad_block));
+
+    cryptonote::blobdata bblob = cryptonote::block_to_blob(bad_block);
+    block_verification_context bvc{};
+    pool_supplement e{};
+    e.txs_by_txid.emplace(get_transaction_hash(tx1),
+                          std::make_pair(tx1, tx_to_blob(tx1)));
+    e.txs_by_txid.emplace(get_transaction_hash(tx2),
+                          std::make_pair(tx2, tx_to_blob(tx2)));
+
+    (void)a.core->handle_single_incoming_block(
+        bblob, &bad_block, bvc, e, false);
+
+    EXPECT_TRUE(bvc.m_verifivation_failed);
+    EXPECT_FALSE(bvc.m_added_to_main_chain);
+
+    proposal_record after{};
+    ASSERT_TRUE(db.get_proposal_record(prop_id, after));
+    EXPECT_EQ(after.status, PROPOSAL_STATUS_PASSED);
+    EXPECT_FALSE(after.executed);
+
+    boost::filesystem::remove_all(base);
+}
+
 TEST(DaoV2Replay, CoinbaseOverpaymentRejected)
 {
     using namespace cryptonote;
