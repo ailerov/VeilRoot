@@ -458,50 +458,6 @@ static bool dao_vss_derive_h(const BIGNUM* P,
     return false;
 }
 
-namespace {
-inline std::string dkg_fp_hex(const uint8_t* p, size_t n)
-{
-    static const char* hx = "0123456789abcdef";
-    std::string s;
-    const size_t lim = n < 8 ? n : 8;
-    for (size_t i = 0; i < lim; ++i) {
-        s.push_back(hx[p[i] >> 4]);
-        s.push_back(hx[p[i] & 0xF]);
-    }
-    return s;
-}
-
-inline std::string dkg_bn_fp(const BIGNUM* b)
-{
-    if (!b) return "null";
-    const int nb = BN_num_bytes(b);
-    if (nb <= 0) return "0:00";
-    std::vector<uint8_t> v(static_cast<size_t>(nb), 0);
-    BN_bn2bin(b, v.data());
-    return std::to_string(BN_num_bits(b)) + ":" + dkg_fp_hex(v.data(), v.size());
-}
-
-inline std::string dkg_group_fp(const dao_vss_group& grp)
-{
-    if (!grp.valid()) return "invalid";
-    return "P=" + dkg_bn_fp(grp.P) +
-           " Pp=" + dkg_bn_fp(grp.P_prime) +
-           " g=" + dkg_bn_fp(grp.g) +
-           " h=" + dkg_bn_fp(grp.h);
-}
-
-inline std::string dkg_commits_fp(const std::vector<std::vector<uint8_t>>& C)
-{
-    if (C.empty()) return "empty";
-    std::string s = "n=" + std::to_string(C.size());
-    for (size_t i = 0; i < C.size() && i < 2; ++i) {
-        if (C[i].empty()) { s += " C" + std::to_string(i) + "=empty"; continue; }
-        s += " C" + std::to_string(i) + "=" + dkg_fp_hex(C[i].data(), C[i].size());
-    }
-    return s;
-}
-} // namespace
-
 bool dao_vss_group_generate(dao_vss_group& out, unsigned int required_order_bits)
 {
     CtxGuard guard;
@@ -903,12 +859,6 @@ bool dao_vss_deal(const dao_vss_group& grp,
     for (uint32_t i = 1; i <= n; ++i) {
         if (!dao_vss_verify_share(grp, commitments_out, n, i,
                                   shares_out[i - 1], blindings_out[i - 1])) {
-            std::cerr << "[dkg] local VSS self-check FAILED"
-                      << " i=" << i << " n=" << n
-                      << " degree=" << t
-                      << " group={" << dkg_group_fp(grp) << "}"
-                      << " commits={" << dkg_commits_fp(commitments_out.C) << "}"
-                      << std::endl;
             for (auto* x : a) if (x) BN_free(x);
             for (auto* x : b) if (x) BN_free(x);
             return false;
@@ -968,16 +918,6 @@ bool dao_vss_verify_share(const dao_vss_group& grp,
     }
 
     const bool ok = (BN_cmp(lhs, rhs) == 0);
-    if (!ok) {
-        std::cerr << "[dkg] verify_share fail i=" << i << " n=" << n
-                  << " lhs=" << dkg_bn_fp(lhs)
-                  << " rhs=" << dkg_bn_fp(rhs)
-                  << " share=" << dkg_bn_fp(share)
-                  << " blinding=" << dkg_bn_fp(blinding)
-                  << " commitments=" << dkg_commits_fp(commitments.C)
-                  << " group={" << dkg_group_fp(grp) << "}"
-                  << std::endl;
-    }
     BN_free(lhs_a); BN_free(lhs_b); BN_free(lhs);
     BN_free(rhs); BN_free(pow);
     return ok;
@@ -2513,12 +2453,6 @@ bool dkg_party::do_polynomial_commit()
             bn_to_signed(b_q[j - 1], bq_enc);
             m.vec_a.push_back(std::move(bq_enc));
         }
-        std::cerr << "[dkg-send] poly_share to=" << j
-                  << " group={" << dkg_group_fp(*vss_group_) << "}"
-                  << " commits={" << dkg_commits_fp(commits_p_.C) << "}"
-                  << " s_p_bits=" << BN_num_bits(s_p[j - 1])
-                  << " b_p_bits=" << BN_num_bits(b_p[j - 1])
-                  << std::endl;
         if (!send_msg(m)) return false;
     }
 
@@ -2965,26 +2899,16 @@ bool dkg_party::handle_message(const dkg_msg& m)
 
         case dkg_msg_type::polynomial_share: {
             const uint32_t j = m.hdr.sender_id;
-            if (j < 1 || j > committee_size_) {
-                std::cerr << "[dkg] poly_share reject: sender out of range j=" << j << " size=" << committee_size_ << std::endl;
+            if (j < 1 || j > committee_size_)
                 return false;
-            }
-            if (m.bytes_a.empty() || m.bytes_b.empty() || m.bytes_c.empty()) {
-                std::cerr << "[dkg] poly_share reject: empty a/b/c j=" << j << std::endl;
+            if (m.bytes_a.empty() || m.bytes_b.empty() || m.bytes_c.empty())
                 return false;
-            }
-            if (m.bytes_d.empty() || m.vec_a.empty() || m.vec_a[0].empty()) {
-                std::cerr << "[dkg] poly_share reject: empty d/vec_a j=" << j << std::endl;
+            if (m.bytes_d.empty() || m.vec_a.empty() || m.vec_a[0].empty())
                 return false;
-            }
-            if (!vss_group_ || !vss_group_->valid()) {
-                std::cerr << "[dkg] poly_share reject: vss_group invalid j=" << j << std::endl;
+            if (!vss_group_ || !vss_group_->valid())
                 return false;
-            }
-            if (commits_p_recv_[j].C.empty() || commits_q_recv_[j].C.empty()) {
-                std::cerr << "[dkg] poly_share reject: commits P/Q missing j=" << j << " P_empty=" << commits_p_recv_[j].C.empty() << " Q_empty=" << commits_q_recv_[j].C.empty() << std::endl;
+            if (commits_p_recv_[j].C.empty() || commits_q_recv_[j].C.empty())
                 return false;
-            }
 
             BIGNUM* sp = BN_bin2bn(m.bytes_a.data(),
                                    static_cast<int>(m.bytes_a.size()), nullptr);
@@ -3000,23 +2924,14 @@ bool dkg_party::handle_message(const dkg_msg& m)
                 aborted_ = true; return false;
             }
 
-            std::cerr << "[dkg-recv] poly_share from=" << j
-                      << " to=" << party_id_
-                      << " group={" << dkg_group_fp(*vss_group_) << "}"
-                      << " commits={" << dkg_commits_fp(commits_p_recv_[j].C) << "}"
-                      << " s_p_bits=" << BN_num_bits(sp)
-                      << " b_p_bits=" << BN_num_bits(bp)
-                      << std::endl;
             if (!dao_vss_verify_share(*vss_group_, commits_p_recv_[j],
                                       committee_size_, party_id_, sp, bp)) {
-                std::cerr << "[dkg] poly_share reject: VSS P verify failed j=" << j << " party_id=" << party_id_ << std::endl;
                 BN_free(sp); BN_free(sq); BN_free(sh);
                 BN_free(bp); BN_free(bq);
                 aborted_ = true; return false;
             }
             if (!dao_vss_verify_share(*vss_group_, commits_q_recv_[j],
                                       committee_size_, party_id_, sq, bq)) {
-                std::cerr << "[dkg] poly_share reject: VSS Q verify failed j=" << j << " party_id=" << party_id_ << std::endl;
                 BN_free(sp); BN_free(sq); BN_free(sh);
                 BN_free(bp); BN_free(bq);
                 aborted_ = true; return false;
@@ -6618,12 +6533,6 @@ public:
         if (!m.serialize(buf)) return false;
         std::string payload(buf.begin(), buf.end());
 
-        std::cerr << "[dkg-tx] type=" << static_cast<int>(m.hdr.type)
-                  << " phase=" << m.hdr.phase
-                  << " sender=" << m.hdr.sender_id
-                  << " recip=" << m.hdr.recipient_id
-                  << " bytes=" << payload.size()
-                  << std::endl;
 
         if (m.hdr.recipient_id == 0) {
             // Peer-only broadcast, matching dkg_inproc_hub::route.
@@ -7130,24 +7039,8 @@ struct dkg_p2p_runner::impl
 
         while (!is_complete(out)) {
             if (stop_flag.load()) return false;
-            if (std::chrono::steady_clock::now() >= deadline) {
-                std::cerr << "[dkg] collect timeout phase=" << expected_phase
-                          << " round=" << expected_round
-                          << " candidate=" << current
-                          << " got(sender:type)=";
-                for (const auto& m : out)
-                    std::cerr << m.hdr.sender_id << ":"
-                              << static_cast<int>(m.hdr.type) << ",";
-                std::cerr << " pending(sender:type)=";
-                for (const auto& m : pending_messages)
-                    std::cerr << m.hdr.sender_id << ":"
-                              << static_cast<int>(m.hdr.type) << ",";
-                std::cerr << " expected=";
-                for (auto typ : expected_types)
-                    std::cerr << static_cast<int>(typ) << ",";
-                std::cerr << " me=" << party->id() << std::endl;
+            if (std::chrono::steady_clock::now() >= deadline)
                 return false;
-            }
 
             dkg_msg m;
             if (transport->try_recv(m)) {
@@ -7179,17 +7072,8 @@ struct dkg_p2p_runner::impl
                 continue;
             }
 
-            if (!party->handle_message(m)) {
-                std::cerr << "[dkg] handle_message rejected"
-                          << " type=" << static_cast<unsigned>(m.hdr.type)
-                          << " candidate=" << m.hdr.candidate_id
-                          << " expected_candidate=" << party->current_candidate_id()
-                          << " phase=" << m.hdr.phase
-                          << " sender=" << m.hdr.sender_id
-                          << " recipient=" << m.hdr.recipient_id
-                          << std::endl;
+            if (!party->handle_message(m))
                 return false;
-            }
 
             // Public (broadcast) DKG messages are recorded verbatim.
             // Private (targeted) messages are recorded through their
@@ -7314,10 +7198,8 @@ bool dkg_p2p_runner::impl::run_modulus_attempt(BIGNUM* N_out)
 
     // Phase 2: each party forms N_i and broadcasts.
     msgs.clear();
-    if (!party->start_phase(2, cfg.k, cfg.security_bits, cfg.target_N_bits)) {
-        std::cerr << "[dkg] start_phase(2) failed" << std::endl;
+    if (!party->start_phase(2, cfg.k, cfg.security_bits, cfg.target_N_bits))
         return false;
-    }
 
     const auto complete_phase2 = [&](const std::vector<dkg_msg>& v) {
         return count_senders(v, dkg_msg_type::bgw_product_share, 0) >= n;
@@ -7415,10 +7297,8 @@ bool dkg_p2p_runner::impl::run_phase_4_biprimality(const BIGNUM* N,
     const uint32_t n = cfg.committee_size;
 
     // Phase 4: each party publishes Q_i.
-    if (!party->start_phase(4, cfg.k, cfg.security_bits, cfg.target_N_bits)) {
-        std::cerr << "[dkg] start_phase(4) failed" << std::endl;
+    if (!party->start_phase(4, cfg.k, cfg.security_bits, cfg.target_N_bits))
         return false;
-    }
 
     std::vector<dkg_msg> msgs;
     const auto complete = [&](const std::vector<dkg_msg>& v) {

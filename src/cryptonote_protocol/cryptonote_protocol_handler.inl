@@ -2807,12 +2807,12 @@ skip:
     });
     if (peers.empty())
     {
-      MWARNING("relay_dao_v2_dkg_msg: no peers connected, payload="
-               << payload.size() << "B dropped");
+      MDEBUG("relay_dao_v2_dkg_msg: no peers connected, payload="
+             << payload.size() << "B dropped");
       return true;
     }
-    MWARNING("relay_dao_v2_dkg_msg: relaying " << payload.size()
-             << "B to " << peers.size() << " peer(s)");
+    MDEBUG("relay_dao_v2_dkg_msg: relaying " << payload.size()
+           << "B to " << peers.size() << " peer(s)");
 
     epee::levin::message_writer writer{256 * 1024};
     epee::serialization::store_t_to_binary(req, writer.buffer);
