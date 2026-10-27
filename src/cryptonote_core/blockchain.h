@@ -1806,7 +1806,7 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     // steady-clock timestamp in seconds since epoch at which the last
     // valid announcement was received. Never persisted to LMDB.
     mutable std::mutex m_dao_v2_ready_mutex;
-    std::map<crypto::public_key, uint64_t> m_dao_v2_ready_peers;
+    std::map<crypto::public_key, std::pair<uint64_t, crypto::hash>> m_dao_v2_ready_peers;
 
     // Throttle for our own announcement. Set to 0 to force an announce
     // on the next on_idle tick.

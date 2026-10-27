@@ -137,18 +137,31 @@ TEST_F(DaoBootstrapIntegration, PersistentNodeIdentityInstalled)
 namespace {
 
 // Sign and deliver a node_ready announcement for (sec, pub). The
-// digest matches Blockchain::compute_dao_v2_node_ready_digest.
+// digest matches Blockchain::compute_dao_v2_node_ready_digest (V2:
+// covers genesis, pk, announce height, and block hash at that height).
 void deliver_node_ready(core& c,
                         const crypto::hash& genesis,
                         const crypto::public_key& pk,
                         const crypto::secret_key& sk)
 {
-    const char* domain = "VeilRoot-DAO-DKG-NODE-READY-V1";
+    auto& bs = c.get_blockchain_storage();
+    const uint64_t current_h = bs.get_current_blockchain_height();
+    if (current_h == 0) return;
+    const uint64_t announce_h = current_h - 1;
+    crypto::hash announce_hash{};
+    try { announce_hash = bs.get_block_id_by_height(announce_h); }
+    catch (...) { return; }
+
+    const char* domain = "VeilRoot-DAO-DKG-NODE-READY-V2";
     std::vector<uint8_t> msg;
     const size_t dlen = std::strlen(domain);
     msg.insert(msg.end(), domain, domain + dlen);
     msg.insert(msg.end(), genesis.data, genesis.data + 32);
     msg.insert(msg.end(), pk.data, pk.data + 32);
+    uint8_t h_le[8];
+    std::memcpy(h_le, &announce_h, 8);
+    msg.insert(msg.end(), h_le, h_le + 8);
+    msg.insert(msg.end(), announce_hash.data, announce_hash.data + 32);
 
     crypto::hash digest{};
     crypto::cn_fast_hash(msg.data(), msg.size(), digest);
@@ -161,12 +174,15 @@ void deliver_node_ready(core& c,
     m.hdr.recipient_id = 0;
     m.bytes_a.resize(sizeof(crypto::signature));
     std::memcpy(m.bytes_a.data(), &sig, sizeof(crypto::signature));
+    m.bytes_b.resize(8 + 32);
+    std::memcpy(m.bytes_b.data(), &announce_h, 8);
+    std::memcpy(m.bytes_b.data() + 8, announce_hash.data, 32);
 
     std::vector<uint8_t> wire;
     ASSERT_TRUE(m.serialize(wire));
     std::string payload(wire.begin(), wire.end());
 
-    c.get_blockchain_storage().handle_dao_v2_dkg_msg(pk, payload);
+    bs.handle_dao_v2_dkg_msg(pk, payload);
 }
 
 }  // namespace
@@ -259,12 +275,24 @@ TEST_F(DaoBootstrapIntegration, NodeReadyRejectsInvalidSignature)
     // Forged: signature is over A's digest, but the message arrives
     // claiming sender=B. The handler computes the digest over B, so
     // signature verification against B's public key fails.
+    auto& bs_for_rej = m_core->get_blockchain_storage();
+    const uint64_t cur_h = bs_for_rej.get_current_blockchain_height();
+    ASSERT_GT(cur_h, 0u);
+    const uint64_t announce_h = cur_h - 1;
+    crypto::hash announce_hash{};
+    try { announce_hash = bs_for_rej.get_block_id_by_height(announce_h); }
+    catch (...) { FAIL() << "get_block_id_by_height threw"; return; }
+
     std::vector<uint8_t> msg;
-    const char* domain = "VeilRoot-DAO-DKG-NODE-READY-V1";
+    const char* domain = "VeilRoot-DAO-DKG-NODE-READY-V2";
     const size_t dlen = std::strlen(domain);
     msg.insert(msg.end(), domain, domain + dlen);
     msg.insert(msg.end(), genesis.data, genesis.data + 32);
     msg.insert(msg.end(), a_pk.data, a_pk.data + 32);
+    uint8_t h_le[8];
+    std::memcpy(h_le, &announce_h, 8);
+    msg.insert(msg.end(), h_le, h_le + 8);
+    msg.insert(msg.end(), announce_hash.data, announce_hash.data + 32);
     crypto::hash digest{};
     crypto::cn_fast_hash(msg.data(), msg.size(), digest);
     crypto::signature sig{};
@@ -275,6 +303,9 @@ TEST_F(DaoBootstrapIntegration, NodeReadyRejectsInvalidSignature)
     forged.hdr.recipient_id = 0;
     forged.bytes_a.resize(sizeof(crypto::signature));
     std::memcpy(forged.bytes_a.data(), &sig, sizeof(crypto::signature));
+    forged.bytes_b.resize(8 + 32);
+    std::memcpy(forged.bytes_b.data(), &announce_h, 8);
+    std::memcpy(forged.bytes_b.data() + 8, announce_hash.data, 32);
     std::vector<uint8_t> wire;
     ASSERT_TRUE(forged.serialize(wire));
     std::string payload(wire.begin(), wire.end());

@@ -9484,13 +9484,22 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     // node that has gone silent does not hold a ceremony open.
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_ready_mutex);
-      constexpr uint64_t k_ready_ttl_s = 30 * 60;
-      const uint64_t now = static_cast<uint64_t>(
-          std::chrono::duration_cast<std::chrono::seconds>(
-              std::chrono::steady_clock::now().time_since_epoch()).count());
+      constexpr uint64_t k_ready_ttl_blocks = 15;
+      const uint64_t current_h = get_current_blockchain_height();
       for (auto it = m_dao_v2_ready_peers.begin();
            it != m_dao_v2_ready_peers.end(); ) {
-        if (now > it->second && now - it->second > k_ready_ttl_s)
+        const uint64_t stored_h = it->second.first;
+        bool stale = false;
+        if (current_h > stored_h &&
+            current_h - stored_h > k_ready_ttl_blocks)
+          stale = true;
+        else if (stored_h < current_h) {
+          crypto::hash canonical{};
+          try { canonical = get_block_id_by_height(stored_h); }
+          catch (...) { stale = true; }
+          if (!stale && canonical != it->second.second) stale = true;
+        }
+        if (stale)
           it = m_dao_v2_ready_peers.erase(it);
         else
           ++it;
@@ -9509,7 +9518,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
   namespace {
     constexpr const char* DAO_NODE_READY_DOMAIN =
-        "VeilRoot-DAO-DKG-NODE-READY-V1";
+        "VeilRoot-DAO-DKG-NODE-READY-V2";
     constexpr uint64_t    DAO_NODE_READY_ANNOUNCE_INTERVAL_S = 60;
   }
 
@@ -9526,15 +9535,21 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
   static void compute_dao_v2_node_ready_digest(
       const crypto::hash& genesis,
       const crypto::public_key& pk,
+      uint64_t height,
+      const crypto::hash& block_hash,
       crypto::hash& out)
   {
     std::vector<uint8_t> msg;
     const size_t dom_len = std::strlen(DAO_NODE_READY_DOMAIN);
-    msg.reserve(dom_len + 32 + 32);
+    msg.reserve(dom_len + 32 + 32 + 8 + 32);
     msg.insert(msg.end(), DAO_NODE_READY_DOMAIN,
                DAO_NODE_READY_DOMAIN + dom_len);
     msg.insert(msg.end(), genesis.data, genesis.data + 32);
     msg.insert(msg.end(), pk.data, pk.data + 32);
+    uint8_t h_le[8];
+    std::memcpy(h_le, &height, 8);
+    msg.insert(msg.end(), h_le, h_le + 8);
+    msg.insert(msg.end(), block_hash.data, block_hash.data + 32);
     crypto::cn_fast_hash(msg.data(), msg.size(), out);
   }
 
@@ -9583,8 +9598,17 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     crypto::public_key self_pk{};
     if (!crypto::secret_key_to_public_key(m_node_privkey, self_pk)) return;
 
+    const uint64_t current_height = get_current_blockchain_height();
+    if (current_height == 0) return;
+    const uint64_t announce_height = current_height - 1;
+    crypto::hash announce_block_hash{};
+    try { announce_block_hash = get_block_id_by_height(announce_height); }
+    catch (...) { return; }
+
     crypto::hash digest{};
-    compute_dao_v2_node_ready_digest(genesis, self_pk, digest);
+    compute_dao_v2_node_ready_digest(genesis, self_pk,
+                                     announce_height, announce_block_hash,
+                                     digest);
 
     crypto::signature sig{};
     crypto::generate_signature(digest, self_pk, m_node_privkey, sig);
@@ -9594,6 +9618,9 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     m.hdr.recipient_id = 0;
     m.bytes_a.resize(sizeof(crypto::signature));
     std::memcpy(m.bytes_a.data(), &sig, sizeof(crypto::signature));
+    m.bytes_b.resize(8 + 32);
+    std::memcpy(m.bytes_b.data(), &announce_height, 8);
+    std::memcpy(m.bytes_b.data() + 8, announce_block_hash.data, 32);
 
     std::vector<uint8_t> wire;
     if (!m.serialize(wire)) return;
@@ -9604,7 +9631,8 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     // Record ourselves so a single-node network can reach the gate if
     // it ever grows to MIN without needing a peer announcement first.
     std::lock_guard<std::mutex> lk(m_dao_v2_ready_mutex);
-    m_dao_v2_ready_peers[self_pk] = now;
+    m_dao_v2_ready_peers[self_pk] =
+        std::make_pair(announce_height, announce_block_hash);
     MWARNING("V2 DKG announce fired, roster="
              << m_dao_v2_ready_peers.size());
   }
@@ -9616,11 +9644,22 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       MWARNING("node_ready: wrong signature length");
       return;
     }
+    if (m.bytes_b.size() != 8 + 32) {
+      MWARNING("node_ready: wrong payload length from " << sender);
+      return;
+    }
+    uint64_t sender_height = 0;
+    std::memcpy(&sender_height, m.bytes_b.data(), 8);
+    crypto::hash sender_block_hash{};
+    std::memcpy(sender_block_hash.data, m.bytes_b.data() + 8, 32);
+
     crypto::hash genesis{};
     if (!get_dao_v2_genesis_hash(genesis)) return;
 
     crypto::hash digest{};
-    compute_dao_v2_node_ready_digest(genesis, sender, digest);
+    compute_dao_v2_node_ready_digest(genesis, sender,
+                                     sender_height, sender_block_hash,
+                                     digest);
 
     crypto::signature sig{};
     std::memcpy(&sig, m.bytes_a.data(), sizeof(crypto::signature));
@@ -9633,13 +9672,12 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     // is the pubkey the P2P connection authenticated as, and the
     // digest is bound to that same pubkey, so a peer cannot announce
     // on behalf of another node.
-    const uint64_t now = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::seconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count());
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_ready_mutex);
-      m_dao_v2_ready_peers[sender] = now;
+      m_dao_v2_ready_peers[sender] =
+          std::make_pair(sender_height, sender_block_hash);
       MWARNING("V2 DKG node_ready rx from " << sender
+               << " height=" << sender_height
                << " roster=" << m_dao_v2_ready_peers.size());
     }
 
@@ -9880,12 +9918,18 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     std::vector<std::pair<crypto::public_key, uint64_t>> shareholders_sorted;
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_ready_mutex);
-      constexpr uint64_t k_ready_ttl_s = 30 * 60;
-      const uint64_t now = static_cast<uint64_t>(
-          std::chrono::duration_cast<std::chrono::seconds>(
-              std::chrono::steady_clock::now().time_since_epoch()).count());
+      constexpr uint64_t k_ready_ttl_blocks = 15;
       for (const auto& kv : m_dao_v2_ready_peers) {
-        if (now > kv.second && now - kv.second > k_ready_ttl_s) continue;
+        const uint64_t stored_h = kv.second.first;
+        if (chain_height > stored_h &&
+            chain_height - stored_h > k_ready_ttl_blocks)
+          continue;
+        if (stored_h < chain_height) {
+          crypto::hash canonical{};
+          try { canonical = get_block_id_by_height(stored_h); }
+          catch (...) { continue; }
+          if (canonical != kv.second.second) continue;
+        }
         shareholders_sorted.emplace_back(kv.first, 0);
       }
     }
