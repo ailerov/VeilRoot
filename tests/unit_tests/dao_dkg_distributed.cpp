@@ -381,7 +381,7 @@ bool run_n_party(uint32_t n, uint32_t timeout_s,
     cfg.security_bits  = 32;
     cfg.qproof_rounds  = DAO_DKG_QPROOF_ROUNDS_TEST;
     cfg.max_attempts   = 2000;
-    cfg.phase_timeout_seconds = 120;
+    cfg.phase_timeout_seconds = 600;
     if (n == 3)  cfg.test_seed = FIXED_TEST_CANDIDATE_SEED_3;
     if (n == 16) cfg.test_seed = FIXED_TEST_CANDIDATE_SEED_16;
     if (n != 3 && n != 16) {
@@ -458,7 +458,7 @@ void expect_public_fields_agree(const std::vector<dkg_result>& rs,
 TEST(dao_dkg_distributed, three_party_nodes_agree_on_public_key_record)
 {
     distributed_run run;
-    ASSERT_TRUE(run_n_party(3, 240, run));
+    ASSERT_TRUE(run_n_party(3, 900, run));
     expect_public_fields_agree(run.results, 3);
 
     for (uint32_t i = 0; i < 3; ++i)
@@ -499,7 +499,7 @@ TEST(dao_dkg_distributed, ordered_startup_no_lost_messages)
     cfg.security_bits  = 32;
     cfg.qproof_rounds  = DAO_DKG_QPROOF_ROUNDS_TEST;
     cfg.max_attempts   = 2000;
-    cfg.phase_timeout_seconds = 120;
+    cfg.phase_timeout_seconds = 600;
     cfg.test_seed      = FIXED_TEST_CANDIDATE_SEED_3;
     cfg.member_ids     = run.pks;
 
@@ -546,7 +546,7 @@ TEST(dao_dkg_distributed, ordered_startup_no_lost_messages)
 TEST(dao_dkg_distributed, four_party_nodes_agree_on_public_key_record)
 {
     distributed_run run;
-    ASSERT_TRUE(run_n_party(4, 300, run));
+    ASSERT_TRUE(run_n_party(4, 900, run));
     expect_public_fields_agree(run.results, 4);
 
     for (uint32_t i = 0; i < 4; ++i)

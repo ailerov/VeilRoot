@@ -9583,6 +9583,17 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     }
   }
 
+  static inline void dao_v2_write_u64_le(uint8_t* out, uint64_t v) {
+    for (int i = 0; i < 8; ++i)
+      out[i] = static_cast<uint8_t>((v >> (8 * i)) & 0xff);
+  }
+  static inline uint64_t dao_v2_read_u64_le(const uint8_t* in) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; ++i)
+      v |= static_cast<uint64_t>(in[i]) << (8 * i);
+    return v;
+  }
+
   static void compute_dao_v2_node_ready_digest(
       const crypto::hash& genesis,
       const crypto::public_key& pk,
@@ -9598,7 +9609,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     msg.insert(msg.end(), genesis.data, genesis.data + 32);
     msg.insert(msg.end(), pk.data, pk.data + 32);
     uint8_t h_le[8];
-    std::memcpy(h_le, &height, 8);
+    dao_v2_write_u64_le(h_le, height);
     msg.insert(msg.end(), h_le, h_le + 8);
     msg.insert(msg.end(), block_hash.data, block_hash.data + 32);
     crypto::cn_fast_hash(msg.data(), msg.size(), out);
@@ -9670,7 +9681,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     m.bytes_a.resize(sizeof(crypto::signature));
     std::memcpy(m.bytes_a.data(), &sig, sizeof(crypto::signature));
     m.bytes_b.resize(8 + 32);
-    std::memcpy(m.bytes_b.data(), &announce_height, 8);
+    dao_v2_write_u64_le(m.bytes_b.data(), announce_height);
     std::memcpy(m.bytes_b.data() + 8, announce_block_hash.data, 32);
 
     std::vector<uint8_t> wire;
@@ -9699,8 +9710,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       MWARNING("node_ready: wrong payload length from " << sender);
       return;
     }
-    uint64_t sender_height = 0;
-    std::memcpy(&sender_height, m.bytes_b.data(), 8);
+    uint64_t sender_height = dao_v2_read_u64_le(m.bytes_b.data());
     crypto::hash sender_block_hash{};
     std::memcpy(sender_block_hash.data, m.bytes_b.data() + 8, 32);
 
@@ -9716,6 +9726,29 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     std::memcpy(&sig, m.bytes_a.data(), sizeof(crypto::signature));
     if (!crypto::check_signature(digest, sender, sig)) {
       MWARNING("node_ready: bad signature from " << sender);
+      return;
+    }
+
+    const uint64_t local_tip = get_current_blockchain_height();
+    if (local_tip == 0) {
+      MWARNING("node_ready: local chain empty, dropping " << sender);
+      return;
+    }
+    if (sender_height >= local_tip) {
+      MWARNING("node_ready: rejecting future height " << sender_height
+               << " (local tip " << (local_tip - 1) << ") from " << sender);
+      return;
+    }
+    crypto::hash canonical_at_height{};
+    try { canonical_at_height = get_block_id_by_height(sender_height); }
+    catch (...) {
+      MWARNING("node_ready: cannot read canonical hash at "
+               << sender_height << ", dropping " << sender);
+      return;
+    }
+    if (canonical_at_height != sender_block_hash) {
+      MWARNING("node_ready: non-canonical hash at height "
+               << sender_height << " from " << sender);
       return;
     }
 

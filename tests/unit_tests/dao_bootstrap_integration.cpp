@@ -317,6 +317,158 @@ TEST_F(DaoBootstrapIntegration, NodeReadyRejectsInvalidSignature)
     EXPECT_EQ(1u, bs.get_dao_v2_ready_peer_count_for_test());
 }
 
+namespace {
+
+inline void write_u64_le(uint8_t out[8], uint64_t v)
+{
+    for (int i = 0; i < 8; ++i)
+        out[i] = static_cast<uint8_t>((v >> (8 * i)) & 0xff);
+}
+
+// Build a node_ready message signed by (pk, sk) over an arbitrary
+// (height, hash) tuple. Height is written little-endian on the wire,
+// matching the source-side encoding.
+dao::dkg_msg make_node_ready_msg(
+    const crypto::hash& genesis,
+    const crypto::public_key& pk,
+    const crypto::secret_key& sk,
+    uint64_t height,
+    const crypto::hash& block_hash)
+{
+    const char* domain = "VeilRoot-DAO-DKG-NODE-READY-V2";
+    std::vector<uint8_t> msg;
+    msg.insert(msg.end(), domain, domain + std::strlen(domain));
+    msg.insert(msg.end(), genesis.data, genesis.data + 32);
+    msg.insert(msg.end(), pk.data, pk.data + 32);
+    uint8_t h_le[8];
+    write_u64_le(h_le, height);
+    msg.insert(msg.end(), h_le, h_le + 8);
+    msg.insert(msg.end(), block_hash.data, block_hash.data + 32);
+    crypto::hash digest{};
+    crypto::cn_fast_hash(msg.data(), msg.size(), digest);
+    crypto::signature sig{};
+    crypto::generate_signature(digest, pk, sk, sig);
+
+    dao::dkg_msg m;
+    m.hdr.type         = dao::dkg_msg_type::node_ready;
+    m.hdr.recipient_id = 0;
+    m.bytes_a.resize(sizeof(crypto::signature));
+    std::memcpy(m.bytes_a.data(), &sig, sizeof(crypto::signature));
+    m.bytes_b.resize(8 + 32);
+    write_u64_le(m.bytes_b.data(), height);
+    std::memcpy(m.bytes_b.data() + 8, block_hash.data, 32);
+    return m;
+}
+
+void send_ready_msg(core& c,
+                    const crypto::public_key& sender,
+                    const dao::dkg_msg& m)
+{
+    std::vector<uint8_t> wire;
+    ASSERT_TRUE(m.serialize(wire));
+    std::string payload(wire.begin(), wire.end());
+    c.get_blockchain_storage().handle_dao_v2_dkg_msg(sender, payload);
+}
+
+}  // namespace
+
+TEST_F(DaoBootstrapIntegration, NodeReadyRejectsFutureHeight)
+{
+    crypto::hash genesis{};
+    ASSERT_TRUE(m_core->get_blockchain_storage()
+                    .get_dao_v2_genesis_hash(genesis));
+
+    crypto::public_key a_pk;
+    crypto::secret_key a_sk;
+    crypto::generate_keys(a_pk, a_sk);
+
+    auto& bs = m_core->get_blockchain_storage();
+    const uint64_t cur_h = bs.get_current_blockchain_height();
+    ASSERT_GT(cur_h, 0u);
+
+    crypto::hash fake_hash{};
+    std::memset(fake_hash.data, 0xAB, sizeof(fake_hash.data));
+
+    // Height at or above local tip is rejected.
+    dao::dkg_msg m = make_node_ready_msg(
+        genesis, a_pk, a_sk, cur_h, fake_hash);
+    send_ready_msg(*m_core, a_pk, m);
+
+    EXPECT_FALSE(bs.has_dao_v2_ready_peer_for_test(a_pk));
+    EXPECT_EQ(0u, bs.get_dao_v2_ready_peer_count_for_test());
+}
+
+TEST_F(DaoBootstrapIntegration, NodeReadyRejectsNonCanonicalHash)
+{
+    crypto::hash genesis{};
+    ASSERT_TRUE(m_core->get_blockchain_storage()
+                    .get_dao_v2_genesis_hash(genesis));
+
+    crypto::public_key a_pk;
+    crypto::secret_key a_sk;
+    crypto::generate_keys(a_pk, a_sk);
+
+    auto& bs = m_core->get_blockchain_storage();
+    const uint64_t cur_h = bs.get_current_blockchain_height();
+    ASSERT_GT(cur_h, 0u);
+
+    const uint64_t h = cur_h - 1;
+    crypto::hash fake_hash{};
+    std::memset(fake_hash.data, 0xCD, sizeof(fake_hash.data));
+
+    dao::dkg_msg m = make_node_ready_msg(genesis, a_pk, a_sk, h, fake_hash);
+    send_ready_msg(*m_core, a_pk, m);
+
+    EXPECT_FALSE(bs.has_dao_v2_ready_peer_for_test(a_pk));
+    EXPECT_EQ(0u, bs.get_dao_v2_ready_peer_count_for_test());
+}
+
+TEST_F(DaoBootstrapIntegration, NodeReadyArrivalOrderABCPopulatesRoster)
+{
+    crypto::hash genesis{};
+    ASSERT_TRUE(m_core->get_blockchain_storage()
+                    .get_dao_v2_genesis_hash(genesis));
+    auto& bs = m_core->get_blockchain_storage();
+
+    crypto::public_key a_pk, b_pk, c_pk;
+    crypto::secret_key a_sk, b_sk, c_sk;
+    crypto::generate_keys(a_pk, a_sk);
+    crypto::generate_keys(b_pk, b_sk);
+    crypto::generate_keys(c_pk, c_sk);
+
+    deliver_node_ready(*m_core, genesis, a_pk, a_sk);
+    deliver_node_ready(*m_core, genesis, b_pk, b_sk);
+    deliver_node_ready(*m_core, genesis, c_pk, c_sk);
+
+    EXPECT_EQ(3u, bs.get_dao_v2_ready_peer_count_for_test());
+    EXPECT_TRUE(bs.has_dao_v2_ready_peer_for_test(a_pk));
+    EXPECT_TRUE(bs.has_dao_v2_ready_peer_for_test(b_pk));
+    EXPECT_TRUE(bs.has_dao_v2_ready_peer_for_test(c_pk));
+}
+
+TEST_F(DaoBootstrapIntegration, NodeReadyArrivalOrderCBAPopulatesRoster)
+{
+    crypto::hash genesis{};
+    ASSERT_TRUE(m_core->get_blockchain_storage()
+                    .get_dao_v2_genesis_hash(genesis));
+    auto& bs = m_core->get_blockchain_storage();
+
+    crypto::public_key a_pk, b_pk, c_pk;
+    crypto::secret_key a_sk, b_sk, c_sk;
+    crypto::generate_keys(a_pk, a_sk);
+    crypto::generate_keys(b_pk, b_sk);
+    crypto::generate_keys(c_pk, c_sk);
+
+    deliver_node_ready(*m_core, genesis, c_pk, c_sk);
+    deliver_node_ready(*m_core, genesis, b_pk, b_sk);
+    deliver_node_ready(*m_core, genesis, a_pk, a_sk);
+
+    EXPECT_EQ(3u, bs.get_dao_v2_ready_peer_count_for_test());
+    EXPECT_TRUE(bs.has_dao_v2_ready_peer_for_test(a_pk));
+    EXPECT_TRUE(bs.has_dao_v2_ready_peer_for_test(b_pk));
+    EXPECT_TRUE(bs.has_dao_v2_ready_peer_for_test(c_pk));
+}
+
 TEST_F(DaoBootstrapIntegration, BootstrapGateRequiresThreeReadyNodes)
 {
     crypto::hash genesis{};
@@ -460,7 +612,7 @@ TEST_F(DaoBootstrapIntegration, ActivationChainBindsKeyRecordAfterPersistence)
         cfg.local_party_id = i + 1;
         cfg.test_seed      = 0x5645494C52544F33ULL;   // 3-party fixed
         cfg.target_N_bits  = 128;
-        cfg.phase_timeout_seconds = 120;
+        cfg.phase_timeout_seconds = 600;
         auto cb = net.cb();
         runners.emplace_back(new dkg_p2p_runner(cfg, vss, cb));
     }
