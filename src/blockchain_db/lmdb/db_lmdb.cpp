@@ -4990,17 +4990,21 @@ void BlockchainLMDB::remove_all_vote_nullifiers(const crypto::hash& proposal_id)
 // BEGIN_VNS_TREASURY_LMDB
 uint64_t BlockchainLMDB::add_treasury_output(uint64_t amount, uint64_t height)
 {
+    LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+    check_open();
+    TXN_BLOCK_PREFIX(0);
+
     // Use a counter stored in the same table
     MDB_val k, v;
     uint64_t counter = 0;
     k.mv_data = (void*)"treasury_counter";
     k.mv_size = strlen("treasury_counter") + 1;
-    if (mdb_get(m_write_txn->m_txn, m_treasury_outputs, &k, &v) == MDB_SUCCESS)
+    if (mdb_get(*txn_ptr, m_treasury_outputs, &k, &v) == MDB_SUCCESS)
         counter = *(uint64_t*)v.mv_data;
     uint64_t next_id = counter + 1;
     v.mv_data = &next_id;
     v.mv_size = sizeof(next_id);
-    mdb_put(m_write_txn->m_txn, m_treasury_outputs, &k, &v, 0);
+    mdb_put(*txn_ptr, m_treasury_outputs, &k, &v, 0);
 
     treasury_output out;
     out.output_id = next_id;
@@ -5013,34 +5017,53 @@ uint64_t BlockchainLMDB::add_treasury_output(uint64_t amount, uint64_t height)
     key.mv_size = sizeof(out.output_id);
     val.mv_data = &out;
     val.mv_size = sizeof(out);
-    mdb_put(m_write_txn->m_txn, m_treasury_outputs, &key, &val, 0);
+    mdb_put(*txn_ptr, m_treasury_outputs, &key, &val, 0);
 
+    TXN_BLOCK_POSTFIX_SUCCESS();
     return next_id;
 }
 
 bool BlockchainLMDB::get_treasury_output(uint64_t output_id, treasury_output& out) const
 {
+    LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+    check_open();
+    TXN_PREFIX_RDONLY();
+
     MDB_val key, val;
     key.mv_data = &output_id;
     key.mv_size = sizeof(output_id);
-    if (mdb_get(m_write_txn->m_txn, m_treasury_outputs, &key, &val) != MDB_SUCCESS)
+    if (mdb_get(m_txn, m_treasury_outputs, &key, &val) != MDB_SUCCESS)
+    {
+        TXN_POSTFIX_RDONLY();
         return false;
+    }
     out = *(treasury_output*)val.mv_data;
+    TXN_POSTFIX_RDONLY();
     return true;
 }
 
 void BlockchainLMDB::remove_treasury_output(uint64_t output_id)
 {
+    LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+    check_open();
+    TXN_BLOCK_PREFIX(0);
+
     MDB_val key;
     key.mv_data = &output_id;
     key.mv_size = sizeof(output_id);
-    mdb_del(m_write_txn->m_txn, m_treasury_outputs, &key, nullptr);
+    mdb_del(*txn_ptr, m_treasury_outputs, &key, nullptr);
+
+    TXN_BLOCK_POSTFIX_SUCCESS();
 }
 
 void BlockchainLMDB::remove_treasury_outputs_by_height(uint64_t height)
 {
+    LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+    check_open();
+    TXN_BLOCK_PREFIX(0);
+
     MDB_cursor* cursor;
-    mdb_cursor_open(m_write_txn->m_txn, m_treasury_outputs, &cursor);
+    mdb_cursor_open(*txn_ptr, m_treasury_outputs, &cursor);
     MDB_val key, val;
     while (mdb_cursor_get(cursor, &key, &val, MDB_NEXT) == MDB_SUCCESS)
     {
@@ -5051,40 +5074,44 @@ void BlockchainLMDB::remove_treasury_outputs_by_height(uint64_t height)
         }
     }
     mdb_cursor_close(cursor);
+
+    TXN_BLOCK_POSTFIX_SUCCESS();
 }
 
 void BlockchainLMDB::mark_treasury_output_spent(uint64_t output_id, bool spent)
 {
+    LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+    check_open();
+    TXN_BLOCK_PREFIX(0);
+
     MDB_val key, val;
     key.mv_data = &output_id;
     key.mv_size = sizeof(output_id);
-    if (mdb_get(m_write_txn->m_txn, m_treasury_outputs, &key, &val) == MDB_SUCCESS)
+    if (mdb_get(*txn_ptr, m_treasury_outputs, &key, &val) == MDB_SUCCESS)
     {
         treasury_output out = *(treasury_output*)val.mv_data;
         out.spent = spent;
         val.mv_data = &out;
         val.mv_size = sizeof(out);
-        mdb_put(m_write_txn->m_txn, m_treasury_outputs, &key, &val, 0);
+        mdb_put(*txn_ptr, m_treasury_outputs, &key, &val, 0);
     }
+
+    TXN_BLOCK_POSTFIX_SUCCESS();
 }
 
 std::vector<treasury_output> BlockchainLMDB::get_unspent_treasury_outputs() const
 {
     LOG_PRINT_L3("BlockchainLMDB::" << __func__);
     check_open();
+    TXN_PREFIX_RDONLY();
 
     std::vector<treasury_output> result;
 
-    MDB_txn *txn = nullptr;
-    int rc = mdb_txn_begin(m_env, nullptr, MDB_RDONLY, &txn);
-    if (rc)
-        throw0(DB_ERROR(lmdb_error("Failed to begin read txn for get_unspent_treasury_outputs: ", rc).c_str()));
-
     MDB_cursor* cursor;
-    rc = mdb_cursor_open(txn, m_treasury_outputs, &cursor);
+    int rc = mdb_cursor_open(m_txn, m_treasury_outputs, &cursor);
     if (rc)
     {
-        mdb_txn_abort(txn);
+        TXN_POSTFIX_RDONLY();
         throw0(DB_ERROR(lmdb_error("Failed to open cursor for treasury_outputs: ", rc).c_str()));
     }
 
@@ -5100,7 +5127,7 @@ std::vector<treasury_output> BlockchainLMDB::get_unspent_treasury_outputs() cons
     }
 
     mdb_cursor_close(cursor);
-    mdb_txn_abort(txn);
+    TXN_POSTFIX_RDONLY();
     return result;
 }
 // END_VNS_TREASURY_LMDB

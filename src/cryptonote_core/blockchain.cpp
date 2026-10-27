@@ -4110,6 +4110,150 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
 
   const uint8_t hf_version = m_hardfork->get_current_version();
 
+  // BEGIN_VNS_TREASURY_VALIDATE_PRE
+  // Validate treasury inputs BEFORE the all_special early-return below.
+  // Without this, a pure-treasury transaction passes check_tx_inputs
+  // without any recipient/amount/change verification, allowing arbitrary
+  // redirection of treasury funds.
+  {
+    uint64_t validation_height = (block_height > 0) ? block_height : m_db->height();
+
+    std::vector<const txin_treasury*> treasury_inputs;
+    for (const auto& txin : tx.vin)
+    {
+      if (txin.type() == typeid(txin_treasury))
+        treasury_inputs.push_back(&boost::get<txin_treasury>(txin));
+    }
+
+    if (!treasury_inputs.empty())
+    {
+      for (const auto* in : treasury_inputs)
+      {
+        if (!validate_treasury_input(*in, tx, validation_height, hf_version))
+        {
+          tvc.m_verifivation_failed = true;
+          return false;
+        }
+      }
+
+      crypto::hash proposal_id = treasury_inputs[0]->proposal_id;
+      for (const auto* in : treasury_inputs)
+      {
+        if (in->proposal_id != proposal_id)
+        {
+          MERROR_VER("Treasury execution tx mixes inputs from different proposals");
+          tvc.m_verifivation_failed = true;
+          return false;
+        }
+      }
+
+      proposal_record rec;
+      if (!m_db->get_proposal_record(proposal_id, rec))
+      {
+        MERROR_VER("Proposal " << proposal_id << " not found in treasury tx validation");
+        tvc.m_verifivation_failed = true;
+        return false;
+      }
+
+      uint64_t total_in = 0;
+      for (const auto* in : treasury_inputs)
+      {
+        treasury_output out;
+        if (!m_db->get_treasury_output(in->treasury_output_id, out))
+        {
+          tvc.m_verifivation_failed = true;
+          return false;
+        }
+        total_in += out.amount;
+      }
+
+      if (tx.vout.empty())
+      {
+        MERROR_VER("Treasury execution tx has no outputs");
+        tvc.m_verifivation_failed = true;
+        return false;
+      }
+      if (tx.vout[0].amount != rec.amount)
+      {
+        MERROR_VER("Treasury execution tx output[0] amount != proposal amount");
+        tvc.m_verifivation_failed = true;
+        return false;
+      }
+
+      uint64_t total_change = 0;
+      for (size_t i = 1; i < tx.vout.size(); ++i)
+      {
+        if (tx.vout[i].target.type() != typeid(txout_treasury))
+        {
+          MERROR_VER("Treasury execution tx output[" << i << "] is not treasury change");
+          tvc.m_verifivation_failed = true;
+          return false;
+        }
+        total_change += tx.vout[i].amount;
+      }
+
+      if (total_in != rec.amount + total_change)
+      {
+        MERROR_VER("Treasury execution tx conservation failed: in=" << total_in
+                  << " recipient=" << rec.amount << " change=" << total_change);
+        tvc.m_verifivation_failed = true;
+        return false;
+      }
+
+      address_parse_info addr_info;
+      if (!cryptonote::get_account_address_from_str(addr_info, m_nettype, rec.recipient))
+      {
+        MERROR_VER("Treasury execution tx: invalid recipient in proposal");
+        tvc.m_verifivation_failed = true;
+        return false;
+      }
+      const account_public_address& recipient_addr = addr_info.address;
+
+      crypto::public_key ecdh_view_pub = rec.recipient_view_public_key;
+      if (ecdh_view_pub == crypto::null_pkey)
+        ecdh_view_pub = recipient_addr.m_view_public_key;
+
+      crypto::secret_key txkey;
+      crypto::hash_to_scalar(rec.proposal_id.data, sizeof(rec.proposal_id), txkey);
+
+      crypto::key_derivation derivation;
+      if (!crypto::generate_key_derivation(ecdh_view_pub, txkey, derivation))
+      {
+        MERROR_VER("Treasury execution tx: failed key derivation");
+        tvc.m_verifivation_failed = true;
+        return false;
+      }
+
+      crypto::public_key expected_eph_key;
+      if (!crypto::derive_public_key(derivation, 0, recipient_addr.m_spend_public_key, expected_eph_key))
+      {
+        MERROR_VER("Treasury execution tx: failed to derive expected eph_key");
+        tvc.m_verifivation_failed = true;
+        return false;
+      }
+
+      crypto::public_key actual_eph_key;
+      if (tx.vout[0].target.type() == typeid(txout_to_key))
+        actual_eph_key = boost::get<txout_to_key>(tx.vout[0].target).key;
+      else if (tx.vout[0].target.type() == typeid(txout_to_tagged_key))
+        actual_eph_key = boost::get<txout_to_tagged_key>(tx.vout[0].target).key;
+      else
+      {
+        MERROR_VER("Treasury execution tx: vout[0] is not a key output");
+        tvc.m_verifivation_failed = true;
+        return false;
+      }
+
+      if (actual_eph_key != expected_eph_key)
+      {
+        MERROR_VER("Treasury execution tx: vout[0] recipient does not match proposal");
+        tvc.m_verifivation_failed = true;
+        return false;
+      }
+    }
+  }
+  // END_VNS_TREASURY_VALIDATE_PRE
+
   // BEGIN_VNS_VOTE_ELIGIBLE_RCT_BYPASS
   {
     bool all_special = true;
