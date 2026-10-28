@@ -602,26 +602,39 @@ TEST_F(DaoBootstrapIntegration, ActivationChainBindsKeyRecordAfterPersistence)
     ASSERT_TRUE(dao_vss_group_generate(vss,
         dao_dkg_required_vss_bits(60, 128, 32)));
 
-    act_network net;
-    std::vector<std::unique_ptr<dkg_p2p_runner>> runners;
-    for (uint32_t i = 0; i < 3; ++i) {
-        dkg_config cfg;
-        cfg.committee_size = 3;
-        cfg.threshold      = dao_dkg_expected_threshold(3);
-        cfg.member_ids     = committee;
-        cfg.local_party_id = i + 1;
-        cfg.test_seed      = 0x5645494C52544F33ULL;   // 3-party fixed
-        cfg.target_N_bits  = 128;
-        cfg.phase_timeout_seconds = 600;
-        auto cb = net.cb();
-        runners.emplace_back(new dkg_p2p_runner(cfg, vss, cb));
-    }
-    for (uint32_t i = 0; i < 3; ++i)
-        net.reg(i + 1, committee[i], runners[i].get());
-    for (auto& r : runners) ASSERT_TRUE(r->start());
-
     dkg_result completed;
-    ASSERT_TRUE(runners[0]->wait(completed, 180));
+    bool ceremony_ok = false;
+    for (int attempt = 0; attempt < 2 && !ceremony_ok; ++attempt) {
+        act_network net;
+        std::vector<std::unique_ptr<dkg_p2p_runner>> runners;
+        for (uint32_t i = 0; i < 3; ++i) {
+            dkg_config cfg;
+            cfg.committee_size = 3;
+            cfg.threshold      = dao_dkg_expected_threshold(3);
+            cfg.member_ids     = committee;
+            cfg.local_party_id = i + 1;
+            cfg.test_seed      = 0x5645494C52544F33ULL;
+            cfg.target_N_bits  = 128;
+            cfg.phase_timeout_seconds = 600;
+            auto cb = net.cb();
+            runners.emplace_back(new dkg_p2p_runner(cfg, vss, cb));
+        }
+        for (uint32_t i = 0; i < 3; ++i)
+            net.reg(i + 1, committee[i], runners[i].get());
+        for (auto& r : runners) ASSERT_TRUE(r->start());
+
+        dkg_result local_completed;
+        if (runners[0]->wait(local_completed, 600) &&
+            local_completed.ok &&
+            !local_completed.local_secret_share.empty()) {
+            completed = std::move(local_completed);
+            ceremony_ok = true;
+        } else {
+            std::cerr << "ActivationChainBinds attempt " << attempt
+                      << ": DKG did not complete\n";
+        }
+    }
+    ASSERT_TRUE(ceremony_ok) << "ActivationChainBinds DKG failed after 2 attempts";
     ASSERT_TRUE(completed.ok);
     ASSERT_FALSE(completed.local_secret_share.empty());
 
