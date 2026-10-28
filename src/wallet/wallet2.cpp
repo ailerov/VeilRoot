@@ -17238,9 +17238,24 @@ wallet2::vote_tx_result wallet2::create_vote_tx(
 // get_outs.bin call. The height is required by the V2 DAO age factor
 // (see vote_proof_verifier.cpp step 14), which is not carried on the
 // wire and must be recomputed identically by wallet and consensus.
+namespace {
+// Match the verifier's age factor computation exactly. Diverging here
+// breaks valid votes on the consensus side.
+inline uint8_t dao_vote_age_factor(uint64_t vote_height, uint64_t output_height)
+{
+  if (output_height > vote_height) return 0;
+  uint64_t raw_days = (vote_height - output_height) / 720;
+  if (raw_days > 7300) raw_days = 7300;
+  uint64_t f = 0, n = raw_days + 1;
+  while (n > 1) { n >>= 1; ++f; }
+  return static_cast<uint8_t>(f > 255 ? 255 : f);
+}
+}  // namespace
+
 bool wallet2::get_dao_v2_ring(
     size_t transfer_idx,
-    size_t fake_outputs_count,
+    uint64_t vote_height,
+    size_t target_ring_size,
     std::vector<dao_v2_ring_member> &ring,
     size_t &real_index)
 {
@@ -17254,17 +17269,21 @@ bool wallet2::get_dao_v2_ring(
   if (!td.is_rct())
     return false;
 
-  const uint64_t real_global = td.m_global_output_index;
+  if (vote_height < td.m_block_height)
+    return false;
 
-  // Step 1: reuse the existing decoy selection. get_outs() already
-  // produces (global_index, P, C) tuples with correct decoys and the
-  // real output included at some position.
+  const uint64_t real_global = td.m_global_output_index;
+  const uint8_t  real_age    = dao_vote_age_factor(vote_height, td.m_block_height);
+
+  // Over-sample decoys so that after filtering to the real output's
+  // age factor we still have enough to reach target_ring_size.
+  const size_t over_sample = target_ring_size * 8;
   std::vector<size_t> selected_transfers{transfer_idx};
   std::unordered_set<crypto::public_key> valid_public_keys_cache;
   std::vector<std::vector<get_outs_entry>> outs;
   try
   {
-    get_outs(outs, selected_transfers, fake_outputs_count, true,
+    get_outs(outs, selected_transfers, over_sample, true,
              valid_public_keys_cache);
   }
   catch (const std::exception &e)
@@ -17323,22 +17342,55 @@ bool wallet2::get_dao_v2_ring(
     return false;
   }
 
-  // Step 3: assemble. The daemon response is in the same order as the
-  // sorted request.
-  ring.reserve(req.outputs.size());
+  // Step 3: filter to same-age-factor candidates and rebuild the ring.
+  std::vector<dao_v2_ring_member> filtered;
+  filtered.reserve(req.outputs.size());
+  size_t real_pos_in_filtered = SIZE_MAX;
   for (size_t i = 0; i < req.outputs.size(); ++i)
   {
+    const uint64_t h = resp.outs[i].height;
+    if (h > vote_height) continue;
+    const uint8_t f = dao_vote_age_factor(vote_height, h);
+    if (f != real_age) continue;
     dao_v2_ring_member m;
     m.global_index = req.outputs[i].index;
     m.P            = resp.outs[i].key;
     m.C            = resp.outs[i].mask;
-    m.height       = resp.outs[i].height;
-    ring.push_back(m);
+    m.height       = h;
     if (m.global_index == real_global)
-      real_index = ring.size() - 1;
+      real_pos_in_filtered = filtered.size();
+    filtered.push_back(m);
   }
 
-  return real_index != SIZE_MAX;
+  if (real_pos_in_filtered == SIZE_MAX)
+  {
+    LOG_ERROR("get_dao_v2_ring: real output not present after age filter");
+    return false;
+  }
+
+  if (filtered.size() < 2)
+  {
+    LOG_ERROR("Cannot cast vote: only " << filtered.size()
+        << " output(s) at your coin's age factor f=" << (int)real_age
+        << ". Wait for the chain to age or use a different output.");
+    return false;
+  }
+
+  // Trim to target, preserving the real output.
+  if (filtered.size() > target_ring_size)
+  {
+    if (real_pos_in_filtered >= target_ring_size)
+    {
+      std::swap(filtered[real_pos_in_filtered],
+                filtered[target_ring_size - 1]);
+      real_pos_in_filtered = target_ring_size - 1;
+    }
+    filtered.resize(target_ring_size);
+  }
+
+  ring = std::move(filtered);
+  real_index = real_pos_in_filtered;
+  return true;
 }
 //----------------------------------------------------------------------------------------------------
 
@@ -17437,12 +17489,10 @@ wallet2::vote_tx_result wallet2::create_vote_v2_tx(
     return result;
   }
 
-  const size_t ring_size = get_min_ring_size();
-  if (ring_size < 2)
-  {
-    result.error = "Ring size too small";
-    return result;
-  }
+  // Ring target is enforced by the DAO verifier. The wallet builds
+  // up to DAO_VOTE_RING_TARGET members from the real output's age
+  // factor bucket; anything smaller than 2 fails ring construction
+  // below, with a clear diagnostic.
 
   // ---- Build the shared-shape outputs vector ----
   std::vector<dao::dao_v2_vote_output> outputs;
@@ -17454,12 +17504,14 @@ wallet2::vote_tx_result wallet2::create_vote_v2_tx(
 
     std::vector<dao_v2_ring_member> ring;
     size_t real_index = SIZE_MAX;
-    if (!get_dao_v2_ring(sel, ring_size - 1, ring, real_index))
+    if (!get_dao_v2_ring(sel, vote_height,
+                         config::DAO_VOTE_RING_TARGET,
+                         ring, real_index))
     {
       result.error = "Failed to build ring for a selected output";
       return result;
     }
-    if (real_index == SIZE_MAX || ring.size() != ring_size)
+    if (real_index == SIZE_MAX || ring.size() < 2)
     {
       result.error = "Ring construction failed";
       return result;

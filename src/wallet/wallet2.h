@@ -1310,7 +1310,8 @@ private:
     // second minimal get_outs.bin call to obtain each member's height.
     bool get_dao_v2_ring(
         size_t transfer_idx,
-        size_t fake_outputs_count,
+        uint64_t vote_height,
+        size_t target_ring_size,
         std::vector<dao_v2_ring_member> &ring,
         size_t &real_index);
 

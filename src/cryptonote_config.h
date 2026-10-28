@@ -311,16 +311,12 @@ namespace config
             && DAO_V2_ACTIVATION_HEIGHT != UINT64_MAX;
     }
 
-    // BEGIN_VNS_RING_SIZE_FROM_VERSION
-    inline unsigned int get_vote_ring_size(uint8_t hardfork_version) {
-        if (hardfork_version < 6) return 1;
-        if (hardfork_version == 6) return 5;
-        if (hardfork_version == 7) return 7;
-        if (hardfork_version == 8) return 11;
-        if (hardfork_version >= 15) return 16;
-        return 1; // fallback
-    }
-    // END_VNS_RING_SIZE_FROM_VERSION
+    // DAO vote ring target: one real output plus N-1 same-age decoys.
+    // Enforced by the wallet builder as a target and by the DAO vote
+    // verifier as the minimum same-age anonymity set once the age
+    // histogram lands. DAO-specific; independent of the mixin ramp
+    // that governs ordinary txin_to_key spends.
+    constexpr uint8_t DAO_VOTE_RING_TARGET = 8;
   uint64_t const CRYPTONOTE_PUBLIC_SUBADDRESS_BASE58_PREFIX = 142;
   uint16_t const P2P_DEFAULT_PORT = 28080;
   uint16_t const RPC_DEFAULT_PORT = 28081;

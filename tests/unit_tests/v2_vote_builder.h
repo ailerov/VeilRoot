@@ -97,8 +97,12 @@ inline bool build_valid_vote(
     constexpr size_t N = 4;
     constexpr size_t L = 2;
 
-    uint64_t heights[N] = {40000, 30000, 20000, 10000};
-    uint8_t  exp_f[N]   = {4, 4, 5, 5};
+    // All ring members are placed in the same age-factor bucket at
+    // vote_height 51000. Heights 10000..25000 all give raw_days in
+    // [36, 56], i.e. f = 5. The DAO verifier (step 14) rejects
+    // mixed-age rings; the fixture must match that rule.
+    uint64_t heights[N] = {10000, 15000, 20000, 25000};
+    uint8_t  exp_f[N]   = {5, 5, 5, 5};
     uint64_t amt[N]     = {10, 11, 12, 13};
     uint64_t abs[N]     = {1000, 2000, 3000, 4000};
     std::vector<uint64_t> rel_offsets = {1000, 1000, 1000, 1000};

@@ -103,8 +103,10 @@ synthetic_source make_source(uint64_t base_abs, uint64_t amount,
 {
     synthetic_source out;
     out.abs     = { base_abs, base_abs + 1, base_abs + 2, base_abs + 3 };
-    out.heights = { 40000, 30000, 20000, 10000 };
-    // Real member index 2 with height 20000 → age factor 5 at vote_height 51000.
+    out.heights = { 10000, 15000, 20000, 25000 };
+    // All members at age factor 5 at vote_height 51000 (raw_days in
+    // [36, 56]). The DAO verifier rejects mixed-age rings; keep all
+    // members in a single bucket. Real index 2 stays at height 20000.
 
     std::vector<rct::key> xs;
     std::vector<rct::key> masks;

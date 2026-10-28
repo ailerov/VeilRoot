@@ -82,6 +82,8 @@ verification_result VoteProofVerifier::verify(
         const size_t n = in.key_offsets.size();
         if (n == 0)
             return fail("step8: empty ring");
+        if (n < 2)
+            return fail("step8: ring size 1 not permitted");
         if (in.weight_signature.s.size() != n)
             return fail("step8: weight CLSAG response/ring size mismatch");
         if (in.balance_signature.s.size() != n)
@@ -177,6 +179,19 @@ verification_result VoteProofVerifier::verify(
             if (f > 255)
                 return fail("step14: age factor overflow");
             rc.age_factors.push_back(static_cast<uint8_t>(f));
+        }
+
+        // Same-age enforcement. Without this, a colluding committee
+        // that decrypts W = f_real * a and B = a recovers f_real, then
+        // eliminates ring members whose public age factors differ.
+        // That collapses the ring to the identified real output. This
+        // check closes the attack at consensus level.
+        {
+            const uint8_t f_first = rc.age_factors.front();
+            for (uint8_t f : rc.age_factors) {
+                if (f != f_first)
+                    return fail("step14: mixed age factors in ring");
+            }
         }
     }
 
