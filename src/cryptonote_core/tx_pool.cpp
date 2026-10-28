@@ -1918,6 +1918,19 @@ namespace cryptonote
               [](const tx_out& out) { return out.target.type() == typeid(txout_to_burn); });
         }
         // END_VNS_NON_CONSUMING_TX
+
+        // BEGIN_VNS_DAO_ZERO_FEE_MINING
+        // DAO V2 tally-result and DKG key-activation transactions are
+        // zero-fee protocol transactions. Mempool admission already
+        // exempts them from the fee check, but fill_block_template did
+        // not; without this exemption they entered the mempool and
+        // never reached a block. Same classifiers as admission, so the
+        // two paths stay consistent.
+        if (!is_vns_special) {
+          is_vns_special = m_blockchain.is_dao_v2_tally_result_tx(tx) ||
+                           m_blockchain.is_dao_v2_dkg_activation_tx(tx);
+        }
+        // END_VNS_DAO_ZERO_FEE_MINING
       }
       // END_VNS_VOTE
 

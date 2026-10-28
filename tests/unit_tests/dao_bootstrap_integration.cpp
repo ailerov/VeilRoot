@@ -794,7 +794,11 @@ TEST(DaoThresholdSubsetInvariance, SameCiphertextFromAnySubset)
 // ------------------------------------------------------------------
 TEST_F(DaoBootstrapIntegration, TallyResultTxValidatedAndApplied)
 {
-    constexpr uint64_t VOTE_END = 60001;
+    // Small enough to keep the test fast while exercising real chain
+    // height in mempool admission. The mempool rejects tally-result
+    // txs whose voting_end_height has not passed on the actual chain,
+    // so the test must mine to VOTE_END + 2 before submitting.
+    constexpr uint64_t VOTE_END = 2;
     const crypto::hash prop_id = []{
         crypto::hash h{};
         std::memset(h.data, 0x77, 32);
@@ -877,7 +881,7 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxValidatedAndApplied)
         std::memset(&rec, 0, sizeof(rec));
         rec.proposal_id = prop_id;
         rec.voting_period_days = 7;
-        rec.submission_height = VOTE_END - 1000;
+        rec.submission_height = 1;
         rec.voting_end_height = VOTE_END;
         std::memset(rec.tally_key_id.data, 0, 32);
         rec.submission_tx_hash = prop_id;
@@ -885,6 +889,40 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxValidatedAndApplied)
         rec.status_height = VOTE_END - 1000;
         db_wtxn_guard g(&db);
         bc.get_db().add_proposal_record(prop_id, rec);
+    }
+
+    // ---- 2b. Mine past VOTE_END ----
+    // Mempool admission checks the real current chain height against
+    // voting_end_height; without mining, the test chain is too shallow
+    // and the tally-result tx is rejected as "before voting ended".
+    {
+        account_base miner_acc;
+        miner_acc.generate();
+        auto& bs = m_core->get_blockchain_storage();
+        while (bs.get_current_blockchain_height() < VOTE_END + 2) {
+            block tmpl{};
+            difficulty_type diff{};
+            uint64_t tmpl_h = 0, reward = 0, seed_h = 0;
+            crypto::hash seed_hsh{};
+            blobdata ex_nonce(8, 0);
+            ASSERT_TRUE(bs.create_block_template(
+                tmpl, miner_acc.get_keys().m_account_address,
+                diff, tmpl_h, reward, ex_nonce, seed_h, seed_hsh));
+            auto gbh = [&bs](const block& b, uint64_t h,
+                             const crypto::hash* sh,
+                             unsigned int mn, crypto::hash& ho) -> bool {
+                return get_block_longhash(&bs, b, ho, h, sh,
+                                          static_cast<int>(mn));
+            };
+            ASSERT_TRUE(miner::find_nonce_for_given_block(
+                gbh, tmpl, diff, tmpl_h, nullptr));
+            block_verification_context bvc{};
+            pool_supplement extra{};
+            blobdata bb = block_to_blob(tmpl);
+            ASSERT_TRUE(m_core->handle_single_incoming_block(
+                bb, &tmpl, bvc, extra, false));
+            ASSERT_FALSE(bvc.m_verifivation_failed);
+        }
     }
 
     // ---- 3. Encrypt a synthetic aggregate ----
@@ -994,6 +1032,71 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxValidatedAndApplied)
         db_rtxn_guard rtxn(&db);
         ASSERT_TRUE(bc.validate_dao_v2_tally_result_tx(
             result_tx, VOTE_END + 1));
+    }
+
+    // ---- 7b. Mempool acceptance + block-template inclusion ----
+    // A valid tally-result tx must be admitted to mempool and then
+    // selected by fill_block_template. Before the exemption was added
+    // it sat in mempool forever and the DAO V2 tally never completed
+    // on chain.
+    {
+        cryptonote::blobdata tx_blob = cryptonote::tx_to_blob(result_tx);
+        cryptonote::tx_verification_context tvc{};
+        ASSERT_TRUE(m_core->handle_incoming_tx(
+            tx_blob, tvc, cryptonote::relay_method::local, false));
+        ASSERT_FALSE(tvc.m_verifivation_failed);
+    }
+
+    {
+        cryptonote::block templ{};
+        cryptonote::difficulty_type diff{};
+        uint64_t tmpl_height = 0, expected_reward = 0;
+        cryptonote::blobdata ex_nonce(8, 0);
+        uint64_t seed_height = 0;
+        crypto::hash seed_hash{};
+        cryptonote::account_base miner_acc;
+        miner_acc.generate();
+        ASSERT_TRUE(bc.create_block_template(
+            templ, miner_acc.get_keys().m_account_address,
+            diff, tmpl_height, expected_reward, ex_nonce,
+            seed_height, seed_hash));
+        const crypto::hash txid = cryptonote::get_transaction_hash(result_tx);
+        EXPECT_NE(std::find(templ.tx_hashes.begin(),
+                            templ.tx_hashes.end(), txid),
+                  templ.tx_hashes.end())
+            << "tally_result tx must be mined in a block template";
+    }
+
+    // ---- 7b. Mempool acceptance + block-template inclusion ----
+    // A valid tally-result tx must be admitted to mempool and then
+    // selected by fill_block_template. Before the fee exemption
+    // existed it sat in mempool forever and the DAO V2 tally never
+    // completed on chain.
+    {
+        cryptonote::blobdata tx_blob = cryptonote::tx_to_blob(result_tx);
+        cryptonote::tx_verification_context tvc{};
+        ASSERT_TRUE(m_core->handle_incoming_tx(
+            tx_blob, tvc, cryptonote::relay_method::local, false));
+        ASSERT_FALSE(tvc.m_verifivation_failed);
+    }
+
+    {
+        cryptonote::block templ{};
+        cryptonote::difficulty_type diff{};
+        uint64_t tmpl_height = 0, expected_reward = 0, seed_height = 0;
+        cryptonote::blobdata ex_nonce(8, 0);
+        crypto::hash seed_hash{};
+        cryptonote::account_base miner_acc;
+        miner_acc.generate();
+        ASSERT_TRUE(bc.create_block_template(
+            templ, miner_acc.get_keys().m_account_address,
+            diff, tmpl_height, expected_reward, ex_nonce,
+            seed_height, seed_hash));
+        const crypto::hash txid = cryptonote::get_transaction_hash(result_tx);
+        EXPECT_NE(std::find(templ.tx_hashes.begin(),
+                            templ.tx_hashes.end(), txid),
+                  templ.tx_hashes.end())
+            << "tally_result tx must be mined in a block template";
     }
 
     // ---- 8. Apply (block-application path) ----
