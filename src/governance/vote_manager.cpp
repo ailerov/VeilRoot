@@ -151,8 +151,12 @@ bool VoteManager::rollback_block(const block& blk,
         BlockchainDB& bdb = m_db.get_underlying_db();
 
         dao::dao_tally_key_record key_rec;
-        if (!bdb.get_dao_tally_key(key_rec))
-            continue;
+        {
+            std::vector<uint8_t> kid(proof.tally_key_id.data,
+                                     proof.tally_key_id.data + 32);
+            if (!bdb.get_dao_tally_key_by_id(kid, key_rec))
+                continue;
+        }
         if (key_rec.key_id.size() != 32)
             continue;
         if (std::memcmp(key_rec.key_id.data(),
@@ -579,12 +583,16 @@ vote_result VoteManager::process_v2_vote(
         return vote_result::invalid_format;
     }
 
-    // The single stable key record must exist.
+    // Per-proposal tally key must exist.
     dao::dao_tally_key_record key_rec;
-    if (!m_db.get_underlying_db().get_dao_tally_key(key_rec))
     {
-        MERROR("V2 vote: tally key not found");
-        return vote_result::invalid_proposal_id;
+        std::vector<uint8_t> kid(proof.tally_key_id.data,
+                                 proof.tally_key_id.data + 32);
+        if (!m_db.get_underlying_db().get_dao_tally_key_by_id(kid, key_rec))
+        {
+            MERROR("V2 vote: tally key not found for key_id");
+            return vote_result::invalid_proposal_id;
+        }
     }
 
     BlockchainDB& bdb = m_db.get_underlying_db();
@@ -616,8 +624,12 @@ bool VoteManager::apply_dao_vote(const vote_proof_v2& proof,
     BlockchainDB& bdb = m_db.get_underlying_db();
 
     dao::dao_tally_key_record key_rec;
-    if (!bdb.get_dao_tally_key(key_rec))
-        return false;
+    {
+        std::vector<uint8_t> kid(proof.tally_key_id.data,
+                                 proof.tally_key_id.data + 32);
+        if (!bdb.get_dao_tally_key_by_id(kid, key_rec))
+            return false;
+    }
 
     dao::PaillierPublicKey pk;
     if (!pk.deserialize_modulus(key_rec.N))

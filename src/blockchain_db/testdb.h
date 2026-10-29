@@ -175,6 +175,11 @@ public:
   virtual void add_dao_tally_key(const dao::dao_tally_key_record&) override {}
   virtual bool get_dao_tally_key(dao::dao_tally_key_record&) const override { return false; }
   virtual void remove_dao_tally_key() override {}
+  virtual void add_dao_tally_key_by_id(const std::vector<uint8_t>&,
+                                       const dao::dao_tally_key_record&) override {}
+  virtual bool get_dao_tally_key_by_id(const std::vector<uint8_t>&,
+                                       dao::dao_tally_key_record&) const override { return false; }
+  virtual void remove_dao_tally_key_by_id(const std::vector<uint8_t>&) override {}
 
   virtual void add_dao_vote_record_v2(const crypto::hash&, const dao_vote_record_v2&) override {}
   virtual bool get_dao_vote_record_v2(const crypto::hash&, dao_vote_record_v2&) const override { return false; }

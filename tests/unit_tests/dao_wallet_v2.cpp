@@ -67,6 +67,18 @@ public:
         return true;
     }
 
+    bool get_dao_tally_key_by_id(const std::vector<uint8_t>& key_id,
+                                 dao::dao_tally_key_record& rec) const override
+    {
+        if (key_id.size() != 32) return false;
+        if (std::memcmp(key_id.data(), proposal_tally_key_id.data, 32) != 0)
+            return false;
+        rec = tally_key_record;
+        rec.key_id.assign(proposal_tally_key_id.data,
+                          proposal_tally_key_id.data + 32);
+        return true;
+    }
+
     bool has_vote_nullifier(const crypto::hash&, const crypto::hash& nf) const override
     {
         return persistent_nullifiers.count(nf) > 0;

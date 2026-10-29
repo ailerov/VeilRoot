@@ -3382,6 +3382,80 @@ void BlockchainLMDB::remove_dao_tally_key()
   else if (result != MDB_NOTFOUND)
     throw0(DB_ERROR(lmdb_error("Failed to remove dao tally key: ", result).c_str()));
 }
+
+void BlockchainLMDB::add_dao_tally_key_by_id(
+    const std::vector<uint8_t>& key_id,
+    const dao::dao_tally_key_record& record)
+{
+    if (key_id.size() != 32)
+        throw0(DB_ERROR("tally key_id must be 32 bytes"));
+    LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+    check_open();
+    TXN_BLOCK_PREFIX(0);
+
+    std::vector<uint8_t> blob;
+    if (!record.serialize(blob))
+        throw0(DB_ERROR("Failed to serialize tally key record"));
+
+    uint8_t kbuf[33];
+    kbuf[0] = 0x46;
+    std::memcpy(kbuf + 1, key_id.data(), 32);
+    MDB_val k = {sizeof(kbuf), kbuf};
+    MDB_val v = {blob.size(), (void*)blob.data()};
+    int result = mdb_put(*txn_ptr, m_tally_keys, &k, &v, 0);
+    if (result)
+        throw0(DB_ERROR(lmdb_error("Failed to add tally key by id: ", result).c_str()));
+
+    TXN_BLOCK_POSTFIX_SUCCESS();
+}
+
+bool BlockchainLMDB::get_dao_tally_key_by_id(
+    const std::vector<uint8_t>& key_id,
+    dao::dao_tally_key_record& record) const
+{
+    if (key_id.size() != 32) return false;
+    LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+    check_open();
+    TXN_PREFIX_RDONLY();
+
+    uint8_t kbuf[33];
+    kbuf[0] = 0x46;
+    std::memcpy(kbuf + 1, key_id.data(), 32);
+    MDB_val k = {sizeof(kbuf), kbuf};
+    MDB_val v;
+    if (mdb_get(m_txn, m_tally_keys, &k, &v) != MDB_SUCCESS)
+    {
+        TXN_POSTFIX_RDONLY();
+        return false;
+    }
+    std::vector<uint8_t> blob(static_cast<uint8_t*>(v.mv_data),
+                              static_cast<uint8_t*>(v.mv_data) + v.mv_size);
+    if (!record.deserialize(blob))
+    {
+        TXN_POSTFIX_RDONLY();
+        return false;
+    }
+    TXN_POSTFIX_RDONLY();
+    return true;
+}
+
+void BlockchainLMDB::remove_dao_tally_key_by_id(
+    const std::vector<uint8_t>& key_id)
+{
+    if (key_id.size() != 32) return;
+    LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+    check_open();
+    TXN_BLOCK_PREFIX(0);
+
+    uint8_t kbuf[33];
+    kbuf[0] = 0x46;
+    std::memcpy(kbuf + 1, key_id.data(), 32);
+    MDB_val k = {sizeof(kbuf), kbuf};
+    mdb_del(*txn_ptr, m_tally_keys, &k, nullptr);
+
+    TXN_BLOCK_POSTFIX_SUCCESS();
+}
+
 // END_VNS_TALLY_KEYS
 
 // BEGIN_VNS_DAO_V2_VOTES

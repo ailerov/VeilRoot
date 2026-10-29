@@ -61,8 +61,12 @@ verification_result VoteProofVerifier::verify(
                     prop.tally_key_id.data, 32) != 0)
         return fail("step6: tally_key_id mismatch");
     dao::dao_tally_key_record key_rec;
-    if (!db.get_dao_tally_key(key_rec))
-        return fail("step6: tally key not found");
+    {
+        std::vector<uint8_t> kid(proof.tally_key_id.data,
+                                 proof.tally_key_id.data + 32);
+        if (!db.get_dao_tally_key_by_id(kid, key_rec))
+            return fail("step6: tally key not found");
+    }
     if (key_rec.key_id.size() != 32)
         return fail("step6: tally key id malformed");
     if (std::memcmp(key_rec.key_id.data(),

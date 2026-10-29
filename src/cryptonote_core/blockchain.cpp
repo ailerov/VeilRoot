@@ -1139,6 +1139,31 @@ block Blockchain::pop_block_from_blockchain()
   }
   // END_VNS_DAO_V2_TALLY_RESULT_ROLLBACK
 
+  // BEGIN_VNS_DAO_V2_DKG_ACTIVATION_ROLLBACK
+  for (const transaction& tx : popped_txs)
+  {
+    if (!is_dao_v2_dkg_activation_tx(tx))
+      continue;
+    std::vector<tx_extra_field> extra_fields;
+    if (!parse_tx_extra(tx.extra, extra_fields))
+      continue;
+    for (const auto& field : extra_fields)
+    {
+      if (field.type() != typeid(tx_extra_governance_payload))
+        continue;
+      const auto& gpf = boost::get<tx_extra_governance_payload>(field);
+      if (gpf.payload.type != governance_object::dkg_key_activation)
+        continue;
+      dao::dao_dkg_key_activation act;
+      if (!act.deserialize(gpf.payload.data)) break;
+      if (act.record.key_id.size() == 32)
+        m_db->remove_dao_tally_key_by_id(act.record.key_id);
+      m_db->remove_dao_tally_key();
+      break;
+    }
+  }
+  // END_VNS_DAO_V2_DKG_ACTIVATION_ROLLBACK
+
   // BEGIN_VNS_DAO_V2_NODE_READY_ROLLBACK
   for (const transaction& tx : popped_txs)
   {
@@ -11220,6 +11245,8 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     m_db->block_wtxn_start();
     try {
       m_db->add_dao_tally_key(record);
+      if (record.key_id.size() == 32)
+        m_db->add_dao_tally_key_by_id(record.key_id, record);
       dao::dao_share_set_record share_set;
       if (dao::dao_synthesize_bootstrap_share_set(record, share_set)) {
         m_db->add_dao_share_set(share_set.share_set_id, share_set);
@@ -11451,9 +11478,11 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
       dao::dao_tally_key_record rec = act.record;
       rec.activation_height = block_height;
 
-      // Install the public key record. This is the only place the
-      // authoritative key record is written.
+      // Install the public key record. Singleton for bootstrap
+      // replay; by-id so per-proposal lookups find it.
       m_db->add_dao_tally_key(rec);
+      if (rec.key_id.size() == 32)
+        m_db->add_dao_tally_key_by_id(rec.key_id, rec);
 
       // Install the bootstrap share set. In the bootstrap set,
       // share-set positions are identical to DKG indices, so this
