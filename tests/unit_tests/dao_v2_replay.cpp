@@ -436,7 +436,7 @@ TEST(DaoV2Replay, NodeBReconstructsKeyRecordFromActivationBlock)
     ASSERT_TRUE(dkg_run_with_transport(cfg, factory, dkg_out));
     ASSERT_TRUE(dkg_out.candidate_accepted);
 
-    a.core->get_blockchain_storage().queue_dao_v2_dkg_result(1, dkg_out);
+    a.core->get_blockchain_storage().queue_dao_v2_dkg_result(std::string{}, dkg_out);
     a.core->get_blockchain_storage().maybe_process_dao_v2_dkg_results();
 
     // Neither node has the key record yet: persistence writes only the

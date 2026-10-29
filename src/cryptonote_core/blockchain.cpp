@@ -9095,7 +9095,7 @@ select_dao_v2_tally_committee(const dao_tally_key_record& key_rec,
 // canonical state only when a DKG key-activation transaction is
 // applied to a block. See apply_dao_v2_dkg_activation.
 bool persist_dao_v2_dkg_result(BlockchainDB& db,
-                               uint32_t ceremony_id,
+                               const std::string& ceremony_id,
                                const dkg_result& res,
                                uint32_t local_id)
 {
@@ -9112,7 +9112,7 @@ bool persist_dao_v2_dkg_result(BlockchainDB& db,
       return false;
     }
     try {
-      db.add_dao_local_share(ceremony_id, local_id, packed);
+      db.add_dao_local_share(1u, local_id, packed);
     } catch (const std::exception& e) {
       MERROR("persist_dao_v2_dkg_result: local share persist failed: "
              << e.what());
@@ -9253,6 +9253,10 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     return config::dao_v2_active(height);
   }
 
+  namespace {
+  const std::string BOOTSTRAP_CEREMONY_ID{};
+  }  // namespace
+
   void Blockchain::handle_dao_v2_dkg_msg(const crypto::public_key& member,
                                          const std::string& payload)
   {
@@ -9339,7 +9343,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     // soon as start_dao_v2_dkg_for_committee inserts it.
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_dkg_runners_mutex);
-      auto it = m_dao_v2_dkg_runners.find(1u);
+      auto it = m_dao_v2_dkg_runners.find(BOOTSTRAP_CEREMONY_ID);
       if (it == m_dao_v2_dkg_runners.end()) {
         if (m_dao_v2_pending_dkg_msgs.size() >=
             k_dao_v2_pending_dkg_msgs_cap) {
@@ -9352,7 +9356,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     std::unique_ptr<dao::dkg_p2p_runner>* runner_ptr = nullptr;
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_dkg_runners_mutex);
-      auto it = m_dao_v2_dkg_runners.find(1u);
+      auto it = m_dao_v2_dkg_runners.find(BOOTSTRAP_CEREMONY_ID);
       if (it == m_dao_v2_dkg_runners.end()) return;
       runner_ptr = &it->second;
     }
@@ -9399,7 +9403,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     if (act.version != 1) return;
     if (act.attestations.size() != 1) return;
 
-    const uint32_t ceremony_id = 1u;  // bootstrap ceremony
+    const std::string ceremony_id;  // bootstrap ceremony
 
     dao::dao_tally_key_record local_rec;
     uint64_t local_sel_h = 0;
@@ -9481,7 +9485,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
   // BEGIN_VNS_DAO_V2_KEY_READY_SUBMIT_HELPER
   bool Blockchain::try_submit_pending_dao_v2_key_activation(
-      uint32_t ceremony_id)
+      const std::string& ceremony_id)
   {
     dao::dao_dkg_key_activation full;
     {
@@ -9540,7 +9544,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
   // END_VNS_DAO_V2_KEY_READY_SUBMIT_HELPER
 
   bool Blockchain::build_dao_v2_dkg_activation_tx(
-      uint32_t /*ceremony_id*/,
+      const std::string& /*ceremony_id*/,
       dao::dao_dkg_key_activation act,
       transaction& tx_out)
   {
@@ -9607,7 +9611,7 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     const uint64_t height = get_current_blockchain_height();
     if (!dao_v2_active_or_test_override(height)) return;
 
-    const uint32_t bootstrap_ceremony_id = 1;
+    const std::string bootstrap_ceremony_id;
 
     // Already running or already persisted.
     if (m_dao_v2_dkg_runners.count(bootstrap_ceremony_id) > 0) return;
@@ -10083,7 +10087,7 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
 // Root participant subset R is the top T_root bootstrap shareholders
 // by the same canonical ranking used to select the tally committee.
 // Deterministic across nodes.
-    void Blockchain::queue_dao_v2_dkg_result(uint32_t ceremony_id,
+    void Blockchain::queue_dao_v2_dkg_result(const std::string& ceremony_id,
                                           dao::dkg_result result)
   {
     std::lock_guard<std::mutex> lock(m_dao_v2_dkg_result_mutex);
@@ -10240,19 +10244,19 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
 
     // Retry any pending activation submissions on this owner cycle.
     {
-      std::vector<uint32_t> ceremony_ids;
+      std::vector<std::string> ceremony_ids;
       {
         std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
         for (const auto& kv : m_dao_v2_local_records)
           ceremony_ids.push_back(kv.first);
       }
-      for (uint32_t id : ceremony_ids)
+      for (const std::string& id : ceremony_ids)
         (void)try_submit_pending_dao_v2_key_activation(id);
     }
     return true;
   }
 
-    bool Blockchain::bootstrap_dao_v2_dkg(uint32_t ceremony_id)
+    bool Blockchain::bootstrap_dao_v2_dkg(const std::string& ceremony_id)
   {
     if (m_dao_v2_dkg_runners.count(ceremony_id) > 0)
       return true;   // already running
@@ -10353,7 +10357,7 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
   }
 
     bool Blockchain::start_dao_v2_dkg_for_committee(
-      uint32_t ceremony_id,
+      const std::string& ceremony_id,
       const std::vector<crypto::public_key>& committee,
       const dao::dao_vss_group& vss,
       uint32_t target_N_bits,
@@ -10433,7 +10437,7 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_dkg_runners_mutex);
       m_dao_v2_dkg_runners.emplace(ceremony_id, std::move(runner));
-      if (ceremony_id == 1u) {
+      if (ceremony_id == BOOTSTRAP_CEREMONY_ID) {
         pending.swap(m_dao_v2_pending_dkg_msgs);
       }
     }
@@ -10453,7 +10457,7 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
   }
 
   bool Blockchain::start_dao_v2_dkg(
-      uint32_t ceremony_id,
+      const std::string& ceremony_id,
       const std::vector<crypto::public_key>& committee,
       const dao::dao_vss_group& vss,
       uint32_t target_N_bits,

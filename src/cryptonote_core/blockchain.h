@@ -1378,7 +1378,7 @@ namespace cryptonote
   // assignment. Does not route through construct_tx_with_tx_key, which
   // enforces MAX_TX_EXTRA_SIZE.
   bool build_dao_v2_dkg_activation_tx(
-      uint32_t ceremony_id,
+      const std::string& ceremony_id,
       dao::dao_dkg_key_activation act,
       transaction& tx_out);
 
@@ -1386,7 +1386,7 @@ namespace cryptonote
   // record and verified attestations, and submit it to the mempool.
   // Retains attestations on failure so the blockchain-owner
   // maintenance path can retry. Never installs the key locally.
-  bool try_submit_pending_dao_v2_key_activation(uint32_t ceremony_id);
+  bool try_submit_pending_dao_v2_key_activation(const std::string& ceremony_id);
 
   // Recognise a DAO V2 tally-result transaction: zero vin, zero vout,
   // RCTTypeNull, exactly one governance payload of type tally_result.
@@ -1472,7 +1472,7 @@ namespace cryptonote
   // deterministically, spawns the runner, and starts a watcher that
   // persists the outcome when the ceremony finishes. Idempotent: a
   // second call while the ceremony is running is a no-op.
-  bool bootstrap_dao_v2_dkg(uint32_t ceremony_id);
+  bool bootstrap_dao_v2_dkg(const std::string& ceremony_id);
 
   // Lifecycle hook called from the daemon idle loop. Runs the DKG
   // once when this node has seen at least DAO_DKG_MIN_COMMITTEE_SIZE
@@ -1527,7 +1527,7 @@ namespace cryptonote
   // Producer side. Called once from the bootstrap path. Spawns the
   // runner for the current committee. Fails if a runner is already
   // running.
-  bool start_dao_v2_dkg(uint32_t ceremony_id,
+  bool start_dao_v2_dkg(const std::string& ceremony_id,
                         const std::vector<crypto::public_key>& committee,
                         const dao::dao_vss_group& vss,
                         uint32_t target_N_bits,
@@ -1537,7 +1537,7 @@ namespace cryptonote
   // party id, builds cfg and callbacks, spawns the runner, and stores
   // it. `start_dao_v2_dkg` is a thin forwarder.
   bool start_dao_v2_dkg_for_committee(
-      uint32_t ceremony_id,
+      const std::string& ceremony_id,
       const std::vector<crypto::public_key>& committee,
       const dao::dao_vss_group& vss,
       uint32_t target_N_bits,
@@ -1546,7 +1546,7 @@ namespace cryptonote
   // Called from the DKG watcher thread when a ceremony finishes.
   // Enqueues the result; the DB write happens on the blockchain owner
   // thread via process_pending_dao_v2_dkg_results().
-  void queue_dao_v2_dkg_result(uint32_t ceremony_id, dao::dkg_result result);
+  void queue_dao_v2_dkg_result(const std::string& ceremony_id, dao::dkg_result result);
 
   // Owner-thread persistence. Consumes the pending queue and writes
   // each result under the caller's write transaction.
@@ -1846,7 +1846,7 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
         m_dao_v2_tally_broadcast;
     // END_VNS_DAO_V2_TALLY_SHARE
     // BEGIN_VNS_DAO_V2_DKG
-    std::map<uint32_t, std::unique_ptr<dao::dkg_p2p_runner>>
+    std::map<std::string, std::unique_ptr<dao::dkg_p2p_runner>>
         m_dao_v2_dkg_runners;
     mutable std::mutex m_dao_v2_dkg_runners_mutex;
     // Inbound DKG envelopes that arrived before this node's runner for
@@ -1860,9 +1860,9 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     // VSS groups are owned here for the lifetime of the runner. The
     // runner holds a raw pointer to the group, so the group must
     // outlive it.
-    std::map<uint32_t, std::unique_ptr<dao::dao_vss_group>>
+    std::map<std::string, std::unique_ptr<dao::dao_vss_group>>
         m_dao_v2_dkg_vss;
-    std::map<uint32_t, std::thread>
+    std::map<std::string, std::thread>
         m_dao_v2_dkg_watchers;
     std::function<bool(const std::string&)>
         m_dao_v2_dkg_send;
@@ -1871,7 +1871,7 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     // blockchain owner thread.
     struct pending_dao_v2_dkg_result
     {
-        uint32_t ceremony_id = 0;
+        std::string ceremony_id;
         dao::dkg_result result;
     };
     mutable std::mutex m_dao_v2_dkg_result_mutex;
@@ -1884,14 +1884,14 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     // record and broadcasts the attestation over the DKG transport
     // (dkg_msg_type::key_record_ready). Accumulation happens only for
     // the single ceremony this node participated in.
-    std::map<uint32_t, dao::dao_tally_key_record>
+    std::map<std::string, dao::dao_tally_key_record>
         m_dao_v2_local_records;
-    std::map<uint32_t, uint64_t>
+    std::map<std::string, uint64_t>
         m_dao_v2_local_selection_height;
-    std::map<uint32_t,
+    std::map<std::string,
              std::map<uint32_t, dao::dao_dkg_key_attestation>>
         m_dao_v2_key_ready_attestations;
-    std::map<uint32_t, bool>
+    std::map<std::string, bool>
         m_dao_v2_key_ready_submitted;
     mutable std::mutex m_dao_v2_key_ready_mutex;
     // END_VNS_DAO_V2_KEY_READY
@@ -2374,7 +2374,7 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
   // wait() and passes the captured result plus this node's committee
   // index. No DB write occurs on a DKG worker thread.
   bool persist_dao_v2_dkg_result(BlockchainDB& db,
-                                 uint32_t ceremony_id,
+                                 const std::string& ceremony_id,
                                  const dkg_result& result,
                                  uint32_t local_party_id);
 

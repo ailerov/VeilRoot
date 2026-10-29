@@ -243,7 +243,7 @@ TEST_F(DaoV2Bootstrap, ThreeEligibleNodesSelectAndComplete2of3DKG)
     for (uint32_t i = 0; i < 3; ++i) {
         db_wtxn_guard wtxn(m_dbs[i].get());
         ASSERT_TRUE(dao::persist_dao_v2_dkg_result(
-            *m_dbs[i], 1, results[i], i + 1));
+            *m_dbs[i], std::string{}, results[i], i + 1));
     }
 
     // The public key record is no longer installed by

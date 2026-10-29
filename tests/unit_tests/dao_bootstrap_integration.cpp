@@ -10,7 +10,7 @@
 //     -> Blockchain::init (real)
 //     -> committee_privkey installed
 //     -> eligible records installed
-//     -> Blockchain::bootstrap_dao_v2_dkg(1)
+//     -> Blockchain::bootstrap_dao_v2_dkg(std::string{})
 //     -> runner starts, watcher queues
 //     -> owner thread drains the queue
 //     -> LMDB holds the tally key record for this node's committee index
@@ -229,7 +229,7 @@ TEST_F(DaoBootstrapIntegration, BootstrapStartsRunnerForThisCommittee)
     m_core->get_blockchain_storage().set_dao_v2_dkg_send(
         [](const std::string&) -> bool { return true; });
 
-    ASSERT_TRUE(m_core->get_blockchain_storage().bootstrap_dao_v2_dkg(1));
+    ASSERT_TRUE(m_core->get_blockchain_storage().bootstrap_dao_v2_dkg(std::string{}));
 
     // A runner for the bootstrap ceremony now exists. It cannot complete without
     // peers; teardown stops it via ~Blockchain.
@@ -479,25 +479,25 @@ TEST_F(DaoBootstrapIntegration, BootstrapGateRequiresThreeReadyNodes)
         [](const std::string&) -> bool { return true; });
 
     // 0 ready: bootstrap refuses.
-    EXPECT_FALSE(m_core->get_blockchain_storage().bootstrap_dao_v2_dkg(1));
+    EXPECT_FALSE(m_core->get_blockchain_storage().bootstrap_dao_v2_dkg(std::string{}));
 
     // 1 ready (self): still refuses.
     deliver_node_ready(*m_core, genesis, m_node_pub, m_node_sec);
-    EXPECT_FALSE(m_core->get_blockchain_storage().bootstrap_dao_v2_dkg(1));
+    EXPECT_FALSE(m_core->get_blockchain_storage().bootstrap_dao_v2_dkg(std::string{}));
 
     // 2 ready: still refuses.
     crypto::public_key a_pk;
     crypto::secret_key a_sk;
     crypto::generate_keys(a_pk, a_sk);
     deliver_node_ready(*m_core, genesis, a_pk, a_sk);
-    EXPECT_FALSE(m_core->get_blockchain_storage().bootstrap_dao_v2_dkg(1));
+    EXPECT_FALSE(m_core->get_blockchain_storage().bootstrap_dao_v2_dkg(std::string{}));
 
     // 3 ready: gate passes and a runner starts.
     crypto::public_key b_pk;
     crypto::secret_key b_sk;
     crypto::generate_keys(b_pk, b_sk);
     deliver_node_ready(*m_core, genesis, b_pk, b_sk);
-    EXPECT_TRUE(m_core->get_blockchain_storage().bootstrap_dao_v2_dkg(1));
+    EXPECT_TRUE(m_core->get_blockchain_storage().bootstrap_dao_v2_dkg(std::string{}));
 }
 
 TEST_F(DaoBootstrapIntegration, AnnounceIsThrottled)
@@ -640,7 +640,7 @@ TEST_F(DaoBootstrapIntegration, ActivationChainBindsKeyRecordAfterPersistence)
 
     // Queue the result on the blockchain and drain it on this thread.
     auto& bc = m_core->get_blockchain_storage();
-    bc.queue_dao_v2_dkg_result(1, completed);
+    bc.queue_dao_v2_dkg_result(std::string{}, completed);
     bc.maybe_process_dao_v2_dkg_results();
 
     // Key record installed. In production this happens via a
@@ -864,7 +864,7 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxValidatedAndApplied)
     ASSERT_EQ(out.test_SK.size(), 3u);
 
     auto& bc = m_core->get_blockchain_storage();
-    bc.queue_dao_v2_dkg_result(1, out);
+    bc.queue_dao_v2_dkg_result(std::string{}, out);
     bc.maybe_process_dao_v2_dkg_results();
 
     // Install the key record. See note at the top of this file.
@@ -1201,7 +1201,7 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxRolledBackByReorg)
     ASSERT_TRUE(out.candidate_accepted);
 
     auto& bc = m_core->get_blockchain_storage();
-    bc.queue_dao_v2_dkg_result(1, out);
+    bc.queue_dao_v2_dkg_result(std::string{}, out);
     bc.maybe_process_dao_v2_dkg_results();
 
     // Install the key record. See note at the top of this file.
@@ -1510,7 +1510,7 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxRejectionBoundaries)
     ASSERT_TRUE(out.candidate_accepted);
 
     auto& bc = m_core->get_blockchain_storage();
-    bc.queue_dao_v2_dkg_result(1, out);
+    bc.queue_dao_v2_dkg_result(std::string{}, out);
     bc.maybe_process_dao_v2_dkg_results();
 
     // Install the key record. See note at the top of this file.
@@ -1798,7 +1798,7 @@ TEST_F(DaoBootstrapIntegration, TallyResultReconstructableFromChainState)
     ASSERT_TRUE(out.candidate_accepted);
 
     auto& bc = m_core->get_blockchain_storage();
-    bc.queue_dao_v2_dkg_result(1, out);
+    bc.queue_dao_v2_dkg_result(std::string{}, out);
     bc.maybe_process_dao_v2_dkg_results();
 
     // Install the key record. See note at the top of this file.
@@ -2015,7 +2015,7 @@ TEST_F(DaoBootstrapIntegration, BootstrapSharePersistsAfterTally)
     ASSERT_TRUE(out.candidate_accepted);
 
     auto& bc = m_core->get_blockchain_storage();
-    bc.queue_dao_v2_dkg_result(1, out);
+    bc.queue_dao_v2_dkg_result(std::string{}, out);
     bc.maybe_process_dao_v2_dkg_results();
 
     // Install the key record. See note at the top of this file.
@@ -2235,7 +2235,7 @@ TEST_F(DaoBootstrapIntegration, OutOfCommitteeShareholderShareAccepted)
     ASSERT_TRUE(out.candidate_accepted);
 
     auto& bc = m_core->get_blockchain_storage();
-    bc.queue_dao_v2_dkg_result(1, out);
+    bc.queue_dao_v2_dkg_result(std::string{}, out);
     bc.maybe_process_dao_v2_dkg_results();
 
     // Install the key record. See note at the top of this file.
