@@ -1139,6 +1139,38 @@ block Blockchain::pop_block_from_blockchain()
   }
   // END_VNS_DAO_V2_TALLY_RESULT_ROLLBACK
 
+  // BEGIN_VNS_DAO_V2_NODE_READY_ROLLBACK
+  for (const transaction& tx : popped_txs)
+  {
+    if (!is_dao_v2_node_ready_tx(tx))
+      continue;
+    std::vector<tx_extra_field> extra_fields;
+    if (!parse_tx_extra(tx.extra, extra_fields))
+      continue;
+    for (const auto& field : extra_fields)
+    {
+      if (field.type() != typeid(tx_extra_governance_payload))
+        continue;
+      const auto& gpf = boost::get<tx_extra_governance_payload>(field);
+      if (gpf.payload.type != governance_object::node_ready)
+        continue;
+      if (gpf.payload.data.empty()) break;
+      node_ready_payload nr;
+      {
+        epee::span<const uint8_t> span(
+            gpf.payload.data.data(), gpf.payload.data.size());
+        binary_archive<false> ar(span);
+        if (!::serialization::serialize(ar, nr)) break;
+      }
+      if (nr.sender_pubkey.size() != 32) break;
+      crypto::public_key sender{};
+      std::memcpy(sender.data, nr.sender_pubkey.data(), 32);
+      m_db->remove_dao_v2_node_ready(sender, nr.height);
+      break;
+    }
+  }
+  // END_VNS_DAO_V2_NODE_READY_ROLLBACK
+
   // make sure the hard fork object updates its current version
   m_hardfork->on_block_popped(old_chain_height - 1);
 
@@ -7095,6 +7127,19 @@ leave:
           return false;
         }
       }
+
+      if (is_dao_v2_node_ready_tx(tx))
+      {
+        if (!validate_dao_v2_node_ready_tx(tx, blockchain_height))
+        {
+          MERROR_VER(
+              "DAO V2 node_ready failed block consensus validation");
+          add_block_as_invalid(bl, id);
+          bvc.m_verifivation_failed = true;
+          return_txs_to_pool();
+          return false;
+        }
+      }
     }
   }
   // END_VNS_DAO_V2_UNCONDITIONAL_VALIDATE
@@ -7239,6 +7284,13 @@ leave:
         {
           if (!apply_dao_v2_tally_result(tx, new_height))
             throw std::runtime_error("tally-result tx apply failed after validation");
+          continue;
+        }
+
+        if (is_dao_v2_node_ready_tx(tx))
+        {
+          if (!apply_dao_v2_node_ready(tx, new_height))
+            throw std::runtime_error("node_ready apply failed after validation");
           continue;
         }
       }
@@ -9616,6 +9668,137 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     crypto::cn_fast_hash(msg.data(), msg.size(), out);
   }
 
+  bool Blockchain::is_dao_v2_node_ready_tx(const transaction& tx) const
+  {
+    if (!tx.vin.empty() || !tx.vout.empty())
+      return false;
+    if (tx.rct_signatures.type != rct::RCTTypeNull)
+      return false;
+    std::vector<tx_extra_field> fields;
+    if (!parse_tx_extra(tx.extra, fields))
+      return false;
+    size_t count = 0;
+    for (const auto& field : fields)
+    {
+      if (field.type() != typeid(tx_extra_governance_payload))
+        continue;
+      const auto& gp = boost::get<tx_extra_governance_payload>(field);
+      if (gp.payload.type == governance_object::node_ready)
+        ++count;
+    }
+    return count == 1;
+  }
+
+  bool Blockchain::validate_dao_v2_node_ready_tx(
+      const transaction& tx, uint64_t block_height) const
+  {
+    if (!is_dao_v2_node_ready_tx(tx))
+      return false;
+
+    std::vector<tx_extra_field> fields;
+    if (!parse_tx_extra(tx.extra, fields))
+      return false;
+
+    std::vector<uint8_t> blob;
+    bool found = false;
+    for (const auto& field : fields)
+    {
+      if (field.type() != typeid(tx_extra_governance_payload))
+        continue;
+      const auto& gpf = boost::get<tx_extra_governance_payload>(field);
+      if (gpf.payload.type != governance_object::node_ready)
+        continue;
+      if (found) return false;
+      blob = gpf.payload.data;
+      found = true;
+    }
+    if (!found || blob.empty())
+      return false;
+
+    node_ready_payload nr;
+    {
+      epee::span<const uint8_t> span(blob.data(), blob.size());
+      binary_archive<false> ar(span);
+      if (!::serialization::serialize(ar, nr))
+        return false;
+    }
+
+    if (nr.version != 1) return false;
+    if (nr.sender_pubkey.size() != 32) return false;
+    if (nr.block_hash.size() != 32) return false;
+    if (nr.signature.size() != sizeof(crypto::signature)) return false;
+
+    crypto::public_key sender{};
+    std::memcpy(sender.data, nr.sender_pubkey.data(), 32);
+    crypto::hash bh{};
+    std::memcpy(bh.data, nr.block_hash.data(), 32);
+
+    crypto::hash genesis{};
+    if (!get_dao_v2_genesis_hash(genesis)) return false;
+
+    crypto::hash digest{};
+    compute_dao_v2_node_ready_digest(genesis, sender, nr.height, bh, digest);
+
+    crypto::signature sig{};
+    std::memcpy(&sig, nr.signature.data(), sizeof(sig));
+    if (!crypto::check_signature(digest, sender, sig))
+      return false;
+
+    // Height must be strictly before this block's height.
+    if (nr.height >= block_height) return false;
+
+    // Block hash must match the canonical chain at that height.
+    crypto::hash canonical{};
+    try { canonical = get_block_id_by_height(nr.height); }
+    catch (...) { return false; }
+    if (canonical != bh) return false;
+
+    return true;
+  }
+
+  bool Blockchain::apply_dao_v2_node_ready(
+      const transaction& tx, uint64_t /*block_height*/)
+  {
+    if (!is_dao_v2_node_ready_tx(tx))
+      return false;
+
+    std::vector<tx_extra_field> fields;
+    if (!parse_tx_extra(tx.extra, fields))
+      return false;
+
+    std::vector<uint8_t> blob;
+    for (const auto& field : fields)
+    {
+      if (field.type() != typeid(tx_extra_governance_payload))
+        continue;
+      const auto& gpf = boost::get<tx_extra_governance_payload>(field);
+      if (gpf.payload.type != governance_object::node_ready)
+        continue;
+      blob = gpf.payload.data;
+      break;
+    }
+    if (blob.empty()) return false;
+
+    node_ready_payload nr;
+    {
+      epee::span<const uint8_t> span(blob.data(), blob.size());
+      binary_archive<false> ar(span);
+      if (!::serialization::serialize(ar, nr))
+        return false;
+    }
+
+    if (nr.sender_pubkey.size() != 32) return false;
+    if (nr.block_hash.size() != 32) return false;
+
+    crypto::public_key sender{};
+    std::memcpy(sender.data, nr.sender_pubkey.data(), 32);
+    crypto::hash bh{};
+    std::memcpy(bh.data, nr.block_hash.data(), 32);
+
+    m_db->add_dao_v2_node_ready(sender, nr.height, bh);
+    return true;
+  }
+
   bool Blockchain::get_node_pubkey(crypto::public_key& out) const
   {
     bool all_zero = true;
@@ -9688,7 +9871,52 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     std::vector<uint8_t> wire;
     if (!m.serialize(wire)) return;
     std::string payload(wire.begin(), wire.end());
-    if (!m_dao_v2_dkg_send(payload)) return;
+
+    // Chain-state submission (canonical path). Submitted to mempool so
+    // a miner can include it; every validator reads the durable record
+    // from chain state. P2P below is the fast path.
+    {
+      node_ready_payload nr;
+      nr.version = 1;
+      nr.sender_pubkey.assign(self_pk.data, self_pk.data + 32);
+      nr.height = announce_height;
+      nr.block_hash.assign(announce_block_hash.data,
+                           announce_block_hash.data + 32);
+      nr.signature.assign(reinterpret_cast<const uint8_t*>(&sig),
+                          reinterpret_cast<const uint8_t*>(&sig)
+                              + sizeof(crypto::signature));
+
+      governance_payload gp;
+      gp.type = governance_object::node_ready;
+      {
+        const std::string nr_blob = t_serializable_object_to_blob(nr);
+        gp.data.assign(nr_blob.begin(), nr_blob.end());
+      }
+
+      tx_extra_governance_payload txgp;
+      txgp.payload = std::move(gp);
+      tx_extra_field ef = txgp;
+      std::string eb = t_serializable_object_to_blob(ef);
+
+      transaction nr_tx;
+      nr_tx.version = 2;
+      nr_tx.unlock_time = 0;
+      nr_tx.extra.assign(eb.begin(), eb.end());
+      nr_tx.rct_signatures = rct::rctSig{};
+      nr_tx.rct_signatures.type = rct::RCTTypeNull;
+
+      tx_verification_context tvc{};
+      const uint8_t hf_v = get_current_hard_fork_version();
+      if (!m_tx_pool.add_tx(nr_tx, tvc, relay_method::local, true,
+                            hf_v, hf_v)) {
+        MWARNING("node_ready: mempool rejected chain-state tx at height "
+                 << announce_height);
+      }
+    }
+
+    // P2P broadcast (fast path). Best-effort: chain-state submission
+    // above is the durable record.
+    (void)m_dao_v2_dkg_send(payload);
 
     m_dao_v2_last_announce_time = now;
     // Record ourselves so a single-node network can reach the gate if

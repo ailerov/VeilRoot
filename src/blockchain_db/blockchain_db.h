@@ -2216,6 +2216,16 @@ public:
     virtual bool get_dao_v2_outcome(const crypto::hash& proposal_id,
                                     dao::dao_v2_outcome_record& rec) const = 0;
     virtual void remove_dao_v2_outcome(const crypto::hash& proposal_id) = 0;
+
+    // DAO V2 node readiness chain state (B1).
+    virtual void add_dao_v2_node_ready(const crypto::public_key& pk,
+                                       uint64_t height,
+                                       const crypto::hash& block_hash) = 0;
+    virtual bool get_dao_v2_node_ready(const crypto::public_key& pk,
+                                       uint64_t height,
+                                       crypto::hash& block_hash) const = 0;
+    virtual void remove_dao_v2_node_ready(const crypto::public_key& pk,
+                                          uint64_t height) = 0;
     // ---------- VNS DAO V2 OUTCOMES END ----------
 
     // ---------- VNS DAO LOCAL SHARE START ----------

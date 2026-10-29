@@ -2372,3 +2372,106 @@ TEST_F(DaoBootstrapIntegration, OutOfCommitteeShareholderShareAccepted)
     BN_free(W); BN_free(S); BN_free(B);
     BN_free(r1); BN_free(r2); BN_free(r3);
 }
+
+// ------------------------------------------------------------------
+// B1: node readiness becomes chain state.
+//
+// 1. mine a few blocks so a lower height has a canonical hash;
+// 2. install a node key;
+// 3. trigger maybe_announce_dao_v2_node_ready, which submits a
+//    node_ready tx to mempool;
+// 4. mine a block that includes it;
+// 5. assert get_dao_v2_node_ready returns the stored hash;
+// 6. pop the block and assert the row is rolled back.
+// ------------------------------------------------------------------
+TEST_F(DaoBootstrapIntegration, NodeReadyChainState)
+{
+    using namespace cryptonote;
+
+    auto& bc = m_core->get_blockchain_storage();
+
+    account_base miner_acc;
+    miner_acc.generate();
+
+    // Mine until tip >= 3 so a lower block height has a canonical hash.
+    while (bc.get_current_blockchain_height() < 3) {
+        block tmpl{};
+        difficulty_type diff{};
+        uint64_t tmpl_h = 0, reward = 0, seed_h = 0;
+        crypto::hash seed_hsh{};
+        blobdata ex_nonce(8, 0);
+        ASSERT_TRUE(bc.create_block_template(
+            tmpl, miner_acc.get_keys().m_account_address,
+            diff, tmpl_h, reward, ex_nonce, seed_h, seed_hsh));
+        auto gbh = [&bc](const block& b, uint64_t h,
+                         const crypto::hash* sh,
+                         unsigned int mn, crypto::hash& ho) -> bool {
+            return get_block_longhash(&bc, b, ho, h, sh,
+                                      static_cast<int>(mn));
+        };
+        ASSERT_TRUE(miner::find_nonce_for_given_block(
+            gbh, tmpl, diff, tmpl_h, nullptr));
+        block_verification_context bvc{};
+        pool_supplement extra{};
+        blobdata bb = block_to_blob(tmpl);
+        ASSERT_TRUE(m_core->handle_single_incoming_block(
+            bb, &tmpl, bvc, extra, false));
+        ASSERT_FALSE(bvc.m_verifivation_failed);
+    }
+
+    crypto::public_key self_pk;
+    crypto::secret_key self_sk;
+    crypto::generate_keys(self_pk, self_sk);
+    m_core->set_node_key(self_sk);
+
+    bc.set_dao_v2_dkg_send([](const std::string&) -> bool { return true; });
+    bc.maybe_announce_dao_v2_node_ready();
+
+    std::vector<crypto::hash> pool_hashes;
+    m_core->get_pool_transaction_hashes(pool_hashes,
+                                        /*include_sensitive_txes=*/true);
+    ASSERT_GE(pool_hashes.size(), 1u);
+
+    const uint64_t h_before = bc.get_current_blockchain_height();
+    const uint64_t announce_h = h_before - 1;
+    const crypto::hash expected_hash = bc.get_block_id_by_height(announce_h);
+
+    {
+        block tmpl{};
+        difficulty_type diff{};
+        uint64_t tmpl_h = 0, reward = 0, seed_h = 0;
+        crypto::hash seed_hsh{};
+        blobdata ex_nonce(8, 0);
+        ASSERT_TRUE(bc.create_block_template(
+            tmpl, miner_acc.get_keys().m_account_address,
+            diff, tmpl_h, reward, ex_nonce, seed_h, seed_hsh));
+        auto gbh = [&bc](const block& b, uint64_t h,
+                         const crypto::hash* sh,
+                         unsigned int mn, crypto::hash& ho) -> bool {
+            return get_block_longhash(&bc, b, ho, h, sh,
+                                      static_cast<int>(mn));
+        };
+        ASSERT_TRUE(miner::find_nonce_for_given_block(
+            gbh, tmpl, diff, tmpl_h, nullptr));
+        block_verification_context bvc{};
+        pool_supplement extra{};
+        blobdata bb = block_to_blob(tmpl);
+        ASSERT_TRUE(m_core->handle_single_incoming_block(
+            bb, &tmpl, bvc, extra, false));
+        ASSERT_FALSE(bvc.m_verifivation_failed);
+    }
+
+    ASSERT_EQ(bc.get_current_blockchain_height(), h_before + 1);
+
+    crypto::hash stored_hash{};
+    ASSERT_TRUE(bc.get_db().get_dao_v2_node_ready(
+        self_pk, announce_h, stored_hash));
+    EXPECT_EQ(stored_hash, expected_hash);
+
+    bc.pop_blocks(1);
+    ASSERT_EQ(bc.get_current_blockchain_height(), h_before);
+
+    crypto::hash after_hash{};
+    EXPECT_FALSE(bc.get_db().get_dao_v2_node_ready(
+        self_pk, announce_h, after_hash));
+}

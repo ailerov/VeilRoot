@@ -1556,7 +1556,7 @@ void BlockchainLMDB::open(const std::string& filename, const int db_flags)
   // margin above the current set so new tables do not require a
   // schema bump each time. MDB_DBS_FULL at 48 with the DAO V2
   // tables added in this session.
-  if ((result = mdb_env_set_maxdbs(m_env, 80)))
+  if ((result = mdb_env_set_maxdbs(m_env, 100)))
     throw0(DB_ERROR(lmdb_error("Failed to set max number of dbs: ", result).c_str()));
 
   int threads = tools::get_max_concurrency();
@@ -1647,6 +1647,8 @@ void BlockchainLMDB::open(const std::string& filename, const int db_flags)
   lmdb_db_open(txn, LMDB_VOTES, MDB_CREATE, m_votes, "Failed to open db handle for votes");
   mdb_set_compare(txn, m_votes, compare_hash64);
   lmdb_db_open(txn, LMDB_COMMITTEE_ELIGIBLE, MDB_CREATE, m_committee_eligible, "Failed to open db handle for committee_eligible");
+  lmdb_db_open(txn, "dao_v2_node_ready", MDB_CREATE, m_dao_v2_node_ready,
+               "Failed to open db handle for dao_v2_node_ready");
   lmdb_db_open(txn, LMDB_VOTE_CIPHERTEXTS, MDB_CREATE, m_vote_ciphertexts, "Failed to open db handle for vote_ciphertexts");
   mdb_set_compare(txn, m_vote_ciphertexts, compare_hash64);
   mdb_set_compare(txn, m_committee_eligible, compare_hash32);
@@ -4307,6 +4309,73 @@ bool BlockchainLMDB::for_all_vote_ciphertext_records(std::function<bool(const cr
 }
 // END_VNS_DKG
 // BEGIN_VNS_ELIGIBLE
+namespace {
+inline void mk_node_ready_key(uint8_t out[40],
+                              const crypto::public_key& pk,
+                              uint64_t height)
+{
+    std::memcpy(out, pk.data, 32);
+    for (int i = 0; i < 8; ++i)
+        out[32 + i] = static_cast<uint8_t>((height >> (8 * i)) & 0xff);
+}
+}  // namespace
+
+void BlockchainLMDB::add_dao_v2_node_ready(const crypto::public_key& pk,
+                                            uint64_t height,
+                                            const crypto::hash& block_hash)
+{
+    LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+    check_open();
+    TXN_BLOCK_PREFIX(0);
+
+    uint8_t kbuf[40];
+    mk_node_ready_key(kbuf, pk, height);
+    MDB_val k = {sizeof(kbuf), kbuf};
+    MDB_val v = {sizeof(block_hash), (void*)&block_hash};
+    int result = mdb_put(*txn_ptr, m_dao_v2_node_ready, &k, &v, 0);
+    if (result)
+        throw0(DB_ERROR(lmdb_error("Failed to add node_ready: ", result).c_str()));
+
+    TXN_BLOCK_POSTFIX_SUCCESS();
+}
+
+bool BlockchainLMDB::get_dao_v2_node_ready(const crypto::public_key& pk,
+                                            uint64_t height,
+                                            crypto::hash& block_hash) const
+{
+    LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+    check_open();
+    TXN_PREFIX_RDONLY();
+
+    uint8_t kbuf[40];
+    mk_node_ready_key(kbuf, pk, height);
+    MDB_val k = {sizeof(kbuf), kbuf};
+    MDB_val v;
+    if (mdb_get(m_txn, m_dao_v2_node_ready, &k, &v) != MDB_SUCCESS)
+    {
+        TXN_POSTFIX_RDONLY();
+        return false;
+    }
+    std::memcpy(block_hash.data, v.mv_data, sizeof(block_hash.data));
+    TXN_POSTFIX_RDONLY();
+    return true;
+}
+
+void BlockchainLMDB::remove_dao_v2_node_ready(const crypto::public_key& pk,
+                                               uint64_t height)
+{
+    LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+    check_open();
+    TXN_BLOCK_PREFIX(0);
+
+    uint8_t kbuf[40];
+    mk_node_ready_key(kbuf, pk, height);
+    MDB_val k = {sizeof(kbuf), kbuf};
+    mdb_del(*txn_ptr, m_dao_v2_node_ready, &k, nullptr);
+
+    TXN_BLOCK_POSTFIX_SUCCESS();
+}
+
 void BlockchainLMDB::add_committee_eligible(const crypto::key_image& ki, const committee_eligible_record& rec)
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);

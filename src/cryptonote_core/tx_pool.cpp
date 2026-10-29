@@ -210,6 +210,7 @@ namespace cryptonote
     // END_VNS_MEMPOOL_TALLY_RESULT_SCOPE
     // BEGIN_VNS_MEMPOOL_DKG_ACTIVATION_SCOPE
     bool is_dao_dkg_activation = false;
+    bool is_dao_node_ready = false;
     // END_VNS_MEMPOOL_DKG_ACTIVATION_SCOPE
     // END_VNS_MEMPOOL_VOTE_SCOPE
     // BEGIN_VNS_MEMPOOL_V2_VOTE_SCOPE
@@ -242,6 +243,7 @@ namespace cryptonote
       // A DAO V2 DKG key-activation transaction is likewise
       // protocol-generated and carries no fee.
       is_dao_dkg_activation = m_blockchain.is_dao_v2_dkg_activation_tx(tx);
+      is_dao_node_ready = m_blockchain.is_dao_v2_node_ready_tx(tx);
       // END_VNS_MEMPOOL_DKG_ACTIVATION_FEE
 
       // BEGIN_VNS_MEMPOOL_V2_VOTE_FEE
@@ -251,7 +253,7 @@ namespace cryptonote
       is_dao_v2_vote = is_dao_v2_vote_tx(tx);
       // END_VNS_MEMPOOL_V2_VOTE_FEE
 
-      fee_good = kept_by_block || is_vote || is_dao_v2_vote || is_eligible || is_proposal || is_dao_exec || is_dao_tally_result || is_dao_dkg_activation || m_blockchain.check_fee(tx_weight, fee);
+      fee_good = kept_by_block || is_vote || is_dao_v2_vote || is_eligible || is_proposal || is_dao_exec || is_dao_tally_result || is_dao_dkg_activation || is_dao_node_ready || m_blockchain.check_fee(tx_weight, fee);
     }
     catch(...) {}
     if (!fee_good) // if fee calculation failed or fee in relayed tx is too low...
@@ -1928,7 +1930,8 @@ namespace cryptonote
         // two paths stay consistent.
         if (!is_vns_special) {
           is_vns_special = m_blockchain.is_dao_v2_tally_result_tx(tx) ||
-                           m_blockchain.is_dao_v2_dkg_activation_tx(tx);
+                           m_blockchain.is_dao_v2_dkg_activation_tx(tx) ||
+                           m_blockchain.is_dao_v2_node_ready_tx(tx);
         }
         // END_VNS_DAO_ZERO_FEE_MINING
       }

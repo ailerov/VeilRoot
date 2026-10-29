@@ -640,6 +640,15 @@ public:
   virtual bool get_dao_v2_outcome(const crypto::hash& proposal_id, dao::dao_v2_outcome_record& rec) const override;
   virtual void remove_dao_v2_outcome(const crypto::hash& proposal_id) override;
 
+  virtual void add_dao_v2_node_ready(const crypto::public_key& pk,
+                                     uint64_t height,
+                                     const crypto::hash& block_hash) override;
+  virtual bool get_dao_v2_node_ready(const crypto::public_key& pk,
+                                     uint64_t height,
+                                     crypto::hash& block_hash) const override;
+  virtual void remove_dao_v2_node_ready(const crypto::public_key& pk,
+                                        uint64_t height) override;
+
   virtual void add_dao_local_share(uint32_t share_set_id,
                                    uint32_t member_index,
                                    const std::vector<uint8_t>& share_blob) override;
@@ -828,6 +837,7 @@ private:
   MDB_dbi m_votes;
   MDB_dbi m_vote_ciphertexts;
   MDB_dbi m_committee_eligible;
+  MDB_dbi m_dao_v2_node_ready;
   MDB_dbi m_proposal_executions;
   MDB_dbi m_dkg_shares;
   MDB_dbi m_committee_key;

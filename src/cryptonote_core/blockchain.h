@@ -1396,6 +1396,12 @@ namespace cryptonote
   // exactly one governance payload of type dkg_key_activation.
   bool is_dao_v2_dkg_activation_tx(const transaction& tx) const;
 
+  bool is_dao_v2_node_ready_tx(const transaction& tx) const;
+  bool validate_dao_v2_node_ready_tx(const transaction& tx,
+                                     uint64_t block_height) const;
+  bool apply_dao_v2_node_ready(const transaction& tx,
+                               uint64_t block_height);
+
   // Consensus validator for a DKG key-activation transaction. Pure
   // validation; never mutates state. Runs before m_db->add_block().
   bool validate_dao_v2_dkg_activation_tx(
