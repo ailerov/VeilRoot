@@ -9255,6 +9255,24 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
   namespace {
   const std::string BOOTSTRAP_CEREMONY_ID{};
+
+  crypto::hash ceremony_id_to_hash(const std::string& ceremony_id) {
+    if (ceremony_id.size() != 64) return crypto::null_hash;
+    auto hexv = [](char ch) -> int {
+      if (ch >= '0' && ch <= '9') return ch - '0';
+      if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+      if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+      return -1;
+    };
+    crypto::hash h{};
+    for (size_t i = 0; i < 32; ++i) {
+      int hi = hexv(ceremony_id[i*2]);
+      int lo = hexv(ceremony_id[i*2+1]);
+      if (hi < 0 || lo < 0) return crypto::null_hash;
+      h.data[i] = static_cast<uint8_t>((hi << 4) | lo);
+    }
+    return h;
+  }
   }  // namespace
 
   void Blockchain::handle_dao_v2_dkg_msg(const crypto::public_key& member,
@@ -9400,7 +9418,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       MWARNING("key_ready: deserialize failed");
       return;
     }
-    if (act.version != 1) return;
+    if (act.version != 2) return;
     if (act.attestations.size() != 1) return;
 
     const std::string ceremony_id;  // bootstrap ceremony
@@ -9459,8 +9477,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     } catch (...) { return; }
     if (genesis_hash == crypto::null_hash) return;
 
-    const crypto::hash digest = dao::dao_dkg_activation_digest(
-        genesis_hash, act.selection_height, act.record);
+    const crypto::hash digest = dao::dao_dkg_activation_digest(genesis_hash, act.selection_height, act.record, act.proposal_id);
 
     crypto::public_key signer_pk{};
     std::memcpy(signer_pk.data, claimed_pk.data(), sizeof(signer_pk.data));
@@ -9498,7 +9515,8 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       if (acc_it == m_dao_v2_key_ready_attestations.end()) return false;
       if (acc_it->second.size() < rec_it->second.threshold) return false;
 
-      full.version          = 1;
+      full.version          = 2;
+      full.proposal_id      = ceremony_id_to_hash(ceremony_id);
       full.selection_height = m_dao_v2_local_selection_height[ceremony_id];
       full.record           = rec_it->second;
       // std::map iterates in ascending member_index order, which the
@@ -10191,9 +10209,7 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
         }
         if (genesis_hash == crypto::null_hash) continue;
 
-        const crypto::hash digest = dao::dao_dkg_activation_digest(
-            genesis_hash, item.result.selection_height,
-            item.result.record);
+        const crypto::hash digest = dao::dao_dkg_activation_digest(genesis_hash, item.result.selection_height, item.result.record, crypto::null_hash);
         if (digest == crypto::null_hash) continue;
 
         crypto::signature sig;
@@ -11319,7 +11335,7 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
       return false;
 
     // 1. version
-    if (act.version != 1)
+    if (act.version != 2)
       return false;
 
     // 2. selection_height strictly before the containing block.
@@ -11423,8 +11439,7 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
       }
       if (genesis_hash == crypto::null_hash) return false;
 
-      const crypto::hash digest = dao::dao_dkg_activation_digest(
-          genesis_hash, act.selection_height, rec);
+      const crypto::hash digest = dao::dao_dkg_activation_digest(genesis_hash, act.selection_height, rec, act.proposal_id);
       if (digest == crypto::null_hash) return false;
 
       size_t valid = 0;
@@ -11487,6 +11502,14 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
       m_db->add_dao_tally_key(rec);
       if (rec.key_id.size() == 32)
         m_db->add_dao_tally_key_by_id(rec.key_id, rec);
+
+      if (act.proposal_id != crypto::null_hash) {
+        proposal_record prop;
+        if (m_db->get_proposal_record(act.proposal_id, prop)) {
+          std::memcpy(prop.tally_key_id.data, rec.key_id.data(), 32);
+          m_db->add_proposal_record(act.proposal_id, prop);
+        }
+      }
 
       // Install the bootstrap share set. In the bootstrap set,
       // share-set positions are identical to DKG indices, so this

@@ -639,8 +639,9 @@ struct dao_dkg_key_attestation
 
 struct dao_dkg_key_activation
 {
-    uint32_t                    version          = 1;
+    uint32_t                    version          = 2;
     uint64_t                    selection_height = 0;
+    crypto::hash                proposal_id{};
     dao_tally_key_record        record;
     std::vector<dao_dkg_key_attestation> attestations;
 
@@ -655,7 +656,8 @@ struct dao_dkg_key_activation
 crypto::hash dao_dkg_activation_digest(
     const crypto::hash& genesis_block_hash,
     uint64_t selection_height,
-    const dao_tally_key_record& record);
+    const dao_tally_key_record& record,
+    const crypto::hash& proposal_id);
 
 // Local share envelope. The share is stored together with the
 // key_id of the record it belongs to, so a share for one

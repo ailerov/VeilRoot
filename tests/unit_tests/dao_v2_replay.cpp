@@ -456,12 +456,11 @@ TEST(DaoV2Replay, NodeBReconstructsKeyRecordFromActivationBlock)
             .get_block_hash_from_height(0);
     ASSERT_NE(genesis_hash, crypto::null_hash);
 
-    const crypto::hash digest = dao::dao_dkg_activation_digest(
-        genesis_hash, selection_height, dkg_out.record);
+    const crypto::hash digest = dao::dao_dkg_activation_digest(genesis_hash, selection_height, dkg_out.record, crypto::null_hash);
     ASSERT_NE(digest, crypto::null_hash);
 
     dao::dao_dkg_key_activation act;
-    act.version          = 1;
+    act.version          = 2;
     act.selection_height = selection_height;
     act.record           = dkg_out.record;
     for (uint32_t idx : { 1u, 2u }) {
