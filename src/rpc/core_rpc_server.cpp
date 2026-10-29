@@ -4777,7 +4777,24 @@ bool core_rpc_server::on_publish_service_descriptor(const COMMAND_RPC_PUBLISH_SE
     RPC_TRACKER(get_dao_tally_key);
 
     dao::dao_tally_key_record rec;
-    if (!m_core.get_blockchain_storage().get_db().get_dao_tally_key(rec))
+    auto& bc_storage = m_core.get_blockchain_storage();
+    auto& db_ref = bc_storage.get_db();
+    bool have_key = false;
+    if (!req.proposal_id.empty()) {
+      crypto::hash pid{};
+      if (epee::string_tools::hex_to_pod(req.proposal_id, pid)) {
+        proposal_record prop;
+        if (db_ref.get_proposal_record(pid, prop) &&
+            prop.tally_key_id != crypto::null_hash) {
+          std::vector<uint8_t> kid(prop.tally_key_id.data,
+                                   prop.tally_key_id.data + 32);
+          have_key = db_ref.get_dao_tally_key_by_id(kid, rec);
+        }
+      }
+    } else {
+      have_key = db_ref.get_dao_tally_key(rec);
+    }
+    if (!have_key)
     {
       res.status = CORE_RPC_STATUS_OK;
       return true;

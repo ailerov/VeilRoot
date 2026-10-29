@@ -7388,6 +7388,21 @@ leave:
   }
   // END_VNS_GOVERNANCE_PROCESS
 
+  // BEGIN_VNS_DAO_V2_PROPOSAL_DKG_TRIGGER
+  // Start a per-proposal DKG for every proposal first indexed at this
+  // height whose tally_key_id is still null. Idempotent: reorg/remine
+  // of the same block does not start a second runner.
+  {
+    for (const auto& tx_hash : bl.tx_hashes) {
+      proposal_record rec;
+      if (!m_db->get_proposal_record(tx_hash, rec)) continue;
+      if (rec.submission_height != new_height) continue;
+      if (rec.tally_key_id != crypto::null_hash) continue;
+      start_dao_v2_dkg_for_proposal(tx_hash);
+    }
+  }
+  // END_VNS_DAO_V2_PROPOSAL_DKG_TRIGGER
+
   // BEGIN_VNS_ELIGIBLE_APPLY
   // Register any committee-eligible announcements carried by this
   // block. Rollback removes them by key image.
@@ -9421,19 +9436,29 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     if (act.version != 2) return;
     if (act.attestations.size() != 1) return;
 
-    const std::string ceremony_id;  // bootstrap ceremony
-
+    // Resolve which local ceremony this attestation belongs to.
+    // Committee_id_hash is unique per ceremony, so matching on it
+    // disambiguates bootstrap from per-proposal ceremonies.
+    std::string ceremony_id;
     dao::dao_tally_key_record local_rec;
     uint64_t local_sel_h = 0;
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
-      auto it = m_dao_v2_local_records.find(ceremony_id);
-      if (it == m_dao_v2_local_records.end()) {
-        // We did not participate in this DKG ceremony. Silent.
-        return;
+      bool found = false;
+      for (const auto& kv : m_dao_v2_local_records) {
+        const auto& rec = kv.second;
+        if (rec.committee_id_hash.size() != 32) continue;
+        if (act.record.committee_id_hash.size() != 32) continue;
+        if (std::memcmp(rec.committee_id_hash.data(),
+                        act.record.committee_id_hash.data(), 32) == 0) {
+          ceremony_id = kv.first;
+          local_rec   = rec;
+          local_sel_h = m_dao_v2_local_selection_height[ceremony_id];
+          found = true;
+          break;
+        }
       }
-      local_rec   = it->second;
-      local_sel_h = m_dao_v2_local_selection_height[ceremony_id];
+      if (!found) return;   // not our ceremony
     }
 
     if (act.selection_height != local_sel_h) {
@@ -10372,7 +10397,109 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     return true;
   }
 
-    bool Blockchain::start_dao_v2_dkg_for_committee(
+    void Blockchain::start_dao_v2_dkg_for_proposal(
+      const crypto::hash& proposal_id)
+  {
+    const std::string ceremony_id = epee::string_tools::pod_to_hex(proposal_id);
+    {
+      std::lock_guard<std::mutex> lk(m_dao_v2_dkg_runners_mutex);
+      if (m_dao_v2_dkg_runners.count(ceremony_id) > 0) return;
+    }
+
+    const uint64_t chain_height = get_current_blockchain_height();
+    if (chain_height == 0) return;
+    const uint64_t selection_height = chain_height - 1;
+
+    // Read canonical readiness from chain state. Local m_dao_v2_ready_peers
+    // is P2P best-effort; chain state is the consensus input for
+    // per-proposal committee selection.
+    constexpr uint64_t k_ready_ttl_blocks = 15;
+    std::map<crypto::public_key, std::pair<uint64_t, crypto::hash>> ready_map;
+    m_db->for_all_dao_v2_node_ready(
+        [&](const crypto::public_key& pk,
+            uint64_t stored_h,
+            const crypto::hash& stored_bh) -> bool {
+          if (stored_h >= chain_height) return true;   // not yet canonical
+          if (chain_height - stored_h > k_ready_ttl_blocks) return true;
+          crypto::hash canonical{};
+          try { canonical = get_block_id_by_height(stored_h); }
+          catch (...) { return true; }
+          if (canonical != stored_bh) return true;
+          auto it = ready_map.find(pk);
+          if (it == ready_map.end() || it->second.first < stored_h)
+            ready_map[pk] = {stored_h, stored_bh};
+          return true;
+        });
+
+    std::vector<std::pair<crypto::public_key, uint64_t>> shareholders_sorted;
+    for (const auto& kv : ready_map)
+      shareholders_sorted.emplace_back(kv.first, 0);
+    std::sort(shareholders_sorted.begin(), shareholders_sorted.end(),
+              [](const auto& a, const auto& b) {
+                return std::memcmp(a.first.data, b.first.data,
+                                   sizeof(a.first.data)) < 0;
+              });
+    if (shareholders_sorted.size() > dao::DAO_DKG_MAX_COMMITTEE_SIZE)
+      shareholders_sorted.resize(dao::DAO_DKG_MAX_COMMITTEE_SIZE);
+    if (shareholders_sorted.size() < dao::DAO_DKG_MIN_COMMITTEE_SIZE) {
+      MWARNING("start_dao_v2_dkg_for_proposal: not enough chain-state "
+               "ready peers for proposal " << proposal_id
+               << " (" << shareholders_sorted.size() << ")");
+      return;
+    }
+
+    std::vector<crypto::public_key> shareholders;
+    shareholders.reserve(shareholders_sorted.size());
+    for (const auto& e : shareholders_sorted) shareholders.push_back(e.first);
+
+#ifdef VEILROOT_DAO_DKG_TESTING
+    const uint32_t target_N_bits = 128;
+    const uint32_t qproof_rounds = dao::DAO_DKG_QPROOF_ROUNDS_TEST;
+#else
+    const uint32_t target_N_bits = dao::DAO_DKG_TARGET_N_BITS_PROD;
+    const uint32_t qproof_rounds = dao::DAO_DKG_QPROOF_ROUNDS_PROD;
+#endif
+    const uint32_t required_bits = dao::dao_dkg_required_vss_bits(
+        dao::DAO_DKG_K_BITS_PROD, target_N_bits,
+        dao::DAO_DKG_SECURITY_BITS_PROD);
+
+    auto vss_holder = std::make_unique<dao::dao_vss_group>();
+    if (!dao::dao_vss_group_generate(*vss_holder, required_bits)) {
+      MWARNING("start_dao_v2_dkg_for_proposal: VSS group generation "
+               "failed for proposal " << proposal_id);
+      return;
+    }
+
+    if (!start_dao_v2_dkg(ceremony_id, shareholders, *vss_holder,
+                          target_N_bits, qproof_rounds)) {
+      // Not in committee is not an error.
+      MINFO("start_dao_v2_dkg_for_proposal: not starting runner for "
+            "proposal " << proposal_id);
+      return;
+    }
+
+    m_dao_v2_dkg_vss.emplace(ceremony_id, std::move(vss_holder));
+    m_dao_v2_local_selection_height[ceremony_id] = selection_height;
+
+    auto* self = this;
+    m_dao_v2_dkg_watchers.emplace(ceremony_id, std::thread(
+        [self, ceremony_id, selection_height]() {
+      auto it = self->m_dao_v2_dkg_runners.find(ceremony_id);
+      if (it == self->m_dao_v2_dkg_runners.end()) return;
+      dao::dkg_result res;
+      if (!it->second->wait(res, 0)) {
+        MWARNING("DAO V2 DKG ceremony " << ceremony_id << ": failed");
+        return;
+      }
+      res.selection_height = selection_height;
+      self->queue_dao_v2_dkg_result(ceremony_id, std::move(res));
+    }));
+
+    MINFO("start_dao_v2_dkg_for_proposal: runner started for proposal "
+          << proposal_id << " committee=" << shareholders.size());
+  }
+
+  bool Blockchain::start_dao_v2_dkg_for_committee(
       const std::string& ceremony_id,
       const std::vector<crypto::public_key>& committee,
       const dao::dao_vss_group& vss,

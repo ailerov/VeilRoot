@@ -3444,8 +3444,13 @@ struct COMMAND_RPC_PUBLISH_NOSTR_EVENT
   {
     struct request_t: public rpc_request_base
     {
+      // Optional. Empty = return the singleton bootstrap key (legacy
+      // behaviour). Hex proposal id = return that proposal's tally key.
+      std::string proposal_id;
+
       BEGIN_KV_SERIALIZE_MAP()
         KV_SERIALIZE_PARENT(rpc_request_base)
+        KV_SERIALIZE(proposal_id)
       END_KV_SERIALIZE_MAP()
     };
     typedef epee::misc_utils::struct_init<request_t> request;

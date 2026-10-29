@@ -1474,6 +1474,12 @@ namespace cryptonote
   // second call while the ceremony is running is a no-op.
   bool bootstrap_dao_v2_dkg(const std::string& ceremony_id);
 
+  // Start a per-proposal DKG for the given proposal. Committee is the
+  // current ready roster; ceremony identifier is hex(proposal_id).
+  // Idempotent: silently returns if a runner for this proposal already
+  // exists.
+  void start_dao_v2_dkg_for_proposal(const crypto::hash& proposal_id);
+
   // Lifecycle hook called from the daemon idle loop. Runs the DKG
   // once when this node has seen at least DAO_DKG_MIN_COMMITTEE_SIZE
   // ready peers and no key record exists yet. No-op otherwise. The
@@ -1506,6 +1512,11 @@ namespace cryptonote
   bool has_dao_v2_ready_peer_for_test(const crypto::public_key& pk) const;
 
   void evict_stale_dao_v2_ready_peers_for_test();
+
+  std::map<std::string, std::unique_ptr<dao::dkg_p2p_runner>>&
+    m_dao_v2_dkg_runners_for_test() { return m_dao_v2_dkg_runners; }
+  std::mutex& m_dao_v2_dkg_runners_for_test_mutex()
+    { return m_dao_v2_dkg_runners_mutex; }
 #endif
   // Lifecycle hook called from the daemon idle loop. Drains any
   // results queued by the DKG watcher threads onto this owner thread.

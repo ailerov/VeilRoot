@@ -2475,3 +2475,83 @@ TEST_F(DaoBootstrapIntegration, NodeReadyChainState)
     EXPECT_FALSE(bc.get_db().get_dao_v2_node_ready(
         self_pk, announce_h, after_hash));
 }
+
+// ------------------------------------------------------------------
+// B2b2b: a proposal mined into a block starts a per-proposal DKG
+// runner, using the chain-state ready roster as its committee.
+// ------------------------------------------------------------------
+TEST_F(DaoBootstrapIntegration, ProposalTriggersPerProposalDkg)
+{
+    using namespace cryptonote;
+
+    auto& bc = m_core->get_blockchain_storage();
+    auto& db = bc.get_db();
+
+    // Ready roster: 3 pubkeys at a canonical height.
+    crypto::hash can_hash_at_1{};
+    while (bc.get_current_blockchain_height() < 3) {
+        account_base ma; ma.generate();
+        block tmpl{}; difficulty_type diff{}; uint64_t h=0,r=0,sh=0;
+        crypto::hash shh{}; blobdata en(8,0);
+        ASSERT_TRUE(bc.create_block_template(tmpl,
+            ma.get_keys().m_account_address, diff, h, r, en, sh, shh));
+        auto gbh = [&bc](const block& b, uint64_t hh,
+                         const crypto::hash* s, unsigned int mn,
+                         crypto::hash& o) -> bool {
+            return get_block_longhash(&bc, b, o, hh, s,
+                                      static_cast<int>(mn));
+        };
+        ASSERT_TRUE(miner::find_nonce_for_given_block(
+            gbh, tmpl, diff, h, nullptr));
+        block_verification_context bvc{}; pool_supplement e{};
+        blobdata bb = block_to_blob(tmpl);
+        ASSERT_TRUE(m_core->handle_single_incoming_block(
+            bb, &tmpl, bvc, e, false));
+        ASSERT_FALSE(bvc.m_verifivation_failed);
+    }
+    can_hash_at_1 = bc.get_block_id_by_height(1);
+
+    // First key is this node's identity so start_dao_v2_dkg_for_committee
+    // finds us in the committee.
+    crypto::public_key self_pk{}; crypto::secret_key self_sk{};
+    crypto::generate_keys(self_pk, self_sk);
+    m_core->set_node_key(self_sk);
+    {
+        db_wtxn_guard g(&db);
+        db.add_dao_v2_node_ready(self_pk, 1, can_hash_at_1);
+    }
+    for (int i = 0; i < 2; ++i) {
+        crypto::public_key pk; crypto::secret_key sk;
+        crypto::generate_keys(pk, sk);
+        db_wtxn_guard g(&db);
+        db.add_dao_v2_node_ready(pk, 1, can_hash_at_1);
+    }
+    bc.set_dao_v2_dkg_send([](const std::string&) -> bool { return true; });
+
+    // Seed a proposal record with submission_height = current tip.
+    crypto::hash prop_id{};
+    std::memset(prop_id.data, 0xA5, 32);
+    const uint64_t sub_h = bc.get_current_blockchain_height();
+    {
+        proposal_record rec{};
+        rec.proposal_id = prop_id;
+        rec.submission_height = sub_h;
+        rec.voting_end_height = sub_h + 720;
+        rec.status = PROPOSAL_STATUS_ACTIVE;
+        std::memset(rec.tally_key_id.data, 0, 32);
+        db_wtxn_guard g(&db);
+        db.add_proposal_record(prop_id, rec);
+    }
+
+    // Direct invocation of the trigger method (the block-apply loop is
+    // a one-line scan that calls the same method; covering that in a
+    // multi-node integration is B4 scope).
+    bc.start_dao_v2_dkg_for_proposal(prop_id);
+
+    const std::string ceremony_id =
+        epee::string_tools::pod_to_hex(prop_id);
+    std::lock_guard<std::mutex> lk2(bc.m_dao_v2_dkg_runners_for_test_mutex());
+    EXPECT_GT(bc.m_dao_v2_dkg_runners_for_test().count(ceremony_id), 0u);
+}
+
+

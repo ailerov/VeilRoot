@@ -4450,6 +4450,42 @@ void BlockchainLMDB::remove_dao_v2_node_ready(const crypto::public_key& pk,
     TXN_BLOCK_POSTFIX_SUCCESS();
 }
 
+
+bool BlockchainLMDB::for_all_dao_v2_node_ready(
+    std::function<bool(const crypto::public_key& pk,
+                       uint64_t height,
+                       const crypto::hash& block_hash)> f) const
+{
+    LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+    check_open();
+    TXN_PREFIX_RDONLY();
+
+    MDB_cursor* cursor;
+    int rc = mdb_cursor_open(m_txn, m_dao_v2_node_ready, &cursor);
+    if (rc) { TXN_POSTFIX_RDONLY(); return false; }
+
+    MDB_val k, v;
+    rc = mdb_cursor_get(cursor, &k, &v, MDB_FIRST);
+    bool cont = true;
+    while (rc == MDB_SUCCESS && cont) {
+        if (k.mv_size == 40 && v.mv_size == 32) {
+            crypto::public_key pk;
+            std::memcpy(pk.data, k.mv_data, 32);
+            const uint8_t* hb = static_cast<const uint8_t*>(k.mv_data) + 32;
+            uint64_t h = 0;
+            for (int i = 0; i < 8; ++i)
+                h |= static_cast<uint64_t>(hb[i]) << (8 * i);
+            crypto::hash bh;
+            std::memcpy(bh.data, v.mv_data, 32);
+            cont = f(pk, h, bh);
+        }
+        rc = mdb_cursor_get(cursor, &k, &v, MDB_NEXT);
+    }
+    mdb_cursor_close(cursor);
+    TXN_POSTFIX_RDONLY();
+    return true;
+}
+
 void BlockchainLMDB::add_committee_eligible(const crypto::key_image& ki, const committee_eligible_record& rec)
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);

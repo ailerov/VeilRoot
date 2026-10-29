@@ -17449,6 +17449,7 @@ wallet2::vote_tx_result wallet2::create_vote_v2_tx(
   // ---- Tally key record ----
   COMMAND_RPC_GET_DAO_TALLY_KEY::request tk_req = AUTO_VAL_INIT(tk_req);
   COMMAND_RPC_GET_DAO_TALLY_KEY::response tk_res = AUTO_VAL_INIT(tk_res);
+  tk_req.proposal_id = epee::string_tools::pod_to_hex(proposal_id);
   {
     const boost::lock_guard<boost::recursive_mutex> lock{m_daemon_rpc_mutex};
     bool r = net_utils::invoke_http_json_rpc("/json_rpc", "get_dao_tally_key",

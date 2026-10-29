@@ -204,6 +204,9 @@ public:
                                      crypto::hash&) const override { return false; }
   virtual void remove_dao_v2_node_ready(const crypto::public_key&,
                                         uint64_t) override {}
+  virtual bool for_all_dao_v2_node_ready(
+      std::function<bool(const crypto::public_key&, uint64_t,
+                         const crypto::hash&)>) const override { return true; }
 
   virtual void add_dao_local_share(uint32_t, uint32_t, const std::vector<uint8_t>&) override {}
   virtual bool get_dao_local_share(uint32_t, uint32_t, std::vector<uint8_t>&) const override { return false; }

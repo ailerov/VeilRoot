@@ -2235,6 +2235,10 @@ public:
                                        crypto::hash& block_hash) const = 0;
     virtual void remove_dao_v2_node_ready(const crypto::public_key& pk,
                                           uint64_t height) = 0;
+    virtual bool for_all_dao_v2_node_ready(
+        std::function<bool(const crypto::public_key& pk,
+                           uint64_t height,
+                           const crypto::hash& block_hash)> f) const = 0;
     // ---------- VNS DAO V2 OUTCOMES END ----------
 
     // ---------- VNS DAO LOCAL SHARE START ----------

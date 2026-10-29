@@ -653,6 +653,10 @@ public:
                                      crypto::hash& block_hash) const override;
   virtual void remove_dao_v2_node_ready(const crypto::public_key& pk,
                                         uint64_t height) override;
+  virtual bool for_all_dao_v2_node_ready(
+      std::function<bool(const crypto::public_key& pk,
+                         uint64_t height,
+                         const crypto::hash& block_hash)> f) const override;
 
   virtual void add_dao_local_share(uint32_t share_set_id,
                                    uint32_t member_index,

@@ -74,17 +74,10 @@ bool ProposalManager::index_proposal(const transaction& tx, const crypto::hash& 
     rec.voting_end_height = end_height;
     rec.submission_height = height;
     rec.submission_tx_hash = tx_hash;
-    {
-        // Bind the proposal to the single stable DKG key record by
-        // its 32-byte key_id.
-        dao::dao_tally_key_record key_rec;
-        if (m_db.get_underlying_db().get_dao_tally_key(key_rec) &&
-            key_rec.key_id.size() == 32)
-            std::memcpy(rec.tally_key_id.data,
-                        key_rec.key_id.data(), 32);
-        else
-            std::memset(rec.tally_key_id.data, 0, 32);
-    }
+    // tally_key_id is bound later, when this proposal's own DKG
+    // completes and its activation lands. Until then the proposal is
+    // not votable; that is intentional.
+    std::memset(rec.tally_key_id.data, 0, 32);
     rec.executed = false;
     rec.status = PROPOSAL_STATUS_ACTIVE;
     rec.status_height = height;
