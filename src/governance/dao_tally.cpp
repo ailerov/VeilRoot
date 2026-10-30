@@ -402,9 +402,25 @@ bool valid_share_set(const dao_tally_key_record& key_rec,
 
 } // namespace
 
+uint32_t share_set_id_for_key_id(const std::vector<uint8_t>& key_id)
+{
+    if (key_id.size() != 32) return 0;
+    std::vector<uint8_t> buf(key_id.begin(), key_id.end());
+    const char* tag = "share_set_id";
+    buf.insert(buf.end(), tag, tag + 13);
+    crypto::hash h{};
+    crypto::cn_fast_hash(buf.data(), buf.size(), h);
+    uint32_t v = 0;
+    for (int i = 0; i < 4; ++i) v |= static_cast<uint32_t>(h.data[i]) << (8*i);
+    v &= 0xFFFFFFFEu;   // force even
+    if (v < 2) v = 2;   // reserve 0 and 1
+    return v;
+}
+
 bool dao_synthesize_bootstrap_share_set(
     const dao_tally_key_record& key_rec,
-    dao_share_set_record& out)
+    dao_share_set_record& out,
+    uint64_t share_set_id)
 {
     if (key_rec.V_K_i.size() != key_rec.committee_size) return false;
     if (key_rec.committee_members.size() != key_rec.committee_size)
@@ -413,7 +429,7 @@ bool dao_synthesize_bootstrap_share_set(
 
     out = dao_share_set_record{};
     out.version      = 1;
-    out.share_set_id = 1;
+    out.share_set_id = share_set_id;
     out.height       = key_rec.activation_height;
     out.threshold    = key_rec.threshold;
     out.key_id       = key_rec.key_id;

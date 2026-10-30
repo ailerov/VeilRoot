@@ -2554,4 +2554,93 @@ TEST_F(DaoBootstrapIntegration, ProposalTriggersPerProposalDkg)
     EXPECT_GT(bc.m_dao_v2_dkg_runners_for_test().count(ceremony_id), 0u);
 }
 
+// ------------------------------------------------------------------
+// B2c1 isolation: two proposals' tally keys must not collide.
+// ------------------------------------------------------------------
+TEST_F(DaoBootstrapIntegration, TwoProposalsIsolatedTallyKeys)
+{
+    using namespace cryptonote;
+
+    auto& bc = m_core->get_blockchain_storage();
+    auto& db = bc.get_db();
+
+    crypto::public_key self_pk{};
+    crypto::secret_key self_sk{};
+    crypto::generate_keys(self_pk, self_sk);
+    m_core->set_node_key(self_sk);
+
+    auto make_record = [&](uint8_t seed) -> dao::dao_tally_key_record {
+        dao::dao_tally_key_record rec{};
+        rec.version        = 1;
+        rec.committee_size = 3;
+        rec.threshold      = 2;
+        rec.t              = 1;
+        rec.committee_id_hash.assign(32, seed);
+        rec.committee_members.resize(3);
+        rec.committee_members[0].assign(self_pk.data, self_pk.data + 32);
+        for (int i = 1; i < 3; ++i) {
+            crypto::public_key pk; crypto::secret_key sk;
+            crypto::generate_keys(pk, sk);
+            rec.committee_members[i].assign(pk.data, pk.data + 32);
+        }
+        rec.delta.assign(32, seed);
+        rec.N.assign(256, seed);
+        rec.G.assign(256, 0);
+        rec.theta.assign(256, 0);
+        rec.V.assign(512, 0);
+        rec.V_K_i.assign(3, std::vector<uint8_t>(512, seed));
+        rec.vss_P.assign(64, 0);
+        rec.vss_P_prime.assign(64, 0);
+        rec.vss_g.assign(1, 4);
+        rec.vss_h.assign(64, 0);
+        rec.activation_height   = 1;
+        rec.dkg_transcript_hash.assign(32, 0);
+        rec.key_id.assign(32, seed);
+        return rec;
+    };
+
+    auto keyA = make_record(0xAA);
+    auto keyB = make_record(0xBB);
+    ASSERT_NE(keyA.key_id, keyB.key_id);
+
+    std::vector<uint8_t> shareA{0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08};
+    std::vector<uint8_t> shareB{0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18};
+
+    bc.install_dao_tally_key_for_proposal_for_test(keyA, shareA);
+    bc.install_dao_tally_key_for_proposal_for_test(keyB, shareB);
+
+    {
+        dao::dao_tally_key_record r;
+        ASSERT_TRUE(db.get_dao_tally_key_by_id(keyA.key_id, r));
+        EXPECT_EQ(r.key_id, keyA.key_id);
+        ASSERT_TRUE(db.get_dao_tally_key_by_id(keyB.key_id, r));
+        EXPECT_EQ(r.key_id, keyB.key_id);
+    }
+
+    const uint32_t ssA = dao::share_set_id_for_key_id(keyA.key_id);
+    const uint32_t ssB = dao::share_set_id_for_key_id(keyB.key_id);
+    EXPECT_GT(ssA, 1u);
+    EXPECT_GT(ssB, 1u);
+    EXPECT_NE(ssA, ssB);
+
+    {
+        dao::dao_share_set_record ss;
+        ASSERT_TRUE(db.get_dao_share_set(ssA, ss));
+        EXPECT_EQ(ss.key_id, keyA.key_id);
+        ASSERT_TRUE(db.get_dao_share_set(ssB, ss));
+        EXPECT_EQ(ss.key_id, keyB.key_id);
+    }
+
+    {
+        std::vector<uint8_t> lsA, lsB;
+        ASSERT_TRUE(db.get_dao_local_share(ssA, 1, lsA));
+        ASSERT_TRUE(db.get_dao_local_share(ssB, 1, lsB));
+        EXPECT_NE(lsA, lsB);
+    }
+
+    {
+        dao::dao_tally_key_record singleton;
+        EXPECT_FALSE(db.get_dao_tally_key(singleton));
+    }
+}
 

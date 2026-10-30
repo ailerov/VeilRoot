@@ -166,7 +166,23 @@ bool TallyManager::produce_local_share(
     if (key_rec.V_K_i.size() != key_rec.committee_members.size())
         return false;
 
-    const uint64_t share_set_id = m_db.get_current_dao_share_set_id();
+    // Match the share-set id used at install: derived from key_id for
+    // per-proposal keys, or the historical id 1 for bootstrap when the
+    // global current still points at a share set for this key.
+    uint64_t share_set_id = m_db.get_current_dao_share_set_id();
+    dao::dao_share_set_record ss;
+    bool ss_matches = false;
+    if (share_set_id != 0 &&
+        m_db.get_dao_share_set(share_set_id, ss) &&
+        ss.key_id.size() == key_rec.key_id.size() &&
+        std::memcmp(ss.key_id.data(), key_rec.key_id.data(),
+                    key_rec.key_id.size()) == 0) {
+        ss_matches = true;
+    }
+    if (!ss_matches) {
+        share_set_id = static_cast<uint64_t>(
+            dao::share_set_id_for_key_id(key_rec.key_id));
+    }
     if (share_set_id == 0) return false;
     std::vector<uint8_t> packed_blob;
     if (!m_db.get_dao_local_share(

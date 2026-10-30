@@ -9127,7 +9127,10 @@ bool persist_dao_v2_dkg_result(BlockchainDB& db,
       return false;
     }
     try {
-      db.add_dao_local_share(1u, local_id, packed);
+      const uint32_t derived_ssid = ceremony_id.empty()
+          ? 1u
+          : dao::share_set_id_for_key_id(res.record.key_id);
+      db.add_dao_local_share(derived_ssid, local_id, packed);
     } catch (const std::exception& e) {
       MERROR("persist_dao_v2_dkg_result: local share persist failed: "
              << e.what());
@@ -11103,8 +11106,14 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
 
         dao::dao_tally_key_record key_rec;
         try {
-          if (!m_db->get_dao_tally_key(key_rec))
-            return true;
+          if (rec.tally_key_id == crypto::null_hash) {
+            // Legacy / bootstrap path.
+            if (!m_db->get_dao_tally_key(key_rec)) return true;
+          } else {
+            std::vector<uint8_t> kid(rec.tally_key_id.data,
+                                     rec.tally_key_id.data + 32);
+            if (!m_db->get_dao_tally_key_by_id(kid, key_rec)) return true;
+          }
         } catch (...) { return true; }
 
         // Use the same committee selector as the consensus
@@ -11405,6 +11414,49 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     }
     m_db->block_wtxn_stop();
   }
+
+  void Blockchain::install_dao_tally_key_for_proposal_for_test(
+      const dao::dao_tally_key_record& record,
+      const std::vector<uint8_t>& local_share_bytes)
+  {
+    m_db->block_wtxn_start();
+    try {
+      if (record.key_id.size() != 32)
+        throw std::runtime_error("bad key_id");
+      m_db->add_dao_tally_key_by_id(record.key_id, record);
+
+      const uint64_t derived_id =
+          static_cast<uint64_t>(dao::share_set_id_for_key_id(record.key_id));
+      dao::dao_share_set_record share_set;
+      if (dao::dao_synthesize_bootstrap_share_set(record, share_set, derived_id))
+        m_db->add_dao_share_set(derived_id, share_set);
+
+      crypto::public_key self_pk{};
+      if (crypto::secret_key_to_public_key(m_node_privkey, self_pk) &&
+          !local_share_bytes.empty()) {
+        uint32_t idx = 0;
+        for (size_t i = 0; i < record.committee_members.size(); ++i) {
+          const auto& m = record.committee_members[i];
+          if (m.size() != sizeof(self_pk.data)) continue;
+          if (std::memcmp(m.data(), self_pk.data, sizeof(self_pk.data)) == 0) {
+            idx = static_cast<uint32_t>(i) + 1;
+            break;
+          }
+        }
+        if (idx > 0) {
+          std::vector<uint8_t> packed = dao::dao_pack_local_share(
+              record.key_id, local_share_bytes);
+          if (!packed.empty())
+            m_db->add_dao_local_share(static_cast<uint32_t>(derived_id),
+                                       idx, packed);
+        }
+      }
+    } catch (...) {
+      try { m_db->block_wtxn_abort(); } catch (...) {}
+      throw;
+    }
+    m_db->block_wtxn_stop();
+  }
 #endif
 
   bool Blockchain::is_dao_v2_dkg_activation_tx(const transaction& tx) const
@@ -11638,14 +11690,19 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
         }
       }
 
-      // Install the bootstrap share set. In the bootstrap set,
-      // share-set positions are identical to DKG indices, so this
-      // simply republishes V_K_i as VK_i. Later resharing writes
-      // share_set_id 2, 3, ... without touching this one.
+      // Install the share set under a deterministic per-key id so
+      // multiple proposals do not collide. Bootstrap (proposal_id ==
+      // null) keeps the historical id 1 and remains the "current"
+      // share set for legacy code paths; per-proposal keys do not
+      // touch the global current pointer.
       dao::dao_share_set_record share_set;
-      if (dao::dao_synthesize_bootstrap_share_set(rec, share_set)) {
-        m_db->add_dao_share_set(share_set.share_set_id, share_set);
-        m_db->set_current_dao_share_set_id(share_set.share_set_id);
+      const bool is_bootstrap = (act.proposal_id == crypto::null_hash);
+      const uint64_t ssid = is_bootstrap
+          ? 1u
+          : static_cast<uint64_t>(dao::share_set_id_for_key_id(rec.key_id));
+      if (dao::dao_synthesize_bootstrap_share_set(rec, share_set, ssid)) {
+        m_db->add_dao_share_set(ssid, share_set);
+        if (is_bootstrap) m_db->set_current_dao_share_set_id(ssid);
       }
 
       MINFO("DKG key activation applied at height " << block_height

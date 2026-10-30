@@ -131,9 +131,15 @@ bool dao_evaluate_v2_tally(
 // Canonical bootstrap share set derived from the key record. Used as
 // the current share set until resharing writes a new one. In this set,
 // share-set positions are identical to bootstrap DKG indices.
+// Deterministic per-key share-set id. Bootstrap (default) uses 1;
+// per-proposal keys derive a stable uint32 from key_id. Reserved: 0
+// (none), 1 (bootstrap).
+uint32_t share_set_id_for_key_id(const std::vector<uint8_t>& key_id);
+
 bool dao_synthesize_bootstrap_share_set(
     const dao_tally_key_record& key_rec,
-    dao_share_set_record& out);
+    dao_share_set_record& out,
+    uint64_t share_set_id = 1);
 
 // Build a certificate from a set of partial decryptions. The member
 // indices must all be in 1..share_set.committee_members.size() and
