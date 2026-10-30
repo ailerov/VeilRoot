@@ -2644,3 +2644,226 @@ TEST_F(DaoBootstrapIntegration, TwoProposalsIsolatedTallyKeys)
     }
 }
 
+// ------------------------------------------------------------------
+// B3b: at voting-end, if the ready roster differs from the acceptance
+// committee, a reshare must start for the proposal's key.
+// ------------------------------------------------------------------
+TEST_F(DaoBootstrapIntegration, B3bTriggerFiresOnRosterChange)
+{
+    using namespace cryptonote;
+    using namespace cryptonote::dao;
+
+    auto& bc = m_core->get_blockchain_storage();
+    auto& db = bc.get_db();
+
+    // Mine to height 3 so height 2 has a canonical hash.
+    account_base miner; miner.generate();
+    while (bc.get_current_blockchain_height() < 3) {
+        block tmpl{}; difficulty_type diff{}; uint64_t h=0,r=0,sh=0;
+        crypto::hash shh{}; blobdata en(8,0);
+        ASSERT_TRUE(bc.create_block_template(tmpl,
+            miner.get_keys().m_account_address, diff, h, r, en, sh, shh));
+        auto gbh = [&bc](const block& b, uint64_t hh,
+                         const crypto::hash* sm, unsigned int mn,
+                         crypto::hash& o) -> bool {
+            return get_block_longhash(&bc, b, o, hh, sm,
+                                      static_cast<int>(mn));
+        };
+        ASSERT_TRUE(miner::find_nonce_for_given_block(
+            gbh, tmpl, diff, h, nullptr));
+        block_verification_context bvc{}; pool_supplement e{};
+        blobdata bb = block_to_blob(tmpl);
+        ASSERT_TRUE(m_core->handle_single_incoming_block(
+            bb, &tmpl, bvc, e, false));
+        ASSERT_FALSE(bvc.m_verifivation_failed);
+    }
+    const crypto::hash ready_h = bc.get_block_id_by_height(2);
+
+    // Real DKG for a 3-party committee. Committee = this node + two
+    // dummies, unsorted — the trigger sorts the ready roster, not the
+    // committee, so unsorted is fine.
+    std::vector<crypto::public_key> committee;
+    std::vector<crypto::secret_key> committee_sks;
+
+    crypto::public_key self_pk; crypto::secret_key self_sk;
+    crypto::generate_keys(self_pk, self_sk);
+    m_core->set_node_key(self_sk);
+    committee.push_back(self_pk);
+    committee_sks.push_back(self_sk);
+
+    for (int i = 0; i < 2; ++i) {
+        crypto::public_key pk; crypto::secret_key sk;
+        crypto::generate_keys(pk, sk);
+        committee.push_back(pk);
+        committee_sks.push_back(sk);
+    }
+
+    dao_vss_group vss;
+    ASSERT_TRUE(dao_vss_group_generate(vss,
+        dao_dkg_required_vss_bits(60, 128, 32)));
+    dkg_inproc_network inet = dkg_make_inproc_network(3, nullptr);
+    std::vector<std::unique_ptr<dkg_transport>> pool;
+    pool.reserve(inet.endpoints.size());
+    for (auto& e : inet.endpoints) pool.push_back(std::move(e));
+    size_t next = 0;
+    dkg_transport_factory factory =
+        [&pool, &next](uint32_t) -> std::unique_ptr<dkg_transport> {
+            if (next >= pool.size()) return nullptr;
+            return std::move(pool[next++]);
+        };
+    dkg_config cfg;
+    cfg.committee_size = 3;
+    cfg.threshold      = dao_dkg_expected_threshold(3);
+    cfg.member_ids     = committee;
+    cfg.k              = 60;
+    cfg.target_N_bits  = 128;
+    cfg.security_bits  = 32;
+    cfg.qproof_rounds  = DAO_DKG_QPROOF_ROUNDS_TEST;
+    cfg.max_attempts   = 1;
+    cfg.test_seed      = 0x5645494C52544F33ULL;
+    cfg.local_party_id = 1;   // our committee[0] = self_pk
+
+    dkg_result dkg_out;
+    ASSERT_TRUE(dkg_run_with_transport(cfg, factory, dkg_out));
+    ASSERT_TRUE(dkg_out.candidate_accepted);
+    ASSERT_FALSE(dkg_out.local_secret_share.empty());
+
+    // Install key record + real local share for this proposal.
+    bc.install_dao_tally_key_for_proposal_for_test(
+        dkg_out.record, dkg_out.local_secret_share);
+
+    // Ready records: 3 committee members + 1 extra, all at height 2.
+    crypto::public_key extra;
+    crypto::secret_key extra_sk;
+    crypto::generate_keys(extra, extra_sk);
+    {
+        db_wtxn_guard g(&db);
+        for (const auto& pk : committee)
+            db.add_dao_v2_node_ready(pk, 2, ready_h);
+        db.add_dao_v2_node_ready(extra, 2, ready_h);
+    }
+
+    bc.set_dao_v2_tally_broadcast(
+        [](const dao::dao_v2_tally_share&) {});
+    bc.set_dao_v2_dkg_send([](const std::string&) -> bool { return true; });
+
+    // Proposal whose voting_end_height equals 3.
+    const uint64_t voting_end = 3;
+    crypto::hash prop_id{};
+    std::memset(prop_id.data, 0xA7, 32);
+    {
+        proposal_record rec{};
+        rec.proposal_id       = prop_id;
+        rec.submission_height = 1;
+        rec.voting_end_height = voting_end;
+        rec.status            = PROPOSAL_STATUS_ACTIVE;
+        std::memcpy(rec.tally_key_id.data,
+                    dkg_out.record.key_id.data(), 32);
+        db_wtxn_guard g(&db);
+        db.add_proposal_record(prop_id, rec);
+    }
+
+    ASSERT_FALSE(bc.has_dao_v2_reshare_runner_for_test());
+    bc.maybe_produce_dao_v2_share(voting_end + 1);
+    EXPECT_TRUE(bc.has_dao_v2_reshare_runner_for_test());
+}
+
+TEST_F(DaoBootstrapIntegration, B3bTriggerNoOpOnSameRoster)
+{
+    using namespace cryptonote;
+
+    auto& bc = m_core->get_blockchain_storage();
+    auto& db = bc.get_db();
+
+    account_base miner; miner.generate();
+    while (bc.get_current_blockchain_height() < 3) {
+        block tmpl{}; difficulty_type diff{}; uint64_t h=0,r=0,sh=0;
+        crypto::hash shh{}; blobdata en(8,0);
+        ASSERT_TRUE(bc.create_block_template(tmpl,
+            miner.get_keys().m_account_address, diff, h, r, en, sh, shh));
+        auto gbh = [&bc](const block& b, uint64_t hh,
+                         const crypto::hash* s, unsigned int mn,
+                         crypto::hash& o) -> bool {
+            return get_block_longhash(&bc, b, o, hh, s,
+                                      static_cast<int>(mn));
+        };
+        ASSERT_TRUE(miner::find_nonce_for_given_block(
+            gbh, tmpl, diff, h, nullptr));
+        block_verification_context bvc{}; pool_supplement e{};
+        blobdata bb = block_to_blob(tmpl);
+        ASSERT_TRUE(m_core->handle_single_incoming_block(
+            bb, &tmpl, bvc, e, false));
+        ASSERT_FALSE(bvc.m_verifivation_failed);
+    }
+    const crypto::hash ready_h = bc.get_block_id_by_height(2);
+
+    crypto::public_key k_self; crypto::secret_key sk_self;
+    crypto::generate_keys(k_self, sk_self);
+    m_core->set_node_key(sk_self);
+
+    std::vector<crypto::public_key> committee = { k_self };
+    for (int i = 0; i < 2; ++i) {
+        crypto::public_key pk; crypto::secret_key sk;
+        crypto::generate_keys(pk, sk);
+        committee.push_back(pk);
+    }
+    std::sort(committee.begin(), committee.end(),
+              [](const auto& a, const auto& b) {
+                return std::memcmp(a.data, b.data, 32) < 0;
+              });
+
+    dao::dao_tally_key_record key_rec{};
+    key_rec.version        = 1;
+    key_rec.committee_size = 3;
+    key_rec.threshold      = 2;
+    key_rec.t              = 1;
+    key_rec.committee_id_hash.assign(32, 0x11);
+    for (const auto& pk : committee)
+        key_rec.committee_members.emplace_back(pk.data, pk.data + 32);
+    key_rec.delta.assign(32, 0x22);
+    key_rec.N.assign(256, 0x33);
+    key_rec.G.assign(256, 0);
+    key_rec.theta.assign(256, 0);
+    key_rec.V.assign(512, 0);
+    key_rec.V_K_i.assign(3, std::vector<uint8_t>(512, 0x44));
+    key_rec.vss_P.assign(64, 0);
+    key_rec.vss_P_prime.assign(64, 0);
+    key_rec.vss_g.assign(1, 4);
+    key_rec.vss_h.assign(64, 0);
+    key_rec.activation_height = 2;
+    key_rec.dkg_transcript_hash.assign(32, 0);
+    key_rec.key_id.assign(32, 0x55);
+
+    std::vector<uint8_t> share_bytes(16, 0x66);
+    bc.install_dao_tally_key_for_proposal_for_test(key_rec, share_bytes);
+
+    // Ready = exactly the committee.
+    {
+        db_wtxn_guard g(&db);
+        for (const auto& pk : committee)
+            db.add_dao_v2_node_ready(pk, 2, ready_h);
+    }
+
+    bc.set_dao_v2_tally_broadcast(
+        [](const dao::dao_v2_tally_share&) {});
+    bc.set_dao_v2_dkg_send([](const std::string&) -> bool { return true; });
+
+    const uint64_t voting_end = 3;
+    crypto::hash prop_id{};
+    std::memset(prop_id.data, 0xA8, 32);
+    {
+        proposal_record rec{};
+        rec.proposal_id       = prop_id;
+        rec.submission_height = 1;
+        rec.voting_end_height = voting_end;
+        rec.status            = PROPOSAL_STATUS_ACTIVE;
+        std::memcpy(rec.tally_key_id.data, key_rec.key_id.data(), 32);
+        db_wtxn_guard g(&db);
+        db.add_proposal_record(prop_id, rec);
+    }
+
+    ASSERT_FALSE(bc.has_dao_v2_reshare_runner_for_test());
+    bc.maybe_produce_dao_v2_share(voting_end + 1);
+    EXPECT_FALSE(bc.has_dao_v2_reshare_runner_for_test());
+}
+

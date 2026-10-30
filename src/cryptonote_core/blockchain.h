@@ -1537,6 +1537,22 @@ namespace cryptonote
   // share set already covers every eligible node.
   void maybe_maintain_dao_v2_share_set();
 
+  // B3b: at voting-end, if the chain-state ready roster differs from
+  // the acceptance-time committee for this proposal, start a reshare
+  // of that proposal's key to the current roster. Deferred to the
+  // existing single reshare runner; if one is already active, the
+  // caller skips and retries on the next tick. Trigger start only —
+  // the producer does not yet consume the new share set (B3c).
+  void maybe_start_dao_v2_reshare_for_proposal(
+      const crypto::hash& proposal_id, uint64_t vote_end_height);
+
+#ifdef VEILROOT_DAO_DKG_TESTING
+  bool has_dao_v2_reshare_runner_for_test() const {
+    std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
+    return m_dao_v2_reshare_runner != nullptr;
+  }
+#endif
+
   // Reshare P2P handler. Routes a reshare message to the running
   // runner, if any. Called from handle_dao_v2_dkg_msg when the wire
   // payload is a reshare message rather than a DKG message.
