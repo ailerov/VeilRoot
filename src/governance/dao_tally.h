@@ -55,7 +55,7 @@ struct dao_partial_set
 
 struct dao_tally_certificate
 {
-    static constexpr uint8_t WIRE_VERSION = 5;
+    static constexpr uint8_t WIRE_VERSION = 6;
 
     crypto::hash         proposal_id;
     uint64_t             vote_end_height = 0;
@@ -79,6 +79,24 @@ struct dao_tally_certificate
     bool                 quorum_met       = false;
     bool                 majority_met     = false;
     bool                 passed           = false;
+
+    // --- v6: reshare evidence ---
+    // All zero / empty means the committee equals the acceptance-time
+    // committee and partials verify against key_rec.V_K_i with
+    // key_rec.threshold (v5-equivalent behaviour).
+    //
+    // When per_event_share_set_id != 0, the cert claims a reshare
+    // occurred; B3c will verify the evidence and use these fields
+    // instead of key_rec's. Until B3c lands, dao_verify_tally_certificate
+    // rejects such certs.
+    uint64_t                              per_event_share_set_id = 0;
+    uint32_t                              threshold              = 0;
+    std::vector<std::vector<uint8_t>>     member_pubkeys;   // 32 bytes each
+    std::vector<std::vector<uint8_t>>     per_event_VK_i;   // PAILLIER_CT_BYTES each
+    uint64_t                              base_share_set_id = 0;
+    std::vector<std::vector<uint8_t>>     contributions;
+    std::vector<uint32_t>                 contributor_indices;
+    std::vector<std::vector<uint8_t>>     contributor_vk;
 
     bool serialize(std::vector<uint8_t>& out) const;
     bool deserialize(const std::vector<uint8_t>& in);

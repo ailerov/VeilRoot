@@ -8,6 +8,7 @@
 #include <openssl/sha.h>
 
 #include "governance/dao_threshold.h"
+#include "misc_log_ex.h"
 
 namespace cryptonote {
 namespace dao {
@@ -260,6 +261,21 @@ bool dao_tally_certificate::serialize(std::vector<uint8_t>& out) const
     push_u8(out, quorum_met ? 1 : 0);
     push_u8(out, majority_met ? 1 : 0);
     push_u8(out, passed ? 1 : 0);
+
+    // v6 fields
+    push_u64(out, per_event_share_set_id);
+    push_u32(out, threshold);
+    push_u32(out, static_cast<uint32_t>(member_pubkeys.size()));
+    for (const auto& m : member_pubkeys) push_vec(out, m);
+    push_u32(out, static_cast<uint32_t>(per_event_VK_i.size()));
+    for (const auto& v : per_event_VK_i) push_vec(out, v);
+    push_u64(out, base_share_set_id);
+    push_u32(out, static_cast<uint32_t>(contributions.size()));
+    for (const auto& c : contributions) push_vec(out, c);
+    push_u32(out, static_cast<uint32_t>(contributor_indices.size()));
+    for (uint32_t i : contributor_indices) push_u32(out, i);
+    push_u32(out, static_cast<uint32_t>(contributor_vk.size()));
+    for (const auto& v : contributor_vk) push_vec(out, v);
     return true;
 }
 
@@ -294,6 +310,60 @@ bool dao_tally_certificate::deserialize(const std::vector<uint8_t>& in)
     quorum_met   = (in[off++] != 0);
     majority_met = (in[off++] != 0);
     passed       = (in[off++] != 0);
+
+    // v6 fields
+    if (!pull_u64(in, off, per_event_share_set_id)) return false;
+    if (!pull_u32(in, off, threshold)) return false;
+
+    uint32_t n = 0;
+    if (!pull_u32(in, off, n)) return false;
+    if (n > DAO_DKG_MAX_COMMITTEE_SIZE) return false;
+    member_pubkeys.clear(); member_pubkeys.reserve(n);
+    for (uint32_t i = 0; i < n; ++i) {
+        std::vector<uint8_t> v;
+        if (!pull_vec(in, off, v)) return false;
+        if (v.size() != 32) return false;
+        member_pubkeys.push_back(std::move(v));
+    }
+
+    if (!pull_u32(in, off, n)) return false;
+    if (n > DAO_DKG_MAX_COMMITTEE_SIZE) return false;
+    per_event_VK_i.clear(); per_event_VK_i.reserve(n);
+    for (uint32_t i = 0; i < n; ++i) {
+        std::vector<uint8_t> v;
+        if (!pull_vec(in, off, v)) return false;
+        per_event_VK_i.push_back(std::move(v));
+    }
+
+    if (!pull_u64(in, off, base_share_set_id)) return false;
+
+    if (!pull_u32(in, off, n)) return false;
+    if (n > DAO_DKG_MAX_COMMITTEE_SIZE) return false;
+    contributions.clear(); contributions.reserve(n);
+    for (uint32_t i = 0; i < n; ++i) {
+        std::vector<uint8_t> v;
+        if (!pull_vec(in, off, v)) return false;
+        contributions.push_back(std::move(v));
+    }
+
+    if (!pull_u32(in, off, n)) return false;
+    if (n > DAO_DKG_MAX_COMMITTEE_SIZE) return false;
+    contributor_indices.clear(); contributor_indices.reserve(n);
+    for (uint32_t i = 0; i < n; ++i) {
+        uint32_t x;
+        if (!pull_u32(in, off, x)) return false;
+        contributor_indices.push_back(x);
+    }
+
+    if (!pull_u32(in, off, n)) return false;
+    if (n > DAO_DKG_MAX_COMMITTEE_SIZE) return false;
+    contributor_vk.clear(); contributor_vk.reserve(n);
+    for (uint32_t i = 0; i < n; ++i) {
+        std::vector<uint8_t> v;
+        if (!pull_vec(in, off, v)) return false;
+        contributor_vk.push_back(std::move(v));
+    }
+
     return off == in.size();
 }
 
@@ -553,6 +623,15 @@ bool dao_verify_tally_certificate(
     if (cert.key_id.size() != 32) return false;
     if (std::memcmp(cert.key_id.data(), key_rec.key_id.data(), 32) != 0)
         return false;
+
+    // v6 reshare-evidence certs are not yet verifiable. Reject until
+    // B3c implements dao_reshare_vss_verify_public + VK_i recompute.
+    if (cert.per_event_share_set_id != 0) {
+        MERROR("v6 tally certificate claims reshare evidence; "
+               "verification not yet implemented (B3c)");
+        return false;
+    }
+
     if (key_rec.committee_members.empty()) return false;
     if (key_rec.threshold == 0) return false;
     if (key_rec.V_K_i.size() != key_rec.committee_members.size())
