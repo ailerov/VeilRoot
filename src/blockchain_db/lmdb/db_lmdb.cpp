@@ -3849,6 +3849,40 @@ void BlockchainLMDB::set_current_dao_share_set_id(uint64_t share_set_id)
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to set current share set id: ", result).c_str()));
 }
+
+
+bool BlockchainLMDB::for_all_dao_share_sets(
+    std::function<bool(uint64_t share_set_id,
+                       const dao::dao_share_set_record&)> f) const
+{
+    LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+    check_open();
+    TXN_PREFIX_RDONLY();
+
+    MDB_cursor* cursor;
+    int rc = mdb_cursor_open(m_txn, m_dao_share_sets, &cursor);
+    if (rc) { TXN_POSTFIX_RDONLY(); return false; }
+    MDB_val k, v;
+    rc = mdb_cursor_get(cursor, &k, &v, MDB_FIRST);
+    bool cont = true;
+    while (rc == MDB_SUCCESS && cont) {
+        if (k.mv_size == sizeof(uint64_t) && v.mv_size > 0) {
+            uint64_t sid = 0;
+            std::memcpy(&sid, k.mv_data, sizeof(sid));
+            std::vector<uint8_t> blob(
+                static_cast<uint8_t*>(v.mv_data),
+                static_cast<uint8_t*>(v.mv_data) + v.mv_size);
+            dao::dao_share_set_record rec;
+            if (rec.deserialize(blob)) {
+                cont = f(sid, rec);
+            }
+        }
+        rc = mdb_cursor_get(cursor, &k, &v, MDB_NEXT);
+    }
+    mdb_cursor_close(cursor);
+    TXN_POSTFIX_RDONLY();
+    return true;
+}
 // END_VNS_DAO_SHARE_SETS
 
 // BEGIN_VNS_DAO_LOCAL_SHARES

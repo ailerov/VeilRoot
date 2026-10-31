@@ -1543,6 +1543,11 @@ namespace cryptonote
   // existing single reshare runner; if one is already active, the
   // caller skips and retries on the next tick. Trigger start only —
   // the producer does not yet consume the new share set (B3c).
+  // Returns the highest share_set_id in the DB whose key_id matches,
+  // or 0 if none. Bootstrap falls back to 1.
+  uint64_t latest_share_set_id_for_key_id(
+      const std::vector<uint8_t>& key_id) const;
+
   void maybe_start_dao_v2_reshare_for_proposal(
       const crypto::hash& proposal_id, uint64_t vote_end_height);
 

@@ -673,6 +673,9 @@ public:
   virtual void remove_dao_share_set(uint64_t share_set_id) override;
   virtual uint64_t get_current_dao_share_set_id() const override;
   virtual void set_current_dao_share_set_id(uint64_t share_set_id) override;
+  virtual bool for_all_dao_share_sets(
+      std::function<bool(uint64_t share_set_id,
+                         const dao::dao_share_set_record&)> f) const override;
   virtual void add_dao_local_dynamic_share(uint32_t share_epoch,
                                            const std::vector<uint8_t>& share_blob) override;
   virtual bool get_dao_local_dynamic_share(uint32_t share_epoch,

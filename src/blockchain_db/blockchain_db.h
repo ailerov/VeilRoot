@@ -2266,6 +2266,9 @@ public:
     // The highest share_set_id ever written, or 0 if none exists.
     virtual uint64_t get_current_dao_share_set_id() const = 0;
     virtual void set_current_dao_share_set_id(uint64_t share_set_id) = 0;
+    virtual bool for_all_dao_share_sets(
+        std::function<bool(uint64_t share_set_id,
+                           const dao::dao_share_set_record&)> f) const = 0;
     // ---------- VNS DAO LOCAL SHARE END ----------
 
     // BEGIN_VNS_DAO_LOCAL_DYNAMIC_SHARES

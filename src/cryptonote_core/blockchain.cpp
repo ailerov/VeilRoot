@@ -10628,6 +10628,22 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
   // allocated at start and freed only when the runner is destroyed.
   // ------------------------------------------------------------------
 
+  uint64_t Blockchain::latest_share_set_id_for_key_id(
+      const std::vector<uint8_t>& key_id) const
+  {
+    if (key_id.size() != 32) return 0;
+    uint64_t best = 0;
+    m_db->for_all_dao_share_sets(
+        [&](uint64_t sid, const dao::dao_share_set_record& rec) -> bool {
+          if (rec.key_id.size() != 32) return true;
+          if (std::memcmp(rec.key_id.data(), key_id.data(), 32) != 0)
+            return true;
+          if (sid > best) best = sid;
+          return true;
+        });
+    return best;
+  }
+
   void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
       const crypto::hash& proposal_id, uint64_t vote_end_height)
   {
@@ -11223,8 +11239,10 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
 
     dao::dao_tally_key_record key_rec;
     try {
-      if (!m_db->get_dao_tally_key(key_rec)) {
-        MWARNING("V2 tally share: key record missing");
+      std::vector<uint8_t> kid(prop.tally_key_id.data,
+                               prop.tally_key_id.data + 32);
+      if (!m_db->get_dao_tally_key_by_id(kid, key_rec)) {
+        MWARNING("V2 tally share: key record missing for proposal");
         return;
       }
     } catch (...) {
@@ -11232,9 +11250,16 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
       return;
     }
 
-    // Resolve the current share set. The sender's position and the
-    // share.member_index both refer to positions in this set.
-    const uint64_t cur_sid = m_db->get_current_dao_share_set_id();
+    // Resolve the current share set for this proposal's key. Bootstrap
+    // uses the singleton pointer; per-proposal uses the latest share
+    // set matching key_id.
+    uint64_t cur_sid = 0;
+    if (key_rec.key_id.size() == 32) {
+      cur_sid = latest_share_set_id_for_key_id(key_rec.key_id);
+    }
+    if (cur_sid == 0) {
+      cur_sid = m_db->get_current_dao_share_set_id();
+    }
     if (cur_sid == 0) {
       MWARNING("V2 tally share: no current share set");
       return;
@@ -11357,7 +11382,14 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     m_db->for_all_proposal_records(
       [&](const crypto::hash& pid, const proposal_record& rec) -> bool {
         if (rec.status != PROPOSAL_STATUS_ACTIVE) return true;
-        if (rec.voting_end_height + 1 != height) return true;
+        if (rec.voting_end_height + 1 > height) return true;
+
+        // B3b: if a reshare for this proposal is still running, defer
+        // production. On next block we retry.
+        {
+          std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
+          if (m_dao_v2_reshare_runner) return true;
+        }
 
         // B3b: if the ready roster at voting-end differs from the
         // acceptance-time committee, start a reshare. The existing
