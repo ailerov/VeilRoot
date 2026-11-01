@@ -249,19 +249,25 @@ bool dao_reshare_combine_one(
     size_t used = 0;
     for (const auto& c : contributions) {
         if (used >= threshold) break;
-        if (c.shares.size() != 1) { BN_free(s_prime); return false; }
-        const auto& sh = c.shares[0];
-        if (sh.j != target_index) { BN_free(s_prime); return false; }
+
+        // A contribution produced by dao_reshare_make_contribution
+        // carries one share per new_member. Select the share that
+        // targets this recipient's position.
+        const dao_reshare_vss_share* target = nullptr;
+        for (const auto& sh : c.shares) {
+            if (sh.j == target_index) { target = &sh; break; }
+        }
+        if (!target) { BN_free(s_prime); return false; }
 
         if (!dao_reshare_vss_verify(pk, grp, V_bytes,
                                      c.link_ctx, c.link_proof,
                                      c.commits, c.coeff_proofs,
-                                     sh.j, sh.q_i_j)) {
+                                     target->j, target->q_i_j)) {
             BN_free(s_prime);
             return false;
         }
         BIGNUM* q = BN_new();
-        if (!q || !dao_reshare_deserialize_signed(sh.q_i_j, q)) {
+        if (!q || !dao_reshare_deserialize_signed(target->q_i_j, q)) {
             BN_free(q); BN_free(s_prime);
             return false;
         }

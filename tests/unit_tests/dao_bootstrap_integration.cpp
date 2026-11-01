@@ -2867,3 +2867,278 @@ TEST_F(DaoBootstrapIntegration, B3bTriggerNoOpOnSameRoster)
     EXPECT_FALSE(bc.has_dao_v2_reshare_runner_for_test());
 }
 
+// ------------------------------------------------------------------
+// v6 certificate evidence end-to-end. Real 3-party DKG, real reshare
+// of the 3-member key to a 3-member subset that includes a new member,
+// hand-built v6 cert, verify accepts, tampered evidence rejects.
+// ------------------------------------------------------------------
+TEST_F(DaoBootstrapIntegration, V6CertificateWithReshareEvidence)
+{
+    using namespace cryptonote;
+    using namespace cryptonote::dao;
+
+    auto& bc = m_core->get_blockchain_storage();
+    auto& db = bc.get_db();
+
+    // Mine to height 3 so genesis and height-2 hashes are canonical.
+    account_base miner; miner.generate();
+    while (bc.get_current_blockchain_height() < 3) {
+        block tmpl{}; difficulty_type diff{}; uint64_t h=0,r=0,sh=0;
+        crypto::hash shh{}; blobdata en(8,0);
+        ASSERT_TRUE(bc.create_block_template(tmpl,
+            miner.get_keys().m_account_address, diff, h, r, en, sh, shh));
+        auto gbh = [&bc](const block& b, uint64_t hh,
+                         const crypto::hash* s, unsigned int mn,
+                         crypto::hash& o) -> bool {
+            return get_block_longhash(&bc, b, o, hh, s,
+                                      static_cast<int>(mn));
+        };
+        ASSERT_TRUE(miner::find_nonce_for_given_block(
+            gbh, tmpl, diff, h, nullptr));
+        block_verification_context bvc{}; pool_supplement e{};
+        blobdata bb = block_to_blob(tmpl);
+        ASSERT_TRUE(m_core->handle_single_incoming_block(
+            bb, &tmpl, bvc, e, false));
+        ASSERT_FALSE(bvc.m_verifivation_failed);
+    }
+
+    // Real 3-party DKG to establish a base key + base VK_i.
+    std::vector<crypto::public_key> committee;
+    std::vector<crypto::secret_key> committee_sks;
+    for (int i = 0; i < 3; ++i) {
+        crypto::public_key pk; crypto::secret_key sk;
+        crypto::generate_keys(pk, sk);
+        committee.push_back(pk);
+        committee_sks.push_back(sk);
+    }
+    dao_vss_group vss;
+    ASSERT_TRUE(dao_vss_group_generate(vss,
+        dao_dkg_required_vss_bits(60, 128, 32)));
+    dkg_inproc_network inet = dkg_make_inproc_network(3, nullptr);
+    std::vector<std::unique_ptr<dkg_transport>> pool;
+    for (auto& e : inet.endpoints) pool.push_back(std::move(e));
+    size_t next = 0;
+    dkg_transport_factory factory =
+        [&pool, &next](uint32_t) -> std::unique_ptr<dkg_transport> {
+            if (next >= pool.size()) return nullptr;
+            return std::move(pool[next++]);
+        };
+    dkg_config cfg;
+    cfg.committee_size = 3;
+    cfg.threshold      = dao_dkg_expected_threshold(3);
+    cfg.member_ids     = committee;
+    cfg.k = 60; cfg.target_N_bits = 128; cfg.security_bits = 32;
+    cfg.qproof_rounds  = DAO_DKG_QPROOF_ROUNDS_TEST;
+    cfg.max_attempts   = 1;
+    cfg.test_seed      = 0x5645494C52544F33ULL;
+    cfg.local_party_id = 1;
+    dkg_result dkg_out;
+    ASSERT_TRUE(dkg_run_with_transport(cfg, factory, dkg_out));
+    ASSERT_TRUE(dkg_out.candidate_accepted);
+    ASSERT_EQ(dkg_out.test_SK.size(), 3u);
+
+    PaillierPublicKey pk;
+    ASSERT_TRUE(pk.deserialize_modulus(dkg_out.record.N));
+
+    BIGNUM* delta = BN_new();
+    BN_dec2bn(&delta, "20922789888000");
+
+    // New member; reshare target is {committee[0], committee[1], new_pk}
+    // sorted by pubkey so indices are canonical.
+    crypto::public_key new_pk; crypto::secret_key new_sk;
+    crypto::generate_keys(new_pk, new_sk);
+    std::vector<crypto::public_key> new_members = {
+        committee[0], committee[1], new_pk
+    };
+    std::sort(new_members.begin(), new_members.end(),
+              [](const auto& a, const auto& b) {
+                return std::memcmp(a.data, b.data, 32) < 0;
+              });
+    std::vector<uint32_t> new_indices = {1, 2, 3};
+    uint32_t new_threshold = dao_dkg_expected_threshold(3);
+
+    // Two contributors: base positions 1 and 2.
+    std::vector<uint32_t> S = {1, 2};
+    std::vector<dao_reshare_contribution> contributions;
+
+    const crypto::hash genesis_hash = bc.get_block_id_by_height(0);
+
+    for (uint32_t i = 0; i < 2; ++i) {
+        uint32_t contrib_index = i + 1;
+        const std::string dec(dkg_out.test_SK[i].begin(),
+                              dkg_out.test_SK[i].end());
+        BIGNUM* s_i = nullptr;
+        ASSERT_NE(BN_dec2bn(&s_i, dec.c_str()), 0);
+        BIGNUM* mu_i = BN_new();
+        ASSERT_TRUE(dao::dao_dkg_lagrange_mu(S, contrib_index, mu_i));
+
+        dao_reshare_link_context link_ctx;
+        link_ctx.genesis_block_hash = genesis_hash;
+        link_ctx.stable_key_record_hash.assign(32, 0);
+        link_ctx.share_set_id = 1;
+        link_ctx.contributor_pubkey.assign(32, 0);
+        std::memcpy(link_ctx.contributor_pubkey.data(),
+                    committee[i].data, 32);
+        link_ctx.original_index = contrib_index;
+        link_ctx.contributor_subset = S;
+        link_ctx.N = dkg_out.record.N;
+        link_ctx.V = dkg_out.record.V;
+        link_ctx.VK_i = dkg_out.record.V_K_i[i];
+        std::vector<uint8_t> delta_bytes(32, 0);
+        BN_bn2binpad(delta, delta_bytes.data(), 32);
+        link_ctx.Delta = std::move(delta_bytes);
+
+        dao_reshare_contribution contrib;
+        ASSERT_TRUE(dao_reshare_make_contribution(
+            pk, vss, dkg_out.record.V, s_i, mu_i, delta,
+            new_threshold - 1, new_indices, link_ctx, contrib));
+
+        BN_free(s_i); BN_free(mu_i);
+        contributions.push_back(std::move(contrib));
+    }
+
+    std::vector<std::vector<uint8_t>> new_vks;
+    ASSERT_TRUE(dao_reshare_compute_all_vks(
+        pk, dkg_out.record.V, contributions, new_indices, new_vks));
+    ASSERT_EQ(new_vks.size(), 3u);
+
+    std::vector<dao_reshare_new_share> new_shares(3);
+    for (uint32_t pos = 0; pos < 3; ++pos) {
+        dao_reshare_new_share ns;
+        ASSERT_TRUE(dao_reshare_combine_one(
+            pk, vss, dkg_out.record.V, contributions, new_indices,
+            pos, new_threshold, delta, ns));
+        ns.VK_j = new_vks[pos];
+        new_shares[pos] = std::move(ns);
+    }
+
+    dao_share_set_record event_ss;
+    uint64_t event_sid = dao::share_set_id_for_key_id(dkg_out.record.key_id);
+    ASSERT_TRUE(dao_reshare_build_share_set(
+        event_sid, 3, dkg_out.record.key_id,
+        new_members, new_shares, new_threshold, event_ss));
+
+    // Attach evidence manually (matches what the runner does in
+    // try_finalize_locked when cfg.contributor_vk is populated).
+    event_ss.base_share_set_id = 1;
+    for (size_t i = 0; i < contributions.size(); ++i) {
+        std::vector<uint8_t> blob;
+        ASSERT_TRUE(dao_reshare_serialize_public(contributions[i], blob));
+        event_ss.contributions.push_back(std::move(blob));
+        event_ss.contributor_indices.push_back(
+            contributions[i].contributor_index);
+        event_ss.contributor_vk.push_back(
+            dkg_out.record.V_K_i[contributions[i].contributor_index - 1]);
+    }
+    ASSERT_EQ(event_ss.contributions.size(), 2u);
+    ASSERT_EQ(event_ss.contributor_vk.size(), 2u);
+
+    // Encrypt a synthetic aggregate under the base key.
+    BIGNUM* W = BN_new(); BN_set_word(W, 1000);
+    BIGNUM* Sa = BN_new(); BN_set_word(Sa, 1000);
+    BIGNUM* B = BN_new(); BN_set_word(B, 5000);
+    BIGNUM* r1 = BN_new(); BN_set_word(r1, 3);
+    BIGNUM* r2 = BN_new(); BN_set_word(r2, 5);
+    BIGNUM* r3 = BN_new(); BN_set_word(r3, 7);
+    std::vector<uint8_t> E_W, E_S, E_B;
+    ASSERT_TRUE(pk.encrypt(W, r1, E_W));
+    ASSERT_TRUE(pk.encrypt(Sa, r2, E_S));
+    ASSERT_TRUE(pk.encrypt(B, r3, E_B));
+
+    // Each new member's s'_j is in new_shares[pos].share_signed. Format
+    // is signed serialization (1 sign byte + magnitude), same as
+    // persist_dao_v2_dkg_result writes.
+    dao_partial_set W_set, S_set, B_set;
+    for (uint32_t pos = 0; pos < 3; ++pos) {
+        uint32_t member_index = pos + 1;
+        const auto& raw = new_shares[pos].share_signed;
+        ASSERT_GE(raw.size(), 2u);
+        bool neg = raw[0] == 1;
+        BIGNUM* s_prime = BN_bin2bn(raw.data() + 1, raw.size() - 1, nullptr);
+        ASSERT_NE(s_prime, nullptr);
+        if (neg) BN_set_negative(s_prime, 1);
+
+        auto do_channel = [&](const std::vector<uint8_t>& c,
+                              std::vector<uint8_t>& partial_out,
+                              dao_partial_decryption_proof& proof_out) -> bool {
+            std::vector<uint8_t> ci;
+            if (!dao_threshold_partial_decrypt(pk, c, s_prime, ci))
+                return false;
+            BIGNUM* r = BN_new();
+            if (!dao_dkg_sample_r(pk, r)) { BN_free(r); return false; }
+            const bool ok = dao_partial_decryption_prove(
+                pk, dkg_out.record.V, new_vks[pos], member_index,
+                c, ci, s_prime, r, proof_out);
+            BN_free(r);
+            if (!ok) return false;
+            partial_out = std::move(ci);
+            return true;
+        };
+
+        std::vector<uint8_t> pw, ps, pb;
+        dao_partial_decryption_proof pfw, pfs, pfb;
+        ASSERT_TRUE(do_channel(E_W, pw, pfw));
+        ASSERT_TRUE(do_channel(E_S, ps, pfs));
+        ASSERT_TRUE(do_channel(E_B, pb, pfb));
+
+        W_set.member_indices.push_back(member_index);
+        W_set.partials.push_back(std::move(pw));
+        W_set.proofs.push_back(std::move(pfw));
+        S_set.member_indices.push_back(member_index);
+        S_set.partials.push_back(std::move(ps));
+        S_set.proofs.push_back(std::move(pfs));
+        B_set.member_indices.push_back(member_index);
+        B_set.partials.push_back(std::move(pb));
+        B_set.proofs.push_back(std::move(pfb));
+
+        BN_free(s_prime);
+    }
+
+    // Build the v6 cert using the event share set.
+    crypto::hash prop_id{};
+    std::memset(prop_id.data, 0x88, 32);
+    dao_tally_certificate cert;
+    ASSERT_TRUE(dao_build_tally_certificate(
+        dkg_out.record, prop_id, 3, E_W, E_S, E_B,
+        W_set, S_set, B_set, cert, &event_ss));
+
+    EXPECT_EQ(cert.per_event_share_set_id, event_sid);
+    EXPECT_EQ(cert.threshold, new_threshold);
+    EXPECT_EQ(cert.contributions.size(), 2u);
+    EXPECT_EQ(cert.member_pubkeys.size(), 3u);
+    EXPECT_EQ(cert.per_event_VK_i.size(), 3u);
+
+    dao_supply_snapshot snap;
+    snap.height = 3;
+    snap.minted = dao_u128(100000);
+    snap.circulating = dao_u128(50000);
+    uint32_t quorum_percent = 10;
+
+    EXPECT_TRUE(dao_verify_tally_certificate(
+        dkg_out.record, snap, quorum_percent, E_W, E_S, E_B, cert));
+
+    // Tampered contribution → reject.
+    {
+        dao_tally_certificate bad = cert;
+        ASSERT_FALSE(bad.contributions.empty());
+        ASSERT_FALSE(bad.contributions[0].empty());
+        bad.contributions[0][bad.contributions[0].size() / 2] ^= 0xFF;
+        EXPECT_FALSE(dao_verify_tally_certificate(
+            dkg_out.record, snap, quorum_percent, E_W, E_S, E_B, bad));
+    }
+
+    // Tampered partial → reject.
+    {
+        dao_tally_certificate bad = cert;
+        ASSERT_FALSE(bad.W.partials.empty());
+        ASSERT_FALSE(bad.W.partials[0].empty());
+        bad.W.partials[0][bad.W.partials[0].size() / 2] ^= 0xFF;
+        EXPECT_FALSE(dao_verify_tally_certificate(
+            dkg_out.record, snap, quorum_percent, E_W, E_S, E_B, bad));
+    }
+
+    BN_free(W); BN_free(Sa); BN_free(B);
+    BN_free(r1); BN_free(r2); BN_free(r3);
+    BN_free(delta);
+}
+
