@@ -11423,6 +11423,15 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
         maybe_start_dao_v2_reshare_for_proposal(pid,
                                                  rec.voting_end_height);
 
+        // If the trigger just started a reshare, defer production to
+        // a future block. Producing now would prove against base
+        // VK_i and be rejected by every validator that expects
+        // reshared VK_i.
+        {
+          std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
+          if (m_dao_v2_reshare_runner) return true;
+        }
+
         dao::dao_tally_key_record key_rec;
         try {
           if (rec.tally_key_id == crypto::null_hash) {
@@ -11529,9 +11538,28 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
           return true;
         }
 
+        // Pick the active share set for this proposal: reshared when
+        // a reshare has landed under a newer id with evidence, base
+        // otherwise. Position and VK_i come from whichever set is
+        // active.
+        dao::dao_share_set_record active_ss;
+        bool use_event = false;
+        {
+          uint64_t base_id = dao::share_set_id_for_key_id(key_rec.key_id);
+          uint64_t latest_id = latest_share_set_id_for_key_id(key_rec.key_id);
+          if (latest_id != 0 && latest_id != base_id &&
+              m_db->get_dao_share_set(latest_id, active_ss) &&
+              !active_ss.contributions.empty()) {
+            use_event = true;
+          }
+        }
+        const auto& committee_members =
+            use_event ? active_ss.committee_members
+                      : key_rec.committee_members;
+
         uint32_t key_record_position = 0;
-        for (size_t i = 0; i < key_rec.committee_members.size(); ++i) {
-          const auto& km = key_rec.committee_members[i];
+        for (size_t i = 0; i < committee_members.size(); ++i) {
+          const auto& km = committee_members[i];
           if (km.size() != sizeof(self_pk.data)) continue;
           if (std::memcmp(km.data(), self_pk.data,
                           sizeof(self_pk.data)) == 0) {
@@ -11541,9 +11569,14 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
         }
         if (key_record_position == 0) return true;
 
+        uint32_t effective_threshold =
+            use_event ? active_ss.threshold : key_rec.threshold;
+        if (committee_members.size() < effective_threshold) return true;
+
         cryptonote::TallyManager tm(*m_db, m_governance_params);
         dao::dao_v2_tally_share share;
-        if (!tm.produce_local_share(pid, key_rec, key_record_position, share))
+        if (!tm.produce_local_share(pid, key_rec, key_record_position, share,
+                                     use_event ? &active_ss : nullptr))
           return true;
 
         MINFO("V2 tally: producing share for proposal " << pid

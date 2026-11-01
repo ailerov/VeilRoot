@@ -59,11 +59,17 @@ public:
     // is this node's 1-based index within the key record's bootstrap
     // shareholder set. Returns false if this node has no share for
     // that index. The caller broadcasts the returned share over P2P.
+    // Produce this node's partial decryptions for a proposal. When
+    // event_share_set is non-null and carries reshare evidence, the
+    // partial is bound to the reshared VK_i and stored local share
+    // under the reshared share set; otherwise the base key's VK_i and
+    // share set are used.
     bool produce_local_share(
         const crypto::hash& proposal_id,
         const dao::dao_tally_key_record& key_rec,
         uint32_t key_record_position,
-        dao::dao_v2_tally_share& share_out);
+        dao::dao_v2_tally_share& share_out,
+        const dao::dao_share_set_record* event_share_set = nullptr);
 
 private:
     BlockchainDB& m_db;

@@ -723,9 +723,14 @@ struct dao_reshare_runner::impl
         // If any step fails, evidence stays empty and the certificate
         // path falls back to the base set's VK_i. Bootstrap never has
         // evidence (its cfg.contributor_vk is empty).
+        // Populate v2 reshare evidence from the ACTUAL contributors
+        // that participated, up to threshold. Verification only needs
+        // threshold-many contributions; requiring all potential
+        // contributors would leave evidence empty on any network where
+        // a non-essential shareholder is offline at voting-end.
         if (cfg.contributor_vk.size() == cfg.contributor_indices.size() &&
             !cfg.contributor_vk.empty() &&
-            ordered.size() == cfg.contributor_indices.size()) {
+            ordered.size() >= cfg.threshold) {
             rec.base_share_set_id = cfg.old_share_set_id;
             bool evidence_ok = true;
             for (size_t i = 0; i < ordered.size(); ++i) {
@@ -734,9 +739,23 @@ struct dao_reshare_runner::impl
                     evidence_ok = false;
                     break;
                 }
+                // Map this contribution's contributor_index to its
+                // position in cfg.contributor_indices to fetch the
+                // correct base VK_i. ordered and cfg.contributor_indices
+                // are not necessarily aligned when a contributor is
+                // missing from the received set.
+                bool found_vk = false;
+                for (size_t j = 0; j < cfg.contributor_indices.size(); ++j) {
+                    if (cfg.contributor_indices[j] ==
+                            ordered[i].contributor_index) {
+                        rec.contributor_vk.push_back(cfg.contributor_vk[j]);
+                        found_vk = true;
+                        break;
+                    }
+                }
+                if (!found_vk) { evidence_ok = false; break; }
                 rec.contributions.push_back(std::move(blob));
                 rec.contributor_indices.push_back(ordered[i].contributor_index);
-                rec.contributor_vk.push_back(cfg.contributor_vk[i]);
             }
             if (!evidence_ok) {
                 rec.base_share_set_id = 0;

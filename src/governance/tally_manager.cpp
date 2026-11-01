@@ -186,34 +186,47 @@ bool TallyManager::produce_local_share(
     const crypto::hash& proposal_id,
     const dao::dao_tally_key_record& key_rec,
     uint32_t key_record_position,
-    dao::dao_v2_tally_share& share_out)
+    dao::dao_v2_tally_share& share_out,
+    const dao::dao_share_set_record* event_share_set)
 {
     proposal_record prop;
     if (!m_db.get_proposal_record(proposal_id, prop)) return false;
 
-    if (key_record_position < 1 ||
-        key_record_position > key_rec.committee_members.size())
-        return false;
+    if (key_record_position < 1) return false;
     if (key_rec.key_id.size() != 32) return false;
     if (key_rec.V_K_i.size() != key_rec.committee_members.size())
         return false;
 
-    // Match the share-set id used at install: derived from key_id for
-    // per-proposal keys, or the historical id 1 for bootstrap when the
-    // global current still points at a share set for this key.
-    uint64_t share_set_id = m_db.get_current_dao_share_set_id();
-    dao::dao_share_set_record ss;
-    bool ss_matches = false;
-    if (share_set_id != 0 &&
-        m_db.get_dao_share_set(share_set_id, ss) &&
-        ss.key_id.size() == key_rec.key_id.size() &&
-        std::memcmp(ss.key_id.data(), key_rec.key_id.data(),
-                    key_rec.key_id.size()) == 0) {
-        ss_matches = true;
-    }
-    if (!ss_matches) {
-        share_set_id = static_cast<uint64_t>(
-            dao::share_set_id_for_key_id(key_rec.key_id));
+    // Resolve which share set (and thus which VK_i) this partial will
+    // be bound to. When the caller passes a reshared event share set,
+    // use it directly: position is in that set, VK_i is that set's.
+    uint64_t share_set_id = 0;
+    std::vector<uint8_t> proof_vk;
+    if (event_share_set != nullptr) {
+        share_set_id = event_share_set->share_set_id;
+        if (key_record_position < 1 ||
+            key_record_position > event_share_set->VK_i.size())
+            return false;
+        proof_vk = event_share_set->VK_i[key_record_position - 1];
+    } else {
+        share_set_id = m_db.get_current_dao_share_set_id();
+        dao::dao_share_set_record ss;
+        bool ss_matches = false;
+        if (share_set_id != 0 &&
+            m_db.get_dao_share_set(share_set_id, ss) &&
+            ss.key_id.size() == key_rec.key_id.size() &&
+            std::memcmp(ss.key_id.data(), key_rec.key_id.data(),
+                        key_rec.key_id.size()) == 0) {
+            ss_matches = true;
+        }
+        if (!ss_matches) {
+            share_set_id = static_cast<uint64_t>(
+                dao::share_set_id_for_key_id(key_rec.key_id));
+        }
+        if (key_record_position < 1 ||
+            key_record_position > key_rec.V_K_i.size())
+            return false;
+        proof_vk = key_rec.V_K_i[key_record_position - 1];
     }
     if (share_set_id == 0) return false;
     std::vector<uint8_t> packed_blob;
@@ -259,10 +272,10 @@ bool TallyManager::produce_local_share(
         if (!dao_threshold_partial_decrypt(pk, c, sk, ci)) return false;
         BIGNUM* r = BN_new();
         if (!dao_dkg_sample_r(pk, r)) { BN_free(r); return false; }
-        const std::vector<uint8_t>& vk =
-            key_rec.V_K_i[key_record_position - 1];
+        // proof_vk is the correct VK for whichever share set is active
+        // (reshared when event_share_set was provided).
         const bool ok = dao_partial_decryption_prove(
-            pk, key_rec.V, vk, key_record_position,
+            pk, key_rec.V, proof_vk, key_record_position,
             c, ci, sk, r, proof_out);
         BN_free(r);
         if (!ok) return false;
