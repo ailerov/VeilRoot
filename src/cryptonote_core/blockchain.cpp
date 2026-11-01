@@ -10667,9 +10667,13 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     if (key_rec.key_id.size() != 32) return;
     if (key_rec.committee_members.empty()) return;
 
-    // Current (acceptance-time) share set for this key.
-    const uint32_t cur_id =
-        dao::share_set_id_for_key_id(key_rec.key_id);
+    // Current share set for this key. Prefer the latest (in case a
+    // previous reshare for the same proposal already happened, e.g.
+    // B3d dropout recovery). Fall back to the derived base id.
+    uint32_t cur_id = static_cast<uint32_t>(
+        latest_share_set_id_for_key_id(key_rec.key_id));
+    if (cur_id == 0)
+      cur_id = dao::share_set_id_for_key_id(key_rec.key_id);
     dao::dao_share_set_record cur_ss;
     if (!m_db->get_dao_share_set(cur_id, cur_ss)) return;
 
@@ -10922,11 +10926,32 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
         if (m_dao_v2_reshare_runner->wait(new_ss, 1)) {
           try {
             m_db->add_dao_share_set(new_ss.share_set_id, new_ss);
-            m_db->set_current_dao_share_set_id(new_ss.share_set_id);
+            // The global "current share set" pointer belongs to the
+            // singleton record (bootstrap). Per-proposal share sets
+            // are discovered by latest_share_set_id_for_key_id and
+            // must not clobber it.
+            {
+              dao::dao_tally_key_record singleton_kr;
+              bool matches = false;
+              try {
+                matches = m_db->get_dao_tally_key(singleton_kr) &&
+                          singleton_kr.key_id.size() ==
+                              new_ss.key_id.size() &&
+                          std::memcmp(singleton_kr.key_id.data(),
+                                      new_ss.key_id.data(),
+                                      new_ss.key_id.size()) == 0;
+              } catch (...) {}
+              if (matches)
+                m_db->set_current_dao_share_set_id(new_ss.share_set_id);
+            }
 
             // Persist this node's new share if it is a new member.
+            // Use new_ss.key_id directly: the share is packed against
+            // the proposal's key, not the singleton (which is empty
+            // for per-proposal reshares).
             std::vector<uint8_t> local_share;
-            if (m_dao_v2_reshare_runner->get_local_share(local_share)) {
+            if (m_dao_v2_reshare_runner->get_local_share(local_share) &&
+                new_ss.key_id.size() == 32) {
               crypto::public_key self_pk{};
               if (crypto::secret_key_to_public_key(m_node_privkey,
                                                     self_pk)) {
@@ -10935,16 +10960,13 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
                   if (new_ss.committee_members[i].size() != 32) continue;
                   if (std::memcmp(new_ss.committee_members[i].data(),
                                   self_pk.data, 32) != 0) continue;
-                  dao::dao_tally_key_record kr;
-                  if (m_db->get_dao_tally_key(kr)) {
-                    std::vector<uint8_t> packed =
-                        dao::dao_pack_local_share(kr.key_id, local_share);
-                    if (!packed.empty())
-                      m_db->add_dao_local_share(
-                          static_cast<uint32_t>(new_ss.share_set_id),
-                          static_cast<uint32_t>(i + 1),
-                          packed);
-                  }
+                  std::vector<uint8_t> packed =
+                      dao::dao_pack_local_share(new_ss.key_id, local_share);
+                  if (!packed.empty())
+                    m_db->add_dao_local_share(
+                        static_cast<uint32_t>(new_ss.share_set_id),
+                        static_cast<uint32_t>(i + 1),
+                        packed);
                   break;
                 }
               }
