@@ -8,6 +8,8 @@
 #include <openssl/sha.h>
 
 #include "governance/dao_threshold.h"
+#include "governance/dao_reshare_vss.h"
+#include "governance/dao_reshare_pipeline.h"
 #include "misc_log_ex.h"
 
 namespace cryptonote {
@@ -525,7 +527,8 @@ bool dao_build_tally_certificate(
     const dao_partial_set& W_set,
     const dao_partial_set& S_set,
     const dao_partial_set& B_set,
-    dao_tally_certificate& cert_out)
+    dao_tally_certificate& cert_out,
+    const dao_share_set_record* event_share_set)
 {
     if (E_W.size() != PAILLIER_CT_BYTES) return false;
     if (E_S.size() != PAILLIER_CT_BYTES) return false;
@@ -538,14 +541,40 @@ bool dao_build_tally_certificate(
     PaillierPublicKey pk;
     if (!pk.deserialize_modulus(key_rec.N)) return false;
 
-    const uint32_t n = static_cast<uint32_t>(
-        key_rec.committee_members.size());
+    // Decide evidence mode.
+    bool use_evidence = false;
+    uint32_t threshold = key_rec.threshold;
+    std::vector<std::vector<uint8_t>> vk_i;
+    std::vector<std::vector<uint8_t>> member_pubkeys;
+
+    if (event_share_set != nullptr &&
+        event_share_set->key_id.size() == 32 &&
+        std::memcmp(event_share_set->key_id.data(),
+                    key_rec.key_id.data(), 32) == 0 &&
+        !event_share_set->contributions.empty() &&
+        event_share_set->contributions.size()
+            == event_share_set->contributor_indices.size() &&
+        event_share_set->contributions.size()
+            == event_share_set->contributor_vk.size()) {
+        use_evidence  = true;
+        threshold     = event_share_set->threshold;
+        vk_i          = event_share_set->VK_i;
+        member_pubkeys = event_share_set->committee_members;
+    } else {
+        vk_i          = key_rec.V_K_i;
+        for (const auto& m : key_rec.committee_members)
+            member_pubkeys.push_back(m);
+    }
+
+    const uint32_t n = static_cast<uint32_t>(vk_i.size());
+    if (n == 0) return false;
+    if (threshold == 0 || threshold > n) return false;
 
     auto check_set = [&](const dao_partial_set& s,
                          const std::vector<uint8_t>& c) -> bool {
         if (s.member_indices.size() != s.partials.size()) return false;
         if (s.proofs.size() != s.partials.size()) return false;
-        if (s.member_indices.size() < key_rec.threshold) return false;
+        if (s.member_indices.size() < threshold) return false;
         std::vector<uint32_t> seen;
         for (size_t i = 0; i < s.member_indices.size(); ++i) {
             uint32_t m = s.member_indices[i];
@@ -555,7 +584,7 @@ bool dao_build_tally_certificate(
             if (s.partials[i].size() != PAILLIER_CT_BYTES) return false;
             if (s.proofs[i].member_index != m) return false;
             if (!dao_partial_decryption_verify(
-                    pk, key_rec.V, key_rec.V_K_i[m-1], m,
+                    pk, key_rec.V, vk_i[m-1], m,
                     c, s.partials[i], s.proofs[i]))
                 return false;
         }
@@ -576,6 +605,17 @@ bool dao_build_tally_certificate(
     cert_out.S = S_set;
     cert_out.B = B_set;
 
+    if (use_evidence) {
+        cert_out.per_event_share_set_id = event_share_set->share_set_id;
+        cert_out.threshold              = threshold;
+        cert_out.member_pubkeys         = member_pubkeys;
+        cert_out.per_event_VK_i         = vk_i;
+        cert_out.base_share_set_id      = event_share_set->base_share_set_id;
+        cert_out.contributions          = event_share_set->contributions;
+        cert_out.contributor_indices    = event_share_set->contributor_indices;
+        cert_out.contributor_vk         = event_share_set->contributor_vk;
+    }
+
     BIGNUM* theta = BN_bin2bn(key_rec.theta.data(),
                               static_cast<int>(key_rec.theta.size()),
                               nullptr);
@@ -586,7 +626,7 @@ bool dao_build_tally_certificate(
                        BIGNUM* m_out) -> bool {
         std::vector<uint8_t> C;
         if (!dao_threshold_combine(pk, s.member_indices, s.partials,
-                                   key_rec.threshold, C))
+                                   threshold, C))
             return false;
         return dao_threshold_finalize(pk, C, theta, m_out);
     };
@@ -624,19 +664,116 @@ bool dao_verify_tally_certificate(
     if (std::memcmp(cert.key_id.data(), key_rec.key_id.data(), 32) != 0)
         return false;
 
-    // v6 reshare-evidence certs are not yet verifiable. Reject until
-    // B3c implements dao_reshare_vss_verify_public + VK_i recompute.
-    if (cert.per_event_share_set_id != 0) {
-        MERROR("v6 tally certificate claims reshare evidence; "
-               "verification not yet implemented (B3c)");
-        return false;
-    }
-
     if (key_rec.committee_members.empty()) return false;
     if (key_rec.threshold == 0) return false;
     if (key_rec.V_K_i.size() != key_rec.committee_members.size())
         return false;
     if (cert.vote_end_height != supply_at_vote_end.height) return false;
+
+    // Paillier public key. Needed both for reshare-evidence verification
+    // and for partial-decryption verification below.
+    PaillierPublicKey pk;
+    if (!pk.deserialize_modulus(key_rec.N)) return false;
+
+    // Effective committee/threshold/VK_i depends on whether this cert
+    // carries v6 reshare evidence.
+    uint32_t effective_threshold = key_rec.threshold;
+    std::vector<std::vector<uint8_t>> effective_vk_i = key_rec.V_K_i;
+
+    if (cert.per_event_share_set_id != 0) {
+        // Verify reshare evidence end-to-end, self-contained: no LMDB
+        // lookup, no trust in cert claims beyond what can be re-derived.
+
+        if (cert.contributions.empty() ||
+            cert.contributions.size() != cert.contributor_indices.size() ||
+            cert.contributions.size() != cert.contributor_vk.size())
+            return false;
+        if (cert.member_pubkeys.empty() ||
+            cert.member_pubkeys.size() != cert.per_event_VK_i.size())
+            return false;
+        if (cert.threshold == 0 ||
+            cert.threshold > cert.per_event_VK_i.size())
+            return false;
+        for (const auto& v : cert.per_event_VK_i)
+            if (v.size() != PAILLIER_CT_BYTES) return false;
+
+        // Reconstruct the VSS group.
+        dao_vss_group grp;
+        if (key_rec.vss_P.empty() || key_rec.vss_P_prime.empty() ||
+            key_rec.vss_g.empty() || key_rec.vss_h.empty())
+            return false;
+        grp.P = BN_bin2bn(key_rec.vss_P.data(),
+                          static_cast<int>(key_rec.vss_P.size()), nullptr);
+        grp.P_prime = BN_bin2bn(key_rec.vss_P_prime.data(),
+                                static_cast<int>(key_rec.vss_P_prime.size()),
+                                nullptr);
+        grp.g = BN_bin2bn(key_rec.vss_g.data(),
+                          static_cast<int>(key_rec.vss_g.size()), nullptr);
+        grp.h = BN_bin2bn(key_rec.vss_h.data(),
+                          static_cast<int>(key_rec.vss_h.size()), nullptr);
+        struct GrpGuard {
+            dao_vss_group& g;
+            ~GrpGuard() {
+                if (g.P) BN_free(g.P);
+                if (g.P_prime) BN_free(g.P_prime);
+                if (g.g) BN_free(g.g);
+                if (g.h) BN_free(g.h);
+                g.P = g.P_prime = g.g = g.h = nullptr;
+            }
+        } grp_guard{grp};
+        if (!grp.valid()) return false;
+
+        std::vector<dao_reshare_contribution> contribs;
+        contribs.reserve(cert.contributions.size());
+        for (size_t i = 0; i < cert.contributions.size(); ++i) {
+            dao_reshare_contribution c;
+            if (!dao_reshare_deserialize_public(cert.contributions[i], c))
+                return false;
+            // Contributor's declared index must match the cert.
+            if (c.contributor_index != cert.contributor_indices[i])
+                return false;
+            // The contribution's link_ctx must be bound to the base
+            // VK_i the cert claims for this contributor.
+            if (c.link_ctx.VK_i.size() != PAILLIER_CT_BYTES) return false;
+            if (cert.contributor_vk[i].size() != PAILLIER_CT_BYTES)
+                return false;
+            if (std::memcmp(c.link_ctx.VK_i.data(),
+                            cert.contributor_vk[i].data(),
+                            PAILLIER_CT_BYTES) != 0)
+                return false;
+            // Reject if the link_ctx V was swapped out.
+            if (c.link_ctx.V.size() != key_rec.V.size()) return false;
+            if (std::memcmp(c.link_ctx.V.data(), key_rec.V.data(),
+                            key_rec.V.size()) != 0)
+                return false;
+            if (!dao_reshare_vss_verify_public(
+                    pk, grp, key_rec.V,
+                    c.link_ctx, c.link_proof, c.commits, c.coeff_proofs))
+                return false;
+            contribs.push_back(std::move(c));
+        }
+
+        // Recompute VK_i from contributions and compare to cert.
+        std::vector<uint32_t> new_indices;
+        for (size_t i = 0; i < cert.member_pubkeys.size(); ++i)
+            new_indices.push_back(static_cast<uint32_t>(i + 1));
+        std::vector<std::vector<uint8_t>> recomputed_vks;
+        if (!dao_reshare_compute_all_vks(pk, key_rec.V, contribs,
+                                          new_indices, recomputed_vks))
+            return false;
+        if (recomputed_vks.size() != cert.per_event_VK_i.size())
+            return false;
+        for (size_t i = 0; i < recomputed_vks.size(); ++i) {
+            if (recomputed_vks[i].size() != PAILLIER_CT_BYTES) return false;
+            if (std::memcmp(recomputed_vks[i].data(),
+                            cert.per_event_VK_i[i].data(),
+                            PAILLIER_CT_BYTES) != 0)
+                return false;
+        }
+
+        effective_threshold = cert.threshold;
+        effective_vk_i      = cert.per_event_VK_i;
+    }
 
     if (E_W.size() != PAILLIER_CT_BYTES) return false;
     if (E_S.size() != PAILLIER_CT_BYTES) return false;
@@ -646,17 +783,15 @@ bool dao_verify_tally_certificate(
     if (memcmp(h.data, cert.aggregate_ciphertext_hash.data, 32) != 0)
         return false;
 
-    PaillierPublicKey pk;
-    if (!pk.deserialize_modulus(key_rec.N)) return false;
 
     const uint32_t n = static_cast<uint32_t>(
-        key_rec.committee_members.size());
+        effective_vk_i.size());
 
     auto verify_set = [&](const dao_partial_set& s,
                           const std::vector<uint8_t>& c) -> bool {
         if (s.member_indices.size() != s.partials.size()) return false;
         if (s.proofs.size() != s.partials.size()) return false;
-        if (s.member_indices.size() < key_rec.threshold) return false;
+        if (s.member_indices.size() < effective_threshold) return false;
         std::vector<uint32_t> seen;
         for (size_t i = 0; i < s.member_indices.size(); ++i) {
             uint32_t m = s.member_indices[i];
@@ -666,7 +801,7 @@ bool dao_verify_tally_certificate(
             if (s.partials[i].size() != PAILLIER_CT_BYTES) return false;
             if (s.proofs[i].member_index != m) return false;
             if (!dao_partial_decryption_verify(
-                    pk, key_rec.V, key_rec.V_K_i[m-1], m,
+                    pk, key_rec.V, effective_vk_i[m-1], m,
                     c, s.partials[i], s.proofs[i]))
                 return false;
         }
@@ -687,7 +822,7 @@ bool dao_verify_tally_certificate(
                        BIGNUM* m_out) -> bool {
         std::vector<uint8_t> C;
         if (!dao_threshold_combine(pk, s.member_indices, s.partials,
-                                   key_rec.threshold, C))
+                                   effective_threshold, C))
             return false;
         return dao_threshold_finalize(pk, C, theta, m_out);
     };

@@ -66,13 +66,45 @@ bool TallyManager::build_tally_result_transaction(
         return false;
 
     dao::dao_tally_key_record key_rec;
-    if (!m_db.get_dao_tally_key(key_rec))
-        return false;
+    if (prop.tally_key_id == crypto::null_hash) {
+        // Bootstrap / legacy: proposal has no per-proposal key binding.
+        // Fall back to the singleton record installed by the
+        // bootstrap DKG activation.
+        if (!m_db.get_dao_tally_key(key_rec))
+            return false;
+    } else {
+        std::vector<uint8_t> kid(prop.tally_key_id.data,
+                                 prop.tally_key_id.data + 32);
+        if (!m_db.get_dao_tally_key_by_id(kid, key_rec))
+            return false;
+    }
 
-    if (threshold < key_rec.threshold)
-        return false;
-    if (shares.size() < key_rec.threshold)
-        return false;
+    // Find the latest share set for this key. If its evidence is
+    // populated, the cert will be emitted as v6 and partials will be
+    // bound to the reshared VK_i. Otherwise the v5-compat path is used.
+    dao::dao_share_set_record share_set;
+    dao::dao_share_set_record* event_ss_ptr = nullptr;
+    {
+        uint64_t latest_sid = 0;
+        m_db.for_all_dao_share_sets(
+            [&](uint64_t sid, const dao::dao_share_set_record& rec) -> bool {
+                if (rec.key_id.size() != 32) return true;
+                if (std::memcmp(rec.key_id.data(), key_rec.key_id.data(),
+                                32) != 0) return true;
+                if (sid > latest_sid) latest_sid = sid;
+                return true;
+            });
+        if (latest_sid != 0 && m_db.get_dao_share_set(latest_sid, share_set))
+            event_ss_ptr = &share_set;
+    }
+
+    // Effective threshold for the "enough shares?" gate.
+    uint32_t eff_threshold = key_rec.threshold;
+    if (event_ss_ptr && !event_ss_ptr->contributions.empty())
+        eff_threshold = event_ss_ptr->threshold;
+
+    if (threshold < eff_threshold) return false;
+    if (shares.size() < eff_threshold) return false;
 
     dao_proposal_aggregate agg;
     if (!m_db.get_dao_proposal_aggregate(proposal_id, agg))
@@ -89,7 +121,7 @@ bool TallyManager::build_tally_result_transaction(
 
     dao::dao_partial_set W_set, S_set, B_set;
     for (const auto& kv : shares) {
-        if (W_set.member_indices.size() >= key_rec.threshold) break;
+        if (W_set.member_indices.size() >= eff_threshold) break;
         const auto& s = kv.second;
         if (std::memcmp(s.aggregate_ciphertext_hash.data,
                         agg_hash.data, 32) != 0)
@@ -104,7 +136,7 @@ bool TallyManager::build_tally_result_transaction(
         B_set.partials.push_back(s.partial_B);
         B_set.proofs.push_back(s.proof_B);
     }
-    if (W_set.member_indices.size() < key_rec.threshold)
+    if (W_set.member_indices.size() < eff_threshold)
         return false;
 
     dao::dao_supply_snapshot snap;
@@ -115,7 +147,7 @@ bool TallyManager::build_tally_result_transaction(
     if (!dao::dao_build_tally_certificate(
             key_rec, proposal_id, prop.voting_end_height,
             agg.aggregate_E_W, agg.aggregate_E_S, agg.aggregate_E_B,
-            W_set, S_set, B_set, cert))
+            W_set, S_set, B_set, cert, event_ss_ptr))
         return false;
     if (!dao::dao_verify_tally_certificate(
             key_rec, snap, m_params.voting_quorum_percent,

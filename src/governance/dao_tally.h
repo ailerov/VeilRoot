@@ -168,6 +168,11 @@ bool dao_synthesize_bootstrap_share_set(
 // Also computes the aggregate ciphertext hash and fills the plaintext
 // recovery fields. The governance evaluation fields are left zero; call
 // dao_verify_tally_certificate to recompute them.
+// Builds a tally certificate. When event_share_set is non-null and
+// carries reshare evidence (non-empty contributions), the cert is
+// emitted as v6 with that evidence and partials are bound to the
+// share set's VK_i. When null or evidence is empty, the builder
+// emits the v5-compatible form bound to key_rec.
 bool dao_build_tally_certificate(
     const dao_tally_key_record& key_rec,
     const crypto::hash& proposal_id,
@@ -178,7 +183,8 @@ bool dao_build_tally_certificate(
     const dao_partial_set& W_set,
     const dao_partial_set& S_set,
     const dao_partial_set& B_set,
-    dao_tally_certificate& cert_out);
+    dao_tally_certificate& cert_out,
+    const dao_share_set_record* event_share_set = nullptr);
 
 // Fully verify a certificate against a key record and the historical
 // supply snapshot at the proposal's voting-end height.
