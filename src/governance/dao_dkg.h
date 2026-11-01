@@ -567,6 +567,15 @@ struct dao_share_set_record
     std::vector<std::vector<uint8_t>> committee_members;  // 32 bytes each
     std::vector<std::vector<uint8_t>> VK_i;     // PAILLIER_CT_BYTES each
 
+    // v2 evidence: how this share set was derived from a base set via
+    // reshare. Empty for bootstrap/direct DKG sets. Populated for
+    // reshared sets. Producers copy these into tally certificates so
+    // validators can verify the reshare back to the base share set.
+    uint64_t                              base_share_set_id = 0;
+    std::vector<std::vector<uint8_t>>     contributions;
+    std::vector<uint32_t>                 contributor_indices;
+    std::vector<std::vector<uint8_t>>     contributor_vk;  // base set VK_i
+
     bool serialize(std::vector<uint8_t>& out) const;
     bool deserialize(const std::vector<uint8_t>& in);
 };

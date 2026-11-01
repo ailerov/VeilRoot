@@ -10818,6 +10818,7 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     cfg.new_members = new_members;
     cfg.contributor_indices = contributor_indices;
     cfg.contributor_members = contributors;
+    cfg.contributor_vk = cur_ss.VK_i;   // base set VK_i, enables evidence
     cfg.old_share_set_id = cur_id;
     cfg.new_share_set_id = cur_id + 1;
     cfg.height = vote_end_height;

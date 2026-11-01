@@ -178,6 +178,10 @@ public:
         std::vector<crypto::public_key>   new_members;
         std::vector<uint32_t>             contributor_indices;
         std::vector<crypto::public_key>   contributor_members;
+        // Base share set's VK_i, aligned with contributor_indices.
+        // Populated by callers that want the resulting share set to
+        // carry reshare evidence. Empty = evidence left unfilled.
+        std::vector<std::vector<uint8_t>> contributor_vk;
         uint64_t                          old_share_set_id = 0;
         uint64_t                          new_share_set_id = 0;
         uint64_t                          height = 0;

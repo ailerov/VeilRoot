@@ -1629,7 +1629,7 @@ bool dao_share_set_record::serialize(std::vector<uint8_t>& out) const
         if (vk.size() != PAILLIER_CT_BYTES) return false;
 
     out.clear();
-    push_u32(out, version);
+    push_u32(out, 2);   // always serialize as v2; evidence may be empty
     push_u64(out, share_set_id);
     push_u64(out, height);
     push_u32(out, threshold);
@@ -1638,6 +1638,15 @@ bool dao_share_set_record::serialize(std::vector<uint8_t>& out) const
     push_u32(out, static_cast<uint32_t>(committee_members.size()));
     for (const auto& m : committee_members) push_bytes(out, m);
     for (const auto& vk : VK_i) push_bytes(out, vk);
+
+    // v2 evidence
+    push_u64(out, base_share_set_id);
+    push_u32(out, static_cast<uint32_t>(contributions.size()));
+    for (const auto& c : contributions) push_bytes(out, c);
+    push_u32(out, static_cast<uint32_t>(contributor_indices.size()));
+    for (uint32_t i : contributor_indices) push_u32(out, i);
+    push_u32(out, static_cast<uint32_t>(contributor_vk.size()));
+    for (const auto& v : contributor_vk) push_bytes(out, v);
     return true;
 }
 
@@ -1646,8 +1655,8 @@ bool dao_share_set_record::deserialize(const std::vector<uint8_t>& in)
     size_t off = 0;
     uint32_t v = 0;
     if (!pull_u32(in, off, v)) return false;
+    if (v != 1 && v != 2) return false;
     version = v;
-    if (version != 1) return false;
     if (!pull_u64(in, off, share_set_id)) return false;
     if (!pull_u64(in, off, height)) return false;
     if (!pull_u32(in, off, threshold)) return false;
@@ -1669,6 +1678,37 @@ bool dao_share_set_record::deserialize(const std::vector<uint8_t>& in)
         if (!pull_bytes(in, off, VK_i[i])) return false;
         if (VK_i[i].size() != PAILLIER_CT_BYTES) return false;
     }
+
+    base_share_set_id = 0;
+    contributions.clear();
+    contributor_indices.clear();
+    contributor_vk.clear();
+
+    if (version == 2) {
+        if (!pull_u64(in, off, base_share_set_id)) return false;
+
+        uint32_t nc = 0;
+        if (!pull_u32(in, off, nc)) return false;
+        if (nc > DAO_DKG_MAX_COMMITTEE_SIZE) return false;
+        contributions.assign(nc, {});
+        for (uint32_t i = 0; i < nc; ++i)
+            if (!pull_bytes(in, off, contributions[i])) return false;
+
+        uint32_t ni = 0;
+        if (!pull_u32(in, off, ni)) return false;
+        if (ni > DAO_DKG_MAX_COMMITTEE_SIZE) return false;
+        contributor_indices.assign(ni, 0);
+        for (uint32_t i = 0; i < ni; ++i)
+            if (!pull_u32(in, off, contributor_indices[i])) return false;
+
+        uint32_t nk = 0;
+        if (!pull_u32(in, off, nk)) return false;
+        if (nk > DAO_DKG_MAX_COMMITTEE_SIZE) return false;
+        contributor_vk.assign(nk, {});
+        for (uint32_t i = 0; i < nk; ++i)
+            if (!pull_bytes(in, off, contributor_vk[i])) return false;
+    }
+
     if (off != in.size()) return false;
     return true;
 }

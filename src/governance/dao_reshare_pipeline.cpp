@@ -713,6 +713,33 @@ struct dao_reshare_runner::impl
                                           new_shares, cfg.threshold, rec))
             return;
 
+        // Populate v2 reshare evidence when the caller supplied base VK_i.
+        // If any step fails, evidence stays empty and the certificate
+        // path falls back to the base set's VK_i. Bootstrap never has
+        // evidence (its cfg.contributor_vk is empty).
+        if (cfg.contributor_vk.size() == cfg.contributor_indices.size() &&
+            !cfg.contributor_vk.empty() &&
+            ordered.size() == cfg.contributor_indices.size()) {
+            rec.base_share_set_id = cfg.old_share_set_id;
+            bool evidence_ok = true;
+            for (size_t i = 0; i < ordered.size(); ++i) {
+                std::vector<uint8_t> blob;
+                if (!dao_reshare_serialize_public(ordered[i], blob)) {
+                    evidence_ok = false;
+                    break;
+                }
+                rec.contributions.push_back(std::move(blob));
+                rec.contributor_indices.push_back(ordered[i].contributor_index);
+                rec.contributor_vk.push_back(cfg.contributor_vk[i]);
+            }
+            if (!evidence_ok) {
+                rec.base_share_set_id = 0;
+                rec.contributions.clear();
+                rec.contributor_indices.clear();
+                rec.contributor_vk.clear();
+            }
+        }
+
         final_record = rec;
         finalized = true;
 
