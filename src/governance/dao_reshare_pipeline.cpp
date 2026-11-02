@@ -808,7 +808,6 @@ bool dao_reshare_runner::start()
             *p_->cfg.pk, *p_->cfg.grp, p_->cfg.V_bytes,
             p_->cfg.local_s_i, p_->cfg.local_mu_i, p_->cfg.delta,
             p_->cfg.t_new, p_->cfg.new_indices, ctx, contrib)) {
-        std::cerr << "[rs-fail step=make_contribution]" << std::endl;
         return false;
     }
 
@@ -838,14 +837,12 @@ bool dao_reshare_runner::start()
     m.sender_index     = p_->cfg.local_party_index;
     m.type             = 0;
     if (!dao_reshare_serialize_public(contrib, m.public_blob)) {
-        std::cerr << "[rs-fail step=serialize_public]" << std::endl;
         return false;
     }
 
     for (size_t i = 0; i < p_->cfg.new_indices.size(); ++i) {
         std::vector<uint8_t> sh_bytes;
         if (!dao_reshare_serialize_share(contrib.shares[i], sh_bytes)) {
-            std::cerr << "[rs-fail step=serialize_share i=" << i << "]" << std::endl;
             return false;
         }
         dao_reshare_share_bundle bundle;
@@ -854,7 +851,6 @@ bool dao_reshare_runner::start()
         bundle.share_bytes      = std::move(sh_bytes);
         std::vector<uint8_t> bb;
         if (!bundle.serialize(bb)) {
-            std::cerr << "[rs-fail step=bundle_serialize i=" << i << "]" << std::endl;
             return false;
         }
 
@@ -862,7 +858,6 @@ bool dao_reshare_runner::start()
         std::string encrypted;
         if (!encrypt_dkg_private_payload(bstr, p_->cfg.local_pub,
                                           p_->cfg.new_members[i], encrypted)) {
-            std::cerr << "[rs-fail step=encrypt i=" << i << "]" << std::endl;
             return false;
         }
         m.recipient_indices.push_back(p_->cfg.new_indices[i]);

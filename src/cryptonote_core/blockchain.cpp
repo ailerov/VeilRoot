@@ -10684,28 +10684,31 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     uint32_t cur_id   = 0;
 
     if (latest_id == 0 || latest_id == base_id) {
+      // No reshape has committed yet. First reshape to ready roster.
       need_reshare = true;
       cur_id = static_cast<uint32_t>(base_id);
     } else {
-      auto cit = m_dao_v2_reshare_committed_block.find(proposal_id);
-      if (cit == m_dao_v2_reshare_committed_block.end()) {
-        auto sit = m_dao_v2_reshare_started_block.find(proposal_id);
-        if (sit != m_dao_v2_reshare_started_block.end() &&
-            current_block > sit->second + k_reshare_retry_blocks) {
-          m_dao_v2_reshare_started_block.erase(proposal_id);
-          need_reshare = true;
-          cur_id = static_cast<uint32_t>(base_id);
-        } else {
-          return;
-        }
+      // A reshape has committed. Detect it from CHAIN state, not from
+      // process-local maps. The share set record is chain-synced, so
+      // latest_id, its contributions and its height are the same on
+      // every validator.
+      dao::dao_share_set_record latest_ss;
+      if (!m_db->get_dao_share_set(latest_id, latest_ss)) return;
+      if (latest_ss.contributions.empty()) {
+        // Share set present but not reshared (base DKG install). Treat
+        // as no reshape yet.
+        need_reshare = true;
+        cur_id = static_cast<uint32_t>(base_id);
       } else {
-        if (current_block < cit->second + k_tally_stall_blocks) return;
-        auto pit = m_dao_v2_tally_shares.find(proposal_id);
-        size_t partials_count = (pit != m_dao_v2_tally_shares.end())
-            ? pit->second.size() : 0;
-        dao::dao_share_set_record latest_ss;
-        if (!m_db->get_dao_share_set(latest_id, latest_ss)) return;
-        if (partials_count >= latest_ss.threshold) return;
+        // Reshape committed at height latest_ss.height (chain-derived).
+        // Do not consult local m_dao_v2_tally_shares for stall timing;
+        // it is process-local and diverges per validator.
+        if (current_block < latest_ss.height + k_tally_stall_blocks)
+          return;
+        // Stall window elapsed. Re-reshape to replace non-responders.
+        // If the tally was already submitted, the produce path will
+        // no-op on the outcome record check; if not, this is exactly
+        // the case we are here to handle.
         cur_id = static_cast<uint32_t>(latest_id);
         need_reshare = false;
       }
@@ -10770,7 +10773,12 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     // partials_count < threshold).
     std::set<crypto::public_key> ready_now;
     if (!need_reshare) {
-      constexpr uint64_t k_ready_ttl_now = 15;
+      // Re-reshape ready cutoff must not exceed the stall window.
+      // Otherwise the trigger fires at vote_end + stall before a dropped
+      // member has aged out of the ready pool (general TTL is 15), and
+      // the re-reshape targets a committee that still contains the
+      // dropped member.
+      constexpr uint64_t k_ready_ttl_now = k_tally_stall_blocks;
       const uint64_t tip = get_current_blockchain_height();
       m_db->for_all_dao_v2_node_ready(
           [&](const crypto::public_key& pk,
@@ -10810,10 +10818,6 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
         contributors.push_back(pk);
         contributor_indices.push_back(static_cast<uint32_t>(i) + 1);
       }
-      MWARNING("[b3d-diag] committee=" << cur_ss.committee_members.size()
-                << " ready_now=" << ready_now.size()
-                << " contributors=" << contributors.size()
-                << " threshold=" << cur_ss.threshold);
       if (contributors.size() < cur_ss.threshold) {
         MWARNING("B3d: re-reshare for " << proposal_id
                  << " aborted: only " << contributors.size()
@@ -10919,17 +10923,17 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
       if (!s) return;
       s_i.reset(s);
 
+      // Fixed interpolation subset: the first `threshold` positions in
+      // contributor_indices. Every contributor MUST use this exact
+      // subset for mu_i or combinations are invalid. Substituting our
+      // own position here (as the previous code did) gave different
+      // mu_i per contributor; combine_one then mixed incompatible
+      // Lagrange coefficients.
       std::vector<uint32_t> S;
       for (size_t i = 0; i < cur_ss.threshold; ++i)
         S.push_back(contributor_indices[i]);
-      // lagrange_mu requires our position to be in S. If the natural
-      // subset excludes us (e.g. we are at position 3 with threshold 2),
-      // swap the last element for our position — any size-`threshold`
-      // subset containing us is valid.
-      if (std::find(S.begin(), S.end(), our_contrib_pos) == S.end()) {
-        if (S.empty()) return;
-        S.back() = our_contrib_pos;
-      }
+      if (std::find(S.begin(), S.end(), our_contrib_pos) == S.end())
+        return;   // not in the fixed subset; do not contribute
       BIGNUM* mu = BN_new();
       if (!mu) return;
       if (!dao::dao_dkg_lagrange_mu(S, our_contrib_pos, mu)) {
@@ -10986,7 +10990,18 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     cfg.new_members = new_members;
     cfg.contributor_indices = contributor_indices;
     cfg.contributor_members = contributors;
-    cfg.contributor_vk = cur_ss.VK_i;   // base set VK_i, enables evidence
+    // contributor_vk must be indexed by contributor_indices position,
+    // not the full cur_ss.VK_i array. For a re-reshape (subset of the
+    // prior committee), the two lengths differ and try_finalize_locked
+    // silently leaves evidence empty when they do not match.
+    cfg.contributor_vk.clear();
+    for (uint32_t idx : contributor_indices) {
+      if (idx < 1 || idx > cur_ss.VK_i.size()) {
+        BN_free(delta);
+        return;
+      }
+      cfg.contributor_vk.push_back(cur_ss.VK_i[idx - 1]);
+    }
     cfg.old_share_set_id = cur_id;
     cfg.new_share_set_id = cur_id + 1;
     cfg.height = vote_end_height;
@@ -11062,23 +11077,7 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     };
 
     auto runner = std::make_unique<dao::dao_reshare_runner>(cfg, cb);
-    std::cerr << "[b3d-prestart] our_contrib=" << our_contrib_pos
-              << " our_new=" << our_new_pos
-              << " cfg.local_party_index=" << cfg.local_party_index
-              << " cfg.local_new_index=" << cfg.local_new_index
-              << " cfg.local_s_i=" << (cfg.local_s_i ? "set" : "null")
-              << " cfg.local_mu_i=" << (cfg.local_mu_i ? "set" : "null")
-              << " cfg.grp=" << (cfg.grp ? "set" : "null")
-              << " cfg.delta=" << (cfg.delta ? "set" : "null")
-              << " new_members=" << cfg.new_members.size()
-              << " contributors=" << cfg.contributor_members.size()
-              << " t_new=" << cfg.t_new
-              << " threshold=" << cfg.threshold
-              << std::endl;
-    bool b3d_start_ok = runner->start();
-    std::cerr << "[b3d-poststart] start_ok=" << (b3d_start_ok ? "1" : "0")
-              << std::endl;
-    if (!b3d_start_ok) {
+    if (!runner->start()) {
       BN_free(delta);
       MWARNING("B3b reshare: runner start failed for proposal "
                << proposal_id);
