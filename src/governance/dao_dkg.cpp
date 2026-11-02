@@ -4948,10 +4948,20 @@ int biprimality_check(const std::vector<const BIGNUM*>& Q,
 // unique across primes: every prime restarts at rep 0. Encode
 // prime_index * REPS + rep so every protocol iteration has a distinct
 // (phase, round) pair.
-static uint32_t trial_division_wire_round(size_t prime_index,
+static uint32_t trial_division_wire_round(uint32_t selector,
+                                          size_t prime_index,
                                           uint32_t rep)
 {
+    // Factor 0 (p) and factor 1 (q) must use disjoint wire_round
+    // ranges. Without the selector offset, both factors emit traffic
+    // with identical (phase=5, round) pairs, and a party that has
+    // moved to factor 1 can have its factor-1 messages filtered out
+    // by another party still collecting factor 0 at the same round.
+    const uint64_t span =
+        static_cast<uint64_t>(DAO_DKG_SMALL_PRIME_COUNT) *
+        static_cast<uint64_t>(DAO_DKG_TRIAL_DIVISION_REPS);
     const uint64_t value =
+        static_cast<uint64_t>(selector) * span +
         static_cast<uint64_t>(prime_index) *
             static_cast<uint64_t>(DAO_DKG_TRIAL_DIVISION_REPS) +
         static_cast<uint64_t>(rep);
@@ -4976,7 +4986,7 @@ bool trial_division_check_factor(
 
         for (uint32_t rep = 0; rep < DAO_DKG_TRIAL_DIVISION_REPS && !passed; ++rep) {
             const uint32_t wire_round =
-                trial_division_wire_round(r_idx, rep);
+                trial_division_wire_round(factor_selector, r_idx, rep);
 
             // Phase: prolog.
             for (auto& p : parties) {
@@ -7486,7 +7496,7 @@ bool dkg_p2p_runner::impl::run_trial_division_factor(uint32_t selector,
              rep < DAO_DKG_TRIAL_DIVISION_REPS && !passed; ++rep)
         {
             const uint32_t wire_round =
-                trial_division_wire_round(r_idx, rep);
+                trial_division_wire_round(selector, r_idx, rep);
 
             
 

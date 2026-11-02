@@ -507,7 +507,10 @@ TEST(dao_dkg_distributed, ordered_startup_no_lost_messages)
     cfg.security_bits  = 32;
     cfg.qproof_rounds  = DAO_DKG_QPROOF_ROUNDS_TEST;
     cfg.max_attempts   = 2000;
-    cfg.phase_timeout_seconds = 600;
+    // Diagnostic-only: 10s so the DKG emits its own
+    // "[dkg] collect timeout phase=N got=... pending=... expected=..."
+    // before this test's 60s wait. Revert to 600 once diagnosed.
+    cfg.phase_timeout_seconds = 10;
     cfg.test_seed      = FIXED_TEST_CANDIDATE_SEED_3;
     cfg.member_ids     = run.pks;
 
@@ -535,6 +538,12 @@ TEST(dao_dkg_distributed, ordered_startup_no_lost_messages)
     // constructor.
     bool ceremony_ok = false;
     for (int attempt = 0; attempt < 2 && !ceremony_ok; ++attempt) {
+        // Reset the delivery counter so wait_for_message below is not
+        // satisfied by messages from a previous attempt.
+        {
+            std::lock_guard<std::mutex> lk(run.net.mu);
+            run.net.msg_count = 0;
+        }
         ASSERT_TRUE(run.runners[0]->start());
         if (!run.net.wait_for_message(1, 120000)) {
             std::cerr << "ordered_startup attempt " << attempt
@@ -547,10 +556,30 @@ TEST(dao_dkg_distributed, ordered_startup_no_lost_messages)
 
         bool all_ok = true;
         for (uint32_t i = 0; i < n; ++i) {
-            if (!run.runners[i]->wait(run.results[i], 900) ||
-                !run.results[i].ok) {
+            auto t0 = std::chrono::steady_clock::now();
+            const bool wait_ok = run.runners[i]->wait(run.results[i], 60);
+            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t0).count();
+            if (!wait_ok) {
+                std::cerr << "[diag] attempt " << attempt
+                          << " party " << (i + 1)
+                          << " elapsed=" << ms << "ms"
+                          << " result.ok=" << (run.results[i].ok ? 1 : 0)
+                          << " cand_att=" << run.results[i].candidate_attempts
+                          << "\n";
                 all_ok = false;
-                break;
+                continue;
+            }
+            if (!run.results[i].ok) {
+                std::cerr << "[diag] attempt " << attempt
+                          << " party " << (i + 1) << " ABORT"
+                          << " cand_att=" << run.results[i].candidate_attempts
+                          << " biprim=" << run.results[i].biprimality_failures
+                          << " trialdiv=" << run.results[i].trial_division_failures
+                          << " beta_r=" << run.results[i].beta_phase_retries
+                          << "\n";
+                all_ok = false;
+                continue;
             }
         }
         if (!all_ok) {
