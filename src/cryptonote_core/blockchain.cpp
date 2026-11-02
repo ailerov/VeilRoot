@@ -10826,7 +10826,14 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     cfg.old_share_set_id = cur_id;
     cfg.new_share_set_id = cur_id + 1;
     cfg.height = vote_end_height;
-    cfg.threshold = cur_ss.threshold;
+    // cfg.threshold is used for (a) the received-contribution count
+    // gate, (b) the interpolation threshold in combine_one, and
+    // (c) the resulting share set's threshold. All three must be the
+    // NEW committee's threshold, not the base set's. For 3->4 they
+    // coincide; for 5->7 they do not, and using cur_ss.threshold
+    // would ship a reshare set whose declared threshold is weaker
+    // than it should be.
+    cfg.threshold = new_threshold;
     cfg.key_id = key_rec.key_id;
     cfg.local_party_index = our_contrib_pos;
     cfg.local_new_index = our_new_pos;
@@ -11134,7 +11141,7 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     cfg.old_share_set_id = cur_id;
     cfg.new_share_set_id = cur_id + 1;
     cfg.height = height;
-    cfg.threshold = cur_ss.threshold;
+    cfg.threshold = new_threshold;
     cfg.key_id = key_rec.key_id;
     cfg.local_party_index = our_contrib_pos;
     cfg.local_new_index = our_new_pos;
