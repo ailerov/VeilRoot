@@ -673,16 +673,18 @@ struct dao_reshare_runner::impl
     void try_finalize_locked()
     {
         if (finalized) return;
+        const uint32_t ct = cfg.contributor_threshold
+            ? cfg.contributor_threshold : cfg.threshold;
         if (cfg.local_new_index == 0) return;
-        if (contributions.size() < cfg.threshold) return;
+        if (contributions.size() < ct) return;
 
         std::vector<dao_reshare_contribution> ordered;
         for (uint32_t idx : cfg.contributor_indices) {
             auto it = contributions.find(idx);
             if (it != contributions.end()) ordered.push_back(it->second);
-            if (ordered.size() >= cfg.threshold) break;
+            if (ordered.size() >= ct) break;
         }
-        if (ordered.size() < cfg.threshold) return;
+        if (ordered.size() < ct) return;
 
         // Every VK'_j is public and derived from the commitments alone.
         std::vector<std::vector<uint8_t>> vks;
@@ -706,7 +708,7 @@ struct dao_reshare_runner::impl
             dao_reshare_new_share mine;
             if (dao_reshare_combine_one(*cfg.pk, *cfg.grp, cfg.V_bytes,
                                          ordered, cfg.new_indices,
-                                         pos, cfg.threshold, cfg.delta, mine)) {
+                                         pos, ct, cfg.delta, mine)) {
                 new_shares[pos].share_signed = std::move(mine.share_signed);
                 local_share = new_shares[pos].share_signed;
                 have_local_share = true;
@@ -730,7 +732,7 @@ struct dao_reshare_runner::impl
         // a non-essential shareholder is offline at voting-end.
         if (cfg.contributor_vk.size() == cfg.contributor_indices.size() &&
             !cfg.contributor_vk.empty() &&
-            ordered.size() >= cfg.threshold) {
+            ordered.size() >= ct) {
             rec.base_share_set_id = cfg.old_share_set_id;
             bool evidence_ok = true;
             for (size_t i = 0; i < ordered.size(); ++i) {
@@ -803,8 +805,10 @@ bool dao_reshare_runner::start()
     if (!dao_reshare_make_contribution(
             *p_->cfg.pk, *p_->cfg.grp, p_->cfg.V_bytes,
             p_->cfg.local_s_i, p_->cfg.local_mu_i, p_->cfg.delta,
-            p_->cfg.t_new, p_->cfg.new_indices, ctx, contrib))
+            p_->cfg.t_new, p_->cfg.new_indices, ctx, contrib)) {
+        std::cerr << "[rs-fail step=make_contribution]" << std::endl;
         return false;
+    }
 
     {
         std::lock_guard<std::mutex> lk(p_->mtx);
@@ -831,24 +835,34 @@ bool dao_reshare_runner::start()
     m.new_share_set_id = p_->cfg.new_share_set_id;
     m.sender_index     = p_->cfg.local_party_index;
     m.type             = 0;
-    if (!dao_reshare_serialize_public(contrib, m.public_blob)) return false;
+    if (!dao_reshare_serialize_public(contrib, m.public_blob)) {
+        std::cerr << "[rs-fail step=serialize_public]" << std::endl;
+        return false;
+    }
 
     for (size_t i = 0; i < p_->cfg.new_indices.size(); ++i) {
         std::vector<uint8_t> sh_bytes;
-        if (!dao_reshare_serialize_share(contrib.shares[i], sh_bytes))
+        if (!dao_reshare_serialize_share(contrib.shares[i], sh_bytes)) {
+            std::cerr << "[rs-fail step=serialize_share i=" << i << "]" << std::endl;
             return false;
+        }
         dao_reshare_share_bundle bundle;
         bundle.old_share_set_id = p_->cfg.old_share_set_id;
         bundle.sender_index     = p_->cfg.local_party_index;
         bundle.share_bytes      = std::move(sh_bytes);
         std::vector<uint8_t> bb;
-        if (!bundle.serialize(bb)) return false;
+        if (!bundle.serialize(bb)) {
+            std::cerr << "[rs-fail step=bundle_serialize i=" << i << "]" << std::endl;
+            return false;
+        }
 
         std::string bstr(bb.begin(), bb.end());
         std::string encrypted;
         if (!encrypt_dkg_private_payload(bstr, p_->cfg.local_pub,
-                                          p_->cfg.new_members[i], encrypted))
+                                          p_->cfg.new_members[i], encrypted)) {
+            std::cerr << "[rs-fail step=encrypt i=" << i << "]" << std::endl;
             return false;
+        }
         m.recipient_indices.push_back(p_->cfg.new_indices[i]);
         m.recipient_payloads.push_back(
             std::vector<uint8_t>(encrypted.begin(), encrypted.end()));
@@ -1018,6 +1032,11 @@ bool dao_reshare_runner::finished() const
 {
     std::lock_guard<std::mutex> lk(p_->mtx);
     return p_->finalized;
+}
+
+crypto::hash dao_reshare_runner::proposal_id() const
+{
+    return p_ ? p_->cfg.proposal_id : crypto::null_hash;
 }
 
 bool dao_reshare_runner::get_local_share(

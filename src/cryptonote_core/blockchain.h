@@ -1956,6 +1956,10 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     std::unique_ptr<BIGNUM, void(*)(BIGNUM*)>
         m_dao_v2_reshare_mu_i{nullptr, BN_free};
     mutable std::mutex m_dao_v2_reshare_mutex;
+
+    // B3d: per-proposal reshare/tally timing in blocks.
+    std::map<crypto::hash, uint64_t> m_dao_v2_reshare_started_block;
+    std::map<crypto::hash, uint64_t> m_dao_v2_reshare_committed_block;
     // END_VNS_DAO_V2_RESHARE
     // END_VNS_DAO_V2_DKG
     // END_VNS_DECRYPTION_STATE

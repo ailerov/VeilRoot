@@ -2519,3 +2519,316 @@ TEST(DaoV2Replay, B3c3RunnerReshareEndToEnd)
     boost::filesystem::remove_all(base);
 }
 
+// ------------------------------------------------------------------
+// B3d: dropout replacement.
+//
+// Real 3-party DKG gives base committee {A,B,C} threshold 2.
+// First reshare to a 4-node committee {A,B,C,D} (D joins ready pool).
+// After commit, D "drops": ready pool keeps A,B,C but D goes silent.
+// Advance past stall window. Second trigger must re-reshare to a
+// 3-member committee {A,B,C} (survivors, D removed). All 3 nodes
+// contribute, combine succeeds, new share set commits with evidence,
+// certificate built against it verifies.
+// ------------------------------------------------------------------
+TEST(DaoV2Replay, B3dDropoutReplacement)
+{
+    using namespace cryptonote;
+    using namespace cryptonote::dao;
+
+    boost::filesystem::path base =
+        boost::filesystem::temp_directory_path() /
+        boost::filesystem::unique_path("vr_b3d_%%%%-%%%%");
+
+    ReplayNode a, b, c;
+    ASSERT_TRUE(a.init((base / "a").string()));
+    ASSERT_TRUE(b.init((base / "b").string()));
+    ASSERT_TRUE(c.init((base / "c").string()));
+
+    auto& bc_a = a.core->get_blockchain_storage();
+    auto& bc_b = b.core->get_blockchain_storage();
+    auto& bc_c = c.core->get_blockchain_storage();
+    auto& db_a = bc_a.get_db();
+    auto& db_b = bc_b.get_db();
+    auto& db_c = bc_c.get_db();
+    bc_a.set_dao_v2_active_for_test(true);
+    bc_b.set_dao_v2_active_for_test(true);
+    bc_c.set_dao_v2_active_for_test(true);
+
+    // 3-party base DKG committee.
+    std::vector<crypto::public_key> committee;
+    std::vector<crypto::secret_key> committee_sks;
+    for (int i = 0; i < 3; ++i) {
+        crypto::public_key pk; crypto::secret_key sk;
+        crypto::generate_keys(pk, sk);
+        committee.push_back(pk);
+        committee_sks.push_back(sk);
+    }
+    std::vector<size_t> ord = { 0, 1, 2 };
+    std::sort(ord.begin(), ord.end(), [&](size_t x, size_t y) {
+        return std::memcmp(committee[x].data, committee[y].data, 32) < 0;
+    });
+    {
+        std::vector<crypto::public_key> p2;
+        std::vector<crypto::secret_key> s2;
+        for (auto i : ord) { p2.push_back(committee[i]); s2.push_back(committee_sks[i]); }
+        committee = std::move(p2);
+        committee_sks = std::move(s2);
+    }
+    crypto::public_key a_pub = committee[0];
+    crypto::public_key b_pub = committee[1];
+    crypto::public_key c_pub = committee[2];
+    a.core->set_node_key(committee_sks[0]);
+    b.core->set_node_key(committee_sks[1]);
+    c.core->set_node_key(committee_sks[2]);
+
+    crypto::public_key d_pub; crypto::secret_key d_sk;
+    crypto::generate_keys(d_pub, d_sk);
+
+    // Real DKG.
+    dao_vss_group vss;
+    ASSERT_TRUE(dao_vss_group_generate(vss,
+        dao_dkg_required_vss_bits(60, 128, 32)));
+    dkg_inproc_network inet = dkg_make_inproc_network(3, nullptr);
+    std::vector<std::unique_ptr<dkg_transport>> pool;
+    for (auto& e : inet.endpoints) pool.push_back(std::move(e));
+    size_t next = 0;
+    dkg_transport_factory factory =
+        [&pool, &next](uint32_t) -> std::unique_ptr<dkg_transport> {
+            if (next >= pool.size()) return nullptr;
+            return std::move(pool[next++]);
+        };
+    dkg_config dcfg;
+    dcfg.committee_size = 3;
+    dcfg.threshold = dao_dkg_expected_threshold(3);
+    dcfg.member_ids = committee;
+    dcfg.k = 60; dcfg.target_N_bits = 128; dcfg.security_bits = 32;
+    dcfg.qproof_rounds = DAO_DKG_QPROOF_ROUNDS_TEST;
+    dcfg.max_attempts = 1;
+    dcfg.test_seed = 0x5645494C52544F33ULL;
+    dcfg.local_party_id = 1;
+    dkg_result dkg_out;
+    ASSERT_TRUE(dkg_run_with_transport(dcfg, factory, dkg_out));
+    ASSERT_TRUE(dkg_out.candidate_accepted);
+    ASSERT_EQ(dkg_out.test_SK.size(), 3u);
+
+    auto decode_sk = [](const std::vector<uint8_t>& dec) {
+        std::string s(dec.begin(), dec.end());
+        BIGNUM* bn = nullptr;
+        if (BN_dec2bn(&bn, s.c_str()) == 0) return std::vector<uint8_t>{};
+        bool neg = BN_is_negative(bn) != 0;
+        BIGNUM* abs_bn = BN_dup(bn); BN_set_negative(abs_bn, 0);
+        int nb = BN_num_bytes(abs_bn);
+        std::vector<uint8_t> raw(1 + nb, 0);
+        raw[0] = neg ? 1 : 0;
+        BN_bn2bin(abs_bn, raw.data() + 1);
+        BN_free(abs_bn); BN_free(bn);
+        return raw;
+    };
+
+    bc_a.install_dao_tally_key_for_proposal_for_test(
+        dkg_out.record, dkg_out.local_secret_share);
+    bc_b.install_dao_tally_key_for_proposal_for_test(
+        dkg_out.record, decode_sk(dkg_out.test_SK[1]));
+    bc_c.install_dao_tally_key_for_proposal_for_test(
+        dkg_out.record, decode_sk(dkg_out.test_SK[2]));
+
+    // Mine to height 5 first (so first reshare commit lands at 5).
+    account_base miner; miner.generate();
+    while (bc_a.get_current_blockchain_height() < 5) {
+        block tmpl{}; difficulty_type diff{}; uint64_t h=0,r=0,sh=0;
+        crypto::hash shh{}; blobdata en(8,0);
+        ASSERT_TRUE(bc_a.create_block_template(tmpl,
+            miner.get_keys().m_account_address, diff, h, r, en, sh, shh));
+        auto gbh = [&bc_a](const block& bb, uint64_t hh,
+                           const crypto::hash* s, unsigned int mn,
+                           crypto::hash& o) -> bool {
+            return get_block_longhash(&bc_a, bb, o, hh, s,
+                                      static_cast<int>(mn));
+        };
+        ASSERT_TRUE(miner::find_nonce_for_given_block(
+            gbh, tmpl, diff, h, nullptr));
+        block_verification_context bvc{}; pool_supplement e{};
+        blobdata blob = block_to_blob(tmpl);
+        ASSERT_TRUE(a.core->handle_single_incoming_block(
+            blob, &tmpl, bvc, e, false));
+        ASSERT_FALSE(bvc.m_verifivation_failed);
+        ASSERT_TRUE(b.core->handle_single_incoming_block(
+            blob, &tmpl, bvc, e, false));
+        ASSERT_FALSE(bvc.m_verifivation_failed);
+        ASSERT_TRUE(c.core->handle_single_incoming_block(
+            blob, &tmpl, bvc, e, false));
+        ASSERT_FALSE(bvc.m_verifivation_failed);
+    }
+
+    crypto::hash g_hash = bc_a.get_block_id_by_height(0);
+    const uint64_t vote_end = 3;
+
+    // Ready at vote_end=3: A, B, C, D.
+    for (auto* db : { &db_a, &db_b, &db_c }) {
+        db_wtxn_guard g(db);
+        for (const auto& pk : { a_pub, b_pub, c_pub, d_pub })
+            db->add_dao_v2_node_ready(pk, 0, g_hash);
+    }
+
+    // Proposal + aggregate + supply.
+    crypto::hash prop_id{};
+    std::memset(prop_id.data, 0xD3, 32);
+    PaillierPublicKey pk;
+    ASSERT_TRUE(pk.deserialize_modulus(dkg_out.record.N));
+    BIGNUM* Wb = BN_new(); BN_set_word(Wb, 1000);
+    BIGNUM* Sb = BN_new(); BN_set_word(Sb, 1000);
+    BIGNUM* Bb = BN_new(); BN_set_word(Bb, 50000);
+    BIGNUM* r1 = BN_new(); BN_set_word(r1, 3);
+    BIGNUM* r2 = BN_new(); BN_set_word(r2, 5);
+    BIGNUM* r3 = BN_new(); BN_set_word(r3, 7);
+    std::vector<uint8_t> E_W, E_S, E_B;
+    ASSERT_TRUE(pk.encrypt(Wb, r1, E_W));
+    ASSERT_TRUE(pk.encrypt(Sb, r2, E_S));
+    ASSERT_TRUE(pk.encrypt(Bb, r3, E_B));
+    for (auto* db : { &db_a, &db_b, &db_c }) {
+        db_wtxn_guard g(db);
+        proposal_record rec{};
+        rec.proposal_id = prop_id;
+        rec.submission_height = 0;
+        rec.voting_end_height = vote_end;
+        rec.status = PROPOSAL_STATUS_ACTIVE;
+        std::memcpy(rec.tally_key_id.data, dkg_out.record.key_id.data(), 32);
+        db->add_proposal_record(prop_id, rec);
+        dao_proposal_aggregate agg;
+        agg.aggregate_E_W = E_W;
+        agg.aggregate_E_S = E_S;
+        agg.aggregate_E_B = E_B;
+        agg.aggregate_C_W = rct::identity();
+        agg.aggregate_C_S = rct::identity();
+        agg.aggregate_C_B = rct::identity();
+        db->add_dao_proposal_aggregate(prop_id, agg);
+        dao_supply_snapshot snap;
+        snap.height = vote_end;
+        snap.minted = dao_u128(100000);
+        snap.circulating = dao_u128(50000);
+        db->add_dao_supply_snapshot(snap);
+    }
+
+    // Mailbox.
+    std::vector<std::pair<crypto::public_key, std::string>> mailbox;
+    std::mutex mb_mu;
+    bc_a.set_dao_v2_dkg_send([&](const std::string& s) -> bool {
+        std::lock_guard<std::mutex> lk(mb_mu);
+        mailbox.emplace_back(a_pub, s);
+        return true;
+    });
+    bc_b.set_dao_v2_dkg_send([&](const std::string& s) -> bool {
+        std::lock_guard<std::mutex> lk(mb_mu);
+        mailbox.emplace_back(b_pub, s);
+        return true;
+    });
+    bc_c.set_dao_v2_dkg_send([&](const std::string& s) -> bool {
+        std::lock_guard<std::mutex> lk(mb_mu);
+        mailbox.emplace_back(c_pub, s);
+        return true;
+    });
+    for (auto* bc : { &bc_a, &bc_b, &bc_c })
+        bc->set_dao_v2_tally_broadcast([](const dao_v2_tally_share&) {});
+
+    auto find_latest = [](BlockchainDB& db,
+                          const std::vector<uint8_t>& kid) -> uint64_t {
+        uint64_t sid = 0;
+        db.for_all_dao_share_sets(
+            [&](uint64_t id, const dao_share_set_record& r) -> bool {
+                if (r.key_id == kid && !r.contributions.empty() && id > sid)
+                    sid = id;
+                return true;
+            });
+        return sid;
+    };
+
+    auto drive = [&](int max_rounds) {
+        for (int r = 0; r < max_rounds; ++r) {
+            std::vector<std::pair<crypto::public_key, std::string>> batch;
+            {
+                std::lock_guard<std::mutex> lk(mb_mu);
+                batch.swap(mailbox);
+            }
+            for (auto& [sender, payload] : batch) {
+                if (sender != a_pub) bc_a.handle_dao_v2_dkg_msg(sender, payload);
+                if (sender != b_pub) bc_b.handle_dao_v2_dkg_msg(sender, payload);
+                if (sender != c_pub) bc_c.handle_dao_v2_dkg_msg(sender, payload);
+            }
+            { db_wtxn_guard g(&db_a); bc_a.maybe_maintain_dao_v2_share_set(); }
+            { db_wtxn_guard g(&db_b); bc_b.maybe_maintain_dao_v2_share_set(); }
+            { db_wtxn_guard g(&db_c); bc_c.maybe_maintain_dao_v2_share_set(); }
+        }
+    };
+
+    // -------- First reshare (base -> {A,B,C,D}) --------
+    bc_a.maybe_start_dao_v2_reshare_for_proposal(prop_id, vote_end);
+    bc_b.maybe_start_dao_v2_reshare_for_proposal(prop_id, vote_end);
+    bc_c.maybe_start_dao_v2_reshare_for_proposal(prop_id, vote_end);
+    drive(15);
+
+    uint64_t sid1 = find_latest(db_a, dkg_out.record.key_id);
+    ASSERT_NE(sid1, 0u) << "first reshare did not commit";
+    {
+        dao_share_set_record ss;
+        ASSERT_TRUE(db_a.get_dao_share_set(sid1, ss));
+        EXPECT_EQ(ss.committee_members.size(), 4u);
+        EXPECT_EQ(ss.threshold, dao_dkg_expected_threshold(4));
+    }
+
+    // -------- Advance past stall window --------
+    while (bc_a.get_current_blockchain_height() < 20) {
+        block tmpl{}; difficulty_type diff{}; uint64_t h=0,r=0,sh=0;
+        crypto::hash shh{}; blobdata en(8,0);
+        ASSERT_TRUE(bc_a.create_block_template(tmpl,
+            miner.get_keys().m_account_address, diff, h, r, en, sh, shh));
+        auto gbh = [&bc_a](const block& bb, uint64_t hh,
+                           const crypto::hash* s, unsigned int mn,
+                           crypto::hash& o) -> bool {
+            return get_block_longhash(&bc_a, bb, o, hh, s,
+                                      static_cast<int>(mn));
+        };
+        ASSERT_TRUE(miner::find_nonce_for_given_block(
+            gbh, tmpl, diff, h, nullptr));
+        block_verification_context bvc{}; pool_supplement e{};
+        blobdata blob = block_to_blob(tmpl);
+        ASSERT_TRUE(a.core->handle_single_incoming_block(
+            blob, &tmpl, bvc, e, false));
+        ASSERT_TRUE(b.core->handle_single_incoming_block(
+            blob, &tmpl, bvc, e, false));
+        ASSERT_TRUE(c.core->handle_single_incoming_block(
+            blob, &tmpl, bvc, e, false));
+    }
+
+    // Refresh ready for A, B, C at current height; D drops.
+    crypto::hash tip_hash = bc_a.get_block_id_by_height(
+        bc_a.get_current_blockchain_height() - 1);
+    const uint64_t now_h = bc_a.get_current_blockchain_height() - 1;
+    for (auto* db : { &db_a, &db_b, &db_c }) {
+        db_wtxn_guard g(db);
+        for (const auto& pk : { a_pub, b_pub, c_pub })
+            db->add_dao_v2_node_ready(pk, now_h, tip_hash);
+        // D's height-0 ready entry auto-expires via TTL (k_ready_ttl_now).
+    }
+
+    // -------- Re-reshare (survivors, D dropped) --------
+    bc_a.maybe_start_dao_v2_reshare_for_proposal(prop_id, vote_end);
+    bc_b.maybe_start_dao_v2_reshare_for_proposal(prop_id, vote_end);
+    bc_c.maybe_start_dao_v2_reshare_for_proposal(prop_id, vote_end);
+    drive(15);
+
+    uint64_t sid2 = find_latest(db_a, dkg_out.record.key_id);
+    ASSERT_NE(sid2, 0u) << "re-reshare did not commit";
+    EXPECT_NE(sid2, sid1);
+
+    dao_share_set_record ss2;
+    ASSERT_TRUE(db_a.get_dao_share_set(sid2, ss2));
+    EXPECT_EQ(ss2.committee_members.size(), 3u);
+    EXPECT_EQ(ss2.threshold, dao_dkg_expected_threshold(3));
+    EXPECT_FALSE(ss2.contributions.empty());
+    EXPECT_EQ(ss2.contributor_indices.size(), ss2.contributions.size());
+
+    BN_free(Wb); BN_free(Sb); BN_free(Bb);
+    BN_free(r1); BN_free(r2); BN_free(r3);
+    boost::filesystem::remove_all(base);
+}
+

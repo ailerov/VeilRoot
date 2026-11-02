@@ -197,6 +197,15 @@ public:
         crypto::public_key                local_pub{};
         crypto::secret_key                local_priv{};
         dao_reshare_link_context          link_ctx_base;
+
+        // Proposal this reshare belongs to. Null hash for bootstrap.
+        crypto::hash                      proposal_id{};
+
+        // Threshold used to combine OLD contributions into new shares.
+        // This is the OLD committee's threshold, which may differ from
+        // `threshold` (the NEW committee's threshold). If 0, falls
+        // back to `threshold` for backward compatibility.
+        uint32_t                          contributor_threshold = 0;
     };
 
     dao_reshare_runner(const config& cfg,
@@ -215,6 +224,7 @@ public:
     // Returns this node's derived s'_j if it is a new member and
     // finalization has completed.
     bool get_local_share(std::vector<uint8_t>& share_out) const;
+    crypto::hash proposal_id() const;
 
 private:
     struct impl;
