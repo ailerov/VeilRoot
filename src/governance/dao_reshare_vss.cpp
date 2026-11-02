@@ -61,22 +61,26 @@ bool modexp_signed(const BIGNUM* base, const BIGNUM* exp,
 
 } // namespace
 
-void dao_reshare_serialize_signed(const BIGNUM* x, std::vector<uint8_t>& out)
+bool dao_reshare_serialize_signed(const BIGNUM* x, std::vector<uint8_t>& out)
 {
     out.assign(DAO_RESHARE_SIGNED_BYTES, 0);
-    if (!x) return;
+    if (!x) return false;
     out[0] = BN_is_negative(x) ? 1 : 0;
     BIGNUM* abs_x = BN_dup(x);
+    if (!abs_x) return false;
     BN_set_negative(abs_x, 0);
     const size_t width = DAO_RESHARE_SIGNED_BYTES - 1;
     if (static_cast<size_t>(BN_num_bytes(abs_x)) > width) {
-        // Caller must treat this as a hard failure. The size is
-        // DAO_RESHARE_SIGNED_BYTES - 1 magnitude bytes.
+        // Hard failure: caller must not proceed with a truncated or
+        // zero magnitude. The previous void return silently produced a
+        // zero-share that downstream code treated as valid.
         BN_free(abs_x);
-        return;
+        out.clear();
+        return false;
     }
     BN_bn2binpad(abs_x, out.data() + 1, static_cast<int>(width));
     BN_free(abs_x);
+    return true;
 }
 
 bool dao_reshare_deserialize_signed(const std::vector<uint8_t>& in,
@@ -416,9 +420,21 @@ bool dao_reshare_vss_deal(
 
         dao_reshare_vss_share sh;
         sh.j = j;
-        dao_reshare_serialize_signed(qj, sh.q_i_j);
-        shares_out.push_back(std::move(sh));
+        const bool ser_ok = dao_reshare_serialize_signed(qj, sh.q_i_j);
         BN_free(qj);
+        if (!ser_ok) {
+            // Free any already-pushed shares before failing out.
+            // The caller sees an incomplete shares_out and rejects.
+            shares_out.clear();
+            BN_free(q_const);
+            for (auto* p : b) if (p) BN_free(p);
+            for (auto* p : xs) if (p) BN_free(p);
+            BN_free(coeff_range); BN_free(sample_limit); BN_free(coeff_scale);
+            BN_free(G_base);
+            BN_free(V); BN_free(c0_exp); BN_free(C0);
+            return false;
+        }
+        shares_out.push_back(std::move(sh));
     }
 
     BN_free(q_const);

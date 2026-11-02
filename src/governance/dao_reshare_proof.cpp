@@ -234,10 +234,15 @@ bool dao_reshare_link_prove(
     proof_out.B.assign(dao_reshare_link_proof::REPS, {});
     for (size_t l = 0; l < dao_reshare_link_proof::REPS; ++l) {
         rs[l] = BN_new();
-        // Sample the randomizer from [0, 2^(8196+128)) so it masks the
-        // ~8196-bit witness statistically. Sampling from [0, N) is too
-        // narrow and leaks s_i through the response magnitude.
-        if (!rs[l] || !BN_rand(rs[l], 8196 + 128,
+        // Sample r from [0, 2^(WITNESS_BITS + STATISTICAL_BITS)) so it
+        // statistically masks a witness of up to WITNESS_BITS. Sampling
+        // from [0, N) is too narrow and leaks s through the response
+        // magnitude, and a randomizer smaller than the witness (as the
+        // previous 8196+128 draw was for reshared witnesses) fails to
+        // mask s at all.
+        if (!rs[l] || !BN_rand(rs[l],
+                               dao_reshare_link_proof::WITNESS_BITS +
+                               dao_reshare_link_proof::STATISTICAL_BITS,
                                BN_RAND_TOP_ANY, BN_RAND_BOTTOM_ANY)) {
             for (auto* p : rs) if (p) BN_free(p);
             BN_free(N); BN_free(V); BN_free(VK); BN_free(C0);

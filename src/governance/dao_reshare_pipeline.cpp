@@ -209,7 +209,8 @@ bool dao_reshare_combine(
 
         dao_reshare_new_share ns;
         ns.j = new_indices[k];
-        dao_reshare_serialize_signed(s_j, ns.share_signed);
+        if (!dao_reshare_serialize_signed(s_j, ns.share_signed))
+            return false;
         ns.VK_j = std::move(VK_j);
         new_shares_out[k] = std::move(ns);
         BN_free(s_j);
@@ -316,7 +317,8 @@ bool dao_reshare_combine_one(
 
     new_share_out = dao_reshare_new_share{};
     new_share_out.j = target_index;
-    dao_reshare_serialize_signed(s_j, new_share_out.share_signed);
+    if (!dao_reshare_serialize_signed(s_j, new_share_out.share_signed))
+        return false;
     new_share_out.VK_j = std::move(VK_j);
     BN_free(s_j);
     return true;

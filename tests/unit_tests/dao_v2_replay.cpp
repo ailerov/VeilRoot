@@ -2832,3 +2832,140 @@ TEST(DaoV2Replay, B3dDropoutReplacement)
     boost::filesystem::remove_all(base);
 }
 
+// ------------------------------------------------------------------
+// Focused regression for the reshape-chain witness bound.
+//
+// Proves that dao_reshare_link_prove and dao_reshare_link_verify handle
+// a 9000-bit witness -- the size produced by a first reshape. The
+// previous SCALAR_BYTES = 1041 (= 8328 bits) rejected it and the
+// previous randomizer draw (8196+128) did not statistically mask it.
+// ------------------------------------------------------------------
+TEST(DaoV2Replay, LinkProofHandlesResharedWitness)
+{
+    using namespace cryptonote;
+    using namespace cryptonote::dao;
+
+    boost::filesystem::path base =
+        boost::filesystem::temp_directory_path() /
+        boost::filesystem::unique_path("vr_linkproof_%%%%-%%%%");
+
+    ReplayNode a;
+    ASSERT_TRUE(a.init((base / "a").string()));
+    auto& bc_a = a.core->get_blockchain_storage();
+    auto& db_a = bc_a.get_db();
+
+    // Real DKG for one small committee so we have a canonical N and V.
+    std::vector<crypto::public_key> committee;
+    for (int i = 0; i < 3; ++i) {
+        crypto::public_key pk; crypto::secret_key sk;
+        crypto::generate_keys(pk, sk);
+        committee.push_back(pk);
+    }
+    std::sort(committee.begin(), committee.end(),
+              [](const auto& x, const auto& y) {
+                return std::memcmp(x.data, y.data, 32) < 0;
+              });
+
+    dao_vss_group vss;
+    ASSERT_TRUE(dao_vss_group_generate(vss,
+        dao_dkg_required_vss_bits(60, 128, 32)));
+
+    dkg_inproc_network inet = dkg_make_inproc_network(3, nullptr);
+    std::vector<std::unique_ptr<dkg_transport>> pool;
+    for (auto& e : inet.endpoints) pool.push_back(std::move(e));
+    size_t next = 0;
+    dkg_transport_factory factory =
+        [&pool, &next](uint32_t) -> std::unique_ptr<dkg_transport> {
+            if (next >= pool.size()) return nullptr;
+            return std::move(pool[next++]);
+        };
+
+    dkg_config cfg;
+    cfg.committee_size = 3;
+    cfg.threshold = dao_dkg_expected_threshold(3);
+    cfg.member_ids = committee;
+    cfg.k = 60; cfg.target_N_bits = 128; cfg.security_bits = 32;
+    cfg.qproof_rounds = DAO_DKG_QPROOF_ROUNDS_TEST;
+    cfg.max_attempts = 1;
+    cfg.test_seed = 0x5645494C52544F33ULL;
+    cfg.local_party_id = 1;
+
+    dkg_result dkg_out;
+    ASSERT_TRUE(dkg_run_with_transport(cfg, factory, dkg_out));
+    ASSERT_TRUE(dkg_out.candidate_accepted);
+
+    PaillierPublicKey pk;
+    ASSERT_TRUE(pk.deserialize_modulus(dkg_out.record.N));
+
+    // Synthetic witness at the size the reshape chain produces.
+    BIGNUM* s_witness = BN_new();
+    ASSERT_TRUE(BN_rand(s_witness, 9000, BN_RAND_TOP_ONE,
+                        BN_RAND_BOTTOM_ANY));
+    const int witness_bits = BN_num_bits(s_witness);
+    ASSERT_GT(witness_bits, 8328) << "precondition: witness exceeds old bound";
+
+    // Compute the matching VK_i = V^(Delta * s) mod N^2 and
+    // C_i0 = V^s mod N^2 (mu_i = 1 for this test).
+    BN_CTX* g_ctx = BN_CTX_new();
+    ASSERT_NE(g_ctx, nullptr);
+    BIGNUM* N = BN_bin2bn(dkg_out.record.N.data(),
+                          static_cast<int>(dkg_out.record.N.size()), nullptr);
+    BIGNUM* N2 = BN_new();
+    BN_sqr(N2, N, g_ctx);
+    BIGNUM* V = BN_bin2bn(dkg_out.record.V.data(),
+                          static_cast<int>(dkg_out.record.V.size()), nullptr);
+    BIGNUM* Delta = BN_new();
+    BN_dec2bn(&Delta, "20922789888000");
+    BIGNUM* exp0 = BN_new();
+    BN_mul(exp0, Delta, s_witness, g_ctx);
+    BIGNUM* VKi = BN_new();
+    BN_mod_exp(VKi, V, exp0, N2, g_ctx);
+    BIGNUM* C0 = BN_new();
+    BN_mod_exp(C0, V, s_witness, N2, g_ctx);
+
+    std::vector<uint8_t> VKi_bytes(PAILLIER_CT_BYTES, 0);
+    std::vector<uint8_t> C0_bytes(PAILLIER_CT_BYTES, 0);
+    BN_bn2binpad(VKi, VKi_bytes.data(), PAILLIER_CT_BYTES);
+    BN_bn2binpad(C0, C0_bytes.data(), PAILLIER_CT_BYTES);
+
+    dao_reshare_link_context ctx;
+    ctx.genesis_block_hash = db_a.get_block_hash_from_height(0);
+    ctx.stable_key_record_hash.assign(32, 0);
+    ctx.share_set_id = 1;
+    ctx.contributor_pubkey.assign(32, 0);
+    std::memcpy(ctx.contributor_pubkey.data(), committee[0].data, 32);
+    ctx.original_index = 1;
+    ctx.contributor_subset = {1, 2};
+    ctx.N = dkg_out.record.N;
+    ctx.V = dkg_out.record.V;
+    ctx.VK_i = VKi_bytes;
+    ctx.C_i0 = C0_bytes;
+    std::vector<uint8_t> Delta_bytes(32, 0);
+    BN_bn2binpad(Delta, Delta_bytes.data(), 32);
+    ctx.Delta = Delta_bytes;
+    // mu_i = 1, signed encoding: 1 sign byte + 512 magnitude
+    std::vector<uint8_t> mu_bytes(1 + 512, 0);
+    mu_bytes[1 + 511] = 1;
+    ctx.mu_i = mu_bytes;
+
+    dao_reshare_link_proof proof;
+    ASSERT_TRUE(dao_reshare_link_prove(ctx, s_witness, proof))
+        << "link_prove failed on " << witness_bits << "-bit witness";
+
+    std::vector<uint8_t> proof_bytes;
+    ASSERT_TRUE(proof.serialize(proof_bytes));
+
+    dao_reshare_link_proof proof2;
+    ASSERT_TRUE(proof2.deserialize(proof_bytes));
+
+    ASSERT_TRUE(dao_reshare_link_verify(ctx, proof2))
+        << "link_verify failed on round-tripped proof";
+
+    BN_free(s_witness);
+    BN_free(N); BN_free(N2); BN_free(V); BN_free(Delta); BN_free(exp0);
+    BN_free(VKi); BN_free(C0);
+    BN_CTX_free(g_ctx);
+
+    boost::filesystem::remove_all(base);
+}
+

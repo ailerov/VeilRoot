@@ -32,9 +32,27 @@ namespace dao {
 struct dao_reshare_link_proof
 {
     static constexpr size_t REPS         = 128;
-    // Bounds the response z = r + e*s where |s| < 2^8196 and r is
-    // masked by 128 statistical bits. 8324/8 = 1040.5 -> 1041.
-    static constexpr size_t SCALAR_BYTES = 1041;
+    // Witness and response bounds for z = r + e*s.
+    //
+    // Base DKG shares are ~8196 bits. Each reshape hop scales the share
+    // by the coefficient factor and adds noise; the observed output of
+    // one hop is ~8389 bits (see dao_dkg.h note on reshared shares).
+    // The design permits up to two reshape hops per proposal (initial
+    // committee, then one dropout replacement), so the worst-case
+    // witness is bounded generously at 10000 bits.
+    //
+    // The randomizer r is drawn uniformly from [0, 2^(WITNESS_BITS +
+    // STATISTICAL_BITS)) so it masks s statistically. Response is
+    // therefore < 2^(WITNESS_BITS + STATISTICAL_BITS + 1) in absolute
+    // value. SCALAR_BYTES covers that plus the 1-byte sign field.
+    //
+    // If the protocol later supports longer reshape chains or a larger
+    // committee size that pushes the witness beyond 10000 bits, this
+    // constant must be re-derived from the actual share growth per hop.
+    static constexpr size_t WITNESS_BITS     = 10000;
+    static constexpr size_t STATISTICAL_BITS = 128;
+    static constexpr size_t SCALAR_BYTES =
+        (WITNESS_BITS + STATISTICAL_BITS + 1 + 7) / 8;  // 1267
 
     // Each A_l and B_l is a PAILLIER_CT_BYTES group element.
     std::vector<std::vector<uint8_t>> A;   // A_l = V^(Delta * r_l)

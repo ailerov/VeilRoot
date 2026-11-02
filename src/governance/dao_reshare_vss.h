@@ -44,9 +44,9 @@ constexpr uint32_t DAO_RESHARE_COEFF_SCALE_BITS = 8281;
 // Response magnitude width. |q_i(j)| < 2^8420 by the expert's
 // bound for n_new=16, degree=7, |mu_i*s_i| < 2^8261, scaled
 // coefficients. 8420/8 = 1052.5 -> 1053 bytes magnitude.
-constexpr size_t DAO_RESHARE_SIGNED_BYTES = 1 + 1053;
+constexpr size_t DAO_RESHARE_SIGNED_BYTES = 1268 + 1053;
 
-void dao_reshare_serialize_signed(const BIGNUM* x, std::vector<uint8_t>& out);
+bool dao_reshare_serialize_signed(const BIGNUM* x, std::vector<uint8_t>& out);
 bool dao_reshare_deserialize_signed(const std::vector<uint8_t>& in,
                                      BIGNUM* out);
 
