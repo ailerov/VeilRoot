@@ -3867,8 +3867,14 @@ bool BlockchainLMDB::for_all_dao_share_sets(
     bool cont = true;
     while (rc == MDB_SUCCESS && cont) {
         if (k.mv_size == sizeof(uint64_t) && v.mv_size > 0) {
+            // Decode using the same big-endian convention as
+            // share_set_encode_key. Host-endian memcpy would byte-swap
+            // on little-endian and hand callers an id that
+            // get_dao_share_set() cannot find.
+            const uint8_t* kb = static_cast<const uint8_t*>(k.mv_data);
             uint64_t sid = 0;
-            std::memcpy(&sid, k.mv_data, sizeof(sid));
+            for (int i = 0; i < 8; ++i)
+                sid = (sid << 8) | kb[i];
             std::vector<uint8_t> blob(
                 static_cast<uint8_t*>(v.mv_data),
                 static_cast<uint8_t*>(v.mv_data) + v.mv_size);

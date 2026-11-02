@@ -10799,9 +10799,29 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     if (!delta) return;
     BN_dec2bn(&delta, "20922789888000");
 
+    // The reshare coefficient proofs must be made in the VSS group
+    // that the base DKG used. The certificate verifier reconstructs
+    // that group from key_rec.vss_*, so proofs in any other group are
+    // unverifiable.
+    if (key_rec.vss_P.empty() || key_rec.vss_P_prime.empty() ||
+        key_rec.vss_g.empty() || key_rec.vss_h.empty()) {
+      BN_free(delta);
+      return;
+    }
     auto vss = std::make_unique<dao::dao_vss_group>();
-    if (!dao::dao_vss_group_generate(*vss,
-            dao::dao_dkg_required_vss_bits(60, 128, 32))) {
+    vss->P       = BN_bin2bn(key_rec.vss_P.data(),
+                             static_cast<int>(key_rec.vss_P.size()),
+                             nullptr);
+    vss->P_prime = BN_bin2bn(key_rec.vss_P_prime.data(),
+                             static_cast<int>(key_rec.vss_P_prime.size()),
+                             nullptr);
+    vss->g       = BN_bin2bn(key_rec.vss_g.data(),
+                             static_cast<int>(key_rec.vss_g.size()),
+                             nullptr);
+    vss->h       = BN_bin2bn(key_rec.vss_h.data(),
+                             static_cast<int>(key_rec.vss_h.size()),
+                             nullptr);
+    if (!vss->valid()) {
       BN_free(delta);
       return;
     }
@@ -11116,9 +11136,29 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     BN_dec2bn(&delta, "20922789888000");
 
     // VSS group for the resharing coefficient proofs.
+    // The reshare coefficient proofs must be made in the VSS group
+    // that the base DKG used. The certificate verifier reconstructs
+    // that group from key_rec.vss_*, so proofs in any other group are
+    // unverifiable.
+    if (key_rec.vss_P.empty() || key_rec.vss_P_prime.empty() ||
+        key_rec.vss_g.empty() || key_rec.vss_h.empty()) {
+      BN_free(delta);
+      return;
+    }
     auto vss = std::make_unique<dao::dao_vss_group>();
-    if (!dao::dao_vss_group_generate(*vss,
-            dao::dao_dkg_required_vss_bits(60, 128, 32))) {
+    vss->P       = BN_bin2bn(key_rec.vss_P.data(),
+                             static_cast<int>(key_rec.vss_P.size()),
+                             nullptr);
+    vss->P_prime = BN_bin2bn(key_rec.vss_P_prime.data(),
+                             static_cast<int>(key_rec.vss_P_prime.size()),
+                             nullptr);
+    vss->g       = BN_bin2bn(key_rec.vss_g.data(),
+                             static_cast<int>(key_rec.vss_g.size()),
+                             nullptr);
+    vss->h       = BN_bin2bn(key_rec.vss_h.data(),
+                             static_cast<int>(key_rec.vss_h.size()),
+                             nullptr);
+    if (!vss->valid()) {
       BN_free(delta);
       return;
     }
