@@ -1666,8 +1666,7 @@ namespace cryptonote
     m_dao_v2_dkg_interval.do_call([this]() -> bool {
       m_blockchain_storage.maybe_process_dao_v2_dkg_results();
       m_blockchain_storage.maybe_announce_dao_v2_node_ready();
-      m_blockchain_storage.maybe_bootstrap_dao_v2_dkg();
-      m_blockchain_storage.maybe_maintain_dao_v2_share_set();
+      m_blockchain_storage.maybe_commit_dao_v2_reshare();
       return true;
     });
     m_miner.on_idle();

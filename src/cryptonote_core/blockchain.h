@@ -1530,12 +1530,15 @@ namespace cryptonote
   // results queued by the DKG watcher threads onto this owner thread.
   void maybe_process_dao_v2_dkg_results();
 
-  // Lifecycle hook called from the daemon idle loop. If the eligible
-  // node set has grown beyond the current share set, starts a
-  // resharing so that every eligible node holds a share. Idempotent:
-  // does nothing while a reshare is already running or when the
-  // share set already covers every eligible node.
-  void maybe_maintain_dao_v2_share_set();
+  // Lifecycle hook called from the daemon idle loop. If a reshare
+  // runner has finished and holds a share-set record, commits the
+  // public share-set record and this node's own private share
+  // atomically in a single write transaction. The transaction is
+  // opened by this function, because core::on_idle does not own one.
+  // Returns true when there is nothing to commit or commit succeeded;
+  // returns false when persistence failed, in which case the runner
+  // and its result are preserved for retry on the next idle tick.
+  bool maybe_commit_dao_v2_reshare();
 
   // B3b: at voting-end, if the chain-state ready roster differs from
   // the acceptance-time committee for this proposal, start a reshare
@@ -1964,7 +1967,6 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
 
     // B3d: per-proposal reshare/tally timing in blocks.
     std::map<crypto::hash, uint64_t> m_dao_v2_reshare_started_block;
-    std::map<crypto::hash, uint64_t> m_dao_v2_reshare_committed_block;
     // END_VNS_DAO_V2_RESHARE
     // END_VNS_DAO_V2_DKG
     // END_VNS_DECRYPTION_STATE
