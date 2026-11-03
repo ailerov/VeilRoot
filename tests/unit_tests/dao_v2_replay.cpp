@@ -3491,3 +3491,171 @@ TEST(DaoV2Replay, RepeatedReshareMaxCommittee)
     BN_CTX_free(ctx);
     boost::filesystem::remove_all(base);
 }
+
+
+// ------------------------------------------------------------------
+// §9 item 5: dao_reshare_combine_one must reject contributions built
+// over different Lagrange interpolation subsets. Each contribution
+// is individually valid; combining mismatched subsets silently
+// produces an s_j that passes the internal V^{s_j*delta}==VK_j check
+// but does not represent a share of the correct secret.
+// ------------------------------------------------------------------
+TEST(DaoV2Replay, CombineRejectsMismatchedSubsets)
+{
+    using namespace cryptonote;
+    using namespace cryptonote::dao;
+
+    boost::filesystem::path base =
+        boost::filesystem::temp_directory_path() /
+        boost::filesystem::unique_path("vr_combine_mismatch_%%%%-%%%%");
+
+    std::vector<crypto::public_key> c0_pks;
+    for (int i = 0; i < 3; ++i) {
+        crypto::public_key pk2; crypto::secret_key sk2;
+        crypto::generate_keys(pk2, sk2);
+        c0_pks.push_back(pk2);
+    }
+    std::sort(c0_pks.begin(), c0_pks.end(),
+        [](const auto& x, const auto& y) {
+            return std::memcmp(x.data, y.data, 32) < 0;
+        });
+
+    dkg_inproc_network inet = dkg_make_inproc_network(3, nullptr);
+    std::vector<std::unique_ptr<dkg_transport>> pool;
+    for (auto& e : inet.endpoints) pool.push_back(std::move(e));
+    size_t next = 0;
+    dkg_transport_factory factory =
+        [&pool, &next](uint32_t) -> std::unique_ptr<dkg_transport> {
+            if (next >= pool.size()) return nullptr;
+            return std::move(pool[next++]);
+        };
+    dkg_config dcfg;
+    dcfg.committee_size = 3;
+    dcfg.threshold = dao_dkg_expected_threshold(3);
+    dcfg.member_ids = c0_pks;
+    dcfg.k = 60; dcfg.target_N_bits = 128; dcfg.security_bits = 32;
+    dcfg.qproof_rounds = DAO_DKG_QPROOF_ROUNDS_TEST;
+    dcfg.max_attempts = 1;
+    dcfg.test_seed = 0x5645494C52544F33ULL;
+    dcfg.local_party_id = 1;
+    dkg_result dkg_out;
+    ASSERT_TRUE(dkg_run_with_transport(dcfg, factory, dkg_out));
+    ASSERT_TRUE(dkg_out.candidate_accepted);
+    ASSERT_EQ(dkg_out.test_SK.size(), 3u);
+
+    auto decode_decimal_sk = [](const std::vector<uint8_t>& dec)
+        -> std::vector<uint8_t> {
+        std::string s(dec.begin(), dec.end());
+        BIGNUM* bn = nullptr;
+        if (BN_dec2bn(&bn, s.c_str()) == 0) return {};
+        bool neg = BN_is_negative(bn) != 0;
+        BIGNUM* abs_bn = BN_dup(bn); BN_set_negative(abs_bn, 0);
+        int nb = BN_num_bytes(abs_bn);
+        std::vector<uint8_t> raw(1 + nb, 0);
+        raw[0] = neg ? 1 : 0;
+        BN_bn2bin(abs_bn, raw.data() + 1);
+        BN_free(abs_bn); BN_free(bn);
+        return raw;
+    };
+
+    std::vector<BIGNUM*> c0_shares;
+    for (auto& b : { dkg_out.local_secret_share,
+                     decode_decimal_sk(dkg_out.test_SK[1]),
+                     decode_decimal_sk(dkg_out.test_SK[2]) }) {
+        BIGNUM* s = decode_share_signed_or_magnitude(b);
+        ASSERT_NE(s, nullptr);
+        c0_shares.push_back(s);
+    }
+
+    PaillierPublicKey pk;
+    ASSERT_TRUE(pk.deserialize_modulus(dkg_out.record.N));
+    dao_vss_group vss;
+    ASSERT_TRUE(dao_vss_group_generate(vss,
+        dao_dkg_required_vss_bits(60, 128, 32)));
+    BIGNUM* delta = BN_dup(dao_dkg_delta());
+    ASSERT_NE(delta, nullptr);
+    std::vector<uint8_t> Delta_bytes(32, 0);
+    BN_bn2binpad(delta, Delta_bytes.data(), 32);
+
+    std::vector<crypto::public_key> new_pks;
+    for (int i = 0; i < 4; ++i) {
+        crypto::public_key pk2; crypto::secret_key sk2;
+        crypto::generate_keys(pk2, sk2);
+        new_pks.push_back(pk2);
+    }
+    std::vector<uint32_t> new_indices = { 1, 2, 3, 4 };
+    const uint32_t t_new = 1;
+    const uint32_t threshold = 2;
+
+    auto make_contrib =
+        [&](uint32_t i, const std::vector<uint32_t>& S,
+            dao_reshare_contribution& c_out) -> bool
+    {
+        dao_reshare_link_context ctx_i;
+        ctx_i.genesis_block_hash = crypto::null_hash;
+        ctx_i.stable_key_record_hash.assign(32, 0);
+        ctx_i.share_set_id = 100;
+        ctx_i.contributor_pubkey.assign(32, 0);
+        std::memcpy(ctx_i.contributor_pubkey.data(),
+                    c0_pks[i - 1].data, 32);
+        ctx_i.original_index = i;
+        ctx_i.contributor_subset = S;
+        ctx_i.N = dkg_out.record.N;
+        ctx_i.V = dkg_out.record.V;
+        ctx_i.VK_i = dkg_out.record.V_K_i[i - 1];
+        ctx_i.C_i0.assign(PAILLIER_CT_BYTES, 0);
+        ctx_i.Delta = Delta_bytes;
+
+        BIGNUM* mu = BN_new();
+        if (!mu || !cryptonote::dao::dao_dkg_lagrange_mu(S, i, mu)) {
+            BN_free(mu); return false;
+        }
+        bool ok = dao_reshare_make_contribution(
+            pk, vss, dkg_out.record.V, c0_shares[i - 1], mu, delta,
+            t_new, new_indices, ctx_i, c_out);
+        BN_free(mu);
+        return ok;
+    };
+
+    dao_reshare_contribution c1_s12, c2_s12, c3_s23;
+    ASSERT_TRUE(make_contrib(1, {1, 2}, c1_s12));
+    ASSERT_TRUE(make_contrib(2, {1, 2}, c2_s12));
+    ASSERT_TRUE(make_contrib(3, {2, 3}, c3_s23));
+
+    // Control: matching subsets combine successfully.
+    {
+        std::vector<dao_reshare_contribution> contribs = { c1_s12, c2_s12 };
+        dao_reshare_new_share ns;
+        EXPECT_TRUE(dao_reshare_combine_one(
+            pk, vss, dkg_out.record.V, contribs, new_indices,
+            0, threshold, delta, ns))
+            << "control case (matching subsets) should succeed";
+        EXPECT_EQ(ns.share_signed.size(), DAO_RESHARE_SIGNED_BYTES);
+        EXPECT_EQ(ns.VK_j.size(), PAILLIER_CT_BYTES);
+    }
+
+    // Negative: mismatched subsets must be rejected.
+    {
+        std::vector<dao_reshare_contribution> contribs = { c1_s12, c3_s23 };
+        dao_reshare_new_share ns;
+        EXPECT_FALSE(dao_reshare_combine_one(
+            pk, vss, dkg_out.record.V, contribs, new_indices,
+            0, threshold, delta, ns))
+            << "combine_one accepted contributions with mismatched "
+               "Lagrange subsets; a wrong result would silently pass "
+               "the V^{s_j*delta}==VK_j check";
+    }
+
+    // Negative: insufficient contributions still fails.
+    {
+        std::vector<dao_reshare_contribution> contribs = { c1_s12 };
+        dao_reshare_new_share ns;
+        EXPECT_FALSE(dao_reshare_combine_one(
+            pk, vss, dkg_out.record.V, contribs, new_indices,
+            0, threshold, delta, ns));
+    }
+
+    for (auto* s : c0_shares) BN_free(s);
+    BN_free(delta);
+    boost::filesystem::remove_all(base);
+}

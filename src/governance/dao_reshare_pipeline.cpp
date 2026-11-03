@@ -7,6 +7,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <map>
+#include <set>
 #include <algorithm>
 #include <iterator>
 #include <mutex>
@@ -249,9 +250,53 @@ bool dao_reshare_combine_one(
     if (!s_prime) return false;
     BN_zero(s_prime);
 
+    // Every contribution combined into the same s_j MUST have been
+    // built over the same Lagrange interpolation subset S. If two
+    // contributors used different S, their mu_i values are different
+    // and the accumulated sum is not the correct linear combination;
+    // the resulting s_j would still pass the V^{s_j*delta} == VK_j
+    // check inside this function (both sides derive from the same
+    // commits) but would NOT represent a share of the same secret.
+    // Reject mismatched subsets up front so the caller fails closed.
+    std::vector<uint32_t> first_subset;
+    std::set<uint32_t> seen_indices;
+
     size_t used = 0;
     for (const auto& c : contributions) {
         if (used >= threshold) break;
+
+        if (used == 0) {
+            first_subset = c.link_ctx.contributor_subset;
+            if (first_subset.size() != threshold) {
+                BN_free(s_prime);
+                return false;
+            }
+        } else if (c.link_ctx.contributor_subset != first_subset) {
+            BN_free(s_prime);
+            return false;
+        }
+
+        // The contributor's claimed position must be inside the
+        // common subset; otherwise mu_i would not have been defined
+        // for this contributor's share and the combination would be
+        // garbage.
+        {
+            bool in_subset = false;
+            for (uint32_t s : first_subset) {
+                if (s == c.contributor_index) { in_subset = true; break; }
+            }
+            if (!in_subset) {
+                BN_free(s_prime);
+                return false;
+            }
+        }
+
+        // Duplicate contributor_index is never valid: the same share
+        // must not be counted twice toward the threshold.
+        if (!seen_indices.insert(c.contributor_index).second) {
+            BN_free(s_prime);
+            return false;
+        }
 
         // A contribution produced by dao_reshare_make_contribution
         // carries one share per new_member. Select the share that
