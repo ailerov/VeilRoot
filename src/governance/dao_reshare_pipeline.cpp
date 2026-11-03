@@ -7,6 +7,8 @@
 #include <atomic>
 #include <condition_variable>
 #include <map>
+#include <algorithm>
+#include <iterator>
 #include <mutex>
 
 #define OPENSSL_SUPPRESS_DEPRECATED
@@ -893,12 +895,31 @@ void dao_reshare_runner::on_message(const crypto::public_key& from,
 
     if (m.type == 0) {
         // Deal.
+        // m.sender_index is the ORIGINAL old-share-set index carried
+        // in the wire message (cfg.local_party_index on the sender).
+        // cfg.contributor_members is a compact parallel vector, so
+        // the sender index must be translated through
+        // cfg.contributor_indices before indexing it.
         if (m.sender_index == 0 ||
-            m.sender_index > p_->cfg.contributor_members.size()) {
+            p_->cfg.contributor_indices.size() !=
+                p_->cfg.contributor_members.size()) {
             return;
         }
-        if (std::memcmp(p_->cfg.contributor_members[m.sender_index - 1].data,
-                        from.data, 32) != 0) {
+        const auto it = std::find(
+            p_->cfg.contributor_indices.begin(),
+            p_->cfg.contributor_indices.end(),
+            m.sender_index);
+        if (it == p_->cfg.contributor_indices.end()) {
+            return;
+        }
+        const size_t contributor_pos = static_cast<size_t>(
+            std::distance(p_->cfg.contributor_indices.begin(), it));
+        if (contributor_pos >= p_->cfg.contributor_members.size()) {
+            return;
+        }
+        if (std::memcmp(
+                p_->cfg.contributor_members[contributor_pos].data,
+                from.data, 32) != 0) {
             return;
         }
 

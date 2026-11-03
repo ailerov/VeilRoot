@@ -10644,6 +10644,50 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     return best;
   }
 
+  namespace {
+  // Local share formats written to LMDB by two different code paths:
+  //   (a) DKG initial share: raw magnitude, arbitrary width (81 bytes
+  //       in test mode; ~768 bytes in production for a 6144-bit
+  //       Paillier modulus). Written by the DKG result path.
+  //   (b) Reshare output: [sign(1) || magnitude(2320)] = 2321 bytes,
+  //       produced by dao_reshare_serialize_signed, whose width is
+  //       DAO_RESHARE_SIGNED_BYTES = 1268 + 1053 = 2321.
+  //
+  // BN_bin2bn on (b) treats the sign byte as the top magnitude byte:
+  // for a negative share this yields |s| + 2^(2320*8), which is
+  // ~18561 bits and overflows the link-proof scalar bound in the NEXT
+  // reshape. (a) never collides with (b) at any supported modulus
+  // width, so a size gate on 2321 unambiguously identifies the
+  // reshare format. Sign byte must be 0 or 1; anything else means
+  // corruption and must fail closed.
+  //
+  // If DAO_RESHARE_SIGNED_BYTES changes, this constant must be updated
+  // in lockstep. Assert at startup using static_assert would need the
+  // vss header; keeping it as a named constant here makes the coupling
+  // visible to grep.
+  constexpr size_t kReshareSignedBytes = 2321;
+
+  bool dao_load_local_share_value_(const std::vector<uint8_t>& raw,
+                                    BIGNUM** out) {
+    if (!out) return false;
+    if (raw.size() == kReshareSignedBytes) {
+      if (raw[0] != 0 && raw[0] != 1) return false;
+      const bool neg = (raw[0] != 0);
+      BIGNUM* b = BN_bin2bn(raw.data() + 1,
+                             static_cast<int>(raw.size() - 1), nullptr);
+      if (!b) return false;
+      if (neg && !BN_is_zero(b)) BN_set_negative(b, 1);
+      *out = b;
+      return true;
+    }
+    BIGNUM* b = BN_bin2bn(raw.data(),
+                           static_cast<int>(raw.size()), nullptr);
+    if (!b) return false;
+    *out = b;
+    return true;
+  }
+  } // namespace
+
   void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
       const crypto::hash& proposal_id, uint64_t vote_end_height)
   {
@@ -10908,32 +10952,40 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     }
     if (our_contrib_pos == 0 && our_new_pos == 0) return;
 
-    // Load s_i, mu_i for this proposal's current share set.
+    // Fixed interpolation subset S: first `threshold` positions in
+    // contributor_indices. Every selected contributor MUST use this
+    // exact subset for mu_i, or combinations are invalid.
+    std::vector<uint32_t> S;
+    if (contributor_indices.size() < cur_ss.threshold) return;
+    for (size_t i = 0; i < cur_ss.threshold; ++i)
+      S.push_back(contributor_indices[i]);
+
+    // Distinguish three roles:
+    //   (1) selected old-share contributor (our_contrib_pos in S)
+    //   (2) new committee member receiving shares (our_new_pos != 0)
+    //   (3) neither
+    // A node outside S can still be a new committee recipient and
+    // must not return early: it needs to receive deals and derive its
+    // new share via the recipient-only path (local_party_index==0).
+    const bool local_is_selected_contributor =
+        our_contrib_pos != 0 &&
+        std::find(S.begin(), S.end(), our_contrib_pos) != S.end();
+    if (!local_is_selected_contributor && our_new_pos == 0) return;
+
+    // Load s_i, mu_i only for selected contributors.
     std::unique_ptr<BIGNUM, void(*)(BIGNUM*)> s_i(nullptr, BN_free);
     std::unique_ptr<BIGNUM, void(*)(BIGNUM*)> mu_i(nullptr, BN_free);
-    if (our_contrib_pos != 0) {
+    if (local_is_selected_contributor) {
       std::vector<uint8_t> packed;
       if (!m_db->get_dao_local_share(cur_id, our_contrib_pos, packed))
         return;
       std::vector<uint8_t> raw;
       if (!dao::dao_unpack_local_share(packed, key_rec.key_id, raw))
         return;
-      BIGNUM* s = BN_bin2bn(raw.data(), static_cast<int>(raw.size()),
-                             nullptr);
-      if (!s) return;
+      BIGNUM* s = nullptr;
+      if (!dao_load_local_share_value_(raw, &s)) return;
       s_i.reset(s);
 
-      // Fixed interpolation subset: the first `threshold` positions in
-      // contributor_indices. Every contributor MUST use this exact
-      // subset for mu_i or combinations are invalid. Substituting our
-      // own position here (as the previous code did) gave different
-      // mu_i per contributor; combine_one then mixed incompatible
-      // Lagrange coefficients.
-      std::vector<uint32_t> S;
-      for (size_t i = 0; i < cur_ss.threshold; ++i)
-        S.push_back(contributor_indices[i]);
-      if (std::find(S.begin(), S.end(), our_contrib_pos) == S.end())
-        return;   // not in the fixed subset; do not contribute
       BIGNUM* mu = BN_new();
       if (!mu) return;
       if (!dao::dao_dkg_lagrange_mu(S, our_contrib_pos, mu)) {
@@ -10988,18 +11040,29 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     cfg.t_new = new_threshold - 1;
     cfg.new_indices = new_indices;
     cfg.new_members = new_members;
-    cfg.contributor_indices = contributor_indices;
-    cfg.contributor_members = contributors;
-    // contributor_vk must be indexed by contributor_indices position,
-    // not the full cur_ss.VK_i array. For a re-reshape (subset of the
-    // prior committee), the two lengths differ and try_finalize_locked
-    // silently leaves evidence empty when they do not match.
+    // Configure the runner's contributor set from S (the fixed
+    // interpolation subset), not from the full candidate list. This
+    // makes the runner's accepted sender list, the contributions used
+    // in combine, and the per-contributor VK_i evidence all describe
+    // the same subset. Original old-share-set indices are preserved.
+    cfg.contributor_indices.clear();
+    cfg.contributor_members.clear();
     cfg.contributor_vk.clear();
-    for (uint32_t idx : contributor_indices) {
+    for (uint32_t idx : S) {
+      size_t k = contributor_indices.size();
+      for (size_t j = 0; j < contributor_indices.size(); ++j) {
+        if (contributor_indices[j] == idx) { k = j; break; }
+      }
+      if (k == contributor_indices.size()) {
+        BN_free(delta);
+        return;
+      }
       if (idx < 1 || idx > cur_ss.VK_i.size()) {
         BN_free(delta);
         return;
       }
+      cfg.contributor_indices.push_back(idx);
+      cfg.contributor_members.push_back(contributors[k]);
       cfg.contributor_vk.push_back(cur_ss.VK_i[idx - 1]);
     }
     cfg.old_share_set_id = cur_id;
@@ -11014,7 +11077,8 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     // than it should be.
     cfg.threshold = new_threshold;
     cfg.key_id = key_rec.key_id;
-    cfg.local_party_index = our_contrib_pos;
+    cfg.local_party_index =
+        local_is_selected_contributor ? our_contrib_pos : 0;
     cfg.local_new_index = our_new_pos;
     cfg.local_s_i = s_i.get();
     cfg.local_mu_i = mu_i.get();
@@ -11272,10 +11336,24 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     // If we are neither a contributor nor a new member, nothing to do.
     if (our_contrib_pos == 0 && our_new_pos == 0) return;
 
-    // We must have a local share if we are a contributor.
+    // Fixed interpolation subset S: first `threshold` positions in
+    // contributor_indices.
+    std::vector<uint32_t> S;
+    if (contributor_indices.size() < cur_ss.threshold) return;
+    for (size_t i = 0; i < cur_ss.threshold; ++i)
+      S.push_back(contributor_indices[i]);
+
+    // Recipient-only nodes (in new committee, not in S) must not
+    // return: they receive deals and derive their new share.
+    const bool local_is_selected_contributor =
+        our_contrib_pos != 0 &&
+        std::find(S.begin(), S.end(), our_contrib_pos) != S.end();
+    if (!local_is_selected_contributor && our_new_pos == 0) return;
+
+    // Load s_i, mu_i only for selected contributors.
     std::unique_ptr<BIGNUM, void(*)(BIGNUM*)> s_i(nullptr, BN_free);
     std::unique_ptr<BIGNUM, void(*)(BIGNUM*)> mu_i(nullptr, BN_free);
-    if (our_contrib_pos != 0) {
+    if (local_is_selected_contributor) {
       std::vector<uint8_t> packed;
       if (!m_db->get_dao_local_share(
               static_cast<uint32_t>(cur_id), our_contrib_pos, packed))
@@ -11283,19 +11361,10 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
       std::vector<uint8_t> raw;
       if (!dao::dao_unpack_local_share(packed, key_rec.key_id, raw))
         return;
-      BIGNUM* s = BN_bin2bn(raw.data(), static_cast<int>(raw.size()),
-                             nullptr);
-      if (!s) return;
-      if (raw.size() > 0 && (raw[0] & 0x80)) {
-        // Signed encoding handled by dao_unpack; raw is magnitude.
-      }
+      BIGNUM* s = nullptr;
+      if (!dao_load_local_share_value_(raw, &s)) return;
       s_i.reset(s);
 
-      // mu_i = Delta * lambda_i(0) for subset S = first `threshold`
-      // contributors.
-      std::vector<uint32_t> S;
-      for (size_t i = 0; i < cur_ss.threshold; ++i)
-        S.push_back(contributor_indices[i]);
       BIGNUM* mu = BN_new();
       if (!mu) return;
       if (!dao::dao_dkg_lagrange_mu(S, our_contrib_pos, mu)) {
@@ -11351,14 +11420,31 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     cfg.t_new = new_threshold - 1;
     cfg.new_indices = new_indices;
     cfg.new_members = new_members;
-    cfg.contributor_indices = contributor_indices;
-    cfg.contributor_members = contributors;
+    // Configure from S (fixed interpolation subset), preserving
+    // original old-share-set indices. cfg.contributor_vk is not
+    // populated in this legacy/eligibility-change path, so evidence
+    // remains empty (base-set fallback).
+    cfg.contributor_indices.clear();
+    cfg.contributor_members.clear();
+    for (uint32_t idx : S) {
+      size_t k = contributor_indices.size();
+      for (size_t j = 0; j < contributor_indices.size(); ++j) {
+        if (contributor_indices[j] == idx) { k = j; break; }
+      }
+      if (k == contributor_indices.size()) {
+        BN_free(delta);
+        return;
+      }
+      cfg.contributor_indices.push_back(idx);
+      cfg.contributor_members.push_back(contributors[k]);
+    }
     cfg.old_share_set_id = cur_id;
     cfg.new_share_set_id = cur_id + 1;
     cfg.height = height;
     cfg.threshold = new_threshold;
     cfg.key_id = key_rec.key_id;
-    cfg.local_party_index = our_contrib_pos;
+    cfg.local_party_index =
+        local_is_selected_contributor ? our_contrib_pos : 0;
     cfg.local_new_index = our_new_pos;
     cfg.local_s_i = s_i.get();
     cfg.local_mu_i = mu_i.get();
