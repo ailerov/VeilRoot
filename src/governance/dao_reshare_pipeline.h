@@ -226,6 +226,13 @@ public:
     bool get_local_share(std::vector<uint8_t>& share_out) const;
     crypto::hash proposal_id() const;
 
+    // Pure query: number of contributions currently held by the
+    // runner. Used by the B3d regression tests to assert that
+    // invalid-sender and non-selected-sender messages are rejected
+    // before mutating the contribution map. Does not mutate state;
+    // not on any production code path.
+    size_t contribution_count_for_test() const;
+
 private:
     struct impl;
     std::unique_ptr<impl> p_;

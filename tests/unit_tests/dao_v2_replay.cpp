@@ -2530,10 +2530,11 @@ TEST(DaoV2Replay, B3c3RunnerReshareEndToEnd)
 // contribute, combine succeeds, new share set commits with evidence,
 // certificate built against it verifies.
 // ------------------------------------------------------------------
-TEST(DaoV2Replay, B3dDropoutReplacement)
+static void run_b3d_dropout_case(int target_slot)
 {
     using namespace cryptonote;
     using namespace cryptonote::dao;
+    SCOPED_TRACE(::testing::Message() << "target_slot=" << target_slot);
 
     boost::filesystem::path base =
         boost::filesystem::temp_directory_path() /
@@ -2581,8 +2582,35 @@ TEST(DaoV2Replay, B3dDropoutReplacement)
     b.core->set_node_key(committee_sks[1]);
     c.core->set_node_key(committee_sks[2]);
 
+    // Force D's pubkey to sort into position `target_slot` among
+    // {A,B,C,D}. A,B,C are already fixed and sorted. Retry until
+    // D falls into the desired slot; expected attempts per slot is
+    // small because the four possible sorted positions of a random
+    // fourth key among three fixed keys are roughly equiprobable.
     crypto::public_key d_pub; crypto::secret_key d_sk;
-    crypto::generate_keys(d_pub, d_sk);
+    {
+        int attempts = 0;
+        for (;;) {
+            crypto::generate_keys(d_pub, d_sk);
+            std::vector<crypto::public_key> sorted = committee;
+            sorted.push_back(d_pub);
+            std::sort(sorted.begin(), sorted.end(),
+                [](const auto& x, const auto& y) {
+                    return std::memcmp(x.data, y.data, 32) < 0;
+                });
+            int slot = 0;
+            for (size_t i = 0; i < sorted.size(); ++i) {
+                if (std::memcmp(sorted[i].data, d_pub.data, 32) == 0) {
+                    slot = static_cast<int>(i) + 1;
+                    break;
+                }
+            }
+            if (slot == target_slot) break;
+            if (++attempts > 100000) {
+                FAIL() << "could not force D into slot " << target_slot;
+            }
+        }
+    }
 
     // Real DKG.
     dao_vss_group vss;
@@ -2814,6 +2842,78 @@ TEST(DaoV2Replay, B3dDropoutReplacement)
     bc_a.maybe_start_dao_v2_reshare_for_proposal(prop_id, vote_end);
     bc_b.maybe_start_dao_v2_reshare_for_proposal(prop_id, vote_end);
     bc_c.maybe_start_dao_v2_reshare_for_proposal(prop_id, vote_end);
+
+    // Negative test: forged reshare messages must not increase the
+    // contribution count on node A. The runner is fresh; only the
+    // local contribution (if any) is present. Any accepted deal
+    // would be visible as a count bump. Both forged messages are
+    // delivered before drive() so no legitimate peer deal has
+    // been processed yet.
+    {
+        const size_t pre_forged =
+            bc_a.get_dao_v2_reshare_contribution_count_for_test();
+
+        // Forged 1: invalid sender index (0).
+        {
+            dao_reshare_msg bogus;
+            bogus.old_share_set_id = sid1;
+            bogus.new_share_set_id = sid1 + 1;
+            bogus.sender_index = 0;
+            bogus.type = 0;
+            bogus.public_blob.assign(16, 0xAB);
+            std::vector<uint8_t> raw;
+            ASSERT_TRUE(bogus.serialize(raw));
+            dkg_msg env;
+            env.hdr.type = dkg_msg_type::share_set_deal;
+            env.bytes_a.assign(raw.begin(), raw.end());
+            std::vector<uint8_t> wire;
+            ASSERT_TRUE(env.serialize(wire));
+            std::string payload(wire.begin(), wire.end());
+            bc_a.handle_dao_v2_dkg_msg(a_pub, payload);
+        }
+
+        // Forged 2: non-selected sender. D's original slot in
+        // the first-reshape committee is not in the second-reshape
+        // fixed interpolation subset S, so the receiver must
+        // reject the message.
+        {
+            dao_share_set_record ss1_check;
+            ASSERT_TRUE(db_a.get_dao_share_set(sid1, ss1_check));
+            uint32_t d_slot = 0;
+            for (size_t i = 0; i < ss1_check.committee_members.size(); ++i) {
+                crypto::public_key pk_i{};
+                std::memcpy(pk_i.data, ss1_check.committee_members[i].data(), 32);
+                if (std::memcmp(pk_i.data, d_pub.data, 32) == 0) {
+                    d_slot = static_cast<uint32_t>(i) + 1;
+                    break;
+                }
+            }
+            ASSERT_NE(d_slot, 0u);
+            dao_reshare_msg bogus;
+            bogus.old_share_set_id = sid1;
+            bogus.new_share_set_id = sid1 + 1;
+            bogus.sender_index = d_slot;
+            bogus.type = 0;
+            bogus.public_blob.assign(16, 0xCD);
+            std::vector<uint8_t> raw;
+            ASSERT_TRUE(bogus.serialize(raw));
+            dkg_msg env;
+            env.hdr.type = dkg_msg_type::share_set_deal;
+            env.bytes_a.assign(raw.begin(), raw.end());
+            std::vector<uint8_t> wire;
+            ASSERT_TRUE(env.serialize(wire));
+            std::string payload(wire.begin(), wire.end());
+            bc_a.handle_dao_v2_dkg_msg(d_pub, payload);
+        }
+
+        const size_t post_forged =
+            bc_a.get_dao_v2_reshare_contribution_count_for_test();
+        EXPECT_EQ(pre_forged, post_forged)
+            << "forged reshare message was accepted; sender "
+               "validation in dao_reshare_runner::on_message is not "
+               "enforcing the contributor_indices allowlist";
+    }
+
     drive(15);
 
     uint64_t sid2 = find_latest(db_a, dkg_out.record.key_id);
@@ -2827,9 +2927,56 @@ TEST(DaoV2Replay, B3dDropoutReplacement)
     EXPECT_FALSE(ss2.contributions.empty());
     EXPECT_EQ(ss2.contributor_indices.size(), ss2.contributions.size());
 
+    // Every node in the new committee must have persisted its own
+    // local share under the new share-set id. This is the assertion
+    // the previous version of this test did not make; its absence
+    // is why the recipient-only bug went undetected even on
+    // passing runs.
+    {
+        struct Triple {
+            BlockchainDB*      db;
+            crypto::public_key pk;
+            const char*        name;
+        };
+        Triple triples[] = {
+            { &db_a, a_pub, "A" },
+            { &db_b, b_pub, "B" },
+            { &db_c, c_pub, "C" },
+        };
+        for (auto& t : triples) {
+            uint32_t pos = 0;
+            for (size_t i = 0; i < ss2.committee_members.size(); ++i) {
+                crypto::public_key pk_i{};
+                std::memcpy(pk_i.data, ss2.committee_members[i].data(), 32);
+                if (std::memcmp(pk_i.data, t.pk.data, 32) == 0) {
+                    pos = static_cast<uint32_t>(i) + 1;
+                    break;
+                }
+            }
+            ASSERT_NE(pos, 0u) << t.name
+                << " is not in the new committee";
+            std::vector<uint8_t> packed;
+            ASSERT_TRUE(t.db->get_dao_local_share(
+                static_cast<uint32_t>(sid2), pos, packed))
+                << "node " << t.name << " missing local share at sid2="
+                << sid2 << " pos=" << pos;
+            ASSERT_FALSE(packed.empty())
+                << "node " << t.name << " has empty packed share at sid2="
+                << sid2;
+        }
+    }
+
     BN_free(Wb); BN_free(Sb); BN_free(Bb);
     BN_free(r1); BN_free(r2); BN_free(r3);
     boost::filesystem::remove_all(base);
+}
+
+// Four iterations, one per possible sorted position of D in the
+// post-first-reshape committee. Each iteration runs in isolation.
+TEST(DaoV2Replay, B3dDropoutReplacement)
+{
+    for (int target_slot = 1; target_slot <= 4; ++target_slot)
+        run_b3d_dropout_case(target_slot);
 }
 
 // ------------------------------------------------------------------

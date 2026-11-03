@@ -1556,6 +1556,11 @@ namespace cryptonote
     std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
     return m_dao_v2_reshare_runner != nullptr;
   }
+  size_t get_dao_v2_reshare_contribution_count_for_test() const {
+    std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
+    if (!m_dao_v2_reshare_runner) return 0;
+    return m_dao_v2_reshare_runner->contribution_count_for_test();
+  }
 #endif
 
   // Reshare P2P handler. Routes a reshare message to the running

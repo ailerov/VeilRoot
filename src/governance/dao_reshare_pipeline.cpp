@@ -795,6 +795,12 @@ dao_reshare_runner::dao_reshare_runner(
 
 dao_reshare_runner::~dao_reshare_runner() = default;
 
+size_t dao_reshare_runner::contribution_count_for_test() const
+{
+    std::lock_guard<std::mutex> lk(p_->mtx);
+    return p_->contributions.size();
+}
+
 bool dao_reshare_runner::start()
 {
     if (p_->cfg.local_party_index == 0) {
