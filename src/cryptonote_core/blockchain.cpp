@@ -9374,25 +9374,35 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     }
     // END_VNS_DAO_V2_RESHARE_ROUTE
 
-    // Guarded lookup. If the bootstrap runner is not yet up on this
-    // node, buffer the message; it will be drained into the runner as
-    // soon as start_dao_v2_dkg_for_committee inserts it.
+    // Route the message to the runner for the ceremony it belongs to.
+    // Bootstrap (null proposal_id) routes to BOOTSTRAP_CEREMONY_ID
+    // (the empty string); a per-proposal ceremony routes by
+    // hex(proposal_id). The proposal_id is stamped on every message
+    // header by the party at construction.
+    const std::string route_ceremony_id =
+        (m.hdr.proposal_id == crypto::null_hash)
+            ? BOOTSTRAP_CEREMONY_ID
+            : epee::string_tools::pod_to_hex(m.hdr.proposal_id);
+
+    // Guarded lookup. If the runner for this ceremony is not yet up
+    // on this node, buffer the message under its ceremony id; it is
+    // drained when the matching runner is inserted.
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_dkg_runners_mutex);
-      auto it = m_dao_v2_dkg_runners.find(BOOTSTRAP_CEREMONY_ID);
+      auto it = m_dao_v2_dkg_runners.find(route_ceremony_id);
       if (it == m_dao_v2_dkg_runners.end()) {
-        if (m_dao_v2_pending_dkg_msgs.size() >=
-            k_dao_v2_pending_dkg_msgs_cap) {
-          m_dao_v2_pending_dkg_msgs.pop_front();
+        auto& q = m_dao_v2_pending_dkg_msgs[route_ceremony_id];
+        if (q.size() >= k_dao_v2_pending_dkg_msgs_cap) {
+          q.pop_front();
         }
-        m_dao_v2_pending_dkg_msgs.emplace_back(member, payload);
+        q.emplace_back(member, payload);
         return;
       }
     }
     std::unique_ptr<dao::dkg_p2p_runner>* runner_ptr = nullptr;
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_dkg_runners_mutex);
-      auto it = m_dao_v2_dkg_runners.find(BOOTSTRAP_CEREMONY_ID);
+      auto it = m_dao_v2_dkg_runners.find(route_ceremony_id);
       if (it == m_dao_v2_dkg_runners.end()) return;
       runner_ptr = &it->second;
     }
@@ -10543,6 +10553,10 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     cfg.threshold      = threshold;
     cfg.member_ids     = committee;
     cfg.local_party_id = local_id;
+    // ceremony_id is hex(proposal_id) for per-proposal; empty for
+    // bootstrap. ceremony_id_to_hash returns null_hash for empty and
+    // the parsed hash for 64-char hex.
+    cfg.proposal_id    = ceremony_id_to_hash(ceremony_id);
     cfg.k              = dao::DAO_DKG_K_BITS_PROD;
     cfg.target_N_bits  = target_N_bits;
     cfg.security_bits  = dao::DAO_DKG_SECURITY_BITS_PROD;
@@ -10583,8 +10597,10 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_dkg_runners_mutex);
       m_dao_v2_dkg_runners.emplace(ceremony_id, std::move(runner));
-      if (ceremony_id == BOOTSTRAP_CEREMONY_ID) {
-        pending.swap(m_dao_v2_pending_dkg_msgs);
+      auto pit = m_dao_v2_pending_dkg_msgs.find(ceremony_id);
+      if (pit != m_dao_v2_pending_dkg_msgs.end()) {
+        pending.swap(pit->second);
+        m_dao_v2_pending_dkg_msgs.erase(pit);
       }
     }
     MINFO("start_dao_v2_dkg: runner started for ceremony_id " << ceremony_id

@@ -246,9 +246,14 @@ struct dao_range_proof
 
 struct dkg_msg_header
 {
-    uint8_t  version      = 1;
+    // Version 2 adds proposal_id, which is required to route a DKG
+    // envelope to the correct runner. Version 1 (no proposal_id) is
+    // rejected by deserialize; the upgrade requires all peers to be
+    // on v2 before a DKG ceremony starts.
+    uint8_t  version      = 2;
     uint32_t candidate_id = 0;              // monotone within ceremony
     uint8_t  committee_id_hash[32] = {};    // H(domain || member ids)
+    crypto::hash proposal_id{};             // null for bootstrap
     uint32_t sender_id    = 0;              // 1..committee_size
     uint32_t recipient_id = 0;              // 0 = broadcast
     uint32_t phase        = 0;
@@ -693,6 +698,7 @@ bool dao_unpack_local_share(
 class dkg_party;
 
 std::unique_ptr<dkg_party> dkg_party_create(uint32_t party_id,
+                                            const crypto::hash& proposal_id,
                                             uint32_t committee_size,
                                             uint32_t threshold);
 
@@ -748,6 +754,11 @@ struct dkg_config
     // is SHA256(domain || ordered member keys). A real committee is
     // never identified merely by indexes 1..n.
     std::vector<crypto::public_key> member_ids;
+
+    // Which proposal this ceremony is for. crypto::null_hash for the
+    // bootstrap ceremony. Threaded through every message header so a
+    // receiver can route by proposal rather than by BOOTSTRAP.
+    crypto::hash proposal_id{};
 
     uint32_t k              = 60;
     uint32_t target_N_bits  = 128;

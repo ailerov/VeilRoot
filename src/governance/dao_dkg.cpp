@@ -296,6 +296,9 @@ bool dkg_msg::serialize(std::vector<uint8_t>& out) const
     out.insert(out.end(),
                std::begin(hdr.committee_id_hash),
                std::end(hdr.committee_id_hash));
+    out.insert(out.end(),
+               hdr.proposal_id.data,
+               hdr.proposal_id.data + 32);
     push_u32(out, hdr.sender_id);
     push_u32(out, hdr.recipient_id);
     push_u32(out, hdr.phase);
@@ -317,10 +320,13 @@ bool dkg_msg::deserialize(const std::vector<uint8_t>& in)
     size_t off = 0;
     if (in.size() < 4) return false;
     hdr.version = in[off++];
-    if (hdr.version != 1) return false;
+    if (hdr.version != 2) return false;
     if (!pull_u32(in, off, hdr.candidate_id)) return false;
     if (off + 32 > in.size()) return false;
     std::memcpy(hdr.committee_id_hash, in.data() + off, 32);
+    off += 32;
+    if (off + 32 > in.size()) return false;
+    std::memcpy(hdr.proposal_id.data, in.data() + off, 32);
     off += 32;
     if (!pull_u32(in, off, hdr.sender_id)) return false;
     if (!pull_u32(in, off, hdr.recipient_id)) return false;
@@ -1983,10 +1989,12 @@ class dkg_party
 {
 public:
     dkg_party(uint32_t party_id, uint32_t committee_size,
-              uint32_t threshold)
+              uint32_t threshold,
+              const crypto::hash& proposal_id)
         : party_id_(party_id),
           committee_size_(committee_size),
-          threshold_(threshold)
+          threshold_(threshold),
+          proposal_id_(proposal_id)
     {
         shares_p_received_.assign(committee_size + 1, nullptr);
         shares_q_received_.assign(committee_size + 1, nullptr);
@@ -2135,6 +2143,7 @@ private:
     uint32_t threshold_;
     uint32_t candidate_id_ = 0;
     uint8_t  committee_id_hash_[32] = {};
+    crypto::hash proposal_id_{};
 
     uint32_t phase_ = 0;
     bool     aborted_ = false;
@@ -2323,6 +2332,7 @@ bool make_transcript_leaf(const dkg_msg& original, dkg_msg& leaf)
     std::memcpy(leaf.hdr.committee_id_hash,
                 original.hdr.committee_id_hash,
                 sizeof(leaf.hdr.committee_id_hash));
+    leaf.hdr.proposal_id = original.hdr.proposal_id;
     leaf.hdr.sender_id = original.hdr.sender_id;
     leaf.hdr.recipient_id = 0;
     leaf.hdr.phase = original.hdr.phase;
@@ -2364,9 +2374,10 @@ dkg_msg dkg_party::make_header(dkg_msg_type type, uint32_t recipient,
                                uint32_t phase, uint32_t round) const
 {
     dkg_msg m;
-    m.hdr.version      = 1;
+    m.hdr.version      = 2;
     m.hdr.candidate_id = candidate_id_;
     std::memcpy(m.hdr.committee_id_hash, committee_id_hash_, 32);
+    m.hdr.proposal_id  = proposal_id_;
     m.hdr.sender_id    = party_id_;
     m.hdr.recipient_id = recipient;
     m.hdr.phase        = phase;
@@ -2920,6 +2931,8 @@ bool dkg_party::handle_message(const dkg_msg& m)
 {
     if (m.hdr.candidate_id != candidate_id_) return false;
     if (std::memcmp(m.hdr.committee_id_hash, committee_id_hash_, 32) != 0)
+        return false;
+    if (std::memcmp(m.hdr.proposal_id.data, proposal_id_.data, 32) != 0)
         return false;
     if (m.hdr.sender_id > committee_size_) return false;
 
@@ -4076,11 +4089,12 @@ bool party_get_lambda_share(const dkg_party& p, BIGNUM* out);
 // ====================================================================
 
 std::unique_ptr<dkg_party> dkg_party_create(uint32_t party_id,
+                                            const crypto::hash& proposal_id,
                                             uint32_t committee_size,
                                             uint32_t threshold)
 {
     return std::unique_ptr<dkg_party>(
-        new dkg_party(party_id, committee_size, threshold));
+        new dkg_party(party_id, committee_size, threshold, proposal_id));
 }
 
 // -------------------------------------------------------------------
@@ -5119,7 +5133,8 @@ bool dkg_run_with_transport(const dkg_config& cfg,
     std::vector<std::unique_ptr<dkg_party>> parties;
     parties.reserve(cfg.committee_size);
     for (uint32_t i = 1; i <= cfg.committee_size; ++i) {
-        auto p = dkg_party_create(i, cfg.committee_size, cfg.threshold);
+        auto p = dkg_party_create(i, cfg.proposal_id,
+                                  cfg.committee_size, cfg.threshold);
         if (!p) return false;
         p->attach_transport(transports[i - 1].get());
         p->set_committee_id_hash(committee_id_hash);
@@ -5292,9 +5307,10 @@ bool dkg_run_with_transport(const dkg_config& cfg,
         // compute Q_i.
         {
             dkg_msg mN;
-            mN.hdr.version = 1;
+            mN.hdr.version = 2;
             mN.hdr.candidate_id = attempt;
             std::memcpy(mN.hdr.committee_id_hash, committee_id_hash, 32);
+            mN.hdr.proposal_id = cfg.proposal_id;
             mN.hdr.sender_id = 0;
             mN.hdr.recipient_id = 0;
             mN.hdr.phase = 3;
@@ -5321,9 +5337,10 @@ bool dkg_run_with_transport(const dkg_config& cfg,
 
         for (auto& p : parties) {
             dkg_msg m;
-            m.hdr.version = 1;
+            m.hdr.version = 2;
             m.hdr.candidate_id = attempt;
             std::memcpy(m.hdr.committee_id_hash, committee_id_hash, 32);
+            m.hdr.proposal_id = cfg.proposal_id;
             m.hdr.sender_id = 0;
             m.hdr.recipient_id = 0;
             m.hdr.phase = 3;
@@ -6716,11 +6733,12 @@ struct dkg_p2p_runner::impl
                               bool accept)
     {
         dkg_msg m;
-        m.hdr.version = 1;
+        m.hdr.version = 2;
         m.hdr.candidate_id = party->current_candidate_id();
         std::memcpy(m.hdr.committee_id_hash,
                     committee_id_hash,
                     sizeof(committee_id_hash));
+        m.hdr.proposal_id = cfg.proposal_id;
         m.hdr.sender_id = party->id();
         m.hdr.recipient_id = 0;
         m.hdr.phase = phase;
@@ -6741,11 +6759,12 @@ struct dkg_p2p_runner::impl
     bool send_trial_rep_result(uint32_t wire_round, bool passed)
     {
         dkg_msg m;
-        m.hdr.version = 1;
+        m.hdr.version = 2;
         m.hdr.candidate_id = party->current_candidate_id();
         std::memcpy(m.hdr.committee_id_hash,
                     committee_id_hash,
                     sizeof(committee_id_hash));
+        m.hdr.proposal_id = cfg.proposal_id;
         m.hdr.sender_id = party->id();
         m.hdr.recipient_id = 0;
         m.hdr.phase = 5;
@@ -7187,9 +7206,10 @@ struct dkg_p2p_runner::impl
                          const BIGNUM* val)
     {
         dkg_msg m;
-        m.hdr.version = 1;
+        m.hdr.version = 2;
         m.hdr.candidate_id = party->current_candidate_id();
         std::memcpy(m.hdr.committee_id_hash, committee_id_hash, 32);
+        m.hdr.proposal_id = cfg.proposal_id;
         m.hdr.sender_id = 0;
         m.hdr.recipient_id = 0;
         m.hdr.phase = phase;
@@ -8186,9 +8206,10 @@ bool dkg_p2p_runner::impl::run_key_phases(const BIGNUM* N)
         if (!party->do_derive_VKi(my_vki)) { BN_free(theta_tilde); BN_free(theta); return false; }
         {
             dkg_msg m;
-            m.hdr.version = 1;
+            m.hdr.version = 2;
             m.hdr.candidate_id = party->current_candidate_id();
             std::memcpy(m.hdr.committee_id_hash, committee_id_hash, 32);
+            m.hdr.proposal_id = cfg.proposal_id;
             m.hdr.sender_id = me;
             m.hdr.recipient_id = 0;
             m.hdr.phase = 13;
@@ -8357,6 +8378,7 @@ bool dkg_p2p_runner::start()
     }
 
     p_->party = dkg_party_create(p_->cfg.local_party_id,
+                                 p_->cfg.proposal_id,
                                  p_->cfg.committee_size,
                                  p_->cfg.threshold);
     if (!p_->party) return false;

@@ -1897,13 +1897,15 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     std::map<std::string, std::unique_ptr<dao::dkg_p2p_runner>>
         m_dao_v2_dkg_runners;
     mutable std::mutex m_dao_v2_dkg_runners_mutex;
-    // Inbound DKG envelopes that arrived before this node's runner for
-    // ceremony 1 existed. Drained on runner creation, then cleared. A
-    // node whose idle tick lands a few seconds after its peers would
-    // otherwise drop the earliest starter's phase-1 messages and time
-    // out. Bounded to cap memory if a malformed peer floods.
+    // Inbound DKG envelopes that arrived before the matching runner
+    // for their ceremony existed. Keyed by ceremony_id: bootstrap
+    // uses BOOTSTRAP_CEREMONY_ID (""), a per-proposal ceremony uses
+    // hex(proposal_id). Drained on runner creation for that exact
+    // ceremony. Per-queue bound prevents a malformed peer flooding
+    // one ceremony from evicting another's pending messages.
     static constexpr size_t k_dao_v2_pending_dkg_msgs_cap = 512;
-    std::deque<std::pair<crypto::public_key, std::string>>
+    std::map<std::string,
+             std::deque<std::pair<crypto::public_key, std::string>>>
         m_dao_v2_pending_dkg_msgs;
     // VSS groups are owned here for the lifetime of the runner. The
     // runner holds a raw pointer to the group, so the group must
