@@ -3116,3 +3116,378 @@ TEST(DaoV2Replay, LinkProofHandlesResharedWitness)
     boost::filesystem::remove_all(base);
 }
 
+
+
+// ------------------------------------------------------------------
+// Repeated reshares through 3 -> 4 -> 6 -> 16 members with threshold
+// increases at each stage (2 -> 2 -> 3 -> 8). Exercises the crypto
+// layer directly, no Blockchain instances (expert Option B). The B3d
+// replay test covers the blockchain integration; this test covers the
+// mathematical property that repeated reshaping does not cause
+// unbounded share growth and that the original secret is preserved
+// across all three operations.
+//
+// Bound units: DAO_RESHARE_SIGNED_BYTES = 2321 total bytes =
+//   1 sign byte + 2320 magnitude bytes = 18560 magnitude bits.
+// The proof-level WITNESS_BITS = 10000 also bounds the acceptable
+// share magnitude (a link proof over a share larger than
+// WITNESS_BITS cannot be generated within SCALAR_BYTES).
+//
+// Assertions:
+//   - all three stages succeed
+//   - every stage share magnitude < WITNESS_BITS
+//   - every stage share magnitude < (DAO_RESHARE_SIGNED_BYTES - 1) * 8
+//   - stage-3 magnitude is not materially larger than stage-1
+//   - f(0) is preserved across all stages (secret unchanged)
+// ------------------------------------------------------------------
+namespace {
+
+using namespace cryptonote::dao;
+
+// Decode a share blob. Both DKG output (local_secret_share, documented
+// as signed-encoded in dao_dkg.h) and reshare output
+// (dao_reshare_serialize_signed, [sign, magnitude] of
+// DAO_RESHARE_SIGNED_BYTES) carry a leading sign byte of 0 or 1.
+// Fall through to plain magnitude if the first byte is neither.
+BIGNUM* decode_share_signed_or_magnitude(const std::vector<uint8_t>& in)
+{
+    if (in.empty()) return nullptr;
+    if (in[0] == 0 || in[0] == 1) {
+        const bool neg = (in[0] == 1);
+        BIGNUM* b = BN_bin2bn(in.data() + 1,
+                               static_cast<int>(in.size() - 1), nullptr);
+        if (!b) return nullptr;
+        if (neg && !BN_is_zero(b)) BN_set_negative(b, 1);
+        return b;
+    }
+    return BN_bin2bn(in.data(), static_cast<int>(in.size()), nullptr);
+}
+
+// f(0) = (sum_{i in S} mu_i * s_i) / delta, where mu_i = delta *
+// lambda_i(0). S is 1-indexed against shares.
+BIGNUM* compute_reconstructed_secret(const std::vector<BIGNUM*>& shares,
+                                      const std::vector<uint32_t>& S,
+                                      const BIGNUM* delta,
+                                      BN_CTX* ctx)
+{
+    if (!delta || S.empty()) return nullptr;
+    BIGNUM* sum = BN_new();
+    if (!sum) return nullptr;
+    BN_zero(sum);
+    for (uint32_t i : S) {
+        if (i == 0 || i > shares.size()) { BN_free(sum); return nullptr; }
+        BIGNUM* mu = BN_new();
+        if (!mu || !dao_dkg_lagrange_mu(S, i, mu)) {
+            BN_free(mu); BN_free(sum); return nullptr;
+        }
+        BIGNUM* term = BN_new();
+        if (!term || !BN_mul(term, mu, shares[i - 1], ctx)) {
+            BN_free(term); BN_free(mu); BN_free(sum); return nullptr;
+        }
+        BN_add(sum, sum, term);
+        BN_free(term); BN_free(mu);
+    }
+    BIGNUM* f0 = BN_new();
+    BIGNUM* rem = BN_new();
+    if (!f0 || !rem ||
+        !BN_div(f0, rem, sum, delta, ctx) ||
+        !BN_is_zero(rem)) {
+        BN_free(f0); BN_free(rem); BN_free(sum); return nullptr;
+    }
+    BN_free(rem); BN_free(sum);
+    return f0;
+}
+
+} // namespace
+
+TEST(DaoV2Replay, RepeatedReshareMaxCommittee)
+{
+    using namespace cryptonote;
+    using namespace cryptonote::dao;
+
+    boost::filesystem::path base =
+        boost::filesystem::temp_directory_path() /
+        boost::filesystem::unique_path("vr_represhape_%%%%-%%%%");
+
+    // -------- Stage 0: 3-party DKG, threshold 2 --------
+    std::vector<crypto::public_key> c0_pks;
+    for (int i = 0; i < 3; ++i) {
+        crypto::public_key pk; crypto::secret_key sk;
+        crypto::generate_keys(pk, sk);
+        c0_pks.push_back(pk);
+    }
+    std::sort(c0_pks.begin(), c0_pks.end(),
+        [](const auto& x, const auto& y) {
+            return std::memcmp(x.data, y.data, 32) < 0;
+        });
+
+    dkg_inproc_network inet = dkg_make_inproc_network(3, nullptr);
+    std::vector<std::unique_ptr<dkg_transport>> pool;
+    for (auto& e : inet.endpoints) pool.push_back(std::move(e));
+    size_t next = 0;
+    dkg_transport_factory factory =
+        [&pool, &next](uint32_t) -> std::unique_ptr<dkg_transport> {
+            if (next >= pool.size()) return nullptr;
+            return std::move(pool[next++]);
+        };
+    dkg_config dcfg;
+    dcfg.committee_size = 3;
+    dcfg.threshold = dao_dkg_expected_threshold(3);
+    dcfg.member_ids = c0_pks;
+    dcfg.k = 60; dcfg.target_N_bits = 128; dcfg.security_bits = 32;
+    dcfg.qproof_rounds = DAO_DKG_QPROOF_ROUNDS_TEST;
+    dcfg.max_attempts = 1;
+    dcfg.test_seed = 0x5645494C52544F33ULL;
+    dcfg.local_party_id = 1;
+    dkg_result dkg_out;
+    ASSERT_TRUE(dkg_run_with_transport(dcfg, factory, dkg_out));
+    ASSERT_TRUE(dkg_out.candidate_accepted);
+    ASSERT_EQ(dkg_out.test_SK.size(), 3u);
+
+    auto decode_decimal_sk = [](const std::vector<uint8_t>& dec)
+        -> std::vector<uint8_t> {
+        std::string s(dec.begin(), dec.end());
+        BIGNUM* bn = nullptr;
+        if (BN_dec2bn(&bn, s.c_str()) == 0) return {};
+        bool neg = BN_is_negative(bn) != 0;
+        BIGNUM* abs_bn = BN_dup(bn); BN_set_negative(abs_bn, 0);
+        int nb = BN_num_bytes(abs_bn);
+        std::vector<uint8_t> raw(1 + nb, 0);
+        raw[0] = neg ? 1 : 0;
+        BN_bn2bin(abs_bn, raw.data() + 1);
+        BN_free(abs_bn); BN_free(bn);
+        return raw;
+    };
+
+    std::vector<std::vector<uint8_t>> c0_share_bytes;
+    c0_share_bytes.push_back(dkg_out.local_secret_share);
+    c0_share_bytes.push_back(decode_decimal_sk(dkg_out.test_SK[1]));
+    c0_share_bytes.push_back(decode_decimal_sk(dkg_out.test_SK[2]));
+
+    std::vector<BIGNUM*> c0_shares;
+    for (auto& b : c0_share_bytes) {
+        BIGNUM* s = decode_share_signed_or_magnitude(b);
+        ASSERT_NE(s, nullptr) << "could not decode DKG share";
+        c0_shares.push_back(s);
+    }
+
+    // Common crypto objects.
+    PaillierPublicKey pk;
+    ASSERT_TRUE(pk.deserialize_modulus(dkg_out.record.N));
+    dao_vss_group vss;
+    ASSERT_TRUE(dao_vss_group_generate(vss,
+        dao_dkg_required_vss_bits(60, 128, 32)));
+    BIGNUM* delta = BN_dup(dao_dkg_delta());
+    ASSERT_NE(delta, nullptr);
+    std::vector<uint8_t> Delta_bytes(32, 0);
+    BN_bn2binpad(delta, Delta_bytes.data(), 32);
+
+    BN_CTX* ctx = BN_CTX_new();
+    ASSERT_NE(ctx, nullptr);
+
+    // Stage 0 f(0): S_0 = {1, 2} (threshold 2).
+    BIGNUM* f0_stage0 = compute_reconstructed_secret(
+        c0_shares, {1, 2}, delta, ctx);
+    ASSERT_NE(f0_stage0, nullptr)
+        << "could not reconstruct f(0) from stage 0";
+
+    // One full reshare stage.
+    auto do_stage =
+        [&](std::vector<crypto::public_key>& old_pks,
+            std::vector<BIGNUM*>& old_shares,
+            const std::vector<std::vector<uint8_t>>& old_vks_in,
+            uint32_t old_threshold,
+            std::vector<crypto::public_key>& new_pks,
+            uint32_t new_threshold,
+            uint64_t old_set_id,
+            uint64_t new_set_id,
+            std::vector<BIGNUM*>& new_shares_out,
+            std::vector<std::vector<uint8_t>>& new_vks_out,
+            int& max_bits_out) -> bool
+    {
+        const uint32_t t_new = new_threshold - 1;
+        std::vector<uint32_t> new_indices;
+        for (size_t i = 0; i < new_pks.size(); ++i)
+            new_indices.push_back(static_cast<uint32_t>(i) + 1);
+
+        // Fixed Lagrange subset: first old_threshold old positions.
+        std::vector<uint32_t> S;
+        for (uint32_t k = 0; k < old_threshold; ++k)
+            S.push_back(static_cast<uint32_t>(k) + 1);
+
+        std::vector<dao_reshare_contribution> contribs;
+        for (uint32_t i : S) {
+            dao_reshare_link_context ctx_i;
+            ctx_i.genesis_block_hash = crypto::null_hash;
+            ctx_i.stable_key_record_hash.assign(32, 0);
+            ctx_i.share_set_id = old_set_id;
+            ctx_i.contributor_pubkey.assign(32, 0);
+            std::memcpy(ctx_i.contributor_pubkey.data(),
+                        old_pks[i - 1].data, 32);
+            ctx_i.original_index = i;
+            ctx_i.contributor_subset = S;
+            ctx_i.N = dkg_out.record.N;
+            ctx_i.V = dkg_out.record.V;
+            ctx_i.VK_i = old_vks_in[i - 1];
+            ctx_i.C_i0.assign(PAILLIER_CT_BYTES, 0);
+            ctx_i.Delta = Delta_bytes;
+
+            BIGNUM* mu = BN_new();
+            if (!mu || !dao_dkg_lagrange_mu(S, i, mu)) {
+                BN_free(mu); return false;
+            }
+            dao_reshare_contribution c;
+            bool ok = dao_reshare_make_contribution(
+                pk, vss, dkg_out.record.V,
+                old_shares[i - 1], mu, delta,
+                t_new, new_indices, ctx_i, c);
+            BN_free(mu);
+            if (!ok) return false;
+            contribs.push_back(std::move(c));
+        }
+
+        std::vector<dao_reshare_new_share> new_shares;
+        for (uint32_t j = 1; j <= new_pks.size(); ++j) {
+            dao_reshare_new_share ns;
+            if (!dao_reshare_combine_one(
+                    pk, vss, dkg_out.record.V, contribs, new_indices,
+                    j - 1, /* old threshold for combine */ old_threshold,
+                    delta, ns))
+                return false;
+            new_shares.push_back(std::move(ns));
+        }
+
+        dao_share_set_record ss;
+        if (!dao_reshare_build_share_set(
+                new_set_id, /* height */ 0, dkg_out.record.key_id,
+                new_pks, new_shares, new_threshold, ss))
+            return false;
+
+        int mb = 0;
+        for (auto& ns : new_shares) {
+            if (ns.share_signed.size() != DAO_RESHARE_SIGNED_BYTES)
+                return false;
+            BIGNUM* b = decode_share_signed_or_magnitude(ns.share_signed);
+            if (!b) return false;
+            int bits = BN_num_bits(b);
+            if (bits > mb) mb = bits;
+            new_shares_out.push_back(b);
+            new_vks_out.push_back(ns.VK_j);
+        }
+        max_bits_out = mb;
+        return true;
+    };
+
+    // -------- Stage 1: 3 -> 4, threshold 2 -> 2 --------
+    std::vector<crypto::public_key> c1_pks;
+    for (int i = 0; i < 4; ++i) {
+        crypto::public_key pk2; crypto::secret_key sk2;
+        crypto::generate_keys(pk2, sk2);
+        c1_pks.push_back(pk2);
+    }
+    std::sort(c1_pks.begin(), c1_pks.end(),
+        [](const auto& x, const auto& y) {
+            return std::memcmp(x.data, y.data, 32) < 0;
+        });
+    std::vector<BIGNUM*> c1_shares;
+    std::vector<std::vector<uint8_t>> c1_vks;
+    int c1_bits = 0;
+    const std::vector<std::vector<uint8_t>> c0_vks = dkg_out.record.V_K_i;
+    ASSERT_TRUE(do_stage(c0_pks, c0_shares, c0_vks, 2, c1_pks,
+                         dao_dkg_expected_threshold(4),
+                         100, 101, c1_shares, c1_vks, c1_bits))
+        << "stage 1 (3->4) failed";
+    ASSERT_EQ(c1_vks.size(), c1_pks.size());
+    {
+        BIGNUM* f = compute_reconstructed_secret(c1_shares, {1, 2}, delta, ctx);
+        ASSERT_NE(f, nullptr) << "stage 1 f(0) unreconstructable";
+        EXPECT_EQ(BN_cmp(f, f0_stage0), 0)
+            << "secret changed after 3->4 reshape";
+        BN_free(f);
+    }
+
+    // -------- Stage 2: 4 -> 6, threshold 2 -> 3 --------
+    std::vector<crypto::public_key> c2_pks;
+    for (int i = 0; i < 6; ++i) {
+        crypto::public_key pk2; crypto::secret_key sk2;
+        crypto::generate_keys(pk2, sk2);
+        c2_pks.push_back(pk2);
+    }
+    std::sort(c2_pks.begin(), c2_pks.end(),
+        [](const auto& x, const auto& y) {
+            return std::memcmp(x.data, y.data, 32) < 0;
+        });
+    std::vector<BIGNUM*> c2_shares;
+    std::vector<std::vector<uint8_t>> c2_vks;
+    int c2_bits = 0;
+    ASSERT_TRUE(do_stage(c1_pks, c1_shares, c1_vks, 2, c2_pks,
+                         dao_dkg_expected_threshold(6),
+                         101, 102, c2_shares, c2_vks, c2_bits))
+        << "stage 2 (4->6) failed";
+    ASSERT_EQ(c2_vks.size(), c2_pks.size());
+    {
+        BIGNUM* f = compute_reconstructed_secret(c2_shares, {1, 2, 3}, delta, ctx);
+        ASSERT_NE(f, nullptr) << "stage 2 f(0) unreconstructable";
+        EXPECT_EQ(BN_cmp(f, f0_stage0), 0)
+            << "secret changed after 4->6 reshape";
+        BN_free(f);
+    }
+
+    // -------- Stage 3: 6 -> 16, threshold 3 -> 8 --------
+    std::vector<crypto::public_key> c3_pks;
+    for (int i = 0; i < 16; ++i) {
+        crypto::public_key pk2; crypto::secret_key sk2;
+        crypto::generate_keys(pk2, sk2);
+        c3_pks.push_back(pk2);
+    }
+    std::sort(c3_pks.begin(), c3_pks.end(),
+        [](const auto& x, const auto& y) {
+            return std::memcmp(x.data, y.data, 32) < 0;
+        });
+    std::vector<BIGNUM*> c3_shares;
+    std::vector<std::vector<uint8_t>> c3_vks;
+    int c3_bits = 0;
+    ASSERT_TRUE(do_stage(c2_pks, c2_shares, c2_vks, 3, c3_pks,
+                         dao_dkg_expected_threshold(16),
+                         102, 103, c3_shares, c3_vks, c3_bits))
+        << "stage 3 (6->16) failed";
+    ASSERT_EQ(c3_vks.size(), c3_pks.size());
+    {
+        std::vector<uint32_t> S = {1, 2, 3, 4, 5, 6, 7, 8};
+        BIGNUM* f = compute_reconstructed_secret(c3_shares, S, delta, ctx);
+        ASSERT_NE(f, nullptr) << "stage 3 f(0) unreconstructable";
+        EXPECT_EQ(BN_cmp(f, f0_stage0), 0)
+            << "secret changed after all three reshares";
+        BN_free(f);
+    }
+
+    // Magnitude bound assertions.
+    const int kMagnitude_bits_bound =
+        static_cast<int>((DAO_RESHARE_SIGNED_BYTES - 1) * 8);  // 18560
+    EXPECT_LT(c1_bits, static_cast<int>(dao_reshare_link_proof::WITNESS_BITS))
+        << "stage-1 magnitude (" << c1_bits << " bits) exceeds WITNESS_BITS";
+    EXPECT_LT(c2_bits, static_cast<int>(dao_reshare_link_proof::WITNESS_BITS))
+        << "stage-2 magnitude (" << c2_bits << " bits) exceeds WITNESS_BITS";
+    EXPECT_LT(c3_bits, static_cast<int>(dao_reshare_link_proof::WITNESS_BITS))
+        << "stage-3 magnitude (" << c3_bits << " bits) exceeds WITNESS_BITS";
+    EXPECT_LT(c1_bits, kMagnitude_bits_bound);
+    EXPECT_LT(c2_bits, kMagnitude_bits_bound);
+    EXPECT_LT(c3_bits, kMagnitude_bits_bound);
+
+    // Bounded growth: stage 3 must not be materially larger than stage 1.
+    // Resharing divides out the accumulated coefficient noise at each
+    // step, so magnitudes stay in the same ballpark across stages.
+    EXPECT_LE(c3_bits, c1_bits + 500)
+        << "share magnitudes grew across repeated reshares; "
+           "s1=" << c1_bits << " s3=" << c3_bits;
+
+    // Cleanup.
+    BN_free(f0_stage0);
+    for (auto* s : c0_shares) BN_free(s);
+    for (auto* s : c1_shares) BN_free(s);
+    for (auto* s : c2_shares) BN_free(s);
+    for (auto* s : c3_shares) BN_free(s);
+    BN_free(delta);
+    BN_CTX_free(ctx);
+    boost::filesystem::remove_all(base);
+}
