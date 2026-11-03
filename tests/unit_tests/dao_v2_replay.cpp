@@ -3659,3 +3659,293 @@ TEST(DaoV2Replay, CombineRejectsMismatchedSubsets)
     BN_free(delta);
     boost::filesystem::remove_all(base);
 }
+
+
+// ------------------------------------------------------------------
+// §9 item 7: all nodes derive the same reshape descriptor regardless
+// of the ORDER in which reshare messages arrive at each node. Node A
+// receives its mailbox FIFO, node B LIFO, node C interleaved (evens
+// then odds). Message set is identical for all three; only arrival
+// order differs. Each node commits its own share set record; the test
+// asserts all three records are structurally identical.
+//
+// Structural fields asserted equal across the three nodes:
+//   share_set_id, committee_members, VK_i, threshold,
+//   contributor_indices, contributor_vk, base_share_set_id,
+//   contributions.size()
+//
+// Bytes of individual contributions are NOT asserted equal: each
+// node's view of a peer contribution carries its OWN decrypted share,
+// so the serialized bytes legitimately differ per recipient.
+// ------------------------------------------------------------------
+TEST(DaoV2Replay, ReshapeDescriptorOrderIndependent)
+{
+    using namespace cryptonote;
+    using namespace cryptonote::dao;
+
+    boost::filesystem::path base =
+        boost::filesystem::temp_directory_path() /
+        boost::filesystem::unique_path("vr_b3g_%%%%-%%%%");
+
+    ReplayNode a, b, c;
+    ASSERT_TRUE(a.init((base / "a").string()));
+    ASSERT_TRUE(b.init((base / "b").string()));
+    ASSERT_TRUE(c.init((base / "c").string()));
+
+    auto& bc_a = a.core->get_blockchain_storage();
+    auto& bc_b = b.core->get_blockchain_storage();
+    auto& bc_c = c.core->get_blockchain_storage();
+    auto& db_a = bc_a.get_db();
+    auto& db_b = bc_b.get_db();
+    auto& db_c = bc_c.get_db();
+    bc_a.set_dao_v2_active_for_test(true);
+    bc_b.set_dao_v2_active_for_test(true);
+    bc_c.set_dao_v2_active_for_test(true);
+
+    // 3-party DKG (identical setup to B3d).
+    std::vector<crypto::public_key> committee;
+    std::vector<crypto::secret_key> committee_sks;
+    for (int i = 0; i < 3; ++i) {
+        crypto::public_key pk2; crypto::secret_key sk2;
+        crypto::generate_keys(pk2, sk2);
+        committee.push_back(pk2);
+        committee_sks.push_back(sk2);
+    }
+    std::vector<size_t> ord = { 0, 1, 2 };
+    std::sort(ord.begin(), ord.end(), [&](size_t x, size_t y) {
+        return std::memcmp(committee[x].data, committee[y].data, 32) < 0;
+    });
+    {
+        std::vector<crypto::public_key> p2;
+        std::vector<crypto::secret_key> s2;
+        for (auto i : ord) { p2.push_back(committee[i]); s2.push_back(committee_sks[i]); }
+        committee = std::move(p2);
+        committee_sks = std::move(s2);
+    }
+    crypto::public_key a_pub = committee[0];
+    crypto::public_key b_pub = committee[1];
+    crypto::public_key c_pub = committee[2];
+    a.core->set_node_key(committee_sks[0]);
+    b.core->set_node_key(committee_sks[1]);
+    c.core->set_node_key(committee_sks[2]);
+
+    crypto::public_key d_pub; crypto::secret_key d_sk;
+    crypto::generate_keys(d_pub, d_sk);
+
+    dao_vss_group vss;
+    ASSERT_TRUE(dao_vss_group_generate(vss,
+        dao_dkg_required_vss_bits(60, 128, 32)));
+    dkg_inproc_network inet = dkg_make_inproc_network(3, nullptr);
+    std::vector<std::unique_ptr<dkg_transport>> pool;
+    for (auto& e : inet.endpoints) pool.push_back(std::move(e));
+    size_t next = 0;
+    dkg_transport_factory factory =
+        [&pool, &next](uint32_t) -> std::unique_ptr<dkg_transport> {
+            if (next >= pool.size()) return nullptr;
+            return std::move(pool[next++]);
+        };
+    dkg_config dcfg;
+    dcfg.committee_size = 3;
+    dcfg.threshold = dao_dkg_expected_threshold(3);
+    dcfg.member_ids = committee;
+    dcfg.k = 60; dcfg.target_N_bits = 128; dcfg.security_bits = 32;
+    dcfg.qproof_rounds = DAO_DKG_QPROOF_ROUNDS_TEST;
+    dcfg.max_attempts = 1;
+    dcfg.test_seed = 0x5645494C52544F33ULL;
+    dcfg.local_party_id = 1;
+    dkg_result dkg_out;
+    ASSERT_TRUE(dkg_run_with_transport(dcfg, factory, dkg_out));
+    ASSERT_TRUE(dkg_out.candidate_accepted);
+    ASSERT_EQ(dkg_out.test_SK.size(), 3u);
+
+    bc_a.install_dao_tally_key_for_proposal_for_test(
+        dkg_out.record, dkg_out.local_secret_share);
+    auto decode_decimal_sk = [](const std::vector<uint8_t>& dec)
+        -> std::vector<uint8_t> {
+        std::string s(dec.begin(), dec.end());
+        BIGNUM* bn = nullptr;
+        if (BN_dec2bn(&bn, s.c_str()) == 0) return {};
+        bool neg = BN_is_negative(bn) != 0;
+        BIGNUM* ab = BN_dup(bn); BN_set_negative(ab, 0);
+        std::vector<uint8_t> r(1 + BN_num_bytes(ab), 0);
+        r[0] = neg ? 1 : 0;
+        BN_bn2bin(ab, r.data() + 1);
+        BN_free(ab); BN_free(bn);
+        return r;
+    };
+    bc_b.install_dao_tally_key_for_proposal_for_test(
+        dkg_out.record, decode_decimal_sk(dkg_out.test_SK[1]));
+    bc_c.install_dao_tally_key_for_proposal_for_test(
+        dkg_out.record, decode_decimal_sk(dkg_out.test_SK[2]));
+
+    // Mine to height 5.
+    account_base miner; miner.generate();
+    while (bc_a.get_current_blockchain_height() < 5) {
+        block tmpl{}; difficulty_type diff{}; uint64_t h=0,r=0,sh=0;
+        crypto::hash shh{}; blobdata en(8,0);
+        ASSERT_TRUE(bc_a.create_block_template(tmpl,
+            miner.get_keys().m_account_address, diff, h, r, en, sh, shh));
+        auto gbh = [&bc_a](const block& bb, uint64_t hh,
+                           const crypto::hash* s, unsigned int mn,
+                           crypto::hash& o) -> bool {
+            return get_block_longhash(&bc_a, bb, o, hh, s,
+                                      static_cast<int>(mn));
+        };
+        ASSERT_TRUE(miner::find_nonce_for_given_block(
+            gbh, tmpl, diff, h, nullptr));
+        block_verification_context bvc{}; pool_supplement e{};
+        blobdata blob = block_to_blob(tmpl);
+        ASSERT_TRUE(a.core->handle_single_incoming_block(
+            blob, &tmpl, bvc, e, false));
+        ASSERT_TRUE(b.core->handle_single_incoming_block(
+            blob, &tmpl, bvc, e, false));
+        ASSERT_TRUE(c.core->handle_single_incoming_block(
+            blob, &tmpl, bvc, e, false));
+    }
+
+    crypto::hash g_hash = bc_a.get_block_id_by_height(0);
+    const uint64_t vote_end = 3;
+    for (auto* db : { &db_a, &db_b, &db_c }) {
+        db_wtxn_guard g(db);
+        for (const auto& pk : { a_pub, b_pub, c_pub, d_pub })
+            db->add_dao_v2_node_ready(pk, 0, g_hash);
+    }
+
+    crypto::hash prop_id{};
+    std::memset(prop_id.data, 0xD3, 32);
+    PaillierPublicKey pk;
+    ASSERT_TRUE(pk.deserialize_modulus(dkg_out.record.N));
+    BIGNUM* Wb = BN_new(); BN_set_word(Wb, 1000);
+    BIGNUM* Sb = BN_new(); BN_set_word(Sb, 1000);
+    BIGNUM* Bb = BN_new(); BN_set_word(Bb, 50000);
+    BIGNUM* r1 = BN_new(); BN_set_word(r1, 3);
+    BIGNUM* r2 = BN_new(); BN_set_word(r2, 5);
+    BIGNUM* r3 = BN_new(); BN_set_word(r3, 7);
+    std::vector<uint8_t> E_W, E_S, E_B;
+    ASSERT_TRUE(pk.encrypt(Wb, r1, E_W));
+    ASSERT_TRUE(pk.encrypt(Sb, r2, E_S));
+    ASSERT_TRUE(pk.encrypt(Bb, r3, E_B));
+    for (auto* db : { &db_a, &db_b, &db_c }) {
+        db_wtxn_guard g(db);
+        proposal_record rec{};
+        rec.proposal_id = prop_id;
+        rec.submission_height = 0;
+        rec.voting_end_height = vote_end;
+        rec.status = PROPOSAL_STATUS_ACTIVE;
+        std::memcpy(rec.tally_key_id.data, dkg_out.record.key_id.data(), 32);
+        db->add_proposal_record(prop_id, rec);
+        dao_proposal_aggregate agg;
+        agg.aggregate_E_W = E_W;
+        agg.aggregate_E_S = E_S;
+        agg.aggregate_E_B = E_B;
+        agg.aggregate_C_W = rct::identity();
+        agg.aggregate_C_S = rct::identity();
+        agg.aggregate_C_B = rct::identity();
+        db->add_dao_proposal_aggregate(prop_id, agg);
+        dao_supply_snapshot snap;
+        snap.height = vote_end;
+        snap.minted = dao_u128(100000);
+        snap.circulating = dao_u128(50000);
+        db->add_dao_supply_snapshot(snap);
+    }
+
+    std::vector<std::pair<crypto::public_key, std::string>> mailbox;
+    std::mutex mb_mu;
+    bc_a.set_dao_v2_dkg_send([&](const std::string& s) -> bool {
+        std::lock_guard<std::mutex> lk(mb_mu);
+        mailbox.emplace_back(a_pub, s); return true;
+    });
+    bc_b.set_dao_v2_dkg_send([&](const std::string& s) -> bool {
+        std::lock_guard<std::mutex> lk(mb_mu);
+        mailbox.emplace_back(b_pub, s); return true;
+    });
+    bc_c.set_dao_v2_dkg_send([&](const std::string& s) -> bool {
+        std::lock_guard<std::mutex> lk(mb_mu);
+        mailbox.emplace_back(c_pub, s); return true;
+    });
+    for (auto* bc : { &bc_a, &bc_b, &bc_c })
+        bc->set_dao_v2_tally_broadcast([](const dao_v2_tally_share&) {});
+
+    // Trigger first reshape on all three nodes.
+    bc_a.maybe_start_dao_v2_reshare_for_proposal(prop_id, vote_end);
+    bc_b.maybe_start_dao_v2_reshare_for_proposal(prop_id, vote_end);
+    bc_c.maybe_start_dao_v2_reshare_for_proposal(prop_id, vote_end);
+
+    // Drive with per-node delivery ordering:
+    //   A: FIFO
+    //   B: LIFO (reverse)
+    //   C: interleaved (even indices then odd indices)
+    // Same message set to all three nodes; only arrival order differs.
+    for (int round = 0; round < 15; ++round) {
+        std::vector<std::pair<crypto::public_key, std::string>> batch;
+        {
+            std::lock_guard<std::mutex> lk(mb_mu);
+            batch.swap(mailbox);
+        }
+        // A: FIFO
+        for (auto& m : batch)
+            if (m.first != a_pub)
+                bc_a.handle_dao_v2_dkg_msg(m.first, m.second);
+        // B: LIFO
+        for (auto it = batch.rbegin(); it != batch.rend(); ++it)
+            if (it->first != b_pub)
+                bc_b.handle_dao_v2_dkg_msg(it->first, it->second);
+        // C: evens then odds
+        for (size_t i = 0; i < batch.size(); i += 2)
+            if (batch[i].first != c_pub)
+                bc_c.handle_dao_v2_dkg_msg(batch[i].first, batch[i].second);
+        for (size_t i = 1; i < batch.size(); i += 2)
+            if (batch[i].first != c_pub)
+                bc_c.handle_dao_v2_dkg_msg(batch[i].first, batch[i].second);
+        { db_wtxn_guard g(&db_a); bc_a.maybe_maintain_dao_v2_share_set(); }
+        { db_wtxn_guard g(&db_b); bc_b.maybe_maintain_dao_v2_share_set(); }
+        { db_wtxn_guard g(&db_c); bc_c.maybe_maintain_dao_v2_share_set(); }
+    }
+
+    auto find_latest = [](BlockchainDB& db,
+                          const std::vector<uint8_t>& kid) -> uint64_t {
+        uint64_t sid = 0;
+        db.for_all_dao_share_sets(
+            [&](uint64_t id, const dao_share_set_record& r) -> bool {
+                if (r.key_id == kid && !r.contributions.empty() && id > sid)
+                    sid = id;
+                return true;
+            });
+        return sid;
+    };
+
+    uint64_t sid_a = find_latest(db_a, dkg_out.record.key_id);
+    uint64_t sid_b = find_latest(db_b, dkg_out.record.key_id);
+    uint64_t sid_c = find_latest(db_c, dkg_out.record.key_id);
+    ASSERT_NE(sid_a, 0u) << "node A did not commit a reshare";
+    ASSERT_NE(sid_b, 0u) << "node B did not commit a reshare";
+    ASSERT_NE(sid_c, 0u) << "node C did not commit a reshare";
+
+    EXPECT_EQ(sid_a, sid_b) << "A and B disagree on reshare share_set_id";
+    EXPECT_EQ(sid_b, sid_c) << "B and C disagree on reshare share_set_id";
+
+    dao_share_set_record ssa, ssb, ssc;
+    ASSERT_TRUE(db_a.get_dao_share_set(sid_a, ssa));
+    ASSERT_TRUE(db_b.get_dao_share_set(sid_b, ssb));
+    ASSERT_TRUE(db_c.get_dao_share_set(sid_c, ssc));
+
+    EXPECT_EQ(ssa.committee_members, ssb.committee_members);
+    EXPECT_EQ(ssb.committee_members, ssc.committee_members);
+    EXPECT_EQ(ssa.VK_i, ssb.VK_i);
+    EXPECT_EQ(ssb.VK_i, ssc.VK_i);
+    EXPECT_EQ(ssa.threshold, ssb.threshold);
+    EXPECT_EQ(ssb.threshold, ssc.threshold);
+    EXPECT_EQ(ssa.contributor_indices, ssb.contributor_indices);
+    EXPECT_EQ(ssb.contributor_indices, ssc.contributor_indices);
+    EXPECT_EQ(ssa.contributor_vk, ssb.contributor_vk);
+    EXPECT_EQ(ssb.contributor_vk, ssc.contributor_vk);
+    EXPECT_EQ(ssa.base_share_set_id, ssb.base_share_set_id);
+    EXPECT_EQ(ssb.base_share_set_id, ssc.base_share_set_id);
+    EXPECT_EQ(ssa.contributions.size(), ssb.contributions.size());
+    EXPECT_EQ(ssb.contributions.size(), ssc.contributions.size());
+    EXPECT_FALSE(ssa.contributions.empty());
+
+    BN_free(Wb); BN_free(Sb); BN_free(Bb);
+    BN_free(r1); BN_free(r2); BN_free(r3);
+    boost::filesystem::remove_all(base);
+}
