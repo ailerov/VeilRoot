@@ -10711,13 +10711,16 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     if (key_rec.key_id.size() != 32) return;
     if (key_rec.committee_members.empty()) return;
 
-    // B3d: decide whether a reshare is needed.
+    // Decide whether a reshare is needed.
     //   - no reshare yet: first reshare to ready roster
-    //   - reshare landed but partials stalled: re-reshare replacing
-    //     non-responders
+    //   - reshare landed but the tally is not yet submitted:
+    //     re-reshare to replace non-responders. The anchor is
+    //     vote_end (latest_ss.height is vote_end_height for a
+    //     proposal-path reshare); this is a retry interval, not
+    //     a stall measured from commit.
     //   - otherwise: nothing to do
     constexpr uint64_t k_reshare_retry_blocks = 15;
-    constexpr uint64_t k_tally_stall_blocks   = 10;
+    constexpr uint64_t k_reshare_retry_interval = 10;
 
     const uint64_t current_block = get_current_blockchain_height();
     const uint64_t base_id =
@@ -10744,15 +10747,18 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
         need_reshare = true;
         cur_id = static_cast<uint32_t>(base_id);
       } else {
-        // Reshape committed at height latest_ss.height (chain-derived).
-        // Do not consult local m_dao_v2_tally_shares for stall timing;
-        // it is process-local and diverges per validator.
-        if (current_block < latest_ss.height + k_tally_stall_blocks)
+        // latest_ss.height is vote_end_height for a proposal-path
+        // reshare (cfg.height is set to vote_end_height at first
+        // reshape). The anchor for this retry is therefore vote_end,
+        // which every validator observes at the same block. Do not
+        // consult local m_dao_v2_tally_shares for timing; it is
+        // process-local and diverges per validator.
+        if (current_block < latest_ss.height + k_reshare_retry_interval)
           return;
-        // Stall window elapsed. Re-reshape to replace non-responders.
-        // If the tally was already submitted, the produce path will
-        // no-op on the outcome record check; if not, this is exactly
-        // the case we are here to handle.
+        // Retry interval elapsed. Re-reshape to replace
+        // non-responders. If the tally was already submitted, the
+        // produce path will no-op on the outcome record check; if
+        // not, this is exactly the case we are here to handle.
         cur_id = static_cast<uint32_t>(latest_id);
         need_reshare = false;
       }
@@ -10817,12 +10823,12 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     // partials_count < threshold).
     std::set<crypto::public_key> ready_now;
     if (!need_reshare) {
-      // Re-reshape ready cutoff must not exceed the stall window.
-      // Otherwise the trigger fires at vote_end + stall before a dropped
-      // member has aged out of the ready pool (general TTL is 15), and
-      // the re-reshape targets a committee that still contains the
-      // dropped member.
-      constexpr uint64_t k_ready_ttl_now = k_tally_stall_blocks;
+      // Re-reshape ready cutoff must not exceed the retry interval.
+      // Otherwise the trigger fires at vote_end + interval before a
+      // dropped member has aged out of the ready pool (general TTL
+      // is 15), and the re-reshape targets a committee that still
+      // contains the dropped member.
+      constexpr uint64_t k_ready_ttl_now = k_reshare_retry_interval;
       const uint64_t tip = get_current_blockchain_height();
       m_db->for_all_dao_v2_node_ready(
           [&](const crypto::public_key& pk,
