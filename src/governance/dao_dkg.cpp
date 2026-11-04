@@ -2064,6 +2064,10 @@ public:
         free_vec(b_h_theta_received_);
     }
 
+    void set_contribution_bits(uint32_t p_bits, uint32_t q_bits) {
+        p_contribution_bits_ = p_bits;
+        q_contribution_bits_ = q_bits;
+    }
     uint32_t id() const { return party_id_; }
     uint32_t current_candidate_id() const { return candidate_id_; }
     const BIGNUM* g_bar() const { return g_bar_; }
@@ -2154,6 +2158,8 @@ private:
 
     // Config carried into phases
     uint32_t k_              = 0;
+    uint32_t p_contribution_bits_ = 0;
+    uint32_t q_contribution_bits_ = 0;
     uint32_t security_bits_  = 0;
     uint32_t target_N_bits_  = 0;
     uint32_t qproof_rounds_  = 0;
@@ -2394,6 +2400,7 @@ dkg_msg dkg_party::make_header(dkg_msg_type type, uint32_t recipient,
 bool dkg_party::do_polynomial_commit()
 {
     if (!vss_group_ || !vss_group_->valid()) return false;
+    if (p_contribution_bits_ == 0 || q_contribution_bits_ == 0) return false;
 
     CtxGuard ctx;
     if (!ctx.ok()) return false;
@@ -2403,8 +2410,9 @@ bool dkg_party::do_polynomial_commit()
     // Pi (i>=2): pi = qi = 0 mod 4.
     const uint32_t t = threshold_ - 1;
 
-    auto draw_candidate = [&](bool p1_style, BIGNUM* out) -> bool {
-        if (!BN_rand(out, k_, BN_RAND_TOP_TWO, BN_RAND_BOTTOM_ANY)) return false;
+    auto draw_candidate = [&](bool p1_style, uint32_t bits, BIGNUM* out) -> bool {
+        if (bits == 0) return false;
+        if (!BN_rand(out, bits, BN_RAND_TOP_TWO, BN_RAND_BOTTOM_ANY)) return false;
 
         BIGNUM* four = BN_new();
         BN_set_word(four, 4);
@@ -2436,8 +2444,8 @@ bool dkg_party::do_polynomial_commit()
     } else
 #endif
     {
-        if (!draw_candidate(is_p1, p_i_)) return false;
-        if (!draw_candidate(is_p1, q_i_)) return false;
+        if (!draw_candidate(is_p1, p_contribution_bits_, p_i_)) return false;
+        if (!draw_candidate(is_p1, q_contribution_bits_, q_i_)) return false;
     }
 
     // Deal VSS of p_i and q_i at degree t.
@@ -4088,6 +4096,46 @@ bool party_get_lambda_share(const dkg_party& p, BIGNUM* out);
 // Public entry points
 // ====================================================================
 
+void dao_dkg_contribution_bits(uint32_t committee_size,
+                               uint32_t target_N_bits,
+                               uint32_t& p_bits_out,
+                               uint32_t& q_bits_out)
+{
+    p_bits_out = 0; q_bits_out = 0;
+    if (committee_size < 3 || committee_size > 16) return;
+    static const struct {
+        uint32_t n, p128, q128, p2048, q2048;
+    } kTable[] = {
+        { 3,   62,   63, 1022, 1023 },
+        { 4,   62,   62, 1022, 1022 },
+        { 5,   61,   62, 1021, 1022 },
+        { 6,   61,   62, 1021, 1022 },
+        { 7,   61,   61, 1021, 1021 },
+        { 8,   61,   61, 1021, 1021 },
+        { 9,   61,   61, 1021, 1021 },
+        { 10,  60,   61, 1020, 1021 },
+        { 11,  60,   61, 1020, 1021 },
+        { 12,  60,   61, 1020, 1021 },
+        { 13,  60,   61, 1020, 1021 },
+        { 14,  60,   60, 1020, 1020 },
+        { 15,  60,   60, 1020, 1020 },
+        { 16,  60,   60, 1020, 1020 },
+    };
+    for (const auto& r : kTable) {
+        if (r.n != committee_size) continue;
+        if (target_N_bits == 128)  { p_bits_out = r.p128;  q_bits_out = r.q128;  return; }
+        if (target_N_bits == 2048) { p_bits_out = r.p2048; q_bits_out = r.q2048; return; }
+    }
+    // Fallback formula for unlisted target sizes. BN_RAND_TOP_TWO gives
+    // each contribution near 0.875*2^k, so log2(N_mean) ~= log2(n*.875)
+    // + p_bits + q_bits.
+    uint32_t log2n = 0;
+    for (uint32_t nn = committee_size; nn > 1; nn >>= 1) ++log2n;
+    if (target_N_bits <= 2 * log2n + 4) return;
+    p_bits_out = (target_N_bits / 2) - log2n - 1;
+    q_bits_out = p_bits_out + 1;
+}
+
 std::unique_ptr<dkg_party> dkg_party_create(uint32_t party_id,
                                             const crypto::hash& proposal_id,
                                             uint32_t committee_size,
@@ -5093,6 +5141,17 @@ bool dkg_run_with_transport(const dkg_config& cfg,
 {
     out = dkg_result{};
 
+    uint32_t eff_p_bits = cfg.p_contribution_bits;
+    uint32_t eff_q_bits = cfg.q_contribution_bits;
+    if (eff_p_bits == 0 || eff_q_bits == 0) {
+        dao_dkg_contribution_bits(cfg.committee_size, cfg.target_N_bits,
+                                  eff_p_bits, eff_q_bits);
+    }
+    if (eff_p_bits == 0 || eff_q_bits == 0) {
+        out.ok = false;
+        return false;
+    }
+
     if (cfg.committee_size < DAO_DKG_MIN_COMMITTEE_SIZE ||
         cfg.committee_size > DAO_DKG_MAX_COMMITTEE_SIZE)
         return false;
@@ -5135,6 +5194,7 @@ bool dkg_run_with_transport(const dkg_config& cfg,
     for (uint32_t i = 1; i <= cfg.committee_size; ++i) {
         auto p = dkg_party_create(i, cfg.proposal_id,
                                   cfg.committee_size, cfg.threshold);
+        if (p) p->set_contribution_bits(eff_p_bits, eff_q_bits);
         if (!p) return false;
         p->attach_transport(transports[i - 1].get());
         p->set_committee_id_hash(committee_id_hash);
@@ -8377,11 +8437,22 @@ bool dkg_p2p_runner::start()
             new dkg_p2p_transport_local(p_->cfg.member_ids, p_->cb));
     }
 
+    if (p_->cfg.p_contribution_bits == 0 || p_->cfg.q_contribution_bits == 0) {
+        dao_dkg_contribution_bits(p_->cfg.committee_size,
+                                  p_->cfg.target_N_bits,
+                                  p_->cfg.p_contribution_bits,
+                                  p_->cfg.q_contribution_bits);
+    }
+    if (p_->cfg.p_contribution_bits == 0 || p_->cfg.q_contribution_bits == 0)
+        return false;
+
     p_->party = dkg_party_create(p_->cfg.local_party_id,
                                  p_->cfg.proposal_id,
                                  p_->cfg.committee_size,
                                  p_->cfg.threshold);
     if (!p_->party) return false;
+    p_->party->set_contribution_bits(p_->cfg.p_contribution_bits,
+                                     p_->cfg.q_contribution_bits);
 
     p_->party->attach_transport(p_->transport.get());
     p_->party->attach_vss_group(p_->vss);
@@ -8561,6 +8632,7 @@ bool dkg_run_distributed(const dkg_config& cfg,
 
 bool dkg_run(const dkg_config& cfg, dkg_result& out)
 {
+    (void)cfg;
     // Construct an in-process transport factory using the network
     // helper from dao_dkg_transport.h.
     dkg_inproc_network net = dkg_make_inproc_network(cfg.committee_size, nullptr);

@@ -697,6 +697,15 @@ bool dao_unpack_local_share(
 
 class dkg_party;
 
+// Derive per-party p_i and q_i contribution bit widths required to
+// reconstruct a target_N_bits modulus at zero after Lagrange
+// interpolation over committee_size members. Returns (0,0) when
+// the combination is not feasible.
+void dao_dkg_contribution_bits(uint32_t committee_size,
+                               uint32_t target_N_bits,
+                               uint32_t& p_bits_out,
+                               uint32_t& q_bits_out);
+
 std::unique_ptr<dkg_party> dkg_party_create(uint32_t party_id,
                                             const crypto::hash& proposal_id,
                                             uint32_t committee_size,
@@ -761,6 +770,8 @@ struct dkg_config
     crypto::hash proposal_id{};
 
     uint32_t k              = 60;
+    uint32_t p_contribution_bits = 0;   // width of p_i (0 = derive)
+    uint32_t q_contribution_bits = 0;   // width of q_i (0 = derive)
     uint32_t target_N_bits  = 128;
 
     uint32_t security_bits  = 32;   // K = 2^security_bits

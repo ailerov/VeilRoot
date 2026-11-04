@@ -3978,3 +3978,165 @@ TEST(DaoV2Replay, ReshareCommitPreservesRunnerWhenNotFinished)
 
     boost::filesystem::remove_all(base);
 }
+
+
+TEST(DaoV2Replay, ProposalDkgEndToEndActivation)
+{
+    using namespace cryptonote;
+    using namespace cryptonote::dao;
+
+    boost::filesystem::path base =
+        boost::filesystem::temp_directory_path() /
+        boost::filesystem::unique_path("vr_dkg_e2e_%%%%-%%%%");
+
+    ReplayNode a, b, c;
+    ASSERT_TRUE(a.init((base / "a").string()));
+    ASSERT_TRUE(b.init((base / "b").string()));
+    ASSERT_TRUE(c.init((base / "c").string()));
+    auto& bc_a = a.core->get_blockchain_storage();
+    auto& bc_b = b.core->get_blockchain_storage();
+    auto& bc_c = c.core->get_blockchain_storage();
+    auto& db_a = bc_a.get_db();
+    auto& db_b = bc_b.get_db();
+    auto& db_c = bc_c.get_db();
+    bc_a.set_dao_v2_active_for_test(true);
+    bc_b.set_dao_v2_active_for_test(true);
+    bc_c.set_dao_v2_active_for_test(true);
+
+    std::vector<crypto::public_key> pk_set;
+    std::vector<crypto::secret_key> sk_set;
+    for (int i = 0; i < 3; ++i) {
+        crypto::public_key pk; crypto::secret_key sk;
+        crypto::generate_keys(pk, sk);
+        pk_set.push_back(pk); sk_set.push_back(sk);
+    }
+    std::vector<size_t> ord = { 0, 1, 2 };
+    std::sort(ord.begin(), ord.end(), [&](size_t x, size_t y) {
+        return std::memcmp(pk_set[x].data, pk_set[y].data, 32) < 0;
+    });
+    {
+        std::vector<crypto::public_key> p2;
+        std::vector<crypto::secret_key> s2;
+        for (auto i : ord) { p2.push_back(pk_set[i]); s2.push_back(sk_set[i]); }
+        pk_set = std::move(p2); sk_set = std::move(s2);
+    }
+    a.core->set_node_key(sk_set[0]);
+    b.core->set_node_key(sk_set[1]);
+    c.core->set_node_key(sk_set[2]);
+
+    account_base miner; miner.generate();
+    while (bc_a.get_current_blockchain_height() < 3) {
+        block tmpl{}; difficulty_type diff{}; uint64_t h=0,r=0,sh=0;
+        crypto::hash shh{}; blobdata en(8,0);
+        ASSERT_TRUE(bc_a.create_block_template(tmpl,
+            miner.get_keys().m_account_address, diff, h, r, en, sh, shh));
+        auto gbh = [&bc_a](const block& bl, uint64_t hh,
+                           const crypto::hash* s, unsigned int mn,
+                           crypto::hash& o) -> bool {
+            return get_block_longhash(&bc_a, bl, o, hh, s, static_cast<int>(mn));
+        };
+        ASSERT_TRUE(miner::find_nonce_for_given_block(gbh, tmpl, diff, h, nullptr));
+        block_verification_context bvc{}; pool_supplement e{};
+        blobdata bb = block_to_blob(tmpl);
+        ASSERT_TRUE(a.core->handle_single_incoming_block(bb, &tmpl, bvc, e, false));
+        ASSERT_TRUE(b.core->handle_single_incoming_block(bb, &tmpl, bvc, e, false));
+        ASSERT_TRUE(c.core->handle_single_incoming_block(bb, &tmpl, bvc, e, false));
+    }
+    crypto::hash can_hash_1 = bc_a.get_block_id_by_height(1);
+
+    for (auto* db : { &db_a, &db_b, &db_c }) {
+        db_wtxn_guard g(db);
+        for (const auto& pk : pk_set) db->add_dao_v2_node_ready(pk, 1, can_hash_1);
+    }
+
+    crypto::hash prop_id{};
+    std::memset(prop_id.data, 0xE2, 32);
+    const uint64_t sub_h = bc_a.get_current_blockchain_height();
+    for (auto* db : { &db_a, &db_b, &db_c }) {
+        db_wtxn_guard g(db);
+        proposal_record rec{};
+        rec.proposal_id = prop_id;
+        rec.submission_height = sub_h;
+        rec.voting_end_height = sub_h + 720;
+        rec.status = PROPOSAL_STATUS_ACTIVE;
+        std::memset(rec.tally_key_id.data, 0, 32);
+        db->add_proposal_record(prop_id, rec);
+    }
+
+    std::vector<std::pair<crypto::public_key, std::string>> mailbox;
+    std::mutex mu;
+    bc_a.set_dao_v2_dkg_send([&](const std::string& s)->bool{
+        std::lock_guard<std::mutex> lk(mu);
+        mailbox.emplace_back(pk_set[0], s); return true; });
+    bc_b.set_dao_v2_dkg_send([&](const std::string& s)->bool{
+        std::lock_guard<std::mutex> lk(mu);
+        mailbox.emplace_back(pk_set[1], s); return true; });
+    bc_c.set_dao_v2_dkg_send([&](const std::string& s)->bool{
+        std::lock_guard<std::mutex> lk(mu);
+        mailbox.emplace_back(pk_set[2], s); return true; });
+    for (auto* bc : { &bc_a, &bc_b, &bc_c })
+        bc->set_dao_v2_tally_broadcast([](const dao_v2_tally_share&){});
+
+    bc_a.start_dao_v2_dkg_for_proposal(prop_id);
+    bc_b.start_dao_v2_dkg_for_proposal(prop_id);
+    bc_c.start_dao_v2_dkg_for_proposal(prop_id);
+
+    auto mine_one = [&]() -> bool {
+        block tmpl{}; difficulty_type diff{}; uint64_t h=0,r=0,sh=0;
+        crypto::hash shh{}; blobdata en(8,0);
+        if (!bc_a.create_block_template(tmpl,
+            miner.get_keys().m_account_address, diff, h, r, en, sh, shh))
+            return false;
+        auto gbh = [&bc_a](const block& bl, uint64_t hh,
+                           const crypto::hash* s, unsigned int mn,
+                           crypto::hash& o) -> bool {
+            return get_block_longhash(&bc_a, bl, o, hh, s, static_cast<int>(mn));
+        };
+        if (!miner::find_nonce_for_given_block(gbh, tmpl, diff, h, nullptr))
+            return false;
+        block_verification_context bvc{}; pool_supplement e{};
+        blobdata bb = block_to_blob(tmpl);
+        if (!a.core->handle_single_incoming_block(bb, &tmpl, bvc, e, false)) return false;
+        block_verification_context bvc2{}; pool_supplement e2{};
+        if (!b.core->handle_single_incoming_block(bb, &tmpl, bvc2, e2, false)) return false;
+        block_verification_context bvc3{}; pool_supplement e3{};
+        if (!c.core->handle_single_incoming_block(bb, &tmpl, bvc3, e3, false)) return false;
+        return true;
+    };
+
+    bool all_complete = false;
+    for (int round = 0; round < 2000 && !all_complete; ++round) {
+        std::vector<std::pair<crypto::public_key, std::string>> batch;
+        { std::lock_guard<std::mutex> lk(mu); batch.swap(mailbox); }
+        for (auto& [snd, pl] : batch) {
+            if (std::memcmp(snd.data, pk_set[0].data, 32) != 0)
+                bc_a.handle_dao_v2_dkg_msg(snd, pl);
+            if (std::memcmp(snd.data, pk_set[1].data, 32) != 0)
+                bc_b.handle_dao_v2_dkg_msg(snd, pl);
+            if (std::memcmp(snd.data, pk_set[2].data, 32) != 0)
+                bc_c.handle_dao_v2_dkg_msg(snd, pl);
+        }
+        bc_a.maybe_process_dao_v2_dkg_results();
+        bc_b.maybe_process_dao_v2_dkg_results();
+        bc_c.maybe_process_dao_v2_dkg_results();
+        if (round > 0 && round % 100 == 0) ASSERT_TRUE(mine_one());
+        proposal_record ra{}, rb{}, rc{};
+        bool a_done = db_a.get_proposal_record(prop_id, ra) && ra.tally_key_id != crypto::null_hash;
+        bool b_done = db_b.get_proposal_record(prop_id, rb) && rb.tally_key_id != crypto::null_hash;
+        bool c_done = db_c.get_proposal_record(prop_id, rc) && rc.tally_key_id != crypto::null_hash;
+        if (a_done && b_done && c_done) { all_complete = true; break; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    proposal_record rec_a{}, rec_b{}, rec_c{};
+    ASSERT_TRUE(db_a.get_proposal_record(prop_id, rec_a));
+    ASSERT_TRUE(db_b.get_proposal_record(prop_id, rec_b));
+    ASSERT_TRUE(db_c.get_proposal_record(prop_id, rec_c));
+    EXPECT_NE(rec_a.tally_key_id, crypto::null_hash)
+        << "A: tally_key_id never set (proposal DKG activation did not complete)";
+    EXPECT_EQ(rec_a.tally_key_id, rec_b.tally_key_id)
+        << "A and B disagree on proposal key_id";
+    EXPECT_EQ(rec_b.tally_key_id, rec_c.tally_key_id)
+        << "B and C disagree on proposal key_id";
+    boost::filesystem::remove_all(base);
+}
