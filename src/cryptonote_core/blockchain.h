@@ -1495,7 +1495,7 @@ namespace cryptonote
   // current ready roster; ceremony identifier is hex(proposal_id).
   // Idempotent: silently returns if a runner for this proposal already
   // exists.
-  void start_dao_v2_dkg_for_proposal(const crypto::hash& proposal_id);
+  dao::dao_dkg_start_status start_dao_v2_dkg_for_proposal(const crypto::hash& proposal_id);
 
   // Lifecycle hook called from the daemon idle loop. Runs the DKG
   // once when this node has seen at least DAO_DKG_MIN_COMMITTEE_SIZE

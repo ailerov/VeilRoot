@@ -759,6 +759,20 @@ struct dkg_result
 #endif
 };
 
+// Result of start_dao_v2_dkg_for_proposal, used by callers and tests
+// to distinguish benign early exits (already_running,
+// local_node_not_selected) from real startup failures.
+enum class dao_dkg_start_status {
+    started,
+    already_running,
+    shutting_down,
+    no_chain,
+    insufficient_ready_committee,
+    vss_initialization_failed,
+    local_node_not_selected,
+    runner_start_failed,
+};
+
 struct dkg_config
 {
     // Default committee is the maximum (16). Callers that run a

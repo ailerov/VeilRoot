@@ -2546,7 +2546,8 @@ TEST_F(DaoBootstrapIntegration, ProposalTriggersPerProposalDkg)
     // Direct invocation of the trigger method (the block-apply loop is
     // a one-line scan that calls the same method; covering that in a
     // multi-node integration is B4 scope).
-    bc.start_dao_v2_dkg_for_proposal(prop_id);
+    EXPECT_EQ(bc.start_dao_v2_dkg_for_proposal(prop_id),
+              dao::dao_dkg_start_status::started);
 
     const std::string ceremony_id =
         epee::string_tools::pod_to_hex(prop_id);

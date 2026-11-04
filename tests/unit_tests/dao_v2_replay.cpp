@@ -4105,9 +4105,20 @@ TEST(DaoV2Replay, ProposalDkgEndToEndActivation)
     bc_b.set_dao_v2_test_dkg_seed(dao::DAO_DKG_TEST_SEED_3);
     bc_c.set_dao_v2_test_dkg_seed(dao::DAO_DKG_TEST_SEED_3);
 
-    bc_a.start_dao_v2_dkg_for_proposal(prop_id);
-    bc_b.start_dao_v2_dkg_for_proposal(prop_id);
-    bc_c.start_dao_v2_dkg_for_proposal(prop_id);
+    auto st_a = bc_a.start_dao_v2_dkg_for_proposal(prop_id);
+    auto st_b = bc_b.start_dao_v2_dkg_for_proposal(prop_id);
+    auto st_c = bc_c.start_dao_v2_dkg_for_proposal(prop_id);
+    EXPECT_EQ(st_a, dao::dao_dkg_start_status::started)
+        << "node A start status=" << (int)st_a;
+    EXPECT_EQ(st_b, dao::dao_dkg_start_status::started)
+        << "node B start status=" << (int)st_b;
+    EXPECT_EQ(st_c, dao::dao_dkg_start_status::started)
+        << "node C start status=" << (int)st_c;
+    if (st_a != dao::dao_dkg_start_status::started ||
+        st_b != dao::dao_dkg_start_status::started ||
+        st_c != dao::dao_dkg_start_status::started) {
+        return;
+    }
 
     auto mine_one = [&]() -> bool {
         block tmpl{}; difficulty_type diff{}; uint64_t h=0,r=0,sh=0;

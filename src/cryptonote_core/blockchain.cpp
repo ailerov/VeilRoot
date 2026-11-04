@@ -7418,7 +7418,15 @@ leave:
       if (!m_db->get_proposal_record(tx_hash, rec)) continue;
       if (rec.submission_height != new_height) continue;
       if (rec.tally_key_id != crypto::null_hash) continue;
-      start_dao_v2_dkg_for_proposal(tx_hash);
+      {
+        auto st = start_dao_v2_dkg_for_proposal(tx_hash);
+        if (st != dao::dao_dkg_start_status::started &&
+            st != dao::dao_dkg_start_status::already_running &&
+            st != dao::dao_dkg_start_status::local_node_not_selected) {
+          MWARNING("start_dao_v2_dkg_for_proposal: status="
+                   << (int)st << " for proposal " << tx_hash);
+        }
+      }
     }
   }
   // END_VNS_DAO_V2_PROPOSAL_DKG_TRIGGER
@@ -10446,17 +10454,21 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     return true;
   }
 
-    void Blockchain::start_dao_v2_dkg_for_proposal(
+    dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
       const crypto::hash& proposal_id)
   {
     const std::string ceremony_id = epee::string_tools::pod_to_hex(proposal_id);
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_dkg_runners_mutex);
-      if (m_dao_v2_dkg_runners.count(ceremony_id) > 0) return;
+      if (m_dao_v2_dkg_shutdown.load())
+        return dao::dao_dkg_start_status::shutting_down;
+      if (m_dao_v2_dkg_runners.count(ceremony_id) > 0)
+        return dao::dao_dkg_start_status::already_running;
     }
 
     const uint64_t chain_height = get_current_blockchain_height();
-    if (chain_height == 0) return;
+    if (chain_height == 0)
+      return dao::dao_dkg_start_status::no_chain;
     const uint64_t selection_height = chain_height - 1;
 
     // Shared proposal-specific roster computation. Same function the
@@ -10468,7 +10480,7 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
       MWARNING("start_dao_v2_dkg_for_proposal: not enough chain-state "
                "ready peers for proposal " << proposal_id
                << " (" << shareholders.size() << ")");
-      return;
+      return dao::dao_dkg_start_status::insufficient_ready_committee;
     }
 
 #ifdef VEILROOT_DAO_DKG_TESTING
@@ -10486,15 +10498,31 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     if (!dao::dao_vss_group_generate(*vss_holder, required_bits)) {
       MWARNING("start_dao_v2_dkg_for_proposal: VSS group generation "
                "failed for proposal " << proposal_id);
-      return;
+      return dao::dao_dkg_start_status::vss_initialization_failed;
     }
 
     if (!start_dao_v2_dkg(ceremony_id, shareholders, *vss_holder,
                           target_N_bits, qproof_rounds)) {
-      // Not in committee is not an error.
-      MINFO("start_dao_v2_dkg_for_proposal: not starting runner for "
-            "proposal " << proposal_id);
-      return;
+      if (m_dao_v2_dkg_shutdown.load())
+        return dao::dao_dkg_start_status::shutting_down;
+      crypto::public_key self_pk{};
+      if (crypto::secret_key_to_public_key(m_node_privkey, self_pk)) {
+        bool in_committee = false;
+        for (const auto& pk : shareholders) {
+          if (std::memcmp(pk.data, self_pk.data, 32) == 0) {
+            in_committee = true;
+            break;
+          }
+        }
+        if (!in_committee) {
+          MINFO("start_dao_v2_dkg_for_proposal: local node not in "
+                "committee for proposal " << proposal_id);
+          return dao::dao_dkg_start_status::local_node_not_selected;
+        }
+      }
+      MWARNING("start_dao_v2_dkg_for_proposal: runner start failed "
+               "for proposal " << proposal_id);
+      return dao::dao_dkg_start_status::runner_start_failed;
     }
 
     m_dao_v2_dkg_vss.emplace(ceremony_id, std::move(vss_holder));
@@ -10521,6 +10549,7 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
 
     MINFO("start_dao_v2_dkg_for_proposal: runner started for proposal "
           << proposal_id << " committee=" << shareholders.size());
+    return dao::dao_dkg_start_status::started;
   }
 
   bool Blockchain::start_dao_v2_dkg_for_committee(
