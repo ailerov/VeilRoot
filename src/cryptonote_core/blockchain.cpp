@@ -765,6 +765,34 @@ void Blockchain::stop_dao_v2_dkg_workers() noexcept
   m_dao_v2_dkg_send = nullptr;
 }
 
+#ifdef VEILROOT_DAO_DKG_TESTING
+bool Blockchain::get_dao_v2_dkg_runner_state_for_test(
+    const crypto::hash& proposal_id,
+    dkg_runner_state_for_test& state_out,
+    dao::dkg_result& result_out) const
+{
+  const std::string ceremony_id =
+      epee::string_tools::pod_to_hex(proposal_id);
+  std::lock_guard<std::mutex> lk(m_dao_v2_dkg_runners_mutex);
+  auto it = m_dao_v2_dkg_runners.find(ceremony_id);
+  if (it == m_dao_v2_dkg_runners.end() || !it->second) {
+    state_out = dkg_runner_state_for_test::not_found;
+    return true;
+  }
+  if (!it->second->finished()) {
+    state_out = dkg_runner_state_for_test::running;
+    return true;
+  }
+  dao::dkg_result res;
+  (void)it->second->wait(res, 1);
+  result_out = std::move(res);
+  state_out = result_out.ok
+      ? dkg_runner_state_for_test::finished_ok
+      : dkg_runner_state_for_test::finished_fail;
+  return true;
+}
+#endif
+
 bool Blockchain::deinit()
 {
   LOG_PRINT_L3("Blockchain::" << __func__);
@@ -10607,6 +10635,9 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     cfg.qproof_rounds  = qproof_rounds;
 #ifdef VEILROOT_DAO_DKG_TESTING
     cfg.test_seed      = m_dao_v2_test_dkg_seed;
+    if (m_dao_v2_test_dkg_phase_timeout_seconds > 0) {
+      cfg.phase_timeout_seconds = m_dao_v2_test_dkg_phase_timeout_seconds;
+    }
 #endif
 
     dao::dkg_p2p_callbacks cb;

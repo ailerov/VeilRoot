@@ -1574,6 +1574,19 @@ namespace cryptonote
 
 #ifdef VEILROOT_DAO_DKG_TESTING
   void set_dao_v2_test_dkg_seed(uint64_t s) { m_dao_v2_test_dkg_seed = s; }
+  void set_dao_v2_test_dkg_phase_timeout_seconds(uint32_t s) {
+    m_dao_v2_test_dkg_phase_timeout_seconds = s;
+  }
+  enum class dkg_runner_state_for_test {
+    not_found,
+    running,
+    finished_ok,
+    finished_fail,
+  };
+  bool get_dao_v2_dkg_runner_state_for_test(
+      const crypto::hash& proposal_id,
+      dkg_runner_state_for_test& state_out,
+      dao::dkg_result& result_out) const;
   bool has_dao_v2_reshare_runner_for_test() const {
     std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
     return m_dao_v2_reshare_runner != nullptr;
@@ -1973,6 +1986,7 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
 #ifdef VEILROOT_DAO_DKG_TESTING
     bool m_dao_v2_active_for_test = false;
     uint64_t m_dao_v2_test_dkg_seed = 0;
+    uint32_t m_dao_v2_test_dkg_phase_timeout_seconds = 0;
 #endif
     // BEGIN_VNS_DAO_V2_RESHARE
     // Single reshare runner. Only one reshare runs at a time. The

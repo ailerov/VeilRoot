@@ -4104,6 +4104,9 @@ TEST(DaoV2Replay, ProposalDkgEndToEndActivation)
     bc_a.set_dao_v2_test_dkg_seed(dao::DAO_DKG_TEST_SEED_3);
     bc_b.set_dao_v2_test_dkg_seed(dao::DAO_DKG_TEST_SEED_3);
     bc_c.set_dao_v2_test_dkg_seed(dao::DAO_DKG_TEST_SEED_3);
+    bc_a.set_dao_v2_test_dkg_phase_timeout_seconds(30);
+    bc_b.set_dao_v2_test_dkg_phase_timeout_seconds(30);
+    bc_c.set_dao_v2_test_dkg_phase_timeout_seconds(30);
 
     auto st_a = bc_a.start_dao_v2_dkg_for_proposal(prop_id);
     auto st_b = bc_b.start_dao_v2_dkg_for_proposal(prop_id);
@@ -4214,8 +4217,7 @@ TEST(DaoV2Replay, ProposalDkgEndToEndActivation)
         return true;
     };
 
-    bool all_complete = false;
-    for (int round = 0; round < 4000 && !all_complete; ++round) {
+    auto pump_mailbox = [&]() {
         std::vector<std::pair<crypto::public_key, std::string>> batch;
         {
             std::lock_guard<std::mutex> lk(mailbox->mutex);
@@ -4229,16 +4231,71 @@ TEST(DaoV2Replay, ProposalDkgEndToEndActivation)
             if (std::memcmp(snd.data, pk_set[2].data, 32) != 0)
                 bc_c.handle_dao_v2_dkg_msg(snd, pl);
         }
+    };
+
+    const auto overall_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(180);
+
+    // Stage 1: pump DKG traffic until all three runners finish.
+    bool stage1_ok = false;
+    while (std::chrono::steady_clock::now() < overall_deadline) {
+        pump_mailbox();
+        Blockchain::dkg_runner_state_for_test sa, sb, sc;
+        dao::dkg_result ra_out{}, rb_out{}, rc_out{};
+        bc_a.get_dao_v2_dkg_runner_state_for_test(prop_id, sa, ra_out);
+        bc_b.get_dao_v2_dkg_runner_state_for_test(prop_id, sb, rb_out);
+        bc_c.get_dao_v2_dkg_runner_state_for_test(prop_id, sc, rc_out);
+
+        auto report_fail = [](const char* who, const dao::dkg_result& r) {
+            return std::string(who) + " runner finished unsuccessfully:"
+                + " attempts=" + std::to_string(r.candidate_attempts)
+                + " accepted=" + std::to_string(r.candidate_accepted)
+                + " biprimality_failures=" + std::to_string(r.biprimality_failures)
+                + " trial_div_failures=" + std::to_string(r.trial_division_failures)
+                + " beta_retries=" + std::to_string(r.beta_phase_retries);
+        };
+        if (sa == Blockchain::dkg_runner_state_for_test::finished_fail)
+            FAIL() << report_fail("A", ra_out);
+        if (sb == Blockchain::dkg_runner_state_for_test::finished_fail)
+            FAIL() << report_fail("B", rb_out);
+        if (sc == Blockchain::dkg_runner_state_for_test::finished_fail)
+            FAIL() << report_fail("C", rc_out);
+
+        if (sa == Blockchain::dkg_runner_state_for_test::finished_ok &&
+            sb == Blockchain::dkg_runner_state_for_test::finished_ok &&
+            sc == Blockchain::dkg_runner_state_for_test::finished_ok) {
+            stage1_ok = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    if (!stage1_ok) {
+        Blockchain::dkg_runner_state_for_test sa, sb, sc;
+        dao::dkg_result ra_out{}, rb_out{}, rc_out{};
+        bc_a.get_dao_v2_dkg_runner_state_for_test(prop_id, sa, ra_out);
+        bc_b.get_dao_v2_dkg_runner_state_for_test(prop_id, sb, rb_out);
+        bc_c.get_dao_v2_dkg_runner_state_for_test(prop_id, sc, rc_out);
+        FAIL() << "Stage 1 deadline (180s) hit. Runner states: A="
+               << (int)sa << " B=" << (int)sb << " C=" << (int)sc;
+    }
+
+    // Stage 2: pump result processing + attestations until the
+    // activation tx appears in A's mempool. No mining yet.
+    bool stage2_ok = false;
+    while (std::chrono::steady_clock::now() < overall_deadline) {
+        pump_mailbox();
         bc_a.maybe_process_dao_v2_dkg_results();
         bc_b.maybe_process_dao_v2_dkg_results();
         bc_c.maybe_process_dao_v2_dkg_results();
-        if (round > 0 && round % 50 == 0) ASSERT_TRUE(mine_one());
-        proposal_record ra{}, rb{}, rc{};
-        bool a_done = db_a.get_proposal_record(prop_id, ra) && ra.tally_key_id != crypto::null_hash;
-        bool b_done = db_b.get_proposal_record(prop_id, rb) && rb.tally_key_id != crypto::null_hash;
-        bool c_done = db_c.get_proposal_record(prop_id, rc) && rc.tally_key_id != crypto::null_hash;
-        if (a_done && b_done && c_done) { all_complete = true; break; }
+        if (a.core->get_pool_transactions_count(false) > 0) {
+            stage2_ok = true;
+            break;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    if (!stage2_ok) {
+        FAIL() << "Stage 2 deadline (180s) hit. Activation tx did not "
+                  "appear in A's mempool.";
     }
 
     // Give any activation tx already in A's mempool a chance to be mined.
