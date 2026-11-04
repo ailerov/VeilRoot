@@ -1551,10 +1551,20 @@ namespace cryptonote
   uint64_t latest_share_set_id_for_key_id(
       const std::vector<uint8_t>& key_id) const;
 
+  // Proposal-specific DKG committee selection. Same roster
+  // computation as start_dao_v2_dkg_for_proposal: chain-state ready
+  // records at selection_height, canonical-hash validated, TTL
+  // filtered, sorted ascending, capped at max. Called by both the
+  // DKG producer and the activation validator so their views of the
+  // committee cannot diverge.
+  std::vector<crypto::public_key>
+  select_dao_v2_proposal_dkg_committee(uint64_t selection_height) const;
+
   void maybe_start_dao_v2_reshare_for_proposal(
       const crypto::hash& proposal_id, uint64_t vote_end_height);
 
 #ifdef VEILROOT_DAO_DKG_TESTING
+  void set_dao_v2_test_dkg_seed(uint64_t s) { m_dao_v2_test_dkg_seed = s; }
   bool has_dao_v2_reshare_runner_for_test() const {
     std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
     return m_dao_v2_reshare_runner != nullptr;
@@ -1948,6 +1958,7 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
 
 #ifdef VEILROOT_DAO_DKG_TESTING
     bool m_dao_v2_active_for_test = false;
+    uint64_t m_dao_v2_test_dkg_seed = 0;
 #endif
     // BEGIN_VNS_DAO_V2_RESHARE
     // Single reshare runner. Only one reshare runs at a time. The

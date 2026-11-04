@@ -89,6 +89,15 @@ constexpr uint32_t DAO_DKG_TRIAL_DIVISION_REPS = 64;
 constexpr uint32_t DAO_DKG_QPROOF_ROUNDS_PROD = 128;
 constexpr uint32_t DAO_DKG_QPROOF_ROUNDS_TEST = 32;
 
+#ifdef VEILROOT_DAO_DKG_TESTING
+// Shared test-only seed constants. When cfg.test_seed equals one of
+// these, the DKG uses the pre-built fixed contributions instead of
+// searching random candidates. Referenced by both runners and by the
+// Blockchain test setter.
+constexpr uint64_t DAO_DKG_TEST_SEED_16   = 0x5645494C52544F54ULL;  // 16-party
+constexpr uint64_t DAO_DKG_TEST_SEED_3 = 0x5645494C52544F33ULL;  // 3-party
+#endif
+
 // Production cryptographic parameters for the DKG ceremony.
 // These values are frozen by the V2 implementation spec (N = 2048,
 // Paillier ciphertext 512 bytes). Test builds use a reduced modulus

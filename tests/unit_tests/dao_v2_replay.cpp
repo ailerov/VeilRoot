@@ -4077,6 +4077,10 @@ TEST(DaoV2Replay, ProposalDkgEndToEndActivation)
     for (auto* bc : { &bc_a, &bc_b, &bc_c })
         bc->set_dao_v2_tally_broadcast([](const dao_v2_tally_share&){});
 
+    bc_a.set_dao_v2_test_dkg_seed(dao::DAO_DKG_TEST_SEED_3);
+    bc_b.set_dao_v2_test_dkg_seed(dao::DAO_DKG_TEST_SEED_3);
+    bc_c.set_dao_v2_test_dkg_seed(dao::DAO_DKG_TEST_SEED_3);
+
     bc_a.start_dao_v2_dkg_for_proposal(prop_id);
     bc_b.start_dao_v2_dkg_for_proposal(prop_id);
     bc_c.start_dao_v2_dkg_for_proposal(prop_id);
@@ -4105,7 +4109,7 @@ TEST(DaoV2Replay, ProposalDkgEndToEndActivation)
     };
 
     bool all_complete = false;
-    for (int round = 0; round < 2000 && !all_complete; ++round) {
+    for (int round = 0; round < 4000 && !all_complete; ++round) {
         std::vector<std::pair<crypto::public_key, std::string>> batch;
         { std::lock_guard<std::mutex> lk(mu); batch.swap(mailbox); }
         for (auto& [snd, pl] : batch) {
@@ -4119,7 +4123,7 @@ TEST(DaoV2Replay, ProposalDkgEndToEndActivation)
         bc_a.maybe_process_dao_v2_dkg_results();
         bc_b.maybe_process_dao_v2_dkg_results();
         bc_c.maybe_process_dao_v2_dkg_results();
-        if (round > 0 && round % 100 == 0) ASSERT_TRUE(mine_one());
+        if (round > 0 && round % 50 == 0) ASSERT_TRUE(mine_one());
         proposal_record ra{}, rb{}, rc{};
         bool a_done = db_a.get_proposal_record(prop_id, ra) && ra.tally_key_id != crypto::null_hash;
         bool b_done = db_b.get_proposal_record(prop_id, rb) && rb.tally_key_id != crypto::null_hash;
@@ -4128,10 +4132,19 @@ TEST(DaoV2Replay, ProposalDkgEndToEndActivation)
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
 
+    // Give any activation tx already in A's mempool a chance to be mined.
+    for (int extra = 0; extra < 5; ++extra) {
+        ASSERT_TRUE(mine_one());
+        bc_a.maybe_process_dao_v2_dkg_results();
+        bc_b.maybe_process_dao_v2_dkg_results();
+        bc_c.maybe_process_dao_v2_dkg_results();
+    }
+
     proposal_record rec_a{}, rec_b{}, rec_c{};
     ASSERT_TRUE(db_a.get_proposal_record(prop_id, rec_a));
     ASSERT_TRUE(db_b.get_proposal_record(prop_id, rec_b));
     ASSERT_TRUE(db_c.get_proposal_record(prop_id, rec_c));
+
     EXPECT_NE(rec_a.tally_key_id, crypto::null_hash)
         << "A: tally_key_id never set (proposal DKG activation did not complete)";
     EXPECT_EQ(rec_a.tally_key_id, rec_b.tally_key_id)

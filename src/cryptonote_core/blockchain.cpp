@@ -10247,7 +10247,16 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
         }
         if (genesis_hash == crypto::null_hash) continue;
 
-        const crypto::hash digest = dao::dao_dkg_activation_digest(genesis_hash, item.result.selection_height, item.result.record, crypto::null_hash);
+        // Bind the attestation to the proposal's activation digest.
+        // The proposal id is derived from the ceremony_id: empty
+        // string => bootstrap => null_hash; hex(proposal_id) =>
+        // the proposal's hash.
+        const crypto::hash proposal_hash =
+            ceremony_id_to_hash(item.ceremony_id);
+
+        const crypto::hash digest = dao::dao_dkg_activation_digest(
+            genesis_hash, item.result.selection_height,
+            item.result.record, proposal_hash);
         if (digest == crypto::null_hash) continue;
 
         crypto::signature sig;
@@ -10261,8 +10270,9 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
                     sizeof(crypto::signature));
 
         dao::dao_dkg_key_activation act;
-        act.version          = 1;
+        act.version          = 2;
         act.selection_height = item.result.selection_height;
+        act.proposal_id      = proposal_hash;
         act.record           = item.result.record;
         act.attestations.push_back(att);
 
@@ -10279,6 +10289,7 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
           std::memcpy(m.hdr.committee_id_hash,
                       item.result.record.committee_id_hash.data(), 32);
           m.hdr.type         = dao::dkg_msg_type::key_record_ready;
+          m.hdr.proposal_id  = proposal_hash;
           m.hdr.sender_id    = local_id;
           m.hdr.recipient_id = 0;
           if (!act.serialize(m.bytes_a)) {
@@ -10400,7 +10411,12 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
       if (it == self->m_dao_v2_dkg_runners.end()) return;
       dao::dkg_result res;
       if (!it->second->wait(res, 0)) {
-        MWARNING("DAO V2 DKG ceremony_id " << ceremony_id << ": ceremony failed");
+        MWARNING("DAO V2 DKG ceremony_id " << ceremony_id
+                 << ": ceremony failed (attempts=" << res.candidate_attempts
+                 << " accepted=" << res.candidate_accepted
+                 << " biprimality_failures=" << res.biprimality_failures
+                 << " trial_div_failures=" << res.trial_division_failures
+                 << " beta_retries=" << res.beta_phase_retries << ")");
         return;
       }
       res.selection_height = selection_height;
@@ -10423,47 +10439,17 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     if (chain_height == 0) return;
     const uint64_t selection_height = chain_height - 1;
 
-    // Read canonical readiness from chain state. Local m_dao_v2_ready_peers
-    // is P2P best-effort; chain state is the consensus input for
-    // per-proposal committee selection.
-    constexpr uint64_t k_ready_ttl_blocks = 15;
-    std::map<crypto::public_key, std::pair<uint64_t, crypto::hash>> ready_map;
-    m_db->for_all_dao_v2_node_ready(
-        [&](const crypto::public_key& pk,
-            uint64_t stored_h,
-            const crypto::hash& stored_bh) -> bool {
-          if (stored_h >= chain_height) return true;   // not yet canonical
-          if (chain_height - stored_h > k_ready_ttl_blocks) return true;
-          crypto::hash canonical{};
-          try { canonical = get_block_id_by_height(stored_h); }
-          catch (...) { return true; }
-          if (canonical != stored_bh) return true;
-          auto it = ready_map.find(pk);
-          if (it == ready_map.end() || it->second.first < stored_h)
-            ready_map[pk] = {stored_h, stored_bh};
-          return true;
-        });
-
-    std::vector<std::pair<crypto::public_key, uint64_t>> shareholders_sorted;
-    for (const auto& kv : ready_map)
-      shareholders_sorted.emplace_back(kv.first, 0);
-    std::sort(shareholders_sorted.begin(), shareholders_sorted.end(),
-              [](const auto& a, const auto& b) {
-                return std::memcmp(a.first.data, b.first.data,
-                                   sizeof(a.first.data)) < 0;
-              });
-    if (shareholders_sorted.size() > dao::DAO_DKG_MAX_COMMITTEE_SIZE)
-      shareholders_sorted.resize(dao::DAO_DKG_MAX_COMMITTEE_SIZE);
-    if (shareholders_sorted.size() < dao::DAO_DKG_MIN_COMMITTEE_SIZE) {
+    // Shared proposal-specific roster computation. Same function the
+    // activation validator calls, so producer and validator cannot
+    // disagree on the committee.
+    std::vector<crypto::public_key> shareholders =
+        select_dao_v2_proposal_dkg_committee(selection_height);
+    if (shareholders.size() < dao::DAO_DKG_MIN_COMMITTEE_SIZE) {
       MWARNING("start_dao_v2_dkg_for_proposal: not enough chain-state "
                "ready peers for proposal " << proposal_id
-               << " (" << shareholders_sorted.size() << ")");
+               << " (" << shareholders.size() << ")");
       return;
     }
-
-    std::vector<crypto::public_key> shareholders;
-    shareholders.reserve(shareholders_sorted.size());
-    for (const auto& e : shareholders_sorted) shareholders.push_back(e.first);
 
 #ifdef VEILROOT_DAO_DKG_TESTING
     const uint32_t target_N_bits = 128;
@@ -10501,7 +10487,12 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
       if (it == self->m_dao_v2_dkg_runners.end()) return;
       dao::dkg_result res;
       if (!it->second->wait(res, 0)) {
-        MWARNING("DAO V2 DKG ceremony " << ceremony_id << ": failed");
+        MWARNING("DAO V2 DKG ceremony " << ceremony_id
+                 << ": failed (attempts=" << res.candidate_attempts
+                 << " accepted=" << res.candidate_accepted
+                 << " biprimality_failures=" << res.biprimality_failures
+                 << " trial_div_failures=" << res.trial_division_failures
+                 << " beta_retries=" << res.beta_phase_retries << ")");
         return;
       }
       res.selection_height = selection_height;
@@ -10561,6 +10552,9 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     cfg.target_N_bits  = target_N_bits;
     cfg.security_bits  = dao::DAO_DKG_SECURITY_BITS_PROD;
     cfg.qproof_rounds  = qproof_rounds;
+#ifdef VEILROOT_DAO_DKG_TESTING
+    cfg.test_seed      = m_dao_v2_test_dkg_seed;
+#endif
 
     dao::dkg_p2p_callbacks cb;
     // The P2P layer does not need a public-key-to-connection mapping.
@@ -10704,7 +10698,48 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
   }
   } // namespace
 
-  void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
+  std::vector<crypto::public_key>
+Blockchain::select_dao_v2_proposal_dkg_committee(
+    uint64_t selection_height) const
+{
+  constexpr uint64_t k_ready_ttl_blocks = 15;
+  const uint64_t chain_height = selection_height + 1;
+  std::map<crypto::public_key, std::pair<uint64_t, crypto::hash>> ready_map;
+  m_db->for_all_dao_v2_node_ready(
+      [&](const crypto::public_key& pk,
+          uint64_t stored_h,
+          const crypto::hash& stored_bh) -> bool {
+        if (stored_h >= chain_height) return true;
+        if (chain_height - stored_h > k_ready_ttl_blocks) return true;
+        crypto::hash canonical{};
+        try { canonical = get_block_id_by_height(stored_h); }
+        catch (...) { return true; }
+        if (canonical != stored_bh) return true;
+        auto it = ready_map.find(pk);
+        if (it == ready_map.end() || it->second.first < stored_h)
+          ready_map[pk] = {stored_h, stored_bh};
+        return true;
+      });
+
+  std::vector<std::pair<crypto::public_key, uint64_t>> shareholders_sorted;
+  for (const auto& kv : ready_map)
+    shareholders_sorted.emplace_back(kv.first, 0);
+  std::sort(shareholders_sorted.begin(), shareholders_sorted.end(),
+            [](const auto& a, const auto& b) {
+              return std::memcmp(a.first.data, b.first.data,
+                                 sizeof(a.first.data)) < 0;
+            });
+  if (shareholders_sorted.size() > dao::DAO_DKG_MAX_COMMITTEE_SIZE)
+    shareholders_sorted.resize(dao::DAO_DKG_MAX_COMMITTEE_SIZE);
+
+  std::vector<crypto::public_key> shareholders;
+  shareholders.reserve(shareholders_sorted.size());
+  for (const auto& e : shareholders_sorted) shareholders.push_back(e.first);
+  return shareholders;
+}
+
+
+void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
       const crypto::hash& proposal_id, uint64_t vote_end_height)
   {
     if (!m_dao_v2_dkg_send) return;
@@ -11924,12 +11959,23 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
 
     const dao::dao_tally_key_record& rec = act.record;
 
-    // 3. Reject a second activation: the single key record already exists.
-    {
+    // 3. Bootstrap activation: reject if the singleton key is already
+    // installed. Per-proposal activations live in the by-id table and
+    // are checked separately at apply time.
+    if (act.proposal_id == crypto::null_hash) {
       dao::dao_tally_key_record existing;
       try {
         if (m_db->get_dao_tally_key(existing)) {
-          MERROR("dkg-activation: key record already installed");
+          MERROR("dkg-activation: bootstrap key record already installed");
+          return false;
+        }
+      } catch (...) {}
+    } else {
+      dao::dao_tally_key_record existing;
+      try {
+        if (m_db->get_dao_tally_key_by_id(rec.key_id, existing)) {
+          MERROR("dkg-activation: by-id key record already installed "
+                 "for proposal " << act.proposal_id);
           return false;
         }
       } catch (...) {}
@@ -11986,12 +12032,12 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
       }
     }
 
-    // 7. Bootstrap shareholder selection at selection_height must
-    //    exactly reproduce the ordered committee member list.
-    {
+    // 7. Committee selection at selection_height must exactly
+    //    reproduce the ordered committee member list.
+    if (act.proposal_id == crypto::null_hash) {
+      // Bootstrap: historical bootstrap-shareholder selector.
       auto selected =
           dao::select_dao_v2_dkg_shareholders(*m_db, act.selection_height);
-      // Trim to at most committee_size.
       if (selected.size() < rec.committee_size) {
         MERROR("dkg-activation: fewer eligible shareholders than record");
         return false;
@@ -12003,6 +12049,28 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
                         sizeof(crypto::public_key::data)) != 0) {
           MERROR("dkg-activation: committee_members do not match "
                  "historical selection at height " << act.selection_height);
+          return false;
+        }
+      }
+    } else {
+      // Per-proposal: node_ready roster at selection_height, same
+      // selector the producer used. Divergence here means producer
+      // and validator disagree on the ready set.
+      auto selected =
+          select_dao_v2_proposal_dkg_committee(act.selection_height);
+      if (selected.size() < rec.committee_size) {
+        MERROR("dkg-activation: fewer ready peers than record at height "
+               << act.selection_height << " (have " << selected.size()
+               << ", need " << rec.committee_size << ")");
+        return false;
+      }
+      selected.resize(rec.committee_size);
+      for (size_t i = 0; i < rec.committee_size; ++i) {
+        if (std::memcmp(selected[i].data,
+                        rec.committee_members[i].data(),
+                        sizeof(crypto::public_key::data)) != 0) {
+          MERROR("dkg-activation: committee_members do not match "
+                 "node_ready selection at height " << act.selection_height);
           return false;
         }
       }
@@ -12076,6 +12144,7 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
 
       dao::dao_tally_key_record rec = act.record;
       rec.activation_height = block_height;
+
 
       // Install the public key record. Singleton for bootstrap
       // replay; by-id so per-proposal lookups find it.
