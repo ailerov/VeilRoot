@@ -148,13 +148,7 @@ Blockchain::Blockchain(tx_memory_pool& tx_pool) :
 Blockchain::~Blockchain()
 {
     // BEGIN_VNS_DAO_V2_DKG
-    // Stop runners first, then watchers, then drop the VSS groups
-    // they reference. Order matters: the runner holds a raw pointer
-    // to the VSS group.
-    for (auto& kv : m_dao_v2_dkg_runners) if (kv.second) kv.second->stop();
-    for (auto& kv : m_dao_v2_dkg_watchers)
-        if (kv.second.joinable()) kv.second.join();
-    m_dao_v2_dkg_vss.clear();
+    stop_dao_v2_dkg_workers();
     // END_VNS_DAO_V2_DKG
 
   // Defensive: if a caller destroyed Blockchain without calling deinit(),
@@ -752,9 +746,35 @@ bool Blockchain::store_blockchain()
   return true;
 }
 //------------------------------------------------------------------
+void Blockchain::stop_dao_v2_dkg_workers() noexcept
+{
+  // Mark shutdown under the runners mutex so any in-flight start
+  // observes it before taking its own lock.
+  {
+    std::lock_guard<std::mutex> lk(m_dao_v2_dkg_runners_mutex);
+    m_dao_v2_dkg_shutdown.store(true);
+  }
+  // stop() joins the worker thread; wait() alone does not.
+  for (auto& kv : m_dao_v2_dkg_runners)
+    if (kv.second) { try { kv.second->stop(); } catch (...) {} }
+  for (auto& kv : m_dao_v2_dkg_watchers)
+    if (kv.second.joinable()) { try { kv.second.join(); } catch (...) {} }
+  m_dao_v2_dkg_watchers.clear();
+  m_dao_v2_dkg_runners.clear();
+  m_dao_v2_dkg_vss.clear();
+  m_dao_v2_dkg_send = nullptr;
+}
+
 bool Blockchain::deinit()
 {
   LOG_PRINT_L3("Blockchain::" << __func__);
+
+  // BEGIN_VNS_DAO_V2_DKG
+  // Stop DKG workers before the database is closed. Without this, a
+  // running runner keeps executing against m_db after close()/delete.
+  // This must come before stop_nostr_fetcher() or any m_db access.
+  stop_dao_v2_dkg_workers();
+  // END_VNS_DAO_V2_DKG
 
   MTRACE("Stopping blockchain read/write activity");
 
@@ -10510,9 +10530,13 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
       uint32_t target_N_bits,
       uint32_t qproof_rounds)
   {
-    if (m_dao_v2_dkg_runners.count(ceremony_id) > 0) {
-      MWARNING("start_dao_v2_dkg: ceremony_id " << ceremony_id << " already running");
-      return false;
+    {
+      std::lock_guard<std::mutex> lk(m_dao_v2_dkg_runners_mutex);
+      if (m_dao_v2_dkg_shutdown.load()) return false;
+      if (m_dao_v2_dkg_runners.count(ceremony_id) > 0) {
+        MWARNING("start_dao_v2_dkg: ceremony_id " << ceremony_id << " already running");
+        return false;
+      }
     }
     if (!m_dao_v2_dkg_send) {
       MWARNING("start_dao_v2_dkg: no send callback installed");
@@ -10590,6 +10614,12 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     std::deque<std::pair<crypto::public_key, std::string>> pending;
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_dkg_runners_mutex);
+      if (m_dao_v2_dkg_shutdown.load()) {
+        // Shutdown started while the runner was being built. Stop it
+        // before returning so no worker outlives the caller.
+        runner->stop();
+        return false;
+      }
       m_dao_v2_dkg_runners.emplace(ceremony_id, std::move(runner));
       auto pit = m_dao_v2_pending_dkg_msgs.find(ceremony_id);
       if (pit != m_dao_v2_pending_dkg_msgs.end()) {

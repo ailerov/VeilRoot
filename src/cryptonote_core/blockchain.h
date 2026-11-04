@@ -318,6 +318,15 @@ namespace cryptonote
      */
     bool deinit();
 
+    // BEGIN_VNS_DAO_V2_DKG
+    // Idempotent shutdown of all DKG workers. Stops every runner
+    // (which joins its worker thread), joins every watcher, then
+    // destroys runners before their referenced VSS groups and
+    // releases the transport callback. Safe to call more than once;
+    // called from deinit() and from the destructor.
+    void stop_dao_v2_dkg_workers() noexcept;
+    // END_VNS_DAO_V2_DKG
+
     /**
      * @brief get a set of blockchain checkpoint hashes
      *
@@ -1926,6 +1935,11 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
         m_dao_v2_dkg_watchers;
     std::function<bool(const std::string&)>
         m_dao_v2_dkg_send;
+
+    // DKG lifecycle. Set under m_dao_v2_dkg_runners_mutex by
+    // stop_dao_v2_dkg_workers(). Once true, start_dao_v2_dkg_for_committee
+    // refuses new ceremonies so shutdown cannot race a fresh worker.
+    std::atomic<bool> m_dao_v2_dkg_shutdown{false};
 
     // Results queued by the DKG watcher thread, drained by the
     // blockchain owner thread.

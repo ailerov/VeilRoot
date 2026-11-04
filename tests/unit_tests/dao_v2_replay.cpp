@@ -3989,6 +3989,12 @@ TEST(DaoV2Replay, ProposalDkgEndToEndActivation)
         boost::filesystem::temp_directory_path() /
         boost::filesystem::unique_path("vr_dkg_e2e_%%%%-%%%%");
 
+    struct PathCleanup {
+        boost::filesystem::path p;
+        ~PathCleanup() { try { boost::filesystem::remove_all(p); } catch (...) {} }
+    };
+    PathCleanup cleanup_guard{base};
+
     ReplayNode a, b, c;
     ASSERT_TRUE(a.init((base / "a").string()));
     ASSERT_TRUE(b.init((base / "b").string()));
@@ -4036,11 +4042,25 @@ TEST(DaoV2Replay, ProposalDkgEndToEndActivation)
             return get_block_longhash(&bc_a, bl, o, hh, s, static_cast<int>(mn));
         };
         ASSERT_TRUE(miner::find_nonce_for_given_block(gbh, tmpl, diff, h, nullptr));
-        block_verification_context bvc{}; pool_supplement e{};
         blobdata bb = block_to_blob(tmpl);
-        ASSERT_TRUE(a.core->handle_single_incoming_block(bb, &tmpl, bvc, e, false));
-        ASSERT_TRUE(b.core->handle_single_incoming_block(bb, &tmpl, bvc, e, false));
-        ASSERT_TRUE(c.core->handle_single_incoming_block(bb, &tmpl, bvc, e, false));
+        block_verification_context bvc_a{}; pool_supplement ea{};
+        block_verification_context bvc_b{}; pool_supplement eb{};
+        block_verification_context bvc_c{}; pool_supplement ec{};
+        ASSERT_TRUE(a.core->handle_single_incoming_block(bb, &tmpl, bvc_a, ea, false));
+        ASSERT_TRUE(b.core->handle_single_incoming_block(bb, &tmpl, bvc_b, eb, false));
+        ASSERT_TRUE(c.core->handle_single_incoming_block(bb, &tmpl, bvc_c, ec, false));
+        ASSERT_FALSE(bvc_a.m_verifivation_failed);
+        ASSERT_FALSE(bvc_b.m_verifivation_failed);
+        ASSERT_FALSE(bvc_c.m_verifivation_failed);
+        ASSERT_TRUE(bvc_a.m_added_to_main_chain);
+        ASSERT_TRUE(bvc_b.m_added_to_main_chain);
+        ASSERT_TRUE(bvc_c.m_added_to_main_chain);
+    }
+    ASSERT_EQ(bc_a.get_current_blockchain_height(), bc_b.get_current_blockchain_height());
+    ASSERT_EQ(bc_a.get_current_blockchain_height(), bc_c.get_current_blockchain_height());
+    for (uint64_t hh = 0; hh < bc_a.get_current_blockchain_height(); ++hh) {
+        ASSERT_EQ(bc_a.get_block_id_by_height(hh), bc_b.get_block_id_by_height(hh));
+        ASSERT_EQ(bc_a.get_block_id_by_height(hh), bc_c.get_block_id_by_height(hh));
     }
     crypto::hash can_hash_1 = bc_a.get_block_id_by_height(1);
 
@@ -4063,17 +4083,21 @@ TEST(DaoV2Replay, ProposalDkgEndToEndActivation)
         db->add_proposal_record(prop_id, rec);
     }
 
-    std::vector<std::pair<crypto::public_key, std::string>> mailbox;
-    std::mutex mu;
-    bc_a.set_dao_v2_dkg_send([&](const std::string& s)->bool{
-        std::lock_guard<std::mutex> lk(mu);
-        mailbox.emplace_back(pk_set[0], s); return true; });
-    bc_b.set_dao_v2_dkg_send([&](const std::string& s)->bool{
-        std::lock_guard<std::mutex> lk(mu);
-        mailbox.emplace_back(pk_set[1], s); return true; });
-    bc_c.set_dao_v2_dkg_send([&](const std::string& s)->bool{
-        std::lock_guard<std::mutex> lk(mu);
-        mailbox.emplace_back(pk_set[2], s); return true; });
+    struct DkgMailboxState {
+        std::mutex mutex;
+        std::vector<std::pair<crypto::public_key, std::string>> messages;
+    };
+    auto mailbox = std::make_shared<DkgMailboxState>();
+    auto make_send = [mailbox](crypto::public_key sender) {
+        return [mailbox, sender](const std::string& s) -> bool {
+            std::lock_guard<std::mutex> lk(mailbox->mutex);
+            mailbox->messages.emplace_back(sender, s);
+            return true;
+        };
+    };
+    bc_a.set_dao_v2_dkg_send(make_send(pk_set[0]));
+    bc_b.set_dao_v2_dkg_send(make_send(pk_set[1]));
+    bc_c.set_dao_v2_dkg_send(make_send(pk_set[2]));
     for (auto* bc : { &bc_a, &bc_b, &bc_c })
         bc->set_dao_v2_tally_broadcast([](const dao_v2_tally_share&){});
 
@@ -4182,7 +4206,10 @@ TEST(DaoV2Replay, ProposalDkgEndToEndActivation)
     bool all_complete = false;
     for (int round = 0; round < 4000 && !all_complete; ++round) {
         std::vector<std::pair<crypto::public_key, std::string>> batch;
-        { std::lock_guard<std::mutex> lk(mu); batch.swap(mailbox); }
+        {
+            std::lock_guard<std::mutex> lk(mailbox->mutex);
+            batch.swap(mailbox->messages);
+        }
         for (auto& [snd, pl] : batch) {
             if (std::memcmp(snd.data, pk_set[0].data, 32) != 0)
                 bc_a.handle_dao_v2_dkg_msg(snd, pl);
@@ -4222,5 +4249,4 @@ TEST(DaoV2Replay, ProposalDkgEndToEndActivation)
         << "A and B disagree on proposal key_id";
     EXPECT_EQ(rec_b.tally_key_id, rec_c.tally_key_id)
         << "B and C disagree on proposal key_id";
-    boost::filesystem::remove_all(base);
 }
