@@ -9505,29 +9505,32 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     if (act.version != 2) return;
     if (act.attestations.size() != 1) return;
 
-    // Resolve which local ceremony this attestation belongs to.
-    // Committee_id_hash is unique per ceremony, so matching on it
-    // disambiguates bootstrap from per-proposal ceremonies.
-    std::string ceremony_id;
+    // Route by proposal identity from the outer header. The emitter
+    // stamps m.hdr.proposal_id and act.proposal_id from the same
+    // source, so they must agree. Committee_id_hash is NOT unique
+    // per ceremony — two proposals can share the same committee —
+    // so committee_hash-first-match would cross-contaminate.
+    if (act.proposal_id != m.hdr.proposal_id) {
+      MWARNING("key_ready: proposal_id mismatch between header and payload");
+      return;
+    }
+
+    const std::string ceremony_id =
+        (act.proposal_id == crypto::null_hash)
+            ? std::string()
+            : epee::string_tools::pod_to_hex(act.proposal_id);
+
     dao::dao_tally_key_record local_rec;
     uint64_t local_sel_h = 0;
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
-      bool found = false;
-      for (const auto& kv : m_dao_v2_local_records) {
-        const auto& rec = kv.second;
-        if (rec.committee_id_hash.size() != 32) continue;
-        if (act.record.committee_id_hash.size() != 32) continue;
-        if (std::memcmp(rec.committee_id_hash.data(),
-                        act.record.committee_id_hash.data(), 32) == 0) {
-          ceremony_id = kv.first;
-          local_rec   = rec;
-          local_sel_h = m_dao_v2_local_selection_height[ceremony_id];
-          found = true;
-          break;
-        }
-      }
-      if (!found) return;   // not our ceremony
+      auto rec_it = m_dao_v2_local_records.find(ceremony_id);
+      if (rec_it == m_dao_v2_local_records.end())
+        return;   // not our ceremony
+      local_rec = rec_it->second;
+      auto sit = m_dao_v2_local_selection_height.find(ceremony_id);
+      if (sit == m_dao_v2_local_selection_height.end()) return;
+      local_sel_h = sit->second;
     }
 
     if (act.selection_height != local_sel_h) {
@@ -9622,15 +9625,28 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     }
 
     // Already canonical: another node's activation block landed.
+    // For bootstrap, the singleton is authoritative. For per-proposal
+    // activations, look up the proposal's own key_id in the by-id
+    // table. The historical bootstrap singleton (present on live chain
+    // from a previous era) must NOT block per-proposal submissions.
     {
-      dao::dao_tally_key_record existing;
+      bool already = false;
       try {
-        if (m_db->get_dao_tally_key(existing)) {
-          std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
-          m_dao_v2_key_ready_attestations.erase(ceremony_id);
-          return true;
+        if (full.proposal_id == crypto::null_hash) {
+          dao::dao_tally_key_record existing;
+          if (m_db->get_dao_tally_key(existing))
+            already = true;
+        } else if (full.record.key_id.size() == 32) {
+          dao::dao_tally_key_record existing;
+          if (m_db->get_dao_tally_key_by_id(full.record.key_id, existing))
+            already = true;
         }
       } catch (...) {}
+      if (already) {
+        std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
+        m_dao_v2_key_ready_attestations.erase(ceremony_id);
+        return true;
+      }
     }
 
     transaction tx;
