@@ -2750,12 +2750,9 @@ bool dkg_party::do_trial_division_prolog(uint32_t r, uint32_t wire_round)
     // is the actual per-factor contribution width for the factor being
     // tested (r==0 => P, r==1 => Q). The universal k_ is no longer the
     // correct width since P and Q contributions use separate sizes.
-    const uint32_t factor_bits =
-        (r == 0) ? p_contribution_bits_ : q_contribution_bits_;
-    if (factor_bits == 0) return false;
     BIGNUM* p_max = BN_new();
     if (!p_max) return false;
-    if (!BN_lshift(p_max, BN_value_one(), factor_bits - 1)) {
+    if (!BN_lshift(p_max, BN_value_one(), k_ - 1)) {
         BN_free(p_max);
         return false;
     }
@@ -5262,10 +5259,10 @@ bool dkg_run_with_transport(const dkg_config& cfg,
     // With p = q = 3 mod 4 (so N = 1 mod 4), a valid split is
     //   p_1 + q_1 = 2 mod 4, p_i + q_i = 0 mod 4 for i >= 2.
     static const char* TEST_P_I_3[3] = {
-        "3579368226433881591", "4551646970566441840", "4078401797674185148"
+        "4682386010002652227", "4682386010002652228", "4682386010002652228"
     };
     static const char* TEST_Q_I_3[3] = {
-        "7787387582241721455", "7047460650018212980", "6939210039764636752"
+        "4090544854494431319", "4090544854494431320", "4090544854494431320"
     };
     // Shared seeds: dao_dkg.h (cryptonote::dao::DAO_DKG_TEST_SEED_16*)
     const bool use_fixed_candidate_16 = (cfg.test_seed == DAO_DKG_TEST_SEED_16);
@@ -8498,10 +8495,10 @@ bool dkg_p2p_runner::start()
     // When test_seed matches, every party uses the same fixed p_i/q_i,
     // the candidate loop runs once, and N has the expected bit length.
     static const char* TEST_P_I_3[3] = {
-        "3579368226433881591", "4551646970566441840", "4078401797674185148"
+        "4682386010002652227", "4682386010002652228", "4682386010002652228"
     };
     static const char* TEST_Q_I_3[3] = {
-        "7787387582241721455", "7047460650018212980", "6939210039764636752"
+        "4090544854494431319", "4090544854494431320", "4090544854494431320"
     };
     static const char* TEST_P_I_16[16] = {
         "969268552214414479",  "888031839494547792",
