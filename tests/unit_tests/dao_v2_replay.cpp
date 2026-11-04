@@ -4098,13 +4098,84 @@ TEST(DaoV2Replay, ProposalDkgEndToEndActivation)
         };
         if (!miner::find_nonce_for_given_block(gbh, tmpl, diff, h, nullptr))
             return false;
-        block_verification_context bvc{}; pool_supplement e{};
-        blobdata bb = block_to_blob(tmpl);
-        if (!a.core->handle_single_incoming_block(bb, &tmpl, bvc, e, false)) return false;
-        block_verification_context bvc2{}; pool_supplement e2{};
-        if (!b.core->handle_single_incoming_block(bb, &tmpl, bvc2, e2, false)) return false;
-        block_verification_context bvc3{}; pool_supplement e3{};
-        if (!c.core->handle_single_incoming_block(bb, &tmpl, bvc3, e3, false)) return false;
+
+        const blobdata bb = block_to_blob(tmpl);
+
+        // A block contains transaction hashes, not full bodies. B and C
+        // are separate nodes with separate mempools — they do not
+        // automatically have A's activation tx. Build independent
+        // supplements from A's pool BEFORE A mines.
+        auto build_supplement = [&](pool_supplement& out) -> bool {
+            for (const crypto::hash& txid : tmpl.tx_hashes) {
+                blobdata tx_blob;
+                if (!a.core->get_pool_transaction(
+                        txid, tx_blob, relay_category::all)) {
+                    std::cerr << "Missing source tx in A pool: "
+                              << txid << std::endl;
+                    return false;
+                }
+                transaction tx;
+                crypto::hash parsed_id{};
+                if (!parse_and_validate_tx_from_blob(
+                        tx_blob, tx, parsed_id) ||
+                    parsed_id != txid) {
+                    std::cerr << "Invalid tx supplement: "
+                              << txid << std::endl;
+                    return false;
+                }
+                out.txs_by_txid.emplace(
+                    txid, std::make_pair(std::move(tx),
+                                          std::move(tx_blob)));
+            }
+            return true;
+        };
+
+        pool_supplement e_b{}, e_c{};
+        if (!build_supplement(e_b) || !build_supplement(e_c))
+            return false;
+
+        const uint64_t new_h = bc_a.get_current_blockchain_height();
+        const crypto::hash expected_block_id = get_block_hash(tmpl);
+
+        block_verification_context bvc_a{};
+        pool_supplement e_a{};
+        if (!a.core->handle_single_incoming_block(
+                bb, &tmpl, bvc_a, e_a, false) ||
+            bvc_a.m_verifivation_failed ||
+            !bvc_a.m_added_to_main_chain) {
+            std::cerr << "A failed block: vf=" << bvc_a.m_verifivation_failed
+                      << " miss=" << bvc_a.m_missing_txs << std::endl;
+            return false;
+        }
+
+        block_verification_context bvc_b{};
+        if (!b.core->handle_single_incoming_block(
+                bb, &tmpl, bvc_b, e_b, false) ||
+            bvc_b.m_verifivation_failed ||
+            bvc_b.m_missing_txs ||
+            !bvc_b.m_added_to_main_chain) {
+            std::cerr << "B failed block: vf=" << bvc_b.m_verifivation_failed
+                      << " miss=" << bvc_b.m_missing_txs << std::endl;
+            return false;
+        }
+
+        block_verification_context bvc_c{};
+        if (!c.core->handle_single_incoming_block(
+                bb, &tmpl, bvc_c, e_c, false) ||
+            bvc_c.m_verifivation_failed ||
+            bvc_c.m_missing_txs ||
+            !bvc_c.m_added_to_main_chain) {
+            std::cerr << "C failed block: vf=" << bvc_c.m_verifivation_failed
+                      << " miss=" << bvc_c.m_missing_txs << std::endl;
+            return false;
+        }
+
+        if (bc_a.get_block_id_by_height(new_h) != expected_block_id ||
+            bc_b.get_block_id_by_height(new_h) != expected_block_id ||
+            bc_c.get_block_id_by_height(new_h) != expected_block_id) {
+            std::cerr << "Nodes disagree on block at h=" << new_h << std::endl;
+            return false;
+        }
         return true;
     };
 
