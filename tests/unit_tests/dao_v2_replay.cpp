@@ -4341,6 +4341,178 @@ TEST(DaoV2Replay, ProposalDkgEndToEndActivation)
         << "A and B disagree on proposal key_id";
     EXPECT_EQ(rec_b.tally_key_id, rec_c.tally_key_id)
         << "B and C disagree on proposal key_id";
+
+    // ============================================================
+    // Stage 3: full tally pipeline on the same 3-node committee.
+    // Encrypt aggregate -> produce shares on 3 nodes -> build cert
+    // -> mine -> apply -> assert identical outcome on 3 nodes.
+    // ============================================================
+    const crypto::hash tally_prop_id = []{
+        crypto::hash h{};
+        std::memset(h.data, 0xE3, 32);
+        return h;
+    }();
+
+    std::vector<uint8_t> kid(rec_a.tally_key_id.data,
+                             rec_a.tally_key_id.data + 32);
+    dao::dao_tally_key_record key_rec;
+    ASSERT_TRUE(db_a.get_dao_tally_key_by_id(kid, key_rec));
+    const uint32_t threshold = key_rec.threshold;
+    ASSERT_GE(threshold, 2u);
+
+    PaillierPublicKey pk;
+    ASSERT_TRUE(pk.deserialize_modulus(key_rec.N));
+    BIGNUM* Wb = BN_new(); BN_set_word(Wb, 2000);
+    BIGNUM* Sb = BN_new(); BN_set_word(Sb, 500);
+    BIGNUM* Bb = BN_new(); BN_set_word(Bb, 5000);
+    BIGNUM* r1 = BN_new(); BN_set_word(r1, 11);
+    BIGNUM* r2 = BN_new(); BN_set_word(r2, 13);
+    BIGNUM* r3 = BN_new(); BN_set_word(r3, 17);
+    std::vector<uint8_t> E_W, E_S, E_B;
+    ASSERT_TRUE(pk.encrypt(Wb, r1, E_W));
+    ASSERT_TRUE(pk.encrypt(Sb, r2, E_S));
+    ASSERT_TRUE(pk.encrypt(Bb, r3, E_B));
+
+    const uint64_t vote_end_h = bc_a.get_current_blockchain_height();
+    for (auto* db : { &db_a, &db_b, &db_c }) {
+        db_wtxn_guard g(db);
+        proposal_record pre{};
+        std::memset(&pre, 0, sizeof(pre));
+        pre.proposal_id = tally_prop_id;
+        pre.voting_period_days = 7;
+        pre.submission_height = 1;
+        pre.voting_end_height = vote_end_h;
+        std::memcpy(pre.tally_key_id.data,
+                    rec_a.tally_key_id.data, 32);
+        pre.submission_tx_hash = tally_prop_id;
+        pre.status = PROPOSAL_STATUS_ACTIVE;
+        pre.status_height = 1;
+        db->add_proposal_record(tally_prop_id, pre);
+
+        dao_proposal_aggregate agg;
+        agg.aggregate_E_W = E_W;
+        agg.aggregate_E_S = E_S;
+        agg.aggregate_E_B = E_B;
+        agg.aggregate_C_W = rct::identity();
+        agg.aggregate_C_S = rct::identity();
+        agg.aggregate_C_B = rct::identity();
+        db->add_dao_proposal_aggregate(tally_prop_id, agg);
+
+        dao::dao_supply_snapshot snap;
+        snap.height = vote_end_h;
+        snap.minted = dao::dao_u128(100000);
+        snap.circulating = dao::dao_u128(50000);
+        db->add_dao_supply_snapshot(snap);
+    }
+
+    for (auto* db : { &db_a, &db_b, &db_c }) {
+        for (size_t i = 0; i < 3; ++i) {
+            committee_eligible_record er{};
+            er.node_pubkey = pk_set[i];
+            er.amount = 3000000;
+            er.unlock_height = 1;
+            er.stake_age_weight = 0;
+            crypto::key_image ki{};
+            std::memset(ki.data, 0, sizeof(ki.data));
+            ki.data[0] = static_cast<uint8_t>(i + 1);
+            db_wtxn_guard g(db);
+            db->add_committee_eligible(ki, er);
+        }
+    }
+
+    std::map<crypto::public_key, dao::dao_v2_tally_share> shares;
+    std::mutex shares_mu;
+    auto make_bcast = [&shares, &shares_mu](crypto::public_key self) {
+        return [&shares, &shares_mu, self](
+            const dao::dao_v2_tally_share& s) {
+            std::lock_guard<std::mutex> lk(shares_mu);
+            shares[self] = s;
+        };
+    };
+    bc_a.set_dao_v2_tally_broadcast(make_bcast(pk_set[0]));
+    bc_b.set_dao_v2_tally_broadcast(make_bcast(pk_set[1]));
+    bc_c.set_dao_v2_tally_broadcast(make_bcast(pk_set[2]));
+
+    { db_wtxn_guard g(&db_a);
+      bc_a.maybe_produce_dao_v2_share(vote_end_h + 1); }
+    { db_wtxn_guard g(&db_b);
+      bc_b.maybe_produce_dao_v2_share(vote_end_h + 1); }
+    { db_wtxn_guard g(&db_c);
+      bc_c.maybe_produce_dao_v2_share(vote_end_h + 1); }
+
+    {
+        std::lock_guard<std::mutex> lk(shares_mu);
+        EXPECT_GE(shares.size(), threshold)
+            << "fewer than threshold shares produced across 3 nodes";
+    }
+
+    std::map<crypto::public_key, dao::dao_v2_tally_share> subset;
+    {
+        std::lock_guard<std::mutex> lk(shares_mu);
+        for (const auto& kv : shares) {
+            if (subset.size() >= threshold) break;
+            subset.insert(kv);
+        }
+    }
+    ASSERT_GE(subset.size(), threshold);
+
+    const governance_params params = governance_params::default_params();
+    TallyManager tm(db_a, params);
+    transaction result_tx;
+    ASSERT_TRUE(tm.build_tally_result_transaction(
+        tally_prop_id, subset, threshold, result_tx));
+
+    std::vector<tx_extra_field> xf;
+    ASSERT_TRUE(parse_tx_extra(result_tx.extra, xf));
+    dao::dao_tally_certificate cert;
+    bool cert_found = false;
+    for (const auto& f : xf) {
+        if (f.type() != typeid(tx_extra_governance_payload)) continue;
+        const auto& gpf = boost::get<tx_extra_governance_payload>(f);
+        if (gpf.payload.type != governance_object::tally_result) continue;
+        ASSERT_TRUE(cert.deserialize(gpf.payload.data));
+        cert_found = true;
+        break;
+    }
+    ASSERT_TRUE(cert_found);
+    EXPECT_EQ(cert.proposal_id, tally_prop_id);
+
+    // Advance one block so validator's "block_height > vote_end_height"
+    // check passes, and so construct_block_here targets the current tip.
+    ASSERT_TRUE(mine_one());
+    const uint64_t cert_height = bc_a.get_current_blockchain_height();
+    const crypto::hash result_txid = get_transaction_hash(result_tx);
+    block blk_tally;
+    std::vector<transaction> tally_txs{result_tx};
+    ASSERT_TRUE(construct_block_here(
+        a, miner, cert_height, tally_txs, blk_tally));
+    cryptonote::blobdata blk_tally_blob =
+        cryptonote::block_to_blob(blk_tally);
+
+    for (ReplayNode* n : { &a, &b, &c }) {
+        block_verification_context bvc{};
+        pool_supplement e{};
+        e.txs_by_txid.emplace(
+            result_txid,
+            std::make_pair(result_tx, tx_to_blob(result_tx)));
+        ASSERT_TRUE(n->core->handle_single_incoming_block(
+            blk_tally_blob, &blk_tally, bvc, e, false));
+        EXPECT_FALSE(bvc.m_verifivation_failed);
+    }
+
+    dao::dao_v2_outcome_record out_a{}, out_b{}, out_c{};
+    ASSERT_TRUE(db_a.get_dao_v2_outcome(tally_prop_id, out_a));
+    ASSERT_TRUE(db_b.get_dao_v2_outcome(tally_prop_id, out_b));
+    ASSERT_TRUE(db_c.get_dao_v2_outcome(tally_prop_id, out_c));
+    EXPECT_EQ(out_a.passed, out_b.passed);
+    EXPECT_EQ(out_b.passed, out_c.passed);
+    EXPECT_EQ(out_a.key_id, out_b.key_id);
+    EXPECT_EQ(out_b.key_id, out_c.key_id);
+    EXPECT_EQ(out_a.yes_weight, out_b.yes_weight);
+    EXPECT_EQ(out_b.yes_weight, out_c.yes_weight);
+
+    BN_free(Wb); BN_free(Sb); BN_free(Bb);
+    BN_free(r1); BN_free(r2); BN_free(r3);
 }
 
 
