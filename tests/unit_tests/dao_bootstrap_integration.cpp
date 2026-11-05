@@ -868,10 +868,10 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxValidatedAndApplied)
     bc.maybe_process_dao_v2_dkg_results();
 
     // Install the key record. See note at the top of this file.
-    bc.install_dao_tally_key_for_test(out.record);
+    bc.install_dao_tally_key_for_proposal_for_test(out.record, out.local_secret_share);
 
     dao::dao_tally_key_record key_rec;
-    ASSERT_TRUE(bc.get_db().get_dao_tally_key(key_rec));
+    ASSERT_TRUE(bc.get_db().get_dao_tally_key_by_id(out.record.key_id, key_rec));
     ASSERT_EQ(key_rec.committee_size, 3u);
     ASSERT_EQ(key_rec.threshold, 2u);
 
@@ -883,7 +883,7 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxValidatedAndApplied)
         rec.voting_period_days = 7;
         rec.submission_height = 1;
         rec.voting_end_height = VOTE_END;
-        std::memset(rec.tally_key_id.data, 0, 32);
+        std::memcpy(rec.tally_key_id.data, out.record.key_id.data(), 32);
         rec.submission_tx_hash = prop_id;
         rec.status = PROPOSAL_STATUS_ACTIVE;
         rec.status_height = VOTE_END - 1000;
@@ -1205,10 +1205,10 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxRolledBackByReorg)
     bc.maybe_process_dao_v2_dkg_results();
 
     // Install the key record. See note at the top of this file.
-    bc.install_dao_tally_key_for_test(out.record);
+    bc.install_dao_tally_key_for_proposal_for_test(out.record, out.local_secret_share);
 
     dao::dao_tally_key_record key_rec;
-    ASSERT_TRUE(bc.get_db().get_dao_tally_key(key_rec));
+    ASSERT_TRUE(bc.get_db().get_dao_tally_key_by_id(out.record.key_id, key_rec));
 
     {
         proposal_record rec{};
@@ -1217,7 +1217,7 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxRolledBackByReorg)
         rec.voting_period_days = 7;
         rec.submission_height = VOTE_END - 1000;
         rec.voting_end_height = VOTE_END;
-        std::memset(rec.tally_key_id.data, 0, 32);
+        std::memcpy(rec.tally_key_id.data, out.record.key_id.data(), 32);
         rec.submission_tx_hash = prop_id;
         rec.status = PROPOSAL_STATUS_ACTIVE;
         rec.status_height = VOTE_END - 1000;
@@ -1514,10 +1514,10 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxRejectionBoundaries)
     bc.maybe_process_dao_v2_dkg_results();
 
     // Install the key record. See note at the top of this file.
-    bc.install_dao_tally_key_for_test(out.record);
+    bc.install_dao_tally_key_for_proposal_for_test(out.record, out.local_secret_share);
 
     dao::dao_tally_key_record key_rec;
-    ASSERT_TRUE(bc.get_db().get_dao_tally_key(key_rec));
+    ASSERT_TRUE(bc.get_db().get_dao_tally_key_by_id(out.record.key_id, key_rec));
 
     {
         proposal_record rec{};
@@ -1526,7 +1526,7 @@ TEST_F(DaoBootstrapIntegration, TallyResultTxRejectionBoundaries)
         rec.voting_period_days = 7;
         rec.submission_height = VOTE_END - 1000;
         rec.voting_end_height = VOTE_END;
-        std::memset(rec.tally_key_id.data, 0, 32);
+        std::memcpy(rec.tally_key_id.data, out.record.key_id.data(), 32);
         rec.submission_tx_hash = prop_id;
         rec.status = PROPOSAL_STATUS_ACTIVE;
         rec.status_height = VOTE_END - 1000;
@@ -1802,10 +1802,10 @@ TEST_F(DaoBootstrapIntegration, TallyResultReconstructableFromChainState)
     bc.maybe_process_dao_v2_dkg_results();
 
     // Install the key record. See note at the top of this file.
-    bc.install_dao_tally_key_for_test(out.record);
+    bc.install_dao_tally_key_for_proposal_for_test(out.record, out.local_secret_share);
 
     dao::dao_tally_key_record key_rec;
-    ASSERT_TRUE(bc.get_db().get_dao_tally_key(key_rec));
+    ASSERT_TRUE(bc.get_db().get_dao_tally_key_by_id(out.record.key_id, key_rec));
 
     {
         proposal_record rec{};
@@ -1814,7 +1814,7 @@ TEST_F(DaoBootstrapIntegration, TallyResultReconstructableFromChainState)
         rec.voting_period_days = 7;
         rec.submission_height = VOTE_END - 1000;
         rec.voting_end_height = VOTE_END;
-        std::memset(rec.tally_key_id.data, 0, 32);
+        std::memcpy(rec.tally_key_id.data, out.record.key_id.data(), 32);
         rec.submission_tx_hash = prop_id;
         rec.status = PROPOSAL_STATUS_ACTIVE;
         rec.status_height = VOTE_END - 1000;
@@ -2019,7 +2019,7 @@ TEST_F(DaoBootstrapIntegration, BootstrapSharePersistsAfterTally)
     bc.maybe_process_dao_v2_dkg_results();
 
     // Install the key record. See note at the top of this file.
-    bc.install_dao_tally_key_for_test(out.record);
+    bc.install_dao_tally_key_for_proposal_for_test(out.record, out.local_secret_share);
 
     // Snapshot the bootstrap share for member 1.
     std::vector<uint8_t> share_before;
@@ -2027,7 +2027,7 @@ TEST_F(DaoBootstrapIntegration, BootstrapSharePersistsAfterTally)
     ASSERT_FALSE(share_before.empty());
 
     dao::dao_tally_key_record key_rec;
-    ASSERT_TRUE(bc.get_db().get_dao_tally_key(key_rec));
+    ASSERT_TRUE(bc.get_db().get_dao_tally_key_by_id(out.record.key_id, key_rec));
 
     {
         proposal_record rec{};
@@ -2036,7 +2036,7 @@ TEST_F(DaoBootstrapIntegration, BootstrapSharePersistsAfterTally)
         rec.voting_period_days = 7;
         rec.submission_height = VOTE_END - 1000;
         rec.voting_end_height = VOTE_END;
-        std::memset(rec.tally_key_id.data, 0, 32);
+        std::memcpy(rec.tally_key_id.data, out.record.key_id.data(), 32);
         rec.submission_tx_hash = prop_id;
         rec.status = PROPOSAL_STATUS_ACTIVE;
         rec.status_height = VOTE_END - 1000;
@@ -2151,7 +2151,7 @@ TEST_F(DaoBootstrapIntegration, BootstrapSharePersistsAfterTally)
     // The public key record also persists — it belongs to the DAO for
     // the lifetime of the key, not to a single proposal.
     dao::dao_tally_key_record key_after;
-    ASSERT_TRUE(bc.get_db().get_dao_tally_key(key_after));
+    ASSERT_TRUE(bc.get_db().get_dao_tally_key_by_id(out.record.key_id, key_after));
     EXPECT_EQ(key_after.N, key_rec.N);
     EXPECT_EQ(key_after.V_K_i, key_rec.V_K_i);
 
@@ -2239,10 +2239,10 @@ TEST_F(DaoBootstrapIntegration, OutOfCommitteeShareholderShareAccepted)
     bc.maybe_process_dao_v2_dkg_results();
 
     // Install the key record. See note at the top of this file.
-    bc.install_dao_tally_key_for_test(out.record);
+    bc.install_dao_tally_key_for_proposal_for_test(out.record, out.local_secret_share);
 
     dao::dao_tally_key_record key_rec;
-    ASSERT_TRUE(bc.get_db().get_dao_tally_key(key_rec));
+    ASSERT_TRUE(bc.get_db().get_dao_tally_key_by_id(out.record.key_id, key_rec));
 
     // Confirm the selected committee excludes member 3.
     {
@@ -2263,7 +2263,7 @@ TEST_F(DaoBootstrapIntegration, OutOfCommitteeShareholderShareAccepted)
         rec.voting_period_days = 7;
         rec.submission_height = VOTE_END - 1000;
         rec.voting_end_height = VOTE_END;
-        std::memset(rec.tally_key_id.data, 0, 32);
+        std::memcpy(rec.tally_key_id.data, out.record.key_id.data(), 32);
         rec.submission_tx_hash = prop_id;
         rec.status = PROPOSAL_STATUS_ACTIVE;
         rec.status_height = VOTE_END - 1000;

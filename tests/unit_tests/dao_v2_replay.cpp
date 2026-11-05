@@ -405,6 +405,34 @@ TEST(DaoV2Replay, NodeBReconstructsKeyRecordFromActivationBlock)
         }
     }
 
+    // Migrated to per-proposal. prop_id must exist as a chain
+    // proposal record before the activation apply path runs (defect 1
+    // writes tally_key_id only if the proposal exists), and the
+    // per-proposal committee selector (defect 4) needs canonical
+    // node_ready records at the selection height.
+    const crypto::hash prop_id = []{
+        crypto::hash h{};
+        std::memset(h.data, 0xEE, 32);
+        return h;
+    }();
+    for (auto* db_ptr : { &adb, &bdb }) {
+        crypto::hash can_h = db_ptr->get_block_hash_from_height(1);
+        db_wtxn_guard g(db_ptr);
+        for (const auto& pk : committee_pks)
+            db_ptr->add_dao_v2_node_ready(pk, 1, can_h);
+        proposal_record prec{};
+        std::memset(&prec, 0, sizeof(prec));
+        prec.proposal_id = prop_id;
+        prec.voting_period_days = 7;
+        prec.submission_height = 1;
+        prec.voting_end_height = 20;
+        prec.submission_tx_hash = prop_id;
+        prec.status = PROPOSAL_STATUS_ACTIVE;
+        prec.status_height = 1;
+        std::memset(prec.tally_key_id.data, 0, 32);
+        db_ptr->add_proposal_record(prop_id, prec);
+    }
+
     // In-process DKG. Only Node A persists the result (local share),
     // which no longer installs the public key record.
     dao_vss_group vss;
@@ -436,15 +464,16 @@ TEST(DaoV2Replay, NodeBReconstructsKeyRecordFromActivationBlock)
     ASSERT_TRUE(dkg_run_with_transport(cfg, factory, dkg_out));
     ASSERT_TRUE(dkg_out.candidate_accepted);
 
-    a.core->get_blockchain_storage().queue_dao_v2_dkg_result(std::string{}, dkg_out);
+    a.core->get_blockchain_storage().queue_dao_v2_dkg_result(
+        epee::string_tools::pod_to_hex(prop_id), dkg_out);
     a.core->get_blockchain_storage().maybe_process_dao_v2_dkg_results();
 
     // Neither node has the key record yet: persistence writes only the
     // local share. Both records must still be absent.
     dao::dao_tally_key_record key_rec_a;
     dao::dao_tally_key_record key_rec_b;
-    EXPECT_FALSE(adb.get_dao_tally_key(key_rec_a));
-    EXPECT_FALSE(bdb.get_dao_tally_key(key_rec_b));
+    EXPECT_FALSE(adb.get_dao_tally_key_by_id(dkg_out.record.key_id, key_rec_a));
+    EXPECT_FALSE(bdb.get_dao_tally_key_by_id(dkg_out.record.key_id, key_rec_b));
 
     // Build the activation certificate. Sign with members 1 and 2
     // (threshold = 2 of 3).
@@ -456,12 +485,13 @@ TEST(DaoV2Replay, NodeBReconstructsKeyRecordFromActivationBlock)
             .get_block_hash_from_height(0);
     ASSERT_NE(genesis_hash, crypto::null_hash);
 
-    const crypto::hash digest = dao::dao_dkg_activation_digest(genesis_hash, selection_height, dkg_out.record, crypto::null_hash);
+    const crypto::hash digest = dao::dao_dkg_activation_digest(genesis_hash, selection_height, dkg_out.record, prop_id);
     ASSERT_NE(digest, crypto::null_hash);
 
     dao::dao_dkg_key_activation act;
     act.version          = 2;
     act.selection_height = selection_height;
+    act.proposal_id      = prop_id;
     act.record           = dkg_out.record;
     for (uint32_t idx : { 1u, 2u }) {
         crypto::signature sig;
@@ -579,8 +609,8 @@ TEST(DaoV2Replay, NodeBReconstructsKeyRecordFromActivationBlock)
 
     // Both nodes now reconstruct the key record and the active
     // by replaying the activation block alone.
-    ASSERT_TRUE(adb.get_dao_tally_key(key_rec_a));
-    ASSERT_TRUE(bdb.get_dao_tally_key(key_rec_b));
+    ASSERT_TRUE(adb.get_dao_tally_key_by_id(dkg_out.record.key_id, key_rec_a));
+    ASSERT_TRUE(bdb.get_dao_tally_key_by_id(dkg_out.record.key_id, key_rec_b));
     EXPECT_EQ(key_rec_a.key_id, key_rec_b.key_id);
     EXPECT_EQ(key_rec_a.committee_size, key_rec_b.committee_size);
     EXPECT_EQ(key_rec_a.threshold, key_rec_b.threshold);
@@ -603,12 +633,6 @@ TEST(DaoV2Replay, NodeBReconstructsKeyRecordFromActivationBlock)
     // --------------------------------------------------------------
     const uint64_t tally_height = a.core->get_current_blockchain_height();
     const uint64_t VOTE_END     = tally_height - 1;
-
-    const crypto::hash prop_id = []{
-        crypto::hash h{};
-        std::memset(h.data, 0xEE, 32);
-        return h;
-    }();
 
     PaillierPublicKey pk;
     ASSERT_TRUE(pk.deserialize_modulus(dkg_out.record.N));
@@ -634,7 +658,7 @@ TEST(DaoV2Replay, NodeBReconstructsKeyRecordFromActivationBlock)
         rec.voting_period_days = 7;
         rec.submission_height = VOTE_END - 1000;
         rec.voting_end_height = VOTE_END;
-        std::memset(rec.tally_key_id.data, 0, 32);
+        std::memcpy(rec.tally_key_id.data, dkg_out.record.key_id.data(), 32);
         rec.submission_tx_hash = prop_id;
         rec.status = PROPOSAL_STATUS_ACTIVE;
         rec.status_height = VOTE_END - 1000;
@@ -677,7 +701,7 @@ TEST(DaoV2Replay, NodeBReconstructsKeyRecordFromActivationBlock)
     second_share.version = 1;
     second_share.proposal_id = prop_id;
     second_share.vote_end_height = VOTE_END;
-    second_share.tally_key_id.assign(32, 0);
+    second_share.tally_key_id = dkg_out.record.key_id;
     second_share.member_index = 2;
     second_share.aggregate_ciphertext_hash = agg_hash;
     {

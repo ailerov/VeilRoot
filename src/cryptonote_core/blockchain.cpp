@@ -1082,10 +1082,14 @@ block Blockchain::pop_block_from_blockchain()
   // END_VNS_COMMITTEE_ROLLBACK
 
   // BEGIN_VNS_DAO_V2_DKG_ACTIVATION_ROLLBACK
-  // A DKG key activation is consensus state only for as long as the
-  // transaction that carried it is in a block. When a block containing
-  // a dkg_key_activation transaction is popped, remove the key record
-  // and its bootstrap share set introduced by that transaction.
+  // A DKG key activation is consensus state only while the transaction
+  // that carried it is in a block. Popping reverses:
+  //  - per-proposal: remove the proposal's share set, its by-id key
+  //    record, and reset proposal.tally_key_id only if it still points
+  //    at the popped key. Never touches the historical bootstrap
+  //    singleton or share set id 1.
+  //  - bootstrap (null proposal_id): remove share set id 1, the
+  //    singleton key record, and the current pointer.
   for (const transaction& tx : popped_txs)
   {
     if (!is_dao_v2_dkg_activation_tx(tx))
@@ -1107,18 +1111,39 @@ block Blockchain::pop_block_from_blockchain()
       if (!act.deserialize(gpf.payload.data))
         break;
 
-      // Remove the share set first, then the key record.
-      try {
-        m_db->remove_dao_share_set(1);
-        m_db->set_current_dao_share_set_id(0);
-      } catch (...) {}
-      try {
-        m_db->remove_dao_tally_key();
-      } catch (...) {
-        // Key record not present; not an error.
+      const bool is_bootstrap =
+          (act.proposal_id == crypto::null_hash);
+      const uint64_t ssid = is_bootstrap
+          ? 1u
+          : static_cast<uint64_t>(
+                dao::share_set_id_for_key_id(act.record.key_id));
+
+      try { m_db->remove_dao_share_set(ssid); } catch (...) {}
+      if (is_bootstrap) {
+        try { m_db->set_current_dao_share_set_id(0); } catch (...) {}
       }
 
-      MINFO("Rolled back DKG key activation");
+      if (act.record.key_id.size() == 32)
+        try { m_db->remove_dao_tally_key_by_id(act.record.key_id); }
+        catch (...) {}
+
+      if (is_bootstrap)
+        try { m_db->remove_dao_tally_key(); } catch (...) {}
+
+      if (!is_bootstrap) {
+        proposal_record prop;
+        if (m_db->get_proposal_record(act.proposal_id, prop)) {
+          if (act.record.key_id.size() == 32 &&
+              std::memcmp(prop.tally_key_id.data,
+                          act.record.key_id.data(), 32) == 0) {
+            std::memset(prop.tally_key_id.data, 0, 32);
+            m_db->add_proposal_record(act.proposal_id, prop);
+          }
+        }
+      }
+
+      MINFO("Rolled back DKG key activation (bootstrap="
+            << (is_bootstrap ? 1 : 0) << ")");
       break;
     }
   }
@@ -1186,31 +1211,6 @@ block Blockchain::pop_block_from_blockchain()
     }
   }
   // END_VNS_DAO_V2_TALLY_RESULT_ROLLBACK
-
-  // BEGIN_VNS_DAO_V2_DKG_ACTIVATION_ROLLBACK
-  for (const transaction& tx : popped_txs)
-  {
-    if (!is_dao_v2_dkg_activation_tx(tx))
-      continue;
-    std::vector<tx_extra_field> extra_fields;
-    if (!parse_tx_extra(tx.extra, extra_fields))
-      continue;
-    for (const auto& field : extra_fields)
-    {
-      if (field.type() != typeid(tx_extra_governance_payload))
-        continue;
-      const auto& gpf = boost::get<tx_extra_governance_payload>(field);
-      if (gpf.payload.type != governance_object::dkg_key_activation)
-        continue;
-      dao::dao_dkg_key_activation act;
-      if (!act.deserialize(gpf.payload.data)) break;
-      if (act.record.key_id.size() == 32)
-        m_db->remove_dao_tally_key_by_id(act.record.key_id);
-      m_db->remove_dao_tally_key();
-      break;
-    }
-  }
-  // END_VNS_DAO_V2_DKG_ACTIVATION_ROLLBACK
 
   // BEGIN_VNS_DAO_V2_NODE_READY_ROLLBACK
   for (const transaction& tx : popped_txs)
@@ -11622,16 +11622,18 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
           if (m_dao_v2_reshare_runner) return true;
         }
 
+        // New proposals must have their own per-proposal key installed
+        // by chain-level dkg_key_activation before shares can be
+        // produced. No fallback to the bootstrap singleton.
+        // Historical bootstrap-era proposals are already tallied and
+        // are not reached by this producer path.
+        if (rec.tally_key_id == crypto::null_hash) return true;
+
         dao::dao_tally_key_record key_rec;
         try {
-          if (rec.tally_key_id == crypto::null_hash) {
-            // Legacy / bootstrap path.
-            if (!m_db->get_dao_tally_key(key_rec)) return true;
-          } else {
-            std::vector<uint8_t> kid(rec.tally_key_id.data,
-                                     rec.tally_key_id.data + 32);
-            if (!m_db->get_dao_tally_key_by_id(kid, key_rec)) return true;
-          }
+          std::vector<uint8_t> kid(rec.tally_key_id.data,
+                                   rec.tally_key_id.data + 32);
+          if (!m_db->get_dao_tally_key_by_id(kid, key_rec)) return true;
         } catch (...) { return true; }
 
         // Use the same committee selector as the consensus
@@ -11882,9 +11884,18 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
       return false;
     }
 
+    // Certificates are verified against the proposal's own key record,
+    // not the bootstrap singleton. Per-proposal activation writes by-id
+    // only (defect 1). The singleton is no longer written by
+    // per-proposal activation, so looking it up here would fail for
+    // every new proposal. Certificates carry cert.key_id explicitly.
     dao::dao_tally_key_record key_rec;
-    if (!m_db->get_dao_tally_key(key_rec)) {
-      MERROR("tally-result: key record missing");
+    if (cert.key_id.size() != 32) {
+      MERROR("tally-result: certificate key_id wrong length");
+      return false;
+    }
+    if (!m_db->get_dao_tally_key_by_id(cert.key_id, key_rec)) {
+      MERROR("tally-result: key record missing by-id");
       return false;
     }
 
@@ -12252,9 +12263,13 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
       rec.activation_height = block_height;
 
 
-      // Install the public key record. Singleton for bootstrap
-      // replay; by-id so per-proposal lookups find it.
-      m_db->add_dao_tally_key(rec);
+      // Install the public key record. Bootstrap (null proposal_id)
+      // writes the singleton for historical replay compatibility;
+      // per-proposal writes by-id only, so proposal activations do
+      // not overwrite the historical bootstrap record.
+      const bool act_is_bootstrap = (act.proposal_id == crypto::null_hash);
+      if (act_is_bootstrap)
+        m_db->add_dao_tally_key(rec);
       if (rec.key_id.size() == 32)
         m_db->add_dao_tally_key_by_id(rec.key_id, rec);
 
