@@ -4843,3 +4843,69 @@ TEST(DaoV2Replay, TwoProposalSameCommitteeActivation)
         EXPECT_EQ(ssB.key_id, keyB);
     }
 }
+
+
+// DISABLED by default. Informational only: measures the empirical
+// per-attempt cost of DKG candidate generation at 128-bit target
+// with no fixed seed. Run manually with:
+//   --gtest_also_run_disabled_tests
+//   --gtest_filter='DaoV2Replay.DISABLED_DKGProductionRateMeasurement'
+TEST(DaoV2Replay, DISABLED_DKGProductionRateMeasurement)
+{
+    using namespace cryptonote;
+    using namespace cryptonote::dao;
+
+    std::vector<crypto::public_key> committee_pks;
+    for (int i = 0; i < 3; ++i) {
+        crypto::public_key pk; crypto::secret_key sk;
+        crypto::generate_keys(pk, sk);
+        committee_pks.push_back(pk);
+    }
+    std::sort(committee_pks.begin(), committee_pks.end(),
+              [](const auto& x, const auto& y){
+                  return std::memcmp(x.data, y.data, 32) < 0;
+              });
+
+    dao_vss_group vss;
+    ASSERT_TRUE(dao_vss_group_generate(vss,
+        dao_dkg_required_vss_bits(60, 128, 32)));
+    dkg_inproc_network inet = dkg_make_inproc_network(3, nullptr);
+    std::vector<std::unique_ptr<dkg_transport>> pool;
+    for (auto& e : inet.endpoints) pool.push_back(std::move(e));
+    size_t next = 0;
+    dkg_transport_factory factory =
+        [&pool, &next](uint32_t) -> std::unique_ptr<dkg_transport> {
+            if (next >= pool.size()) return nullptr;
+            return std::move(pool[next++]);
+        };
+
+    dkg_config cfg;
+    cfg.committee_size = 3;
+    cfg.threshold      = dao_dkg_expected_threshold(3);
+    cfg.member_ids     = committee_pks;
+    cfg.k              = 60;
+    cfg.target_N_bits  = 128;
+    cfg.security_bits  = 32;
+    cfg.qproof_rounds  = DAO_DKG_QPROOF_ROUNDS_TEST;
+    cfg.max_attempts   = 200;
+    cfg.test_seed      = 0;
+    cfg.local_party_id = 1;
+
+    auto t0 = std::chrono::steady_clock::now();
+    dkg_result out;
+    bool ok = dkg_run_with_transport(cfg, factory, out);
+    auto t1 = std::chrono::steady_clock::now();
+    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        t1 - t0).count();
+
+    std::cerr << "DKG-MEASURE ok=" << (ok ? 1 : 0)
+              << " attempts=" << out.candidate_attempts
+              << " elapsed_ms=" << elapsed_ms
+              << " per_attempt_ms="
+              << (out.candidate_attempts > 0
+                    ? static_cast<long long>(elapsed_ms) /
+                      static_cast<long long>(out.candidate_attempts)
+                    : 0)
+              << std::endl;
+    SUCCEED();
+}
