@@ -6799,6 +6799,7 @@ struct dkg_p2p_runner::impl
 
     bool is_fixture_mode() const
     {
+#ifdef VEILROOT_DAO_DKG_TESTING
         // Fixture mode: a test supplies deterministic contributions and
         // the sieve must not run (it would overwrite them).
         // Two forms, both indicate a test has pre-computed p_i/q_i:
@@ -6811,6 +6812,11 @@ struct dkg_p2p_runner::impl
         if (cfg.test_p_i_dec.size() == cfg.committee_size &&
             cfg.test_q_i_dec.size() == cfg.committee_size)
             return true;
+#endif
+        // Production build (no VEILROOT_DAO_DKG_TESTING): test_seed and
+        // test_p_i_dec / test_q_i_dec are not members of dkg_config at
+        // all, so this function cannot reference them. Fixture mode is
+        // unavailable; the production sieve path always runs.
         return false;
     }
 
