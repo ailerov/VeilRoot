@@ -23,6 +23,11 @@ set(governance_sources
     dao_tally_share.cpp
     tally_manager.cpp
     dao_dkg.cpp
+    dao_mpc.cpp
+    dao_mpc_crt.cpp
+    dao_mpc_abb.cpp
+    dao_mpc_rot.cpp
+    dao_sieve_runner.cpp
     dao_reshare_proof.cpp
     dao_reshare_vss.cpp
     dao_reshare_coeff_link.cpp

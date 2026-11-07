@@ -126,6 +126,14 @@ set(unit_tests_sources
   dao_tally.cpp
   dao_tally_share.cpp
   dao_dkg.cpp
+  dao_mpc_test.cpp
+  dao_mpc_crt_test.cpp
+  dao_mpc_stepwise_test.cpp
+  dao_mpc_wire_test.cpp
+  dao_mpc_eratosthenes_test.cpp
+  dao_mpc_abb_test.cpp
+  dao_mpc_rot_test.cpp
+  dao_sieve_runner_test.cpp
   dao_dkg_e2e.cpp
   dao_dkg_distributed.cpp
   dao_dkg_bootstrap.cpp

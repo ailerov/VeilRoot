@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "dao_dkg.h"
+#include "dao_mpc_crt.h"
+#include "dao_sieve_runner.h"
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -2027,9 +2029,7 @@ public:
             v.clear();
         };
         free_bn(p_i_); free_bn(q_i_);
-#ifdef VEILROOT_DAO_DKG_TESTING
         free_bn(fixed_test_p_i_); free_bn(fixed_test_q_i_);
-#endif
         free_bn(h_coeffs_first_);
         free_bn(N_i_); free_bn(N_candidate_);
         free_bn(g_bar_); free_bn(Q_i_);
@@ -2167,10 +2167,11 @@ private:
     // --- modulus generation ---
     BIGNUM* p_i_ = nullptr;
     BIGNUM* q_i_ = nullptr;
-#ifdef VEILROOT_DAO_DKG_TESTING
+    // Precomputed contribution injected by the runner when a sieved
+    // candidate is ready. When both are non-null, do_polynomial_commit
+    // uses them instead of drawing random values.
     BIGNUM* fixed_test_p_i_ = nullptr;
     BIGNUM* fixed_test_q_i_ = nullptr;
-#endif
     dao_vss_commitments commits_p_;
     dao_vss_commitments commits_q_;
     dao_vss_commitments commits_h_;
@@ -2276,9 +2277,13 @@ public:
     // Test-only accessors. Not compiled into production builds.
     const BIGNUM* test_p_i() const { return p_i_; }
     const BIGNUM* test_q_i() const { return q_i_; }
+#endif
 
-    // Test-only injection of a fixed contribution. When both are set,
-    // do_polynomial_commit uses them instead of drawing random values.
+public:
+    // Inject a precomputed contribution for the current attempt.
+    // When both p and q are non-null, do_polynomial_commit uses them
+    // instead of drawing random values. Clear to nullptr to restore
+    // the random draw path.
     void set_fixed_test_contribution(const BIGNUM* p, const BIGNUM* q)
     {
         free_bn(fixed_test_p_i_);
@@ -2286,7 +2291,6 @@ public:
         fixed_test_p_i_ = p ? BN_dup(p) : nullptr;
         fixed_test_q_i_ = q ? BN_dup(q) : nullptr;
     }
-#endif
 };
 
 // -------------------------------------------------------------------
@@ -2437,12 +2441,10 @@ bool dkg_party::do_polynomial_commit()
     p_i_ = BN_new();
     q_i_ = BN_new();
 
-#ifdef VEILROOT_DAO_DKG_TESTING
     if (fixed_test_p_i_ && fixed_test_q_i_) {
         if (!BN_copy(p_i_, fixed_test_p_i_)) return false;
         if (!BN_copy(q_i_, fixed_test_q_i_)) return false;
     } else
-#endif
     {
         if (!draw_candidate(is_p1, p_contribution_bits_, p_i_)) return false;
         if (!draw_candidate(is_p1, q_contribution_bits_, q_i_)) return false;
@@ -6784,6 +6786,50 @@ struct dkg_p2p_runner::impl
 
     uint32_t phase_timeout_s = 120;   // overwritten from cfg in start()
 
+    // Sample modulus M_0 = 4 * prod(sieve primes). Constructed once
+    // in start(), sized for (target_N_bits, committee_size). Used by
+    // passes_local_small_prime_screen (expert Q4 step 4).
+    BIGNUM*  sieve_M0_          = nullptr;
+    uint32_t sieve_prime_count_ = 0;
+
+    ~impl()
+    {
+        if (sieve_M0_) { BN_free(sieve_M0_); sieve_M0_ = nullptr; }
+    }
+
+    bool is_fixture_mode() const
+    {
+        // Fixture mode: a test supplies deterministic contributions and
+        // the sieve must not run (it would overwrite them).
+        // Two forms, both indicate a test has pre-computed p_i/q_i:
+        //   1. test_seed == DAO_DKG_TEST_SEED_3 or _16 (hardcoded fixture).
+        //   2. test_p_i_dec / test_q_i_dec populated (numeric-per-party
+        //      fixture, used by run_n_party for n not in {3, 16}).
+        if (cfg.test_seed == DAO_DKG_TEST_SEED_3 ||
+            cfg.test_seed == DAO_DKG_TEST_SEED_16)
+            return true;
+        if (cfg.test_p_i_dec.size() == cfg.committee_size &&
+            cfg.test_q_i_dec.size() == cfg.committee_size)
+            return true;
+        return false;
+    }
+
+    // Expert Q4 step 4: gcd(N, M_sample) == 1. N = P*Q is odd; M_0
+    // = 4*M_sample. gcd(N,4)=1 always, so gcd(N,M_0)==1 <=> gcd(N,
+    // M_sample)==1.
+    bool passes_local_small_prime_screen(const BIGNUM* N)
+    {
+        if (!N || !sieve_M0_) return false;
+        BN_CTX* cctx = BN_CTX_new();
+        if (!cctx) return false;
+        BIGNUM* g = BN_new();
+        if (!g) { BN_CTX_free(cctx); return false; }
+        bool ok = BN_gcd(g, N, sieve_M0_, cctx) == 1 && BN_is_one(g);
+        BN_free(g);
+        BN_CTX_free(cctx);
+        return ok;
+    }
+
 
     // ---- runner-control helpers ----
 
@@ -7305,6 +7351,42 @@ bool dkg_p2p_runner::impl::run_modulus_attempt(BIGNUM* N_out)
     const uint32_t n = cfg.committee_size;
     const uint32_t me = party->id();
 
+    // Production sieve: replace the fixture's fixed contribution with
+    // a real CRT-sieved candidate produced via wire rounds. Fixture
+    // mode skips this and uses the party's injected test contribution.
+    if (!is_fixture_mode()) {
+        const uint32_t lambda = cfg.target_N_bits / 2;
+        const uint32_t sigma  = 80;   // expert-specified, separate from security_bits
+        std::vector<uint32_t> sieve_primes;
+        if (!dao_mpc_crt::near_primorial_primes(lambda, n, sieve_primes))
+            return false;
+        BIGNUM* sieve_p = BN_new();
+        BIGNUM* sieve_q = BN_new();
+        if (!sieve_p || !sieve_q) {
+            if (sieve_p) BN_free(sieve_p);
+            if (sieve_q) BN_free(sieve_q);
+            return false;
+        }
+        BN_CTX* sctx = BN_CTX_new();
+        if (!sctx) { BN_free(sieve_p); BN_free(sieve_q); return false; }
+        const char* stage = nullptr;
+        const bool sok = dkg_run_sieve_both_runner(
+            transport.get(), n, cfg.threshold, me,
+            committee_id_hash, party->current_candidate_id(),
+            sieve_primes, *vss, lambda, sigma,
+            phase_timeout_s, sieve_p, sieve_q, sctx, &stage);
+        BN_CTX_free(sctx);
+        if (!sok) {
+            std::cerr << "[runner p" << me << " c"
+                      << party->current_candidate_id()
+                      << "] sieve failed: " << (stage ? stage : "?") << "\n";
+            BN_free(sieve_p); BN_free(sieve_q);
+            return false;
+        }
+        party->set_fixed_test_contribution(sieve_p, sieve_q);
+        BN_free(sieve_p); BN_free(sieve_q);
+    }
+
     // Phase 1: each party deals VSS and sends shares.
     if (!party->start_phase(1, cfg.k, cfg.security_bits, cfg.target_N_bits)) {
         
@@ -7781,9 +7863,23 @@ void dkg_p2p_runner::impl::run()
 
         bool candidate_reject = false;
 
-        // Wrong N length is a candidate rejection, not a fatal error.
-        if (static_cast<uint32_t>(BN_num_bits(attempt_N)) != cfg.target_N_bits)
-            candidate_reject = true;
+
+        // Length gate. Fixture mode asserts exact target_N_bits (the
+        // fixture N is a known value). Production sieve produces N in
+        // [2^target, 2^(target + 2*sigma)) by construction (expert Q1);
+        // accept that full range rather than requiring exact equality.
+        {
+            const uint32_t nb = (uint32_t)BN_num_bits(attempt_N);
+            bool len_ok = false;
+            if (is_fixture_mode()) {
+                len_ok = (nb == cfg.target_N_bits);
+            } else {
+                const uint32_t sigma = 80;
+                len_ok = (nb >= cfg.target_N_bits) &&
+                         (nb <= cfg.target_N_bits + 2 * sigma);
+            }
+            if (!len_ok) candidate_reject = true;
+        }
 
         BIGNUM* g_bar = nullptr;
 
@@ -7819,20 +7915,36 @@ void dkg_p2p_runner::impl::run()
                     break;
                 }
 
-                bool reject_p = false;
-                if (!run_trial_division_factor(0, reject_p)) {
-                    BN_free(g_bar);
-                    break;
-                }
-                if (reject_p) candidate_reject = true;
-
-                if (!candidate_reject) {
-                    bool reject_q = false;
-                    if (!run_trial_division_factor(1, reject_q)) {
+                if (is_fixture_mode()) {
+                    // Fixture path: keep the existing distributed
+                    // trial division. The fixed candidate fixtures
+                    // were designed for it.
+                    bool reject_p = false;
+                    if (!run_trial_division_factor(0, reject_p)) {
                         BN_free(g_bar);
                         break;
                     }
-                    if (reject_q) candidate_reject = true;
+                    if (reject_p) candidate_reject = true;
+
+                    if (!candidate_reject) {
+                        bool reject_q = false;
+                        if (!run_trial_division_factor(1, reject_q)) {
+                            BN_free(g_bar);
+                            break;
+                        }
+                        if (reject_q) candidate_reject = true;
+                    }
+                } else {
+                    // Production path (expert Q4 step 4): replace
+                    // distributed trial division with a local gcd
+                    // check against the full sieve modulus M_0.
+                    // The sieve construction already forces P and Q
+                    // coprime to every sieved prime; this check
+                    // verifies that invariant survived wire round
+                    // trips and any malicious behaviour.
+                    if (!passes_local_small_prime_screen(N)) {
+                        candidate_reject = true;
+                    }
                 }
             }
 
@@ -8456,6 +8568,44 @@ bool dkg_p2p_runner::start()
                                   p_->cfg.p_contribution_bits,
                                   p_->cfg.q_contribution_bits);
     }
+
+    // Local trial-division modulus M_0 for passes_local_small_prime_screen.
+    //
+    // The CRT sieve excludes certain small primes for Lagrange reasons
+    // (2t+1 collinearity: r=3 for n=3 if starting from 3; r in
+    // {3,5,7,11,13} for n=16). Those excluded primes are still
+    // important: if N happened to be divisible by one of them, the
+    // sampling construction would not reject it. So the local
+    // gcd(N, M_0) check uses ALL primes below the sieve bound, not
+    // only the sieved ones. This gives coprimality to every small
+    // prime below the bound (expert Q4 step 4 + defense in depth).
+    if (!p_->sieve_M0_) {
+        const uint32_t kappa = p_->cfg.target_N_bits / 2;
+        // Determine the sieve bound from the near-primorial selection
+        // (which is the actual sieve extent), then take ALL primes
+        // below that bound for the local check.
+        std::vector<uint32_t> sieve_primes;
+        if (!dao_mpc_crt::near_primorial_primes(
+                kappa, p_->cfg.committee_size, sieve_primes))
+            return false;
+        p_->sieve_prime_count_ = (uint32_t)sieve_primes.size();
+        const uint32_t bound = sieve_primes.empty()
+            ? 3u
+            : sieve_primes.back() + 2;
+
+        std::vector<uint32_t> all_primes;
+        if (!dao_mpc_crt::sieved_primes(bound, all_primes))
+            return false;
+
+        p_->sieve_M0_ = BN_new();
+        if (!p_->sieve_M0_) return false;
+        BN_CTX* cctx = BN_CTX_new();
+        if (!cctx) return false;
+        const bool ok = dao_mpc_crt::sieve_modulus_mod4(
+            all_primes, p_->sieve_M0_, cctx);
+        BN_CTX_free(cctx);
+        if (!ok) return false;
+    }
     if (p_->cfg.p_contribution_bits == 0 || p_->cfg.q_contribution_bits == 0)
         return false;
 
@@ -8735,9 +8885,10 @@ bool dao_Q_prove(const dao_vss_group& grp,
         // A, B, and the round index.
         SHA256_CTX sha;
         SHA256_Init(&sha);
-        unsigned char nb[256];
-        BN_bn2binpad(N, nb, 256);
-        SHA256_Update(&sha, nb, 256);
+        std::vector<uint8_t> nb(N_bytes, 0);
+        if (BN_bn2binpad(N, nb.data(), static_cast<int>(N_bytes))
+            != static_cast<int>(N_bytes)) return false;
+        SHA256_Update(&sha, nb.data(), nb.size());
         uint8_t mi_le[4];
         for (int q2 = 0; q2 < 4; ++q2) mi_le[q2] = (member_index >> (8*q2)) & 0xff;
         SHA256_Update(&sha, mi_le, 4);
@@ -8819,9 +8970,10 @@ bool dao_Q_verify(const dao_vss_group& grp,
         // Recompute challenge.
         SHA256_CTX sha;
         SHA256_Init(&sha);
-        unsigned char nb[256];
-        BN_bn2binpad(N, nb, 256);
-        SHA256_Update(&sha, nb, 256);
+        std::vector<uint8_t> nb(N_bytes, 0);
+        if (BN_bn2binpad(N, nb.data(), static_cast<int>(N_bytes))
+            != static_cast<int>(N_bytes)) return false;
+        SHA256_Update(&sha, nb.data(), nb.size());
         uint8_t mi_le[4];
         for (int q2 = 0; q2 < 4; ++q2) mi_le[q2] = (proof.member_index >> (8*q2)) & 0xff;
         SHA256_Update(&sha, mi_le, 4);

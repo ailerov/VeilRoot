@@ -367,6 +367,14 @@ public:
     virtual bool send(const dkg_msg& m) = 0;
     virtual bool recv(dkg_msg& m) = 0;
     virtual bool try_recv(dkg_msg& m) = 0;
+    // Transports that self-deliver broadcasts (e.g. dkg_p2p_transport_local,
+    // which parks a copy of the sender's own broadcast for re-injection)
+    // override this. Transports that do not (e.g. dkg_inproc_transport,
+    // whose hub skips the sender) leave the default, which always returns
+    // false. Callers that seed their own state locally need not rely on
+    // this; callers that wait for the broadcaster to process its own
+    // message must poll it alongside try_recv.
+    virtual bool try_recv_own(dkg_msg& m) { (void)m; return false; }
     virtual void shutdown() = 0;
 };
 

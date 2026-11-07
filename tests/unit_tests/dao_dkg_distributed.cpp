@@ -422,6 +422,66 @@ bool run_n_party(uint32_t n, uint32_t timeout_s,
     return true;
 }
 
+// Real-random variant: same shape as run_n_party but no fixture
+// contribution. Configures the runner to take the sieve branch
+// (is_fixture_mode() == false). Used to prove the sieve runs through
+// the runner end-to-end without hanging or crashing.
+//
+// Unlike run_n_party, this returns true if every runner produced a
+// dkg_result at all, regardless of whether the attempt succeeded. A
+// 128-bit candidate is not expected to biprime on the first few
+// attempts (rate ~1/100). The caller checks attempts / acceptance.
+bool run_n_party_real(uint32_t n, uint32_t max_attempts,
+                      uint32_t phase_timeout_s, uint32_t wait_s,
+                      distributed_run& out)
+{
+    out.sks.resize(n);
+    out.pks.resize(n);
+    for (uint32_t i = 0; i < n; ++i)
+        crypto::generate_keys(out.pks[i], out.sks[i]);
+
+    dkg_config cfg;
+    cfg.committee_size = n;
+    cfg.threshold      = dao_dkg_expected_threshold(n);
+    if (cfg.threshold == 0) return false;
+    cfg.k              = 60;
+    cfg.target_N_bits  = 128;
+    cfg.security_bits  = 32;
+    cfg.qproof_rounds  = DAO_DKG_QPROOF_ROUNDS_TEST;
+    cfg.max_attempts   = max_attempts;
+    cfg.phase_timeout_seconds = phase_timeout_s;
+    // test_seed = 0; test_p_i_dec / test_q_i_dec empty.
+    cfg.member_ids = out.pks;
+
+    const uint32_t required_bits =
+        dao_dkg_required_vss_bits(cfg.k, cfg.target_N_bits, cfg.security_bits);
+    if (!dao_vss_group_generate(out.vss, required_bits)) return false;
+
+    out.results.resize(n);
+    for (uint32_t i = 0; i < n; ++i) {
+        dkg_config node_cfg = cfg;
+        node_cfg.local_party_id = dao_dkg_party_index_for(cfg.member_ids,
+                                                          out.pks[i]);
+        if (node_cfg.local_party_id == 0) return false;
+        auto cb = out.net.callbacks_for_self();
+        out.runners.emplace_back(new dkg_p2p_runner(node_cfg, out.vss, cb));
+    }
+    for (uint32_t i = 0; i < n; ++i) {
+        out.net.register_runner(i + 1, out.pks[i], out.runners[i].get());
+    }
+    for (auto& r : out.runners) if (!r->start()) return false;
+
+    // wait() returns out.ok, which is false when the candidate was
+    // rejected (expected for 128-bit). "Ran" means candidate_attempts
+    // was populated. wait_s is the hang guard.
+    bool any_ran = false;
+    for (uint32_t i = 0; i < n; ++i) {
+        out.runners[i]->wait(out.results[i], wait_s);
+        if (out.results[i].candidate_attempts > 0) any_ran = true;
+    }
+    return any_ran;
+}
+
 void expect_public_fields_agree(const std::vector<dkg_result>& rs,
                                 uint32_t n)
 {
@@ -609,4 +669,142 @@ TEST(dao_dkg_distributed, four_party_nodes_agree_on_public_key_record)
         }
     }
     ASSERT_TRUE(ok) << "4-party DKG failed after 2 attempts";
+}
+
+TEST(dao_dkg_distributed, real_random_128bit_sieve_through_runner)
+{
+    // Proves the production sieve runs through dkg_p2p_runner.
+    // Non-fixture config, target_N_bits=128 so the VSS group
+    // generation stays cheap (production 2048-bit target costs
+    // minutes for the safe prime alone; separate diagnostic).
+    //
+    // A 128-bit candidate is not expected to biprime within a few
+    // attempts. This test asserts:
+    //   1. All three runners start.
+    //   2. All three runners return a dkg_result within wait_s.
+    //   3. Each result shows exactly max_attempts attempts (all
+    //      rejected, expected) OR candidate_accepted == true with
+    //      correct N bit length (rare, also fine).
+    //   4. No crash, no hang.
+    //
+    // The presence of this test in the suite is proof the sieve
+    // branch is executed by the runner (is_fixture_mode() == false
+    // because test_seed and test_p_i_dec are both empty).
+
+    const uint32_t n = 3;
+    const uint32_t max_attempts = 3;
+    const uint32_t phase_timeout_s = 30;
+    const uint32_t wait_s = 120;
+
+    distributed_run run;
+    const bool ran = run_n_party_real(n, max_attempts,
+                                       phase_timeout_s, wait_s, run);
+    ASSERT_TRUE(ran) << "runner never returned a dkg_result";
+
+    ASSERT_EQ(run.results.size(), n);
+    for (uint32_t i = 0; i < n; ++i) {
+        const dkg_result& r = run.results[i];
+        EXPECT_EQ(r.candidate_attempts, max_attempts)
+            << "party " << (i + 1) << " did not exhaust attempts";
+        if (r.candidate_accepted) {
+            // Rare good outcome: verify N bit length.
+            BIGNUM* N = BN_bin2bn(r.N.data(),
+                                  (int)r.N.size(), nullptr);
+            ASSERT_NE(N, nullptr);
+            const uint32_t nb = (uint32_t)BN_num_bits(N);
+            EXPECT_GE(nb, 128u);
+            EXPECT_LE(nb, 128u + 2 * 80u);
+            EXPECT_TRUE(r.ok);
+            BN_free(N);
+        } else {
+            // Expected outcome: rejected on length or biprimality.
+            EXPECT_FALSE(r.ok);
+        }
+    }
+}
+
+TEST(dao_dkg_distributed, timing_2048_vss_and_one_attempt)
+{
+    // Measures two unknowns at target_N_bits=2048 before committing
+    // to a full Phase 8 test:
+    //   1. dao_vss_group_generate at the required safe-prime size
+    //   2. One full attempt through run_n_party_real (sieve +
+    //      polynomial_commit + bgw + biprimality + length check)
+    // Emits both timings. Does NOT wait for a successful candidate.
+
+    const uint32_t n = 3;
+    const uint32_t kappa = 60;
+
+    // vss group size required for 2048-bit target with 32-bit security.
+    const uint32_t required_bits =
+        dao_dkg_required_vss_bits(kappa, 2048, 32);
+    std::cout << "[timing] required_vss_bits = " << required_bits << "\n";
+
+    auto tv0 = std::chrono::steady_clock::now();
+    dao_vss_group vss;
+    ASSERT_TRUE(dao_vss_group_generate(vss, required_bits));
+    auto tv1 = std::chrono::steady_clock::now();
+    auto vss_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        tv1 - tv0).count();
+    std::cout << "[timing] vss_group_generate = " << vss_ms << " ms\n";
+
+    // One attempt with target_N_bits=2048 via the sieve path.
+    distributed_run run;
+    run.sks.resize(n);
+    run.pks.resize(n);
+    for (uint32_t i = 0; i < n; ++i)
+        crypto::generate_keys(run.pks[i], run.sks[i]);
+
+    dkg_config cfg;
+    cfg.committee_size = n;
+    cfg.threshold      = dao_dkg_expected_threshold(n);
+    cfg.k              = kappa;
+    cfg.target_N_bits  = 2048;
+    cfg.security_bits  = 32;
+    cfg.qproof_rounds  = DAO_DKG_QPROOF_ROUNDS_TEST;
+    cfg.max_attempts   = 3;   // probe: length-fail gives attempts=3, bip-break gives attempts=1
+    cfg.phase_timeout_seconds = 300;
+    cfg.member_ids = run.pks;
+    // test_seed = 0, test_p_i_dec empty -> sieve path.
+
+    // Reuse the vss group we already generated.
+    run.vss.P       = BN_dup(vss.P);
+    run.vss.P_prime = BN_dup(vss.P_prime);
+    run.vss.g       = BN_dup(vss.g);
+    run.vss.h       = BN_dup(vss.h);
+    ASSERT_TRUE(run.vss.valid());
+
+    run.results.resize(n);
+    for (uint32_t i = 0; i < n; ++i) {
+        dkg_config node_cfg = cfg;
+        node_cfg.local_party_id = dao_dkg_party_index_for(cfg.member_ids,
+                                                          run.pks[i]);
+        ASSERT_NE(node_cfg.local_party_id, 0u);
+        auto cb = run.net.callbacks_for_self();
+        run.runners.emplace_back(new dkg_p2p_runner(node_cfg, run.vss, cb));
+    }
+    for (uint32_t i = 0; i < n; ++i)
+        run.net.register_runner(i + 1, run.pks[i], run.runners[i].get());
+    for (auto& r : run.runners) ASSERT_TRUE(r->start());
+
+    auto ta0 = std::chrono::steady_clock::now();
+    for (uint32_t i = 0; i < n; ++i) {
+        run.runners[i]->wait(run.results[i], 300);
+    }
+    auto ta1 = std::chrono::steady_clock::now();
+    auto attempt_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        ta1 - ta0).count();
+    std::cout << "[timing] one-attempt wall = " << attempt_ms << " ms\n";
+
+    for (uint32_t i = 0; i < n; ++i) {
+        const dkg_result& r = run.results[i];
+        std::cout << "[timing] p" << (i + 1)
+                  << " attempts=" << r.candidate_attempts
+                  << " accepted=" << (r.candidate_accepted ? "y" : "n")
+                  << " bip_fail=" << r.biprimality_failures
+                  << "\n";
+    }
+
+    std::cout << "[timing] extrapolated full search at 3607 attempts: "
+              << (attempt_ms * 3607ull / 1000) << " seconds\n";
 }
