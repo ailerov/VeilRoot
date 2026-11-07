@@ -5577,9 +5577,24 @@ bool dkg_run_with_transport(const dkg_config& cfg,
 #endif
 
         // Candidate accepted.
+        // Expert §2: BN_bn2binpad returns -1 on overflow, and the
+        // previous code silently emitted uninitialized buffer content
+        // in that case. Reject any N that cannot fit the fixed
+        // PAILLIER_MODULUS_BYTES wire format before encoding.
+        if (BN_num_bits(N) > static_cast<int>(PAILLIER_MODULUS_BITS)) {
+            out.biprimality_failures++;
+            BN_free(g_bar);
+            goto next_attempt;
+        }
         {
             out.N.assign(PAILLIER_MODULUS_BYTES, 0);
-            BN_bn2binpad(N, out.N.data(), PAILLIER_MODULUS_BYTES);
+            if (BN_bn2binpad(N, out.N.data(),
+                             static_cast<int>(PAILLIER_MODULUS_BYTES)) !=
+                static_cast<int>(PAILLIER_MODULUS_BYTES))
+            {
+                BN_free(g_bar);
+                goto next_attempt;
+            }
         }
         BN_free(g_bar);
         accepted = true;
@@ -7870,15 +7885,21 @@ void dkg_p2p_runner::impl::run()
         bool candidate_reject = false;
 
 
-        // Length gate. Fixture mode asserts exact target_N_bits (the
-        // fixture N is a known value). Production sieve produces N in
-        // [2^target, 2^(target + 2*sigma)) by construction (expert Q1);
-        // accept that full range rather than requiring exact equality.
+        // Length gate. Fixture mode asserts exact target_N_bits.
+        // Production at target_N_bits == PAILLIER_MODULUS_BITS:
+        //   enforce BN_num_bits == PAILLIER_MODULUS_BITS exactly.
+        //   Expert §2: fixed 2048-bit Paillier format. Sieve output
+        //   above this cannot be encoded in PAILLIER_MODULUS_BYTES.
+        // Production at any other target (test paths, reshare fixtures):
+        //   range check unchanged, no forced 2048-bit constraint.
         {
             const uint32_t nb = (uint32_t)BN_num_bits(attempt_N);
             bool len_ok = false;
             if (is_fixture_mode()) {
                 len_ok = (nb == cfg.target_N_bits);
+            } else if (cfg.target_N_bits == static_cast<uint32_t>(
+                           PAILLIER_MODULUS_BITS)) {
+                len_ok = (nb == static_cast<uint32_t>(PAILLIER_MODULUS_BITS));
             } else {
                 const uint32_t sigma = 80;
                 len_ok = (nb >= cfg.target_N_bits) &&
@@ -7976,12 +7997,18 @@ void dkg_p2p_runner::impl::run()
 
             if (!BN_copy(accepted_N, attempt_N)) break;
 
+            // Candidate cannot be encoded into PAILLIER_MODULUS_BYTES.
+            // Clear accepted so the DKG does not proceed with a
+            // partially-written or truncated buffer. Expert §2: this
+            // path is defensive (length gate above should already have
+            // rejected any nb != PAILLIER_MODULUS_BITS).
             result.N.assign(PAILLIER_MODULUS_BYTES, 0);
             if (BN_bn2binpad(attempt_N,
                              result.N.data(),
-                             PAILLIER_MODULUS_BYTES) !=
-                PAILLIER_MODULUS_BYTES)
+                             static_cast<int>(PAILLIER_MODULUS_BYTES)) !=
+                static_cast<int>(PAILLIER_MODULUS_BYTES))
             {
+                accepted = false;
                 break;
             }
 
