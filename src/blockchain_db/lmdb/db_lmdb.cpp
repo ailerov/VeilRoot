@@ -3072,7 +3072,6 @@ uint64_t BlockchainLMDB::get_treasury_balance() const
   return balance;
 }
 
-// BEGIN_VNS_TXN_SAFE_GETTERS
 uint64_t BlockchainLMDB::get_treasury_balance_in_txn() const
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
@@ -3110,7 +3109,6 @@ void BlockchainLMDB::set_treasury_balance(uint64_t amount)
 
   txn.commit();
 }
-// BEGIN_VNS_TXN_SAFE_GETTERS
 void BlockchainLMDB::set_treasury_balance_in_txn(uint64_t amount)
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
@@ -4675,7 +4673,6 @@ bool BlockchainLMDB::get_proposal_execution_record(const crypto::hash& proposal_
   }
   return true;
 }
-// BEGIN_VNS_TXN_SAFE_GETTERS
 bool BlockchainLMDB::get_proposal_execution_record_in_txn(const crypto::hash& proposal_id, proposal_execution_record& rec)
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
@@ -5522,33 +5519,6 @@ bool BlockchainLMDB::get_extension_policy(const std::string& extension, uint64_t
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
 
-  if (m_batch_active && m_write_txn && m_write_txn->m_txn)
-  {
-    MDB_cursor *cursor;
-    int result = mdb_cursor_open(m_write_txn->m_txn, m_extension_policy, &cursor);
-    if (result)
-      throw0(DB_ERROR(lmdb_error("Failed to open extension_policy cursor: ", result).c_str()));
-
-    MDB_val k, v;
-    uint64_t best_activation = 0;
-    bool found = false;
-    result = mdb_cursor_get(cursor, &k, &v, MDB_FIRST);
-    while (result == MDB_SUCCESS)
-    {
-      const extension_policy_record* candidate = (const extension_policy_record*)v.mv_data;
-      if (strncmp(candidate->extension, extension.c_str(), sizeof(candidate->extension)) == 0 &&
-          candidate->activation_height <= height &&
-          candidate->activation_height >= best_activation)
-      {
-        best_activation = candidate->activation_height;
-        rec = *candidate;
-        found = true;
-      }
-      result = mdb_cursor_get(cursor, &k, &v, MDB_NEXT);
-    }
-    mdb_cursor_close(cursor);
-    return found;
-  }
 
   TXN_PREFIX_RDONLY();
   RCURSOR(extension_policy)
@@ -5659,33 +5629,6 @@ bool BlockchainLMDB::get_premium_label_policy(const std::string& label, uint64_t
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
 
-  if (m_batch_active && m_write_txn && m_write_txn->m_txn)
-  {
-    MDB_cursor *cursor;
-    int result = mdb_cursor_open(m_write_txn->m_txn, m_premium_label_policy, &cursor);
-    if (result)
-      throw0(DB_ERROR(lmdb_error("Failed to open premium_label_policy cursor: ", result).c_str()));
-
-    MDB_val k, v;
-    uint64_t best_activation = 0;
-    bool found = false;
-    result = mdb_cursor_get(cursor, &k, &v, MDB_FIRST);
-    while (result == MDB_SUCCESS)
-    {
-      const premium_label_policy_record* candidate = (const premium_label_policy_record*)v.mv_data;
-      if (strncmp(candidate->label, label.c_str(), sizeof(candidate->label)) == 0 &&
-          candidate->activation_height <= height &&
-          candidate->activation_height >= best_activation)
-      {
-        best_activation = candidate->activation_height;
-        rec = *candidate;
-        found = true;
-      }
-      result = mdb_cursor_get(cursor, &k, &v, MDB_NEXT);
-    }
-    mdb_cursor_close(cursor);
-    return found;
-  }
 
   TXN_PREFIX_RDONLY();
   RCURSOR(premium_label_policy)
@@ -5796,33 +5739,6 @@ bool BlockchainLMDB::get_banned_label_policy(const std::string& term, uint64_t h
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
 
-  if (m_batch_active && m_write_txn && m_write_txn->m_txn)
-  {
-    MDB_cursor *cursor;
-    int result = mdb_cursor_open(m_write_txn->m_txn, m_banned_label_policy, &cursor);
-    if (result)
-      throw0(DB_ERROR(lmdb_error("Failed to open banned_label_policy cursor: ", result).c_str()));
-
-    MDB_val k, v;
-    uint64_t best_activation = 0;
-    bool found = false;
-    result = mdb_cursor_get(cursor, &k, &v, MDB_FIRST);
-    while (result == MDB_SUCCESS)
-    {
-      const banned_label_policy_record* candidate = (const banned_label_policy_record*)v.mv_data;
-      if (strncmp(candidate->term, term.c_str(), sizeof(candidate->term)) == 0 &&
-          candidate->activation_height <= height &&
-          candidate->activation_height >= best_activation)
-      {
-        best_activation = candidate->activation_height;
-        rec = *candidate;
-        found = true;
-      }
-      result = mdb_cursor_get(cursor, &k, &v, MDB_NEXT);
-    }
-    mdb_cursor_close(cursor);
-    return found;
-  }
 
   TXN_PREFIX_RDONLY();
   RCURSOR(banned_label_policy)
@@ -5933,33 +5849,6 @@ bool BlockchainLMDB::get_banned_extension_policy(const std::string& extension, u
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
 
-  if (m_batch_active && m_write_txn && m_write_txn->m_txn)
-  {
-    MDB_cursor *cursor;
-    int result = mdb_cursor_open(m_write_txn->m_txn, m_banned_extension_policy, &cursor);
-    if (result)
-      throw0(DB_ERROR(lmdb_error("Failed to open banned_extension_policy cursor: ", result).c_str()));
-
-    MDB_val k, v;
-    uint64_t best_activation = 0;
-    bool found = false;
-    result = mdb_cursor_get(cursor, &k, &v, MDB_FIRST);
-    while (result == MDB_SUCCESS)
-    {
-      const banned_extension_policy_record* candidate = (const banned_extension_policy_record*)v.mv_data;
-      if (strncmp(candidate->extension, extension.c_str(), sizeof(candidate->extension)) == 0 &&
-          candidate->activation_height <= height &&
-          candidate->activation_height >= best_activation)
-      {
-        best_activation = candidate->activation_height;
-        rec = *candidate;
-        found = true;
-      }
-      result = mdb_cursor_get(cursor, &k, &v, MDB_NEXT);
-    }
-    mdb_cursor_close(cursor);
-    return found;
-  }
 
   TXN_PREFIX_RDONLY();
   RCURSOR(banned_extension_policy)
@@ -6070,34 +5959,6 @@ bool BlockchainLMDB::get_exact_domain_ban_policy(const std::string& domain, uint
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
 
-  if (m_batch_active && m_write_txn && m_write_txn->m_txn)
-  {
-    MDB_cursor *cursor;
-    int result = mdb_cursor_open(m_write_txn->m_txn, m_exact_domain_ban_policy, &cursor);
-    if (result)
-      throw0(DB_ERROR(lmdb_error("Failed to open exact_domain_ban_policy cursor: ", result).c_str()));
-
-    MDB_val k, v;
-    uint64_t best_activation = 0;
-    bool found = false;
-    result = mdb_cursor_get(cursor, &k, &v, MDB_FIRST);
-    while (result == MDB_SUCCESS)
-    {
-      const exact_domain_ban_policy_record* candidate =
-          (const exact_domain_ban_policy_record*)v.mv_data;
-      if (strncmp(candidate->domain, domain.c_str(), sizeof(candidate->domain)) == 0 &&
-          candidate->activation_height <= height &&
-          candidate->activation_height >= best_activation)
-      {
-        best_activation = candidate->activation_height;
-        rec = *candidate;
-        found = true;
-      }
-      result = mdb_cursor_get(cursor, &k, &v, MDB_NEXT);
-    }
-    mdb_cursor_close(cursor);
-    return found;
-  }
 
   TXN_PREFIX_RDONLY();
   RCURSOR(exact_domain_ban_policy)
@@ -6240,34 +6101,6 @@ bool BlockchainLMDB::get_exact_domain_tier_policy(const std::string& domain, uin
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
 
-  if (m_batch_active && m_write_txn && m_write_txn->m_txn)
-  {
-    MDB_cursor *cursor;
-    int result = mdb_cursor_open(m_write_txn->m_txn, m_exact_domain_tier_policy, &cursor);
-    if (result)
-      throw0(DB_ERROR(lmdb_error("Failed to open exact_domain_tier_policy cursor: ", result).c_str()));
-
-    MDB_val k, v;
-    uint64_t best_activation = 0;
-    bool found = false;
-    result = mdb_cursor_get(cursor, &k, &v, MDB_FIRST);
-    while (result == MDB_SUCCESS)
-    {
-      const exact_domain_tier_policy_record* candidate =
-          (const exact_domain_tier_policy_record*)v.mv_data;
-      if (strncmp(candidate->domain, domain.c_str(), sizeof(candidate->domain)) == 0 &&
-          candidate->activation_height <= height &&
-          candidate->activation_height >= best_activation)
-      {
-        best_activation = candidate->activation_height;
-        rec = *candidate;
-        found = true;
-      }
-      result = mdb_cursor_get(cursor, &k, &v, MDB_NEXT);
-    }
-    mdb_cursor_close(cursor);
-    return found;
-  }
 
   TXN_PREFIX_RDONLY();
   RCURSOR(exact_domain_tier_policy)
@@ -6530,34 +6363,6 @@ bool BlockchainLMDB::get_parameter(governance_parameter param, uint64_t height, 
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
 
-  // BEGIN_VNS_BATCH_AWARE_PARAMETER_READ
-  if (m_batch_active && m_write_txn && m_write_txn->m_txn)
-  {
-    MDB_cursor *cursor;
-    int result = mdb_cursor_open(m_write_txn->m_txn, m_governance_parameters, &cursor);
-    if (result)
-      throw0(DB_ERROR(lmdb_error("Failed to open governance_parameters cursor: ", result).c_str()));
-
-    MDB_val k, v;
-    uint64_t best_activation = 0;
-    bool found = false;
-    result = mdb_cursor_get(cursor, &k, &v, MDB_FIRST);
-    while (result == MDB_SUCCESS)
-    {
-      const parameter_record* rec = (const parameter_record*)v.mv_data;
-      if (rec->parameter == param && rec->activation_height <= height && rec->activation_height >= best_activation)
-      {
-        best_activation = rec->activation_height;
-        value = rec->value;
-        found = true;
-      }
-      result = mdb_cursor_get(cursor, &k, &v, MDB_NEXT);
-    }
-    mdb_cursor_close(cursor);
-    return found;
-  }
-  // END_VNS_BATCH_AWARE_PARAMETER_READ
-
   TXN_PREFIX_RDONLY();
   RCURSOR(governance_parameters)
 
@@ -6585,32 +6390,6 @@ bool BlockchainLMDB::get_parameter_record(governance_parameter param, uint64_t h
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
 
-  if (m_batch_active && m_write_txn && m_write_txn->m_txn)
-  {
-    MDB_cursor *cursor;
-    int result = mdb_cursor_open(m_write_txn->m_txn, m_governance_parameters, &cursor);
-    if (result)
-      throw0(DB_ERROR(lmdb_error("Failed to open governance_parameters cursor: ", result).c_str()));
-
-    MDB_val k, v;
-    uint64_t best_activation = 0;
-    bool found = false;
-    result = mdb_cursor_get(cursor, &k, &v, MDB_FIRST);
-    while (result == MDB_SUCCESS)
-    {
-      const parameter_record* candidate = (const parameter_record*)v.mv_data;
-      if (candidate->parameter == param && candidate->activation_height <= height &&
-          candidate->activation_height >= best_activation)
-      {
-        best_activation = candidate->activation_height;
-        rec = *candidate;
-        found = true;
-      }
-      result = mdb_cursor_get(cursor, &k, &v, MDB_NEXT);
-    }
-    mdb_cursor_close(cursor);
-    return found;
-  }
 
   TXN_PREFIX_RDONLY();
   RCURSOR(governance_parameters)
@@ -6656,33 +6435,6 @@ bool BlockchainLMDB::get_proposal_data(const crypto::hash& proposal_id, std::str
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
-
-  // BEGIN_VNS_BATCH_AWARE_PROPOSAL_DATA_READ
-  if (m_batch_active && m_write_txn && m_write_txn->m_txn)
-  {
-    MDB_cursor *cursor;
-    int result = mdb_cursor_open(m_write_txn->m_txn, m_proposal_data, &cursor);
-    if (result)
-      throw0(DB_ERROR(lmdb_error("Failed to open proposal_data cursor: ", result).c_str()));
-
-    MDB_val k = {sizeof(proposal_id), (void*)&proposal_id};
-    MDB_val v;
-    result = mdb_cursor_get(cursor, &k, &v, MDB_SET);
-    if (result == MDB_NOTFOUND)
-    {
-      mdb_cursor_close(cursor);
-      return false;
-    }
-    if (result)
-    {
-      mdb_cursor_close(cursor);
-      throw0(DB_ERROR(lmdb_error("Failed to get proposal data: ", result).c_str()));
-    }
-    data_blob.assign((const char*)v.mv_data, v.mv_size);
-    mdb_cursor_close(cursor);
-    return true;
-  }
-  // END_VNS_BATCH_AWARE_PROPOSAL_DATA_READ
 
   TXN_PREFIX_RDONLY();
   RCURSOR(proposal_data)
@@ -7137,36 +6889,6 @@ crypto::hash BlockchainLMDB::get_block_hash_from_height(const uint64_t& height) 
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
 
-  // BEGIN_VNS_BATCH_AWARE_BLOCK_HASH
-  // If a write/batch transaction is active, use it directly. Opening a new
-  // read transaction here causes MDB_BAD_TXN.
-  if (m_batch_active && m_write_txn && m_write_txn->m_txn)
-  {
-    MDB_cursor *cursor;
-    int result = mdb_cursor_open(m_write_txn->m_txn, m_block_info, &cursor);
-    if (result)
-      throw0(DB_ERROR(lmdb_error("Failed to open block_info cursor: ", result).c_str()));
-
-    MDB_val_set(key, height);
-    result = mdb_cursor_get(cursor, (MDB_val *)&zerokval, &key, MDB_GET_BOTH);
-    if (result == MDB_NOTFOUND)
-    {
-      mdb_cursor_close(cursor);
-      throw0(BLOCK_DNE(std::string("Attempt to get hash from height ").append(boost::lexical_cast<std::string>(height)).append(" failed -- hash not in db").c_str()));
-    }
-    if (result)
-    {
-      mdb_cursor_close(cursor);
-      throw0(DB_ERROR(lmdb_error("Error attempting to retrieve a block hash from the db: ", result).c_str()));
-    }
-
-    mdb_block_info *bi = (mdb_block_info *)key.mv_data;
-    crypto::hash ret = bi->bi_hash;
-    mdb_cursor_close(cursor);
-    return ret;
-  }
-  // END_VNS_BATCH_AWARE_BLOCK_HASH
-
   TXN_PREFIX_RDONLY();
   RCURSOR(block_info);
 
@@ -7185,34 +6907,8 @@ crypto::hash BlockchainLMDB::get_block_hash_from_height(const uint64_t& height) 
   return ret;
 }
 
-// BEGIN_VNS_TXN_SAFE_GETTERS
 bool BlockchainLMDB::get_block_hash_from_height_in_txn(uint64_t height, crypto::hash& hash)
 {
-  if (m_batch_active && m_write_txn && m_write_txn->m_txn)
-  {
-    MDB_cursor *cursor;
-    int result = mdb_cursor_open(m_write_txn->m_txn, m_block_info, &cursor);
-    if (result)
-      throw0(DB_ERROR(lmdb_error("Failed to open block_info cursor: ", result).c_str()));
-
-    MDB_val_set(key, height);
-    result = mdb_cursor_get(cursor, (MDB_val *)&zerokval, &key, MDB_GET_BOTH);
-    if (result == MDB_NOTFOUND)
-    {
-      mdb_cursor_close(cursor);
-      return false;
-    }
-    if (result)
-    {
-      mdb_cursor_close(cursor);
-      throw0(DB_ERROR(lmdb_error("Error getting block hash: ", result).c_str()));
-    }
-
-    mdb_block_info *bi = (mdb_block_info *)key.mv_data;
-    hash = bi->bi_hash;
-    mdb_cursor_close(cursor);
-    return true;
-  }
 
   // No active write transaction: fall back to a short-lived read transaction.
   TXN_PREFIX_RDONLY();

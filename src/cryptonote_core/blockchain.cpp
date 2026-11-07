@@ -5053,13 +5053,14 @@ bool Blockchain::resolve_domain_policy(const std::string& domain, uint64_t heigh
     if (m_db->get_pending_domain_policy(normalized, pending_rec))
     {
         proposal_record pending_proposal;
-        bool have_proposal = false;
-        if (m_db->is_batch_active() || m_db->has_active_write_txn())
-            have_proposal = m_db->get_proposal_record_in_txn(
-                pending_rec.proposal_id, pending_proposal);
-        else
-            have_proposal = m_db->get_proposal_record(
-                pending_rec.proposal_id, pending_proposal);
+        // Reader-safe getter. Internally routes the writer thread to
+        // the active write txn and every other thread to its own
+        // thread-local read txn (block_rtxn_start). Calling the
+        // _in_txn variant behind an is_batch_active() check from a
+        // reader thread races: the writer can commit/abort between
+        // check and use.
+        const bool have_proposal = m_db->get_proposal_record(
+            pending_rec.proposal_id, pending_proposal);
 
         // An executed proposal no longer locks the domain. The executed
         // exact-domain policy takes over. Keeping the pending record until
@@ -10115,22 +10116,26 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
       return;
     }
 
-    const uint64_t local_tip = get_current_blockchain_height();
-    if (local_tip == 0) {
-      MWARNING("node_ready: local chain empty, dropping " << sender);
-      return;
-    }
-    if (sender_height >= local_tip) {
-      MWARNING("node_ready: rejecting future height " << sender_height
-               << " (local tip " << (local_tip - 1) << ") from " << sender);
-      return;
-    }
+    uint64_t local_tip = 0;
     crypto::hash canonical_at_height{};
-    try { canonical_at_height = get_block_id_by_height(sender_height); }
-    catch (...) {
-      MWARNING("node_ready: cannot read canonical hash at "
-               << sender_height << ", dropping " << sender);
-      return;
+    {
+      CRITICAL_REGION_LOCAL(m_blockchain_lock);
+      local_tip = get_current_blockchain_height();
+      if (local_tip == 0) {
+        MWARNING("node_ready: local chain empty, dropping " << sender);
+        return;
+      }
+      if (sender_height >= local_tip) {
+        MWARNING("node_ready: rejecting future height " << sender_height
+                 << " (local tip " << (local_tip - 1) << ") from " << sender);
+        return;
+      }
+      try { canonical_at_height = get_block_id_by_height(sender_height); }
+      catch (...) {
+        MWARNING("node_ready: cannot read canonical hash at "
+                 << sender_height << ", dropping " << sender);
+        return;
+      }
     }
     if (canonical_at_height != sender_block_hash) {
       MWARNING("node_ready: non-canonical hash at height "
