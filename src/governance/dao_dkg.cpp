@@ -7885,21 +7885,21 @@ void dkg_p2p_runner::impl::run()
         bool candidate_reject = false;
 
 
-        // Length gate. Fixture mode asserts exact target_N_bits.
-        // Production at target_N_bits == PAILLIER_MODULUS_BITS:
-        //   enforce BN_num_bits == PAILLIER_MODULUS_BITS exactly.
-        //   Expert §2: fixed 2048-bit Paillier format. Sieve output
-        //   above this cannot be encoded in PAILLIER_MODULUS_BYTES.
-        // Production at any other target (test paths, reshare fixtures):
-        //   range check unchanged, no forced 2048-bit constraint.
+        // Length gate. Fixture mode asserts exact target_N_bits (the
+        // fixture N is a known value). Production sieve produces N in
+        // [2^target, 2^(target + 2*sigma)) by construction (expert Q1);
+        // accept that full range rather than requiring exact equality.
+        // NOTE: with Paillier format fixed at 2048-bit (expert §2),
+        // candidates above 2048 bits are rejected at the encode step,
+        // not here. This gate stays as-is while Eratosthenes remains
+        // an experimental path; the Miller–Rabin production path will
+        // generate exact-2048-bit N by construction and does not
+        // reach this Eratosthenes gate.
         {
             const uint32_t nb = (uint32_t)BN_num_bits(attempt_N);
             bool len_ok = false;
             if (is_fixture_mode()) {
                 len_ok = (nb == cfg.target_N_bits);
-            } else if (cfg.target_N_bits == static_cast<uint32_t>(
-                           PAILLIER_MODULUS_BITS)) {
-                len_ok = (nb == static_cast<uint32_t>(PAILLIER_MODULUS_BITS));
             } else {
                 const uint32_t sigma = 80;
                 len_ok = (nb >= cfg.target_N_bits) &&
