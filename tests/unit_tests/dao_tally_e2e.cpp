@@ -24,7 +24,6 @@
 #include "governance/dao_paillier.h"
 #include "governance/dao_supply.h"
 #include "governance/dao_tally.h"
-#include "governance/dao_tally_session_cycle.h"
 #include "governance/tally_manager.h"
 #include "blockchain_db/lmdb/db_lmdb.h"
 #include "blockchain_db/blockchain_db.h"

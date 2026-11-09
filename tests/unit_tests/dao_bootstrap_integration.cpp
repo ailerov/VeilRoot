@@ -38,7 +38,6 @@
 #include "serialization/variant.h"
 #include "serialization/string.h"
 #include "governance/governance_params.h"
-#include "governance/dao_tally_session_cycle.h"
 #include "governance/tally_manager.h"
 #include "governance/dao_tally_share.h"
 #include "governance/dao_tally.h"

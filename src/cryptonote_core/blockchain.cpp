@@ -75,7 +75,6 @@
 #include "governance/vote_utils.h"
 #include "governance/dao_supply.h"
 #include "governance/dao_tally_share.h"
-#include "governance/dao_tally_session_cycle.h"
 #include "governance/tally_manager.h"
 #include "governance/dao_tally.h"
 #include "governance/dao_dkg.h"
@@ -11490,48 +11489,6 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
         const uint32_t threshold = key_rec.threshold;
         if (threshold == 0) return true;
 
-        dao::dao_tally_session session;
-        bool have_session = false;
-        auto sit = m_dao_v2_tally_sessions.find(pid);
-        if (sit != m_dao_v2_tally_sessions.end()) {
-          have_session = true;
-          session = sit->second;
-        }
-
-        if (!have_session) {
-          session = dao::dao_tally_session{};
-          session.version        = 1;
-          session.share_epoch    = 1;
-          session.proposal_id    = pid;
-          if (key_rec.key_id.size() == 32)
-            std::memcpy(session.public_key_id.data,
-                        key_rec.key_id.data(), 32);
-          session.selection_height = rec.voting_end_height;
-          session.vote_end_height  = rec.voting_end_height;
-          session.committee_members = committee.members;
-          session.committee_global_indices = committee.global_indices;
-          session.committee_size = static_cast<uint32_t>(
-              committee.members.size());
-          session.threshold = threshold;
-          session.t         = key_rec.t;
-
-          const char* dom = "VeilRoot-DAO-TALLY-SESSION-COMMITTEE-V1";
-          std::vector<uint8_t> buf;
-          buf.insert(buf.end(), dom, dom + std::strlen(dom));
-          const uint32_t se = session.share_epoch;
-          for (int i = 0; i < 4; ++i)
-            buf.push_back((se >> (8*(3-i))) & 0xff);
-          for (const auto& m : session.committee_members)
-            buf.insert(buf.end(), m.data, m.data + sizeof(m.data));
-          crypto::cn_fast_hash(buf.data(), buf.size(),
-                               session.committee_id_hash);
-
-          m_dao_v2_tally_sessions[pid] = session;
-          MINFO("V2 tally session opened: proposal " << pid
-                << " committee " << session.committee_size
-                << " threshold " << session.threshold);
-        }
-
         // Tally uses the stable bootstrap DKG shares. The temporary
         // committee selects who participates; the verifier checks
         // partials against key_rec.V_K_i. No per-event reshare is
@@ -12150,7 +12107,6 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
 
       // Session and share buffer are per-event scratch state. Once
       // the result is applied they have served their purpose.
-      m_dao_v2_tally_sessions.erase(cert.proposal_id);
       m_dao_v2_tally_shares.erase(cert.proposal_id);
 
       applied = true;

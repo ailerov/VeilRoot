@@ -30,7 +30,7 @@
 
 #pragma once
 
-namespace cryptonote { namespace dao { struct dao_tally_key_record; struct dao_tally_session; } }
+namespace cryptonote { namespace dao { struct dao_tally_key_record; } }
 namespace cryptonote { namespace dao { struct dao_share_set_record; } }
 namespace cryptonote { namespace dao { struct dao_supply_snapshot; } }
 namespace cryptonote { namespace dao { struct dao_v2_outcome_record; } }

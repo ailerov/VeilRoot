@@ -18,7 +18,6 @@
 #include "cryptonote_core/blockchain.h"   // for proposal_record, status enum
 #include "governance/dao_paillier.h"
 #include "governance/dao_supply.h"
-#include "governance/dao_tally_session_cycle.h"
 #include "governance/dao_threshold.h"
 #include "misc_log_ex.h"
 
