@@ -9615,18 +9615,11 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     }
 
     // Already canonical: another node's activation block landed.
-    // For bootstrap, the singleton is authoritative. For per-proposal
-    // activations, look up the proposal's own key_id in the by-id
-    // table. The historical bootstrap singleton (present on live chain
-    // from a previous era) must NOT block per-proposal submissions.
+    // Per-proposal activations look up by-id.
     {
       bool already = false;
       try {
-        if (full.proposal_id == crypto::null_hash) {
-          dao::dao_tally_key_record existing;
-          if (m_db->get_dao_tally_key(existing))
-            already = true;
-        } else if (full.record.key_id.size() == 32) {
+        if (full.record.key_id.size() == 32) {
           dao::dao_tally_key_record existing;
           if (m_db->get_dao_tally_key_by_id(full.record.key_id, existing))
             already = true;

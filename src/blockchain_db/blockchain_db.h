@@ -2283,13 +2283,6 @@ public:
     // BEGIN_VNS_DAO_TALLY_SESSIONS
     // Public per-proposal tally session. Consensus state.
     // Key: proposal_id (32 bytes).
-    virtual void add_dao_tally_session(const crypto::hash& proposal_id,
-                                       const dao::dao_tally_session& rec) = 0;
-    virtual bool get_dao_tally_session(const crypto::hash& proposal_id,
-                                       dao::dao_tally_session& rec) const = 0;
-    virtual void remove_dao_tally_session(const crypto::hash& proposal_id) = 0;
-    virtual bool for_all_dao_tally_sessions(
-        std::function<bool(const crypto::hash&, const dao::dao_tally_session&)> f) const = 0;
     // ---------- VNS DAO TALLY SESSIONS END ----------
 
     // BEGIN_VNS_ELIGIBLE

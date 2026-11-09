@@ -45,7 +45,6 @@
 #define LMDB_DAO_V2_OUTCOMES "dao_v2_outcomes"
 #define LMDB_DAO_LOCAL_SHARES "dao_local_shares"
 #define LMDB_DAO_LOCAL_DYNAMIC_SHARES "dao_local_dynamic_shares"
-#define LMDB_DAO_TALLY_SESSIONS "dao_tally_sessions"
 #define LMDB_DAO_SHARE_SETS "dao_share_sets"
 #define LMDB_DAO_PROPOSAL_AGGREGATES "dao_proposal_aggregates"
 
@@ -104,7 +103,6 @@ typedef struct mdb_txn_cursors
   MDB_cursor *m_txc_dao_v2_outcomes;
   MDB_cursor *m_txc_dao_local_shares;
   MDB_cursor *m_txc_dao_local_dynamic_shares;
-  MDB_cursor *m_txc_dao_tally_sessions;
   MDB_cursor *m_txc_dao_share_sets;
   MDB_cursor *m_txc_extension_policy;
   MDB_cursor *m_txc_premium_label_policy;
@@ -157,7 +155,6 @@ typedef struct mdb_txn_cursors
 #define m_cur_dao_v2_outcomes      m_cursors->m_txc_dao_v2_outcomes
 #define m_cur_dao_local_shares     m_cursors->m_txc_dao_local_shares
 #define m_cur_dao_local_dynamic_shares     m_cursors->m_txc_dao_local_dynamic_shares
-#define m_cur_dao_tally_sessions     m_cursors->m_txc_dao_tally_sessions
 #define m_cur_dao_share_sets       m_cursors->m_txc_dao_share_sets
 #define m_cur_proposal_data        m_cursors->m_txc_proposal_data
 #define m_cur_pending_executions   m_cursors->m_txc_pending_executions
@@ -221,7 +218,6 @@ typedef struct mdb_rflags
   bool m_rf_dao_v2_outcomes;
   bool m_rf_dao_local_shares;
   bool m_rf_dao_local_dynamic_shares;
-  bool m_rf_dao_tally_sessions;
   bool m_rf_dao_share_sets;
 } mdb_rflags;
 
@@ -681,13 +677,6 @@ public:
   virtual bool get_dao_local_dynamic_share(uint32_t share_epoch,
                                            std::vector<uint8_t>& share_blob) const override;
   virtual void remove_dao_local_dynamic_share(uint32_t share_epoch) override;
-  virtual void add_dao_tally_session(const crypto::hash& proposal_id,
-                                     const dao::dao_tally_session& rec) override;
-  virtual bool get_dao_tally_session(const crypto::hash& proposal_id,
-                                     dao::dao_tally_session& rec) const override;
-  virtual void remove_dao_tally_session(const crypto::hash& proposal_id) override;
-  virtual bool for_all_dao_tally_sessions(
-      std::function<bool(const crypto::hash&, const dao::dao_tally_session&)> f) const override;
   // END_VNS_DAO_VOTE
 
   // BEGIN_VNS_TREASURY_LMDB_OVERRIDE
@@ -875,7 +864,6 @@ private:
   MDB_dbi m_dao_v2_outcomes;
   MDB_dbi m_dao_local_shares;
   MDB_dbi m_dao_local_dynamic_shares;
-  MDB_dbi m_dao_tally_sessions;
   MDB_dbi m_dao_share_sets;
 
   mutable uint64_t m_cum_size;

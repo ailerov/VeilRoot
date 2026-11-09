@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "governance/dao_tally_key.h"
-#include "governance/dao_tally_session.h"
 
 #include <cstring>
 
@@ -70,70 +69,6 @@ bool pull_fixed(const std::vector<uint8_t>& v, size_t& off, size_t n,
 // --------------------------------------------------------------------
 // dao_tally_committee_record
 // --------------------------------------------------------------------
-
-bool dao_tally_committee_record::serialize(std::vector<uint8_t>& out) const
-{
-    if (public_key_id.size()     != 32) return false;
-    if (committee_id_hash.size() != 32) return false;
-    if (committee_members.size() != committee_size) return false;
-    for (const auto& m : committee_members)
-        if (m.size() != 32) return false;
-    if (V_K_i.size() != committee_size) return false;
-    for (const auto& vk : V_K_i)
-        if (vk.size() != PAILLIER_CT_BYTES) return false;
-
-    out.clear();
-    push_u32(out, version);
-    push_u32(out, share_epoch);
-    push_u32(out, committee_size);
-    push_u32(out, threshold);
-    push_u32(out, t);
-    out.insert(out.end(), public_key_id.begin(), public_key_id.end());
-    out.insert(out.end(), committee_id_hash.begin(), committee_id_hash.end());
-    for (const auto& m : committee_members)
-        out.insert(out.end(), m.begin(), m.end());
-    for (const auto& vk : V_K_i)
-        out.insert(out.end(), vk.begin(), vk.end());
-    push_u64(out, selection_height);
-    push_u64(out, activation_height);
-    return true;
-}
-
-bool dao_tally_committee_record::deserialize(const std::vector<uint8_t>& in)
-{
-    size_t off = 0;
-    uint32_t v = 0, se = 0, cs = 0, th = 0, tt = 0;
-    if (!pull_u32(in, off, v))  return false;
-    if (!pull_u32(in, off, se)) return false;
-    if (!pull_u32(in, off, cs)) return false;
-    if (!pull_u32(in, off, th)) return false;
-    if (!pull_u32(in, off, tt)) return false;
-    if (cs == 0 || cs > 64) return false;
-
-    if (!pull_fixed(in, off, 32, public_key_id)) return false;
-    if (!pull_fixed(in, off, 32, committee_id_hash)) return false;
-
-    committee_members.assign(cs, {});
-    for (uint32_t i = 0; i < cs; ++i) {
-        if (!pull_fixed(in, off, 32, committee_members[i])) return false;
-    }
-
-    V_K_i.assign(cs, {});
-    for (uint32_t i = 0; i < cs; ++i) {
-        if (!pull_fixed(in, off, PAILLIER_CT_BYTES, V_K_i[i])) return false;
-    }
-
-    if (!pull_u64(in, off, selection_height))  return false;
-    if (!pull_u64(in, off, activation_height)) return false;
-    if (off != in.size()) return false;
-
-    version        = v;
-    share_epoch    = se;
-    committee_size = cs;
-    threshold      = th;
-    t              = tt;
-    return true;
-}
 
 } // namespace dao
 } // namespace cryptonote

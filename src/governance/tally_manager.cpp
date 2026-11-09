@@ -66,13 +66,9 @@ bool TallyManager::build_tally_result_transaction(
         return false;
 
     dao::dao_tally_key_record key_rec;
-    if (prop.tally_key_id == crypto::null_hash) {
-        // Bootstrap / legacy: proposal has no per-proposal key binding.
-        // Fall back to the singleton record installed by the
-        // bootstrap DKG activation.
-        if (!m_db.get_dao_tally_key(key_rec))
-            return false;
-    } else {
+    if (prop.tally_key_id == crypto::null_hash)
+        return false;  // proposal has no per-proposal key bound
+    {
         std::vector<uint8_t> kid(prop.tally_key_id.data,
                                  prop.tally_key_id.data + 32);
         if (!m_db.get_dao_tally_key_by_id(kid, key_rec))
