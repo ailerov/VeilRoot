@@ -71,15 +71,6 @@ public:
         return true;
     }
 
-    bool get_dao_tally_key(dao::dao_tally_key_record& rec) const override
-    {
-        if (!have_tally_key) return false;
-        rec = tally_key_record;
-        rec.key_id.assign(proposal_tally_key_id.data,
-                          proposal_tally_key_id.data + 32);
-        return true;
-    }
-
     bool get_dao_tally_key_by_id(const std::vector<uint8_t>& key_id,
                                  dao::dao_tally_key_record& rec) const override
     {

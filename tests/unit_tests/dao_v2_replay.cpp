@@ -906,7 +906,8 @@ bool build_v2_vote_fixture(V2VoteFixture& fx, const std::string& tag)
     if (dkg_out.record.key_id.size() != 32) return false;
     if (dkg_out.record.N.size() != 256) return false;
     fx.key_rec = dkg_out.record;
-    bc_a.install_dao_tally_key_for_test(dkg_out.record);
+    bc_a.install_dao_tally_key_for_proposal_for_test(
+        dkg_out.record, dkg_out.local_secret_share);
 
     // Mine empty blocks so real coinbase outputs exist.
     for (int i = 0; i < 5; ++i) {

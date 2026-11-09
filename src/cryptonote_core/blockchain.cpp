@@ -11771,29 +11771,7 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
     m_dao_v2_tally_shares.clear();
   }
 
-  void Blockchain::install_dao_tally_key_for_test(
-      const dao::dao_tally_key_record& record)
-  {
-    // The DB layer expects an active write transaction. The block
-    // apply path opens one; a direct test call must do the same.
-    m_db->block_wtxn_start();
-    try {
-      m_db->add_dao_tally_key(record);
-      if (record.key_id.size() == 32)
-        m_db->add_dao_tally_key_by_id(record.key_id, record);
-      dao::dao_share_set_record share_set;
-      if (dao::dao_synthesize_bootstrap_share_set(record, share_set)) {
-        m_db->add_dao_share_set(share_set.share_set_id, share_set);
-        m_db->set_current_dao_share_set_id(share_set.share_set_id);
-      }
-    } catch (...) {
-      try { m_db->block_wtxn_abort(); } catch (...) {}
-      throw;
-    }
-    m_db->block_wtxn_stop();
-  }
-
-  void Blockchain::install_dao_tally_key_for_proposal_for_test(
+    void Blockchain::install_dao_tally_key_for_proposal_for_test(
       const dao::dao_tally_key_record& record,
       const std::vector<uint8_t>& local_share_bytes)
   {

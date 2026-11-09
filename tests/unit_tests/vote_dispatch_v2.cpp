@@ -227,7 +227,7 @@ protected:
         rec.dkg_transcript_hash.assign(32, 0);
         rec.key_id.assign(32, 0);
         db_wtxn_guard g(m_db);
-        m_db->add_dao_tally_key(rec);
+        m_db->add_dao_tally_key_by_id(rec.key_id, rec);
     }
 };
 

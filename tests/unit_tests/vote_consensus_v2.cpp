@@ -101,7 +101,7 @@ protected:
 
         db_wtxn_guard g(m_db);
         m_db->add_proposal_record(fx.proposal_id, rec);
-        m_db->add_dao_tally_key(fx.key_rec);
+        m_db->add_dao_tally_key_by_id(fx.key_rec.key_id, fx.key_rec);
     }
 
     dao::PaillierPrivateKey m_psk;

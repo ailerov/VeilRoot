@@ -505,84 +505,6 @@ struct act_network
 
 } // namespace
 
-TEST_F(DaoBootstrapIntegration, ActivationChainBindsKeyRecordAfterPersistence)
-{
-    // The integration node's identity is already installed in LMDB.
-    // Build a committee whose first entry is this node, then run three
-    // offline runners to produce a real dkg_result.
-    std::vector<crypto::public_key> committee;
-    committee.push_back(m_node_pub);
-    for (int i = 0; i < 2; ++i) {
-        crypto::public_key pk;
-        crypto::secret_key sk;
-        crypto::generate_keys(pk, sk);
-        committee.push_back(pk);
-    }
-
-    dao_vss_group vss;
-    ASSERT_TRUE(dao_vss_group_generate(vss,
-        dao_dkg_required_vss_bits(60, 128, 32)));
-
-    dkg_result completed;
-    bool ceremony_ok = false;
-    for (int attempt = 0; attempt < 2 && !ceremony_ok; ++attempt) {
-        act_network net;
-        std::vector<std::unique_ptr<dkg_p2p_runner>> runners;
-        for (uint32_t i = 0; i < 3; ++i) {
-            dkg_config cfg;
-            cfg.committee_size = 3;
-            cfg.threshold      = dao_dkg_expected_threshold(3);
-            cfg.member_ids     = committee;
-            cfg.local_party_id = i + 1;
-            cfg.test_seed      = 0x5645494C52544F33ULL;
-            cfg.target_N_bits  = 128;
-            cfg.phase_timeout_seconds = 600;
-            auto cb = net.cb();
-            runners.emplace_back(new dkg_p2p_runner(cfg, vss, cb));
-        }
-        for (uint32_t i = 0; i < 3; ++i)
-            net.reg(i + 1, committee[i], runners[i].get());
-        for (auto& r : runners) ASSERT_TRUE(r->start());
-
-        dkg_result local_completed;
-        if (runners[0]->wait(local_completed, 600) &&
-            local_completed.ok &&
-            !local_completed.local_secret_share.empty()) {
-            completed = std::move(local_completed);
-            ceremony_ok = true;
-        } else {
-            std::cerr << "ActivationChainBinds attempt " << attempt
-                      << ": DKG did not complete\n";
-        }
-    }
-    ASSERT_TRUE(ceremony_ok) << "ActivationChainBinds DKG failed after 2 attempts";
-    ASSERT_TRUE(completed.ok);
-    ASSERT_FALSE(completed.local_secret_share.empty());
-
-    // Queue the result on the blockchain and drain it on this thread.
-    auto& bc = m_core->get_blockchain_storage();
-    bc.queue_dao_v2_dkg_result(std::string{}, completed);
-    bc.maybe_process_dao_v2_dkg_results();
-
-    // Key record installed. In production this happens via a
-    // DKG key-activation transaction during block application; this
-    // fixture exercises the tally path and installs directly.
-    bc.install_dao_tally_key_for_test(completed.record);
-
-    // Key record persisted.
-    dao::dao_tally_key_record rec;
-    ASSERT_TRUE(bc.get_db().get_dao_tally_key(rec));
-    EXPECT_EQ(rec.committee_size, 3u);
-    EXPECT_EQ(rec.threshold, 2u);
-
-    // Key record activated.
-    
-    // Local share stored under this node's committee index.
-    std::vector<uint8_t> share;
-    ASSERT_TRUE(bc.get_db().get_dao_local_share(1, 1, share));
-    EXPECT_FALSE(share.empty());
-}
-
 // ------------------------------------------------------------------
 // Threshold combine is invariant to the chosen subset.
 //
@@ -2560,10 +2482,6 @@ TEST_F(DaoBootstrapIntegration, TwoProposalsIsolatedTallyKeys)
         EXPECT_NE(lsA, lsB);
     }
 
-    {
-        dao::dao_tally_key_record singleton;
-        EXPECT_FALSE(db.get_dao_tally_key(singleton));
-    }
 }
 
 // ------------------------------------------------------------------

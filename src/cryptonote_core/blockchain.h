@@ -1452,8 +1452,6 @@ namespace cryptonote
   // single-node fixtures that exercise the tally path and do not care
   // about how the key record arrived. Tests that specifically exercise
   // the activation path must not use this.
-  void install_dao_tally_key_for_test(
-      const dao::dao_tally_key_record& record);
 
   // Per-proposal install: writes the key by-id only (no singleton),
   // synthesizes the share set under the derived id, stores the local

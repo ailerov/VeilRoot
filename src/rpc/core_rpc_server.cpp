@@ -4791,8 +4791,6 @@ bool core_rpc_server::on_publish_service_descriptor(const COMMAND_RPC_PUBLISH_SE
           have_key = db_ref.get_dao_tally_key_by_id(kid, rec);
         }
       }
-    } else {
-      have_key = db_ref.get_dao_tally_key(rec);
     }
     if (!have_key)
     {

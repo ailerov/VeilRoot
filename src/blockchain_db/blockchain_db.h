@@ -2185,9 +2185,6 @@ public:
     // There is one stable DKG key record per network. It is not
     // All proposals, votes and shares bind to it by
     // key_id (32 bytes) carried inside the record itself.
-    virtual void add_dao_tally_key(const dao::dao_tally_key_record& record) = 0;
-    virtual bool get_dao_tally_key(dao::dao_tally_key_record& record) const = 0;
-    virtual void remove_dao_tally_key() = 0;
 
     // Per-proposal tally key storage (B2a). Indexed by the record's
     // 32-byte key_id. The singleton accessors above remain for
