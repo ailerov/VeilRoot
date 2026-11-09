@@ -205,20 +205,8 @@ bool TallyManager::produce_local_share(
             return false;
         proof_vk = event_share_set->VK_i[key_record_position - 1];
     } else {
-        share_set_id = m_db.get_current_dao_share_set_id();
-        dao::dao_share_set_record ss;
-        bool ss_matches = false;
-        if (share_set_id != 0 &&
-            m_db.get_dao_share_set(share_set_id, ss) &&
-            ss.key_id.size() == key_rec.key_id.size() &&
-            std::memcmp(ss.key_id.data(), key_rec.key_id.data(),
-                        key_rec.key_id.size()) == 0) {
-            ss_matches = true;
-        }
-        if (!ss_matches) {
-            share_set_id = static_cast<uint64_t>(
-                dao::share_set_id_for_key_id(key_rec.key_id));
-        }
+        share_set_id = static_cast<uint64_t>(
+            dao::share_set_id_for_key_id(key_rec.key_id));
         if (key_record_position < 1 ||
             key_record_position > key_rec.V_K_i.size())
             return false;

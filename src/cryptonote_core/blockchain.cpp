@@ -11296,9 +11296,6 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
       cur_sid = latest_share_set_id_for_key_id(key_rec.key_id);
     }
     if (cur_sid == 0) {
-      cur_sid = m_db->get_current_dao_share_set_id();
-    }
-    if (cur_sid == 0) {
       MWARNING("V2 tally share: no current share set");
       return;
     }

@@ -54,9 +54,6 @@ struct dao_tally_session
     std::vector<uint32_t>             committee_global_indices;
 
     bool                              tally_complete = false;
-
-    bool serialize(std::vector<uint8_t>& out) const;
-    bool deserialize(const std::vector<uint8_t>& in);
 };
 
 } // namespace dao
