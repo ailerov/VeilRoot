@@ -10674,6 +10674,16 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
   {
     if (!m_dao_v2_dkg_send) return;
 
+    // Hold m_blockchain_lock across chain-state reads (proposal
+    // record, key record, share sets, node_ready roster) and the
+    // runner assignment. Without this, under concurrent batch
+    // writes the reads can observe mixed pre-/post-batch state: a
+    // node_ready entry's stored_bh passes one read and its
+    // canonical-hash check fails the next, filtering every peer out
+    // and aborting the reshape with zero reachable contributors.
+    // Recursive critical_section: callers already holding it are fine.
+    CRITICAL_REGION_LOCAL(m_blockchain_lock);
+
     // Only one reshare runner at a time. If busy, defer to next tick.
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
