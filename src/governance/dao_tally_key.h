@@ -22,37 +22,5 @@
 
 namespace cryptonote {
 namespace dao {
-
-struct dao_tally_public_key_record
-{
-    uint32_t             version   = 1;
-    uint32_t             key_epoch = 0;
-
-    std::vector<uint8_t> delta;   // 32 bytes, canonical big-endian
-    std::vector<uint8_t> N;       // 256 bytes
-    std::vector<uint8_t> G;       // 256 bytes, canonical big-endian (N+1)
-    std::vector<uint8_t> theta;   // 256 bytes, canonical big-endian
-    std::vector<uint8_t> V;       // 512 bytes, verification base
-
-    // VSS group public parameters. These belong to the key system, not
-    // to any particular committee, so they live here rather than on the
-    // committee record.
-    std::vector<uint8_t> vss_P;
-    std::vector<uint8_t> vss_P_prime;
-    std::vector<uint8_t> vss_g;
-    std::vector<uint8_t> vss_h;
-
-    // Deterministic hash of this complete public record.
-    std::vector<uint8_t> key_id;               // 32 bytes
-
-    // Bootstrap DKG transcript hash.
-    std::vector<uint8_t> dkg_transcript_hash;  // 32 bytes
-
-    uint64_t             activation_height = 0;
-
-    bool serialize(std::vector<uint8_t>& out) const;
-    bool deserialize(const std::vector<uint8_t>& in);
-};
-
 } // namespace dao
 } // namespace cryptonote

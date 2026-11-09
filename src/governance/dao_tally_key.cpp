@@ -65,61 +65,7 @@ bool pull_fixed(const std::vector<uint8_t>& v, size_t& off, size_t n,
 } // anonymous namespace
 
 // --------------------------------------------------------------------
-// dao_tally_public_key_record
 // --------------------------------------------------------------------
-
-bool dao_tally_public_key_record::serialize(std::vector<uint8_t>& out) const
-{
-    if (delta.size() != 32)                       return false;
-    if (N.size()     != PAILLIER_MODULUS_BYTES)   return false;
-    if (G.size()     != PAILLIER_MODULUS_BYTES)   return false;
-    if (theta.size() != PAILLIER_MODULUS_BYTES)   return false;
-    if (V.size()     != PAILLIER_CT_BYTES)        return false;
-    if (key_id.size()              != 32)         return false;
-    if (dkg_transcript_hash.size() != 32)         return false;
-
-    out.clear();
-    push_u32(out, version);
-    push_u32(out, key_epoch);
-    push_bytes(out, delta);
-    push_bytes(out, N);
-    push_bytes(out, G);
-    push_bytes(out, theta);
-    push_bytes(out, V);
-    push_bytes(out, vss_P);
-    push_bytes(out, vss_P_prime);
-    push_bytes(out, vss_g);
-    push_bytes(out, vss_h);
-    out.insert(out.end(), key_id.begin(), key_id.end());
-    out.insert(out.end(), dkg_transcript_hash.begin(), dkg_transcript_hash.end());
-    push_u64(out, activation_height);
-    return true;
-}
-
-bool dao_tally_public_key_record::deserialize(const std::vector<uint8_t>& in)
-{
-    size_t off = 0;
-    uint32_t v = 0, e = 0;
-    if (!pull_u32(in, off, v)) return false;
-    if (!pull_u32(in, off, e)) return false;
-    if (!pull_bytes(in, off, delta)) return false;
-    if (!pull_bytes(in, off, N)) return false;
-    if (!pull_bytes(in, off, G)) return false;
-    if (!pull_bytes(in, off, theta)) return false;
-    if (!pull_bytes(in, off, V)) return false;
-    if (!pull_bytes(in, off, vss_P)) return false;
-    if (!pull_bytes(in, off, vss_P_prime)) return false;
-    if (!pull_bytes(in, off, vss_g)) return false;
-    if (!pull_bytes(in, off, vss_h)) return false;
-    if (!pull_fixed(in, off, 32, key_id)) return false;
-    if (!pull_fixed(in, off, 32, dkg_transcript_hash)) return false;
-    if (!pull_u64(in, off, activation_height)) return false;
-    if (off != in.size()) return false;
-
-    version   = v;
-    key_epoch = e;
-    return true;
-}
 
 // --------------------------------------------------------------------
 // dao_tally_committee_record
