@@ -537,7 +537,6 @@ TYPED_TEST(BlockchainDBTest, DaoShareSetRoundTrip)
   this->get_filenames();
 
   // Never-set current share set -> 0.
-  EXPECT_EQ(this->m_db->get_current_dao_share_set_id(), 0u);
 
   auto make_record = [](uint64_t id, uint8_t fill) {
     dao::dao_share_set_record r;
@@ -559,10 +558,8 @@ TYPED_TEST(BlockchainDBTest, DaoShareSetRoundTrip)
   {
     db_wtxn_guard guard(this->m_db);
     ASSERT_NO_THROW(this->m_db->add_dao_share_set(1, rec1));
-    ASSERT_NO_THROW(this->m_db->set_current_dao_share_set_id(1));
   }
 
-  EXPECT_EQ(this->m_db->get_current_dao_share_set_id(), 1u);
 
   {
     dao::dao_share_set_record got;
@@ -579,10 +576,8 @@ TYPED_TEST(BlockchainDBTest, DaoShareSetRoundTrip)
   {
     db_wtxn_guard guard(this->m_db);
     ASSERT_NO_THROW(this->m_db->add_dao_share_set(2, rec2));
-    ASSERT_NO_THROW(this->m_db->set_current_dao_share_set_id(2));
   }
 
-  EXPECT_EQ(this->m_db->get_current_dao_share_set_id(), 2u);
 
   {
     dao::dao_share_set_record g1, g2;

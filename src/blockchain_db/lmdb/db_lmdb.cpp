@@ -1734,9 +1734,6 @@ void BlockchainLMDB::open(const std::string& filename, const int db_flags)
   // dao_tally_key_record. There is exactly one stable key record per
   // network.
   lmdb_db_open(txn, LMDB_TALLY_KEYS, MDB_CREATE, m_tally_keys, "Failed to open db handle for tally_keys");
-  // tally_state: singleton. Key = 0x45 ('E'), value = 4-byte BE current
-  // share set id.
-  lmdb_db_open(txn, LMDB_TALLY_STATE, MDB_CREATE, m_tally_state, "Failed to open db handle for tally_state");
   lmdb_db_open(txn, LMDB_DAO_SHARE_SETS, MDB_CREATE, m_dao_share_sets, "Failed to open db handle for dao_share_sets");
   // END_VNS_TALLY_KEYS
 
@@ -3689,7 +3686,6 @@ uint64_t share_set_decode_key(const unsigned char in[8])
   for (int i = 0; i < 8; ++i) x = (x << 8) | in[i];
   return x;
 }
-constexpr unsigned char SHARE_SET_CURRENT_KEY = 0x53; // 'S'
 } // namespace
 
 void BlockchainLMDB::add_dao_share_set(uint64_t share_set_id,
@@ -3748,42 +3744,6 @@ void BlockchainLMDB::remove_dao_share_set(uint64_t share_set_id)
     mdb_cursor_del(cur.get(), 0);
   else if (result != MDB_NOTFOUND)
     throw0(DB_ERROR(lmdb_error("Failed to remove dao share set: ", result).c_str()));
-}
-
-uint64_t BlockchainLMDB::get_current_dao_share_set_id() const
-{
-  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
-  check_open();
-  TXN_PREFIX_RDONLY();
-  RCURSOR(tally_state)
-  unsigned char kbuf[1] = { SHARE_SET_CURRENT_KEY };
-  MDB_val k = { sizeof(kbuf), kbuf };
-  MDB_val v;
-  int result = mdb_cursor_get(m_cur_tally_state, &k, &v, MDB_SET);
-  if (result == MDB_NOTFOUND) { TXN_POSTFIX_RDONLY(); return 0; }
-  if (result)
-    throw0(DB_ERROR(lmdb_error("Failed to get current share set id: ", result).c_str()));
-  if (v.mv_size != 8) { TXN_POSTFIX_RDONLY(); return 0; }
-  const uint64_t id = share_set_decode_key(static_cast<const unsigned char*>(v.mv_data));
-  TXN_POSTFIX_RDONLY();
-  return id;
-}
-
-void BlockchainLMDB::set_current_dao_share_set_id(uint64_t share_set_id)
-{
-  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
-  check_open();
-  lmdb_cursor_guard cur(m_write_txn->m_txn, m_tally_state);
-  unsigned char kbuf[1] = { SHARE_SET_CURRENT_KEY };
-  unsigned char vbuf[8];
-  share_set_encode_key(share_set_id, vbuf);
-  MDB_val k = { sizeof(kbuf), kbuf };
-  MDB_val v = { sizeof(vbuf), vbuf };
-  int result = mdb_cursor_put(cur.get(), &k, &v, MDB_NODUPDATA);
-  if (result == MDB_KEYEXIST)
-    result = mdb_cursor_put(cur.get(), &k, &v, MDB_CURRENT);
-  if (result)
-    throw0(DB_ERROR(lmdb_error("Failed to set current share set id: ", result).c_str()));
 }
 
 

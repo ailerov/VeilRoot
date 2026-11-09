@@ -39,7 +39,6 @@
 #define ENABLE_AUTO_RESIZE
 #define LMDB_TREASURY_OUTPUTS "treasury_outputs"
 #define LMDB_TALLY_KEYS "tally_keys"
-#define LMDB_TALLY_STATE "tally_state"
 #define LMDB_DAO_VOTE_RECORDS "dao_vote_records"
 #define LMDB_DAO_SUPPLY_HISTORY "dao_supply_history"
 #define LMDB_DAO_V2_OUTCOMES "dao_v2_outcomes"
@@ -96,7 +95,6 @@ typedef struct mdb_txn_cursors
   MDB_cursor *m_txc_pending_executions;
   MDB_cursor *m_txc_governance_parameters;
   MDB_cursor *m_txc_tally_keys;
-  MDB_cursor *m_txc_tally_state;
   MDB_cursor *m_txc_dao_vote_records;
   MDB_cursor *m_txc_dao_proposal_aggregates;
   MDB_cursor *m_txc_dao_supply_history;
@@ -148,7 +146,6 @@ typedef struct mdb_txn_cursors
 #define m_cur_committee_key        m_cursors->m_txc_committee_key
 #define m_cur_proposal_outcomes    m_cursors->m_txc_proposal_outcomes
 #define m_cur_tally_keys           m_cursors->m_txc_tally_keys
-#define m_cur_tally_state          m_cursors->m_txc_tally_state
 #define m_cur_dao_vote_records     m_cursors->m_txc_dao_vote_records
 #define m_cur_dao_proposal_aggregates m_cursors->m_txc_dao_proposal_aggregates
 #define m_cur_dao_supply_history   m_cursors->m_txc_dao_supply_history
@@ -211,7 +208,6 @@ typedef struct mdb_rflags
   bool m_rf_proposal_outcomes;
   bool m_rf_proposal_data;
   bool m_rf_tally_keys;
-  bool m_rf_tally_state;
   bool m_rf_dao_vote_records;
   bool m_rf_dao_proposal_aggregates;
   bool m_rf_dao_supply_history;
@@ -664,8 +660,6 @@ public:
   virtual bool get_dao_share_set(uint64_t share_set_id,
                                  dao::dao_share_set_record& record) const override;
   virtual void remove_dao_share_set(uint64_t share_set_id) override;
-  virtual uint64_t get_current_dao_share_set_id() const override;
-  virtual void set_current_dao_share_set_id(uint64_t share_set_id) override;
   virtual bool for_all_dao_share_sets(
       std::function<bool(uint64_t share_set_id,
                          const dao::dao_share_set_record&)> f) const override;
@@ -854,7 +848,6 @@ private:
   MDB_dbi m_vote_nullifiers;
   MDB_dbi m_treasury_outputs;
   MDB_dbi m_tally_keys;
-  MDB_dbi m_tally_state;
   MDB_dbi m_dao_vote_records;
   MDB_dbi m_dao_proposal_aggregates;
   MDB_dbi m_dao_supply_history;

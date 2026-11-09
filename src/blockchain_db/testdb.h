@@ -211,8 +211,6 @@ public:
   virtual void add_dao_share_set(uint64_t, const dao::dao_share_set_record&) override {}
   virtual bool get_dao_share_set(uint64_t, dao::dao_share_set_record&) const override { return false; }
   virtual void remove_dao_share_set(uint64_t) override {}
-  virtual uint64_t get_current_dao_share_set_id() const override { return 0; }
-  virtual void set_current_dao_share_set_id(uint64_t) override {}
   virtual bool for_all_dao_share_sets(
       std::function<bool(uint64_t, const dao::dao_share_set_record&)>)
       const override { return true; }
