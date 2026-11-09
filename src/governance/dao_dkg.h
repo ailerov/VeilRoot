@@ -127,20 +127,18 @@ uint32_t dao_dkg_required_vss_bits(uint32_t k_bits,
 
 enum class dkg_msg_type : uint8_t
 {
-    phase_complete           = 0x02,
+    // Retired wire bytes (do not reuse): 0x02, 0x14, 0x32, 0x71, 0x7A, 0x7C, 0x7D.
     dkg_abort                = 0x03,
 
     polynomial_commitment_p  = 0x10,
     polynomial_commitment_q  = 0x11,
     polynomial_commitment_h  = 0x12,
     polynomial_share         = 0x13,
-    share_complaint          = 0x14,
 
     bgw_product_share        = 0x20,
 
     biprimality_base         = 0x30,
     biprimality_Q            = 0x31,
-    biprimality_Q_proof      = 0x32,
 
     trial_division_commit    = 0x40,
     trial_division_share     = 0x41,
@@ -167,7 +165,6 @@ enum class dkg_msg_type : uint8_t
     v_commit                 = 0x67,
     v_reveal                 = 0x68,
     verification_key         = 0x70,
-    verification_key_proof   = 0x71,
     key_record_ready         = 0x72,
     transcript_leaf          = 0x73,
 
@@ -195,10 +192,7 @@ enum class dkg_msg_type : uint8_t
     reshare_proof            = 0x77,
     reshare_complete         = 0x78,
     reshare_abort            = 0x79,
-    reshare_vki_set          = 0x7A,
     reshare_ready            = 0x7B,
-    reshare_manifest         = 0x7C,
-    reshare_manifest_ack     = 0x7D,
 
 };
 
