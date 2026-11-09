@@ -7398,9 +7398,6 @@ bool dkg_p2p_runner::impl::run_modulus_attempt(BIGNUM* N_out)
             phase_timeout_s, sieve_p, sieve_q, sctx, &stage);
         BN_CTX_free(sctx);
         if (!sok) {
-            std::cerr << "[runner p" << me << " c"
-                      << party->current_candidate_id()
-                      << "] sieve failed: " << (stage ? stage : "?") << "\n";
             BN_free(sieve_p); BN_free(sieve_q);
             return false;
         }
@@ -7433,11 +7430,6 @@ bool dkg_p2p_runner::impl::run_modulus_attempt(BIGNUM* N_out)
     }
     if (!feed_party(msgs)) {
         
-        for (const auto& m : msgs) {
-            std::cerr << "  msg type=" << static_cast<int>(m.hdr.type)
-                      << " sender=" << m.hdr.sender_id
-                      << " recip=" << m.hdr.recipient_id << "\n";
-        }
         return false;
     }
 

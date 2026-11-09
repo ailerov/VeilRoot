@@ -1111,26 +1111,16 @@ block Blockchain::pop_block_from_blockchain()
       if (!act.deserialize(gpf.payload.data))
         break;
 
-      const bool is_bootstrap =
-          (act.proposal_id == crypto::null_hash);
-      const uint64_t ssid = is_bootstrap
-          ? 1u
-          : static_cast<uint64_t>(
-                dao::share_set_id_for_key_id(act.record.key_id));
+      const uint64_t ssid = static_cast<uint64_t>(
+          dao::share_set_id_for_key_id(act.record.key_id));
 
       try { m_db->remove_dao_share_set(ssid); } catch (...) {}
-      if (is_bootstrap) {
-        try { m_db->set_current_dao_share_set_id(0); } catch (...) {}
-      }
 
       if (act.record.key_id.size() == 32)
         try { m_db->remove_dao_tally_key_by_id(act.record.key_id); }
         catch (...) {}
 
-      if (is_bootstrap)
-        try { m_db->remove_dao_tally_key(); } catch (...) {}
-
-      if (!is_bootstrap) {
+      {
         proposal_record prop;
         if (m_db->get_proposal_record(act.proposal_id, prop)) {
           if (act.record.key_id.size() == 32 &&
@@ -1142,8 +1132,7 @@ block Blockchain::pop_block_from_blockchain()
         }
       }
 
-      MINFO("Rolled back DKG key activation (bootstrap="
-            << (is_bootstrap ? 1 : 0) << ")");
+      MINFO("Rolled back DKG key activation for " << act.proposal_id);
       break;
     }
   }
@@ -9720,62 +9709,6 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
   }
   return false;
 }
-
-void Blockchain::maybe_bootstrap_dao_v2_dkg()
-  {
-    // One-time bootstrap of the stable Paillier public key.
-    //
-    // This establishes N, G, theta, V, V_K_i and the distributed
-    // secret sharing among the bootstrap shareholders.
-    // Every currently eligible node is a bootstrap shareholder, so
-    // every node that could ever be selected for a tally committee
-    // already holds a share for this key.
-    //
-    // The tally committee for a proposal is a temporary subset of
-    // this shareholder set, selected at the proposal's voting end.
-    // No new DKG, no share transfer: the selected members use the
-    // shares they already hold.
-    //
-    // Runs once. Idempotent.
-    const uint64_t height = get_current_blockchain_height();
-    if (!dao_v2_active_or_test_override(height)) return;
-
-    const std::string bootstrap_ceremony_id;
-
-    // Already running or already persisted.
-    if (m_dao_v2_dkg_runners.count(bootstrap_ceremony_id) > 0) return;
-
-    {
-      dao::dao_tally_key_record existing;
-      try {
-        if (m_db->get_dao_tally_key(existing)) return;
-      } catch (...) {
-        // Read failure is not fatal here; try to bootstrap next cycle.
-      }
-    }
-
-    // The bootstrap gate is the ready-node roster, not the wallet
-    // registration table. Roster entries are dropped when stale, so a
-    // node that has gone silent does not hold a ceremony open.
-    {
-      std::lock_guard<std::mutex> lk(m_dao_v2_ready_mutex);
-      for (auto it = m_dao_v2_ready_peers.begin();
-           it != m_dao_v2_ready_peers.end(); ) {
-        if (is_dao_v2_ready_peer_stale(it->second.first, it->second.second))
-          it = m_dao_v2_ready_peers.erase(it);
-        else
-          ++it;
-      }
-      MWARNING("V2 DKG gate: roster=" << m_dao_v2_ready_peers.size());
-      if (m_dao_v2_ready_peers.size() <
-          dao::DAO_DKG_MIN_COMMITTEE_SIZE)
-        return;
-    }
-
-    // Not a bootstrap shareholder is fine — other nodes will run it.
-    (void)bootstrap_dao_v2_dkg(bootstrap_ceremony_id);
-  }
-
   // BEGIN_VNS_DAO_V2_NODE_READY
 
   namespace {
@@ -10397,112 +10330,6 @@ void Blockchain::maybe_bootstrap_dao_v2_dkg()
     }
     return true;
   }
-
-    bool Blockchain::bootstrap_dao_v2_dkg(const std::string& ceremony_id)
-  {
-    if (m_dao_v2_dkg_runners.count(ceremony_id) > 0)
-      return true;   // already running
-
-    // The bootstrap DKG runs over the ready-node roster: every daemon
-    // that has announced a valid node_ready and whose announcement has
-    // not expired. Order is lexicographic on the 32-byte pubkey so every
-    // node derives the same committee list and the same member indices.
-    const uint64_t chain_height = get_current_blockchain_height();
-    if (chain_height == 0) return false;
-    const uint64_t selection_height = chain_height - 1;
-
-    std::vector<std::pair<crypto::public_key, uint64_t>> shareholders_sorted;
-    {
-      std::lock_guard<std::mutex> lk(m_dao_v2_ready_mutex);
-      for (const auto& kv : m_dao_v2_ready_peers) {
-        if (is_dao_v2_ready_peer_stale(kv.second.first, kv.second.second))
-          continue;
-        shareholders_sorted.emplace_back(kv.first, 0);
-      }
-    }
-    std::sort(shareholders_sorted.begin(), shareholders_sorted.end(),
-              [](const auto& a, const auto& b) {
-                return std::memcmp(a.first.data, b.first.data,
-                                   sizeof(a.first.data)) < 0;
-              });
-    if (shareholders_sorted.size() > dao::DAO_DKG_MAX_COMMITTEE_SIZE)
-      shareholders_sorted.resize(dao::DAO_DKG_MAX_COMMITTEE_SIZE);
-
-    if (shareholders_sorted.size() < dao::DAO_DKG_MIN_COMMITTEE_SIZE) {
-      MWARNING("bootstrap_dao_v2_dkg: not enough eligible shareholders");
-      return false;
-    }
-    if (shareholders_sorted.size() > dao::DAO_DKG_MAX_COMMITTEE_SIZE) {
-      MERROR("bootstrap_dao_v2_dkg: " << shareholders_sorted.size()
-             << " eligible shareholders, but the current threshold "
-             "implementation supports at most "
-             << dao::DAO_DKG_MAX_COMMITTEE_SIZE
-             << ". Delta is fixed at 16! and the Lagrange machinery is "
-             "defined for member indices 1..16.");
-      return false;
-    }
-
-    std::vector<crypto::public_key> shareholders;
-    shareholders.reserve(shareholders_sorted.size());
-    for (const auto& e : shareholders_sorted)
-      shareholders.push_back(e.first);
-
-    // Deterministic VSS group. In production this selects an FFDHE
-    // named group and derives h from a canonical tuple of the group
-    // parameters, so every node derives the same group.
-#ifdef VEILROOT_DAO_DKG_TESTING
-    const uint32_t target_N_bits = 128;
-    const uint32_t qproof_rounds = dao::DAO_DKG_QPROOF_ROUNDS_TEST;
-#else
-    const uint32_t target_N_bits = dao::DAO_DKG_TARGET_N_BITS_PROD;
-    const uint32_t qproof_rounds = dao::DAO_DKG_QPROOF_ROUNDS_PROD;
-#endif
-
-    const uint32_t required_bits = dao::dao_dkg_required_vss_bits(
-        dao::DAO_DKG_K_BITS_PROD, target_N_bits,
-        dao::DAO_DKG_SECURITY_BITS_PROD);
-
-    // The runner stores a raw pointer to the VSS group, so the group
-    // must outlive the runner. Own it alongside the runner.
-    auto vss_holder = std::make_unique<dao::dao_vss_group>();
-    if (!dao::dao_vss_group_generate(*vss_holder, required_bits)) {
-      MWARNING("bootstrap_dao_v2_dkg: VSS group generation failed");
-      return false;
-    }
-
-    if (!start_dao_v2_dkg(ceremony_id, shareholders, *vss_holder,
-                          target_N_bits, qproof_rounds)) {
-      // Not in committee is not an error.
-      MINFO("bootstrap_dao_v2_dkg: runner not started for ceremony_id " << ceremony_id);
-      return false;
-    }
-
-    m_dao_v2_dkg_vss.emplace(ceremony_id, std::move(vss_holder));
-
-    // Watcher: waits for the runner to finish, then persists the
-    // outcome. Runs on its own thread so the caller is not blocked.
-    auto* self = this;
-    m_dao_v2_dkg_watchers.emplace(ceremony_id, std::thread(
-        [self, ceremony_id, selection_height]() {
-      auto it = self->m_dao_v2_dkg_runners.find(ceremony_id);
-      if (it == self->m_dao_v2_dkg_runners.end()) return;
-      dao::dkg_result res;
-      if (!it->second->wait(res, 0)) {
-        MWARNING("DAO V2 DKG ceremony_id " << ceremony_id
-                 << ": ceremony failed (attempts=" << res.candidate_attempts
-                 << " accepted=" << res.candidate_accepted
-                 << " biprimality_failures=" << res.biprimality_failures
-                 << " trial_div_failures=" << res.trial_division_failures
-                 << " beta_retries=" << res.beta_phase_retries << ")");
-        return;
-      }
-      res.selection_height = selection_height;
-      self->queue_dao_v2_dkg_result(ceremony_id, std::move(res));
-    }));
-
-    return true;
-  }
-
     dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
       const crypto::hash& proposal_id)
   {
@@ -12081,18 +11908,8 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
 
     const dao::dao_tally_key_record& rec = act.record;
 
-    // 3. Bootstrap activation: reject if the singleton key is already
-    // installed. Per-proposal activations live in the by-id table and
-    // are checked separately at apply time.
-    if (act.proposal_id == crypto::null_hash) {
-      dao::dao_tally_key_record existing;
-      try {
-        if (m_db->get_dao_tally_key(existing)) {
-          MERROR("dkg-activation: bootstrap key record already installed");
-          return false;
-        }
-      } catch (...) {}
-    } else {
+    // Duplicate check for per-proposal activation (by-id only).
+    {
       dao::dao_tally_key_record existing;
       try {
         if (m_db->get_dao_tally_key_by_id(rec.key_id, existing)) {
@@ -12268,13 +12085,7 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
       rec.activation_height = block_height;
 
 
-      // Install the public key record. Bootstrap (null proposal_id)
-      // writes the singleton for historical replay compatibility;
-      // per-proposal writes by-id only, so proposal activations do
-      // not overwrite the historical bootstrap record.
-      const bool act_is_bootstrap = (act.proposal_id == crypto::null_hash);
-      if (act_is_bootstrap)
-        m_db->add_dao_tally_key(rec);
+      // Per-proposal activation writes by-id only.
       if (rec.key_id.size() == 32)
         m_db->add_dao_tally_key_by_id(rec.key_id, rec);
 
@@ -12287,18 +12098,12 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
       }
 
       // Install the share set under a deterministic per-key id so
-      // multiple proposals do not collide. Bootstrap (proposal_id ==
-      // null) keeps the historical id 1 and remains the "current"
-      // share set for legacy code paths; per-proposal keys do not
-      // touch the global current pointer.
+      // multiple proposals do not collide. Per-proposal only.
       dao::dao_share_set_record share_set;
-      const bool is_bootstrap = (act.proposal_id == crypto::null_hash);
-      const uint64_t ssid = is_bootstrap
-          ? 1u
-          : static_cast<uint64_t>(dao::share_set_id_for_key_id(rec.key_id));
+      const uint64_t ssid = static_cast<uint64_t>(
+          dao::share_set_id_for_key_id(rec.key_id));
       if (dao::dao_synthesize_bootstrap_share_set(rec, share_set, ssid)) {
         m_db->add_dao_share_set(ssid, share_set);
-        if (is_bootstrap) m_db->set_current_dao_share_set_id(ssid);
       }
 
       MINFO("DKG key activation applied at height " << block_height

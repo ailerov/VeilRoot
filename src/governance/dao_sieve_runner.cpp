@@ -70,25 +70,7 @@ bool run_one_factor_impl(
 {
     auto FAIL = [&](const char* stage) -> bool {
         if (fail_stage_out) *fail_stage_out = stage;
-        std::fprintf(stderr, "[sieve f%u p%u] FAIL: %s\n",
-                     (unsigned)factor, local_party_id, stage);
-        // File-based log (defensive against test harness capturing stderr).
-        if (FILE* f = std::fopen("sieve_debug.log", "a")) {
-            std::fprintf(f, "[f%u p%u] FAIL: %s\n",
-                         (unsigned)factor, local_party_id, stage);
-            std::fclose(f);
-        }
         return false;
-    };
-
-    // Diagnostic: log entry/exit for drain stages so we can identify where
-    // the pipeline stalls. Writes to sieve_debug.log in cwd.
-    auto dbg = [&](const char* tag) {
-        if (FILE* f = std::fopen("sieve_debug.log", "a")) {
-            std::fprintf(f, "[f%u p%u] %s\n",
-                         (unsigned)factor, local_party_id, tag);
-            std::fclose(f);
-        }
     };
 
     // Factor-aware drain failure strings.
@@ -277,15 +259,12 @@ bool run_one_factor_impl(
         L, std::vector<dao_vss_commitments>(n));
     std::vector<std::vector<std::vector<BIGNUM*>>> u_shares(
         L, std::vector<std::vector<BIGNUM*>>(n));
-    dbg("drain_l0_enter");
     if (!drain(0, u_commits, u_shares, my_u_commits, my_u_shares)) {
-        dbg("drain_l0_FAIL");
         for (auto& v : my_u_shares) for (auto* x : v) BN_free(x);
         for (auto& v : my_u_blinds) for (auto* x : v) BN_free(x);
         for (auto& v : u_shares) for (auto& vv : v) for (auto* x : vv) BN_free(x);
         return FAIL(drain_fail(0));
     }
-    dbg("drain_l0_done");
     for (auto& v : my_u_shares) for (auto* x : v) BN_free(x);
     for (auto& v : my_u_blinds) for (auto* x : v) BN_free(x);
 
@@ -358,13 +337,11 @@ bool run_one_factor_impl(
         {
             char tag[32];
             std::snprintf(tag, sizeof(tag), "drain_l%u_enter", level);
-            dbg(tag);
         }
         if (!drain(level, c_commits_peer, c_shares_peer, c_commits, c_shares)) {
             {
                 char tag[32];
                 std::snprintf(tag, sizeof(tag), "drain_l%u_FAIL", level);
-                dbg(tag);
             }
             for (auto& v : c_shares) for (auto* x : v) BN_free(x);
             for (auto& v : c_blinds) for (auto* x : v) BN_free(x);
@@ -376,7 +353,6 @@ bool run_one_factor_impl(
         {
             char tag[32];
             std::snprintf(tag, sizeof(tag), "drain_l%u_done", level);
-            dbg(tag);
         }
         for (auto& v : c_shares) for (auto* x : v) BN_free(x);
         for (auto& v : c_blinds) for (auto* x : v) BN_free(x);

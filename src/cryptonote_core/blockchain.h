@@ -1489,7 +1489,6 @@ namespace cryptonote
   // deterministically, spawns the runner, and starts a watcher that
   // persists the outcome when the ceremony finishes. Idempotent: a
   // second call while the ceremony is running is a no-op.
-  bool bootstrap_dao_v2_dkg(const std::string& ceremony_id);
 
   // Start a per-proposal DKG for the given proposal. Committee is the
   // current ready roster; ceremony identifier is hex(proposal_id).
@@ -1502,7 +1501,6 @@ namespace cryptonote
   // ready peers and no key record exists yet. No-op otherwise. The
   // readiness roster is built from P2P announcements; it no longer
   // depends on the wallet registration table.
-  void maybe_bootstrap_dao_v2_dkg();
 
   // Staleness predicate shared by all eviction/filter paths.
   bool is_dao_v2_ready_peer_stale(
