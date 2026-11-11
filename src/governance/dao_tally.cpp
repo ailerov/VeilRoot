@@ -98,50 +98,73 @@ void bn_to_fixed_512(const BIGNUM* b, std::vector<uint8_t>& out)
 // Reduce a BIGNUM modulo N, decode signed Paillier plaintext.
 //   m <= N/2  -> S = m >= 0
 //   m >  N/2  -> S = m - N < 0
-void decode_signed(const BIGNUM* m, const BIGNUM* N,
+bool decode_signed(const BIGNUM* m, const BIGNUM* N,
                    bool& negative, dao_u128& magnitude)
 {
+    if (!m || !N) return false;
+    if (BN_is_negative(m) || BN_is_negative(N)) return false;
     BIGNUM* half = BN_new();
+    if (!half) return false;
     BN_rshift1(half, N);
     CtxGuard g;
+    bool result = false;
     if (BN_cmp(m, half) <= 0) {
         negative = false;
-        magnitude = 0;
-        for (int i = BN_num_bytes(m) - 1; i >= 0; --i) {
-            magnitude = (magnitude << 8) | dao_u128(BN_is_bit_set(m, i*8) ? 1 : 0);
+        if (BN_num_bits(m) <= 128) {
+            const int nbytes = BN_num_bytes(m);
+            std::vector<uint8_t> buf(nbytes);
+            BN_bn2bin(m, buf.data());
+            magnitude = 0;
+            for (uint8_t x : buf) magnitude = (magnitude << 8) | dao_u128(x);
+            result = true;
         }
-        // simpler: convert via bytes
-        const int nbytes = BN_num_bytes(m);
-        std::vector<uint8_t> buf(nbytes);
-        BN_bn2bin(m, buf.data());
-        magnitude = 0;
-        for (uint8_t x : buf) magnitude = (magnitude << 8) | dao_u128(x);
     } else {
         negative = true;
         BIGNUM* neg = BN_new();
-        BN_sub(neg, N, m);           // magnitude = N - m
-        const int nbytes = BN_num_bytes(neg);
-        std::vector<uint8_t> buf(nbytes);
-        BN_bn2bin(neg, buf.data());
-        magnitude = 0;
-        for (uint8_t x : buf) magnitude = (magnitude << 8) | dao_u128(x);
-        BN_free(neg);
+        if (neg) {
+            BN_sub(neg, N, m);
+            if (BN_num_bits(neg) <= 128) {
+                const int nbytes = BN_num_bytes(neg);
+                std::vector<uint8_t> buf(nbytes);
+                BN_bn2bin(neg, buf.data());
+                magnitude = 0;
+                for (uint8_t x : buf) magnitude = (magnitude << 8) | dao_u128(x);
+                result = true;
+            }
+            BN_free(neg);
+        }
     }
     BN_free(half);
+    return result;
 }
 
-// Non-negative decode.
-dao_u128 bn_to_u128(const BIGNUM* b)
+// Non-negative decode. Rejects negatives and values wider than 128 bits.
+bool bn_to_u128(const BIGNUM* b, dao_u128& out)
 {
+    if (!b) return false;
+    if (BN_is_negative(b)) return false;
+    if (BN_num_bits(b) > 128) return false;
     const int nbytes = BN_num_bytes(b);
     std::vector<uint8_t> buf(nbytes);
     BN_bn2bin(b, buf.data());
-    dao_u128 out = 0;
+    out = 0;
     for (uint8_t x : buf) out = (out << 8) | dao_u128(x);
-    return out;
+    return true;
 }
 
 } // anonymous namespace
+
+#ifdef VEILROOT_DAO_DKG_TESTING
+// Test-only wrappers so decoder rejection behaviour can be tested
+// directly. See tests/unit_tests/dao_tally.cpp.
+bool dao_test_bn_to_u128(const BIGNUM* b, dao_u128& out) {
+    return bn_to_u128(b, out);
+}
+bool dao_test_decode_signed(const BIGNUM* m, const BIGNUM* N,
+                            bool& negative, dao_u128& magnitude) {
+    return decode_signed(m, N, negative, magnitude);
+}
+#endif
 
 // ------------------------------------------------------------------
 // Aggregate ciphertext hash
@@ -638,9 +661,11 @@ bool dao_build_tally_certificate(
               recover(S_set, E_S, mS) &&
               recover(B_set, E_B, mB);
     if (ok) {
-        cert_out.W_total = bn_to_u128(mW);
-        decode_signed(mS, pk.N(), cert_out.s_negative, cert_out.S_abs);
-        cert_out.B_total = bn_to_u128(mB);
+        if (!bn_to_u128(mW, cert_out.W_total) ||
+            !decode_signed(mS, pk.N(), cert_out.s_negative, cert_out.S_abs) ||
+            !bn_to_u128(mB, cert_out.B_total)) {
+            ok = false;
+        }
     }
     BN_free(mW); BN_free(mS); BN_free(mB); BN_free(theta);
     return ok;
@@ -838,16 +863,20 @@ bool dao_verify_tally_certificate(
         return false;
     }
 
-    dao_u128 W_rec = bn_to_u128(mW);
+    dao_u128 W_rec = 0, S_abs_rec = 0, B_rec = 0;
     bool s_neg_rec = false;
-    dao_u128 S_abs_rec = 0;
-    decode_signed(mS, pk.N(), s_neg_rec, S_abs_rec);
-    dao_u128 B_rec = bn_to_u128(mB);
+    if (!bn_to_u128(mW, W_rec) ||
+        !decode_signed(mS, pk.N(), s_neg_rec, S_abs_rec) ||
+        !bn_to_u128(mB, B_rec)) {
+        BN_free(mW); BN_free(mS); BN_free(mB); BN_free(theta);
+        return false;
+    }
 
     if (W_rec != cert.W_total) { BN_free(mW); BN_free(mS); BN_free(mB); BN_free(theta); return false; }
     if (s_neg_rec != cert.s_negative) { BN_free(mW); BN_free(mS); BN_free(mB); BN_free(theta); return false; }
     if (S_abs_rec != cert.S_abs) { BN_free(mW); BN_free(mS); BN_free(mB); BN_free(theta); return false; }
     if (B_rec != cert.B_total) { BN_free(mW); BN_free(mS); BN_free(mB); BN_free(theta); return false; }
+    if (B_rec > supply_at_vote_end.circulating) { BN_free(mW); BN_free(mS); BN_free(mB); BN_free(theta); return false; }
 
     const dao_u128 W_MAX =
         dao_u128(240000000ULL) * dao_u128(1000000000000ULL);

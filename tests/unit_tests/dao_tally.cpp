@@ -20,6 +20,14 @@
 using namespace cryptonote;
 using namespace cryptonote::dao;
 
+#ifdef VEILROOT_DAO_DKG_TESTING
+namespace cryptonote { namespace dao {
+bool dao_test_bn_to_u128(const BIGNUM* b, dao_u128& out);
+bool dao_test_decode_signed(const BIGNUM* m, const BIGNUM* N,
+                            bool& negative, dao_u128& magnitude);
+}}
+#endif
+
 namespace {
 
 // --- Pure evaluator tests ---
@@ -107,5 +115,66 @@ TEST(dao_evaluate_v2_tally, percent_out_of_range_rejected)
         dao_u128(0), dao_u128(0), dao_u128(0),
         dao_u128(0), 101, qthr, qmet, mmet, passed));
 }
+
+#ifdef VEILROOT_DAO_DKG_TESTING
+// --- P1.2 decoder overflow tests ---
+
+TEST(dao_tally_decode, bn_to_u128_accepts_2p128_minus_1)
+{
+    BIGNUM* b = BN_new();
+    BN_one(b); BN_lshift(b, b, 128); BN_sub_word(b, 1);
+    dao_u128 out = 0;
+    EXPECT_TRUE(dao_test_bn_to_u128(b, out));
+    EXPECT_EQ(out, (dao_u128(1) << 128) - 1);
+    BN_free(b);
+}
+
+TEST(dao_tally_decode, bn_to_u128_rejects_2p128)
+{
+    BIGNUM* b = BN_new();
+    BN_one(b); BN_lshift(b, b, 128);
+    dao_u128 out = 0;
+    EXPECT_FALSE(dao_test_bn_to_u128(b, out));
+    BN_free(b);
+}
+
+TEST(dao_tally_decode, bn_to_u128_rejects_negative)
+{
+    BIGNUM* b = BN_new();
+    BN_set_word(b, 5); BN_set_negative(b, 1);
+    dao_u128 out = 0;
+    EXPECT_FALSE(dao_test_bn_to_u128(b, out));
+    BN_free(b);
+}
+
+TEST(dao_tally_decode, decode_signed_rejects_oversized_positive)
+{
+    BIGNUM* m = BN_new(); BN_one(m); BN_lshift(m, m, 128); BN_add_word(m, 1000);
+    BIGNUM* N = BN_new(); BN_one(N); BN_lshift(N, N, 200);
+    bool neg = false; dao_u128 mag = 0;
+    EXPECT_FALSE(dao_test_decode_signed(m, N, neg, mag));
+    BN_free(m); BN_free(N);
+}
+
+TEST(dao_tally_decode, decode_signed_rejects_negative_magnitude)
+{
+    BIGNUM* m = BN_new(); BN_set_word(m, 5); BN_set_negative(m, 1);
+    BIGNUM* N = BN_new(); BN_set_word(N, 1000);
+    bool neg = false; dao_u128 mag = 0;
+    EXPECT_FALSE(dao_test_decode_signed(m, N, neg, mag));
+    BN_free(m); BN_free(N);
+}
+
+TEST(dao_tally_decode, decode_signed_accepts_small_positive)
+{
+    BIGNUM* m = BN_new(); BN_set_word(m, 100);
+    BIGNUM* N = BN_new(); BN_set_word(N, 1000);
+    bool neg = true; dao_u128 mag = 0;
+    ASSERT_TRUE(dao_test_decode_signed(m, N, neg, mag));
+    EXPECT_FALSE(neg);
+    EXPECT_EQ(mag, dao_u128(100));
+    BN_free(m); BN_free(N);
+}
+#endif
 
 } // namespace

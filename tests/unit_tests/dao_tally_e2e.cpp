@@ -420,3 +420,55 @@ TEST(dao_tally_e2e, certificate_rejects_fewer_than_threshold)
     BN_free(W_bn); BN_free(S_bn); BN_free(B_bn);
     BN_free(r1); BN_free(r2); BN_free(r3);
 }
+
+TEST(dao_tally_e2e, rejects_participation_above_circulating_supply)
+{
+    dkg_result out;
+    ASSERT_TRUE(run_three_party_dkg(out));
+    PaillierPublicKey pk;
+    ASSERT_TRUE(pk.deserialize_modulus(out.record.N));
+
+    std::vector<BIGNUM*> sk_all(3, nullptr);
+    for (size_t j = 0; j < 3; ++j) {
+        const std::string dec(out.test_SK[j].begin(), out.test_SK[j].end());
+        ASSERT_EQ(BN_dec2bn(&sk_all[j], dec.c_str()),
+                  static_cast<int>(dec.size()));
+    }
+
+    BIGNUM* W_bn = BN_new(); BN_set_word(W_bn, 1000);
+    BIGNUM* S_bn = BN_new(); BN_set_word(S_bn, 1000);
+    BIGNUM* B_bn = BN_new(); BN_set_word(B_bn, 200000);
+    BIGNUM* r_W  = BN_new(); BN_set_word(r_W, 3);
+    BIGNUM* r_S  = BN_new(); BN_set_word(r_S, 5);
+    BIGNUM* r_B  = BN_new(); BN_set_word(r_B, 7);
+
+    std::vector<uint8_t> E_W, E_S, E_B;
+    ASSERT_TRUE(pk.encrypt(W_bn, r_W, E_W));
+    ASSERT_TRUE(pk.encrypt(S_bn, r_S, E_S));
+    ASSERT_TRUE(pk.encrypt(B_bn, r_B, E_B));
+
+    dao_partial_set W_set = build_partial_set(pk, out.record, sk_all, E_W);
+    dao_partial_set S_set = build_partial_set(pk, out.record, sk_all, E_S);
+    dao_partial_set B_set = build_partial_set(pk, out.record, sk_all, E_B);
+
+    crypto::hash prop_id{}; std::memset(prop_id.data, 0x33, 32);
+
+    dao_tally_certificate cert;
+    ASSERT_TRUE(dao_build_tally_certificate(
+        out.record, prop_id, 60000,
+        E_W, E_S, E_B, W_set, S_set, B_set, cert));
+
+    dao_supply_snapshot snap;
+    snap.height      = 60000;
+    snap.minted      = dao_u128(200000);
+    snap.treasury    = dao_u128(50000);
+    snap.burned      = dao_u128(50000);
+    snap.circulating = dao_u128(100000);
+
+    EXPECT_FALSE(dao_verify_tally_certificate(
+        out.record, snap, 10, E_W, E_S, E_B, cert));
+
+    for (auto* sk : sk_all) BN_free(sk);
+    BN_free(W_bn); BN_free(S_bn); BN_free(B_bn);
+    BN_free(r_W); BN_free(r_S); BN_free(r_B);
+}
