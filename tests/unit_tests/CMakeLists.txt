@@ -122,6 +122,7 @@ set(unit_tests_sources
   dao_vote_or_proof.cpp
   dao_consistency.cpp
   dao_paillier.cpp
+  dao_crypto_backend.cpp
   dao_threshold.cpp
   dao_tally.cpp
   dao_tally_share.cpp
