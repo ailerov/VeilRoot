@@ -1412,6 +1412,18 @@ namespace cryptonote
   bool apply_dao_v2_node_ready(const transaction& tx,
                                uint64_t block_height);
 
+  // Purge every local secret share for this key_id across all
+  // share sets. Idempotent. Called from the block-apply purge
+  // walk once the terminal-status finality window has elapsed.
+  void purge_dao_local_shares_by_key_id(
+      const std::vector<uint8_t>& key_id);
+
+  // Per-block purge walk. Removes local shares for every
+  // proposal whose terminal-status window has elapsed. Runs
+  // inside the block-apply write txn. Local-only; does not
+  // affect consensus.
+  void maybe_purge_local_shares_at_height(uint64_t new_height);
+
   // Consensus validator for a DKG key-activation transaction. Pure
   // validation; never mutates state. Runs before m_db->add_block().
   bool validate_dao_v2_dkg_activation_tx(

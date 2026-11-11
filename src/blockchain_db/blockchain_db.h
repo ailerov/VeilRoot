@@ -2251,6 +2251,12 @@ public:
     virtual void remove_dao_local_share(uint32_t share_set_id,
                                         uint32_t member_index) = 0;
 
+    // Purge every local secret share belonging to any share set
+    // of this key_id. Idempotent: missing rows are silently
+    // skipped. Public key and share-set records are NOT removed.
+    virtual void purge_dao_local_shares_by_key_id(
+        const std::vector<uint8_t>& key_id) = 0;
+
     // Persist a share-set record. Keyed by monotone share_set_id.
     // share_set_id is NOT a public-key identifier: the stable Paillier key
     // does not change when the share set changes.

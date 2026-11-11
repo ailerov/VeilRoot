@@ -7375,6 +7375,15 @@ leave:
       }
       // END_VNS_DAO_V2_TALLY_RESULT_APPLY
 
+      // BEGIN_VNS_DAO_V2_PURGE_LOCAL_SHARES
+      // After terminal status (REJECTED/EXECUTED) or abandonment
+      // of a PASSED proposal, purge this node's local secret
+      // shares once the finality window has elapsed. Reorg past
+      // this window is by design unrecoverable: shares are gone.
+      // Public key and share-set records remain for audit.
+      maybe_purge_local_shares_at_height(new_height);
+      // END_VNS_DAO_V2_PURGE_LOCAL_SHARES
+
       rebuild_committee_eligible_list(new_height);
     }
     catch (const KEY_IMAGE_EXISTS& e)
@@ -12674,6 +12683,45 @@ bool Blockchain::process_parameter_execution(const transaction& tx, uint64_t hei
     return true;
 }
 // END_VNS_PARAMETER_EXECUTION_HELPERS
+
+// BEGIN_VNS_DAO_V2_PURGE_LOCAL_SHARES_IMPL
+void Blockchain::purge_dao_local_shares_by_key_id(
+    const std::vector<uint8_t>& key_id)
+{
+  if (key_id.size() != 32) return;
+  m_db->purge_dao_local_shares_by_key_id(key_id);
+}
+
+void Blockchain::maybe_purge_local_shares_at_height(
+    uint64_t new_height)
+{
+  std::vector<std::vector<uint8_t>> due;
+  m_db->for_all_proposal_records(
+      [&](const crypto::hash&, const proposal_record& rec) -> bool {
+        if (rec.tally_key_id == crypto::null_hash) return true;
+        const uint64_t exec_delay = governance()
+            .get_governance_parameter(
+                governance_parameter::execution_delay,
+                rec.voting_end_height);
+        uint64_t due_height = 0;
+        if (rec.status == PROPOSAL_STATUS_REJECTED ||
+            rec.status == PROPOSAL_STATUS_EXECUTED) {
+          due_height = rec.status_height + exec_delay;
+        } else if (rec.status == PROPOSAL_STATUS_PASSED &&
+                   !rec.executed) {
+          due_height = rec.voting_end_height + 2 * exec_delay;
+        } else {
+          return true;
+        }
+        if (new_height >= due_height)
+          due.emplace_back(rec.tally_key_id.data,
+                           rec.tally_key_id.data + 32);
+        return true;
+      });
+  for (const auto& key_id : due)
+    purge_dao_local_shares_by_key_id(key_id);
+}
+// END_VNS_DAO_V2_PURGE_LOCAL_SHARES_IMPL
 
 bool Blockchain::build_execution_transaction(const proposal_record& rec, transaction& tx, uint64_t height, uint8_t hf_version, std::set<uint64_t>& reserved_treasury_outputs) const
 {

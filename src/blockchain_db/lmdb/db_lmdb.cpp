@@ -3849,6 +3849,24 @@ void BlockchainLMDB::remove_dao_local_share(uint32_t share_set_id, uint32_t memb
   else if (result != MDB_NOTFOUND)
     throw0(DB_ERROR(lmdb_error("Failed to remove dao local share: ", result).c_str()));
 }
+
+void BlockchainLMDB::purge_dao_local_shares_by_key_id(
+    const std::vector<uint8_t>& key_id)
+{
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  check_open();
+  std::vector<std::pair<uint32_t, uint32_t>> targets;
+  for_all_dao_share_sets(
+      [&](uint64_t ssid, const dao::dao_share_set_record& ss) -> bool {
+        if (ss.key_id != key_id) return true;
+        const uint32_t n = static_cast<uint32_t>(ss.committee_members.size());
+        for (uint32_t idx = 1; idx <= n; ++idx)
+          targets.emplace_back(static_cast<uint32_t>(ssid), idx);
+        return true;
+      });
+  for (const auto& t : targets)
+    remove_dao_local_share(t.first, t.second);
+}
 // END_VNS_DAO_LOCAL_SHARES
 
 // BEGIN_VNS_DAO_LOCAL_DYNAMIC_SHARES

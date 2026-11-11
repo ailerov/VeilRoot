@@ -4908,3 +4908,119 @@ TEST(DaoV2Replay, SameProposalSameCommittee)
 
     boost::filesystem::remove_all(base);
 }
+
+TEST(DaoV2Replay, TerminalStatusPurgesLocalShares)
+{
+    using namespace cryptonote;
+    using namespace cryptonote::dao;
+
+    boost::filesystem::path base =
+        boost::filesystem::temp_directory_path() /
+        boost::filesystem::unique_path("vr_purge_%%%%-%%%%");
+    struct PathCleanup {
+        boost::filesystem::path p;
+        ~PathCleanup() { try { boost::filesystem::remove_all(p); } catch (...) {} }
+    };
+    PathCleanup cleanup_guard{base};
+
+    ReplayNode a;
+    ASSERT_TRUE(a.init((base / "a").string()));
+    auto& bc_a = a.core->get_blockchain_storage();
+    auto& db_a = bc_a.get_db();
+
+    {
+        db_wtxn_guard g(&db_a);
+        parameter_record dp{};
+        dp.parameter         = governance_parameter::execution_delay;
+        dp.value             = 5;
+        dp.activation_height = 0;
+        dp.proposal_height   = 0;
+        dp.proposal_id       = crypto::null_hash;
+        db_a.add_parameter_record(dp);
+    }
+
+    account_base miner; miner.generate();
+    auto mine_until = [&](uint64_t target_height) {
+        while (bc_a.get_current_blockchain_height() < target_height) {
+            block tmpl{}; difficulty_type diff{}; uint64_t h=0,r=0,sh=0;
+            crypto::hash shh{}; blobdata en(8,0);
+            ASSERT_TRUE(bc_a.create_block_template(tmpl,
+                miner.get_keys().m_account_address, diff, h, r, en, sh, shh));
+            auto gbh = [&bc_a](const block& bl, uint64_t hh,
+                               const crypto::hash* sg, unsigned int mn,
+                               crypto::hash& o) -> bool {
+                return get_block_longhash(&bc_a, bl, o, hh, sg, static_cast<int>(mn));
+            };
+            ASSERT_TRUE(miner::find_nonce_for_given_block(gbh, tmpl, diff, h, nullptr));
+            blobdata bb = block_to_blob(tmpl);
+            block_verification_context bvc{}; pool_supplement e{};
+            ASSERT_TRUE(a.core->handle_single_incoming_block(bb, &tmpl, bvc, e, false));
+            ASSERT_TRUE(bvc.m_added_to_main_chain);
+        }
+    };
+    mine_until(3);
+
+    const crypto::hash key_id = []{
+        crypto::hash k{}; std::memset(k.data, 0xCD, 32); return k;
+    }();
+    const uint64_t ssid = 100;
+    std::vector<uint8_t> key_id_vec(key_id.data, key_id.data + 32);
+    {
+        db_wtxn_guard g(&db_a);
+        dao_share_set_record ss{};
+        ss.version = 1;
+        ss.share_set_id = ssid;
+        ss.height = 3;
+        ss.threshold = 2;
+        ss.key_id = key_id_vec;
+        ss.committee_id_hash.assign(32, 0xAB);
+        for (int i = 0; i < 3; ++i) {
+            crypto::public_key pk{}; std::memset(pk.data, 0x10 + i, 32);
+            ss.committee_members.push_back(
+                std::vector<uint8_t>(pk.data, pk.data + 32));
+        }
+        for (int i = 0; i < 3; ++i)
+            ss.VK_i.push_back(std::vector<uint8_t>(PAILLIER_CT_BYTES, 0x55));
+        db_a.add_dao_share_set(ssid, ss);
+
+        for (uint32_t idx = 1; idx <= 3; ++idx) {
+            std::vector<uint8_t> dummy = {0xDE,0xAD,0xBE,0xEF,(uint8_t)idx};
+            db_a.add_dao_local_share(static_cast<uint32_t>(ssid), idx, dummy);
+        }
+    }
+
+    {
+        std::vector<uint8_t> blob;
+        EXPECT_TRUE(db_a.get_dao_local_share(
+            static_cast<uint32_t>(ssid), 1, blob));
+    }
+
+    const uint64_t reject_height = bc_a.get_current_blockchain_height() - 1;
+    crypto::hash prop_id{};
+    std::memset(prop_id.data, 0x77, 32);
+    {
+        db_wtxn_guard g(&db_a);
+        proposal_record prec{};
+        prec.proposal_id = prop_id;
+        prec.submission_height = reject_height;
+        prec.voting_end_height = reject_height;
+        prec.status = PROPOSAL_STATUS_REJECTED;
+        prec.status_height = reject_height;
+        std::memcpy(prec.tally_key_id.data, key_id.data, 32);
+        db_a.add_proposal_record(prop_id, prec);
+    }
+
+    mine_until(reject_height + 5 + 2);
+
+    for (uint32_t idx = 1; idx <= 3; ++idx) {
+        std::vector<uint8_t> blob;
+        EXPECT_FALSE(db_a.get_dao_local_share(
+            static_cast<uint32_t>(ssid), idx, blob))
+            << "local share idx=" << idx << " should be purged";
+    }
+    {
+        dao_share_set_record ss{};
+        EXPECT_TRUE(db_a.get_dao_share_set(ssid, ss));
+        EXPECT_EQ(ss.key_id, key_id_vec);
+    }
+}

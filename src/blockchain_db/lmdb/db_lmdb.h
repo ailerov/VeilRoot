@@ -655,6 +655,8 @@ public:
                                    std::vector<uint8_t>& share_blob) const override;
   virtual void remove_dao_local_share(uint32_t share_set_id,
                                       uint32_t member_index) override;
+  virtual void purge_dao_local_shares_by_key_id(
+      const std::vector<uint8_t>& key_id) override;
   virtual void add_dao_share_set(uint64_t share_set_id,
                                  const dao::dao_share_set_record& record) override;
   virtual bool get_dao_share_set(uint64_t share_set_id,
