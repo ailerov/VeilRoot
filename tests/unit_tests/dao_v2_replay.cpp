@@ -2460,11 +2460,43 @@ static void run_b3d_dropout_case(int target_slot)
         }
     };
 
+    // Pump messages + trigger commits until pred() becomes true, or
+    // the deadline expires. Sleeps 2ms between iterations so the
+    // asynchronous reshare runner thread gets CPU even under host
+    // load (307-test regression, other suites mining in parallel).
+    // drive(N) above remains for the negative-test contribution-count
+    // check, where iteration count matters and waiting is not needed.
+    auto drive_until = [&](auto pred,
+                           std::chrono::milliseconds tmo) -> bool {
+        const auto deadline = std::chrono::steady_clock::now() + tmo;
+        while (std::chrono::steady_clock::now() < deadline) {
+            std::vector<std::pair<crypto::public_key, std::string>> batch;
+            {
+                std::lock_guard<std::mutex> lk(mb_mu);
+                batch.swap(mailbox);
+            }
+            for (auto& [sender, payload] : batch) {
+                if (sender != a_pub) bc_a.handle_dao_v2_dkg_msg(sender, payload);
+                if (sender != b_pub) bc_b.handle_dao_v2_dkg_msg(sender, payload);
+                if (sender != c_pub) bc_c.handle_dao_v2_dkg_msg(sender, payload);
+            }
+            bc_a.maybe_commit_dao_v2_reshare();
+            bc_b.maybe_commit_dao_v2_reshare();
+            bc_c.maybe_commit_dao_v2_reshare();
+            if (pred()) return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        return pred();
+    };
+
     // -------- First reshare (base -> {A,B,C,D}) --------
     bc_a.maybe_start_dao_v2_reshare_for_proposal(prop_id, vote_end);
     bc_b.maybe_start_dao_v2_reshare_for_proposal(prop_id, vote_end);
     bc_c.maybe_start_dao_v2_reshare_for_proposal(prop_id, vote_end);
-    drive(15);
+    ASSERT_TRUE(drive_until([&]{
+        return find_latest(db_a, dkg_out.record.key_id) != 0;
+    }, std::chrono::seconds(30)))
+        << "first reshare did not commit within deadline";
 
     uint64_t sid1 = find_latest(db_a, dkg_out.record.key_id);
     ASSERT_NE(sid1, 0u) << "first reshare did not commit";
@@ -2586,7 +2618,11 @@ static void run_b3d_dropout_case(int target_slot)
                "enforcing the contributor_indices allowlist";
     }
 
-    drive(15);
+    ASSERT_TRUE(drive_until([&]{
+        const uint64_t cur = find_latest(db_a, dkg_out.record.key_id);
+        return cur != 0 && cur != sid1;
+    }, std::chrono::seconds(30)))
+        << "re-reshare did not commit within deadline";
 
     uint64_t sid2 = find_latest(db_a, dkg_out.record.key_id);
     ASSERT_NE(sid2, 0u) << "re-reshare did not commit";
