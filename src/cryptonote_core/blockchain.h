@@ -1563,7 +1563,9 @@ namespace cryptonote
   // DKG producer and the activation validator so their views of the
   // committee cannot diverge.
   std::vector<crypto::public_key>
-  select_dao_v2_proposal_dkg_committee(uint64_t selection_height) const;
+  select_dao_v2_proposal_dkg_committee(
+      const crypto::hash& proposal_id,
+      uint64_t selection_height) const;
 
   void maybe_start_dao_v2_reshare_for_proposal(
       const crypto::hash& proposal_id, uint64_t vote_end_height);

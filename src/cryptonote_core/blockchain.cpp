@@ -10349,7 +10349,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     // activation validator calls, so producer and validator cannot
     // disagree on the committee.
     std::vector<crypto::public_key> shareholders =
-        select_dao_v2_proposal_dkg_committee(selection_height);
+        select_dao_v2_proposal_dkg_committee(proposal_id, selection_height);
     if (shareholders.size() < dao::DAO_DKG_MIN_COMMITTEE_SIZE) {
       MWARNING("start_dao_v2_dkg_for_proposal: not enough chain-state "
                "ready peers for proposal " << proposal_id
@@ -10636,6 +10636,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
   std::vector<crypto::public_key>
 Blockchain::select_dao_v2_proposal_dkg_committee(
+    const crypto::hash& proposal_id,
     uint64_t selection_height) const
 {
   constexpr uint64_t k_ready_ttl_blocks = 15;
@@ -10657,20 +10658,47 @@ Blockchain::select_dao_v2_proposal_dkg_committee(
         return true;
       });
 
-  std::vector<std::pair<crypto::public_key, uint64_t>> shareholders_sorted;
-  for (const auto& kv : ready_map)
-    shareholders_sorted.emplace_back(kv.first, 0);
-  std::sort(shareholders_sorted.begin(), shareholders_sorted.end(),
+  // Per-proposal reproducible pseudorandom ordering. Rank each
+  // candidate by cn_fast_hash(domain || proposal_id || seed || pk)
+  // where seed is the canonical block hash at selection_height.
+  // Same inputs on every validator produce the same ordering;
+  // different proposals at the same height produce different
+  // orderings. The set of candidates is fixed by node_ready state.
+  // The seed is the block hash at selection_height; a miner who
+  // controls that block could grind for a favorable ordering, but
+  // ordering only affects membership when |candidates| exceeds
+  // MAX_COMMITTEE_SIZE (otherwise the set is independent of order).
+  // Documented as a known limitation, not a security claim.
+  crypto::hash seed{};
+  try { seed = get_block_id_by_height(selection_height); }
+  catch (...) { return {}; }
+  if (seed == crypto::null_hash) return {};
+
+  static const char* kDomain = "VeilRoot-DAO-DKG-SELECT-V1";
+  std::vector<std::pair<crypto::hash, crypto::public_key>> ranked;
+  ranked.reserve(ready_map.size());
+  for (const auto& kv : ready_map) {
+    std::vector<uint8_t> buf;
+    buf.insert(buf.end(), kDomain, kDomain + std::strlen(kDomain));
+    buf.insert(buf.end(), proposal_id.data, proposal_id.data + 32);
+    buf.insert(buf.end(), seed.data, seed.data + 32);
+    buf.insert(buf.end(), kv.first.data, kv.first.data + 32);
+    crypto::hash h{};
+    crypto::cn_fast_hash(buf.data(), buf.size(), h);
+    ranked.emplace_back(h, kv.first);
+  }
+  std::sort(ranked.begin(), ranked.end(),
             [](const auto& a, const auto& b) {
-              return std::memcmp(a.first.data, b.first.data,
-                                 sizeof(a.first.data)) < 0;
+              int c = std::memcmp(a.first.data, b.first.data, 32);
+              if (c != 0) return c < 0;
+              return std::memcmp(a.second.data, b.second.data, 32) < 0;
             });
-  if (shareholders_sorted.size() > dao::DAO_DKG_MAX_COMMITTEE_SIZE)
-    shareholders_sorted.resize(dao::DAO_DKG_MAX_COMMITTEE_SIZE);
+  if (ranked.size() > dao::DAO_DKG_MAX_COMMITTEE_SIZE)
+    ranked.resize(dao::DAO_DKG_MAX_COMMITTEE_SIZE);
 
   std::vector<crypto::public_key> shareholders;
-  shareholders.reserve(shareholders_sorted.size());
-  for (const auto& e : shareholders_sorted) shareholders.push_back(e.first);
+  shareholders.reserve(ranked.size());
+  for (const auto& e : ranked) shareholders.push_back(e.second);
   return shareholders;
 }
 
@@ -11937,7 +11965,8 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
       // selector the producer used. Divergence here means producer
       // and validator disagree on the ready set.
       auto selected =
-          select_dao_v2_proposal_dkg_committee(act.selection_height);
+          select_dao_v2_proposal_dkg_committee(act.proposal_id,
+                                               act.selection_height);
       if (selected.size() < rec.committee_size) {
         MERROR("dkg-activation: fewer ready peers than record at height "
                << act.selection_height << " (have " << selected.size()

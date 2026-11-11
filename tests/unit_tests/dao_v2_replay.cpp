@@ -327,9 +327,9 @@ TEST(DaoV2Replay, NodeBReconstructsKeyRecordFromActivationBlock)
     ASSERT_TRUE(a.init((base / "a").string()));
     ASSERT_TRUE(b.init((base / "b").string()));
 
-    // Three committee members, sorted by public key ascending so that
-    // select_dao_v2_dkg_shareholders (weight DESC, pubkey ASC) returns
-    // them in the same order we hand to the DKG.
+    // Three committee members. Order is set below from the deterministic
+    // per-proposal selector so that producer and activation validator
+    // both see the same hash-ranked membership list.
     std::vector<crypto::public_key> committee_pks;
     std::vector<crypto::secret_key> committee_sks;
     for (int i = 0; i < 3; ++i) {
@@ -338,23 +338,6 @@ TEST(DaoV2Replay, NodeBReconstructsKeyRecordFromActivationBlock)
         committee_pks.push_back(pk);
         committee_sks.push_back(sk);
     }
-    {
-        std::vector<size_t> idx = {0, 1, 2};
-        std::sort(idx.begin(), idx.end(), [&](size_t x, size_t y) {
-            return std::memcmp(committee_pks[x].data,
-                               committee_pks[y].data, 32) < 0;
-        });
-        std::vector<crypto::public_key> pk2;
-        std::vector<crypto::secret_key> sk2;
-        for (auto i : idx) {
-            pk2.push_back(committee_pks[i]);
-            sk2.push_back(committee_sks[i]);
-        }
-        committee_pks = std::move(pk2);
-        committee_sks = std::move(sk2);
-    }
-    a.core->set_node_key(committee_sks[0]);
-    b.core->set_node_key(committee_sks[1]);
 
     auto& adb = a.core->get_blockchain_storage().get_db();
     auto& bdb = b.core->get_blockchain_storage().get_db();
@@ -418,6 +401,33 @@ TEST(DaoV2Replay, NodeBReconstructsKeyRecordFromActivationBlock)
         prec.status_height = 1;
         std::memset(prec.tally_key_id.data, 0, 32);
         db_ptr->add_proposal_record(prop_id, prec);
+    }
+
+    // Reorder committee members to the deterministic per-proposal
+    // hash ranking. The activation validator computes the same
+    // selector from chain state, so producer and validator agree on
+    // the ordered committee list.
+    {
+        const uint64_t k_sel_height =
+            a.core->get_current_blockchain_height() - 1;
+        auto ranked = a.core->get_blockchain_storage()
+            .select_dao_v2_proposal_dkg_committee(prop_id, k_sel_height);
+        ASSERT_EQ(ranked.size(), 3u);
+        std::vector<std::pair<crypto::public_key, crypto::secret_key>> sk_of;
+        for (size_t i = 0; i < committee_pks.size(); ++i)
+            sk_of.emplace_back(committee_pks[i], committee_sks[i]);
+        auto find_sk = [&](const crypto::public_key& pk) -> crypto::secret_key {
+            for (const auto& e : sk_of)
+                if (std::memcmp(e.first.data, pk.data, 32) == 0)
+                    return e.second;
+            return crypto::secret_key{};
+        };
+        for (size_t i = 0; i < ranked.size(); ++i) {
+            committee_pks[i] = ranked[i];
+            committee_sks[i] = find_sk(ranked[i]);
+        }
+        a.core->set_node_key(committee_sks[0]);
+        b.core->set_node_key(committee_sks[1]);
     }
 
     // In-process DKG. Only Node A persists the result (local share),
