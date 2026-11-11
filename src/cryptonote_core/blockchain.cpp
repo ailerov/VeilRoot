@@ -9094,10 +9094,10 @@ select_dao_v2_committee(BlockchainDB& db, uint32_t max_committee_size,
   return sorted;
 }
 
-// The bootstrap DKG shareholder set is every currently eligible node,
-// not a top-N subset. Later, at a proposal's voting end, the tally
-// committee is selected as a temporary subset of this shareholder
-// set. The two roles are deliberately distinct.
+// The DKG shareholder set is every currently eligible node, not a
+// top-N subset. Later, at a proposal's voting end, the tally
+// committee is selected as a subset of this shareholder set. The two
+// roles are deliberately distinct.
 std::vector<std::pair<crypto::public_key, uint64_t>>
 select_dao_v2_dkg_shareholders(BlockchainDB& db, uint64_t selection_height)
 {
@@ -9132,11 +9132,11 @@ select_dao_v2_dkg_shareholders(BlockchainDB& db, uint64_t selection_height)
   return sorted;
 }
 
-// Select the temporary tally committee for one proposal from the
-// bootstrap DKG shareholder set, filtered by current eligibility and
-// ranked by stake-age weight at the selection height. Returns both the
-// ordered members and their 1-based global indices within the
-// bootstrap key record.
+// Select the tally committee for one proposal from the DKG
+// shareholder set, filtered by current eligibility and ranked by
+// stake-age weight at the selection height. Returns both the ordered
+// members and their 1-based global indices within the proposal's key
+// record.
 dao_tally_committee
 select_dao_v2_tally_committee(const dao_tally_key_record& key_rec,
                               BlockchainDB& db,
@@ -11462,12 +11462,12 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
     // Proposals whose voting window closed at height - 1. For each:
     //   1. read the bootstrap key record;
     //   2. deterministically select the temporary tally committee
-    //      from the bootstrap shareholder set, filtered by current
+    //      from the proposal's DKG committee, filtered by current
     //      eligibility and ranked at voting_end_height;
     //   3. persist the tally session (idempotent);
     //   4. if this node is in the committee, produce and broadcast
-    //      its partial decryptions using its already-held bootstrap
-    //      DKG share.
+    //      its partial decryptions using its already-held DKG share
+    //      for this proposal's key.
     m_db->for_all_proposal_records(
       [&](const crypto::hash& pid, const proposal_record& rec) -> bool {
         if (rec.status != PROPOSAL_STATUS_ACTIVE) return true;
@@ -11498,11 +11498,10 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
           if (m_dao_v2_reshare_runner) return true;
         }
 
-        // New proposals must have their own per-proposal key installed
-        // by chain-level dkg_key_activation before shares can be
-        // produced. No fallback to the bootstrap singleton.
-        // Historical bootstrap-era proposals are already tallied and
-        // are not reached by this producer path.
+        // The proposal must have its per-proposal key installed by
+        // chain-level dkg_key_activation before shares can be produced.
+        // Proposals without an activated key are skipped; there is no
+        // fallback key.
         if (rec.tally_key_id == crypto::null_hash) return true;
 
         dao::dao_tally_key_record key_rec;
@@ -11718,11 +11717,9 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
       return false;
     }
 
-    // Certificates are verified against the proposal's own key record,
-    // not the bootstrap singleton. Per-proposal activation writes by-id
-    // only (defect 1). The singleton is no longer written by
-    // per-proposal activation, so looking it up here would fail for
-    // every new proposal. Certificates carry cert.key_id explicitly.
+    // Certificates are verified against the proposal's own key record.
+    // Per-proposal activation writes by-id only. Certificates carry
+    // cert.key_id explicitly.
     dao::dao_tally_key_record key_rec;
     if (cert.key_id.size() != 32) {
       MERROR("tally-result: certificate key_id wrong length");

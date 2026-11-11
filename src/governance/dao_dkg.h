@@ -540,30 +540,28 @@ bool dao_partial_decryption_verify(const PaillierPublicKey& pk,
 // ====================================================================
 // Public tally-key record
 //
-// This record describes the single stable public Paillier key and the
-// BOOTSTRAP SHAREHOLDER SET that generated it. It does NOT describe
-// the temporary tally committee. The temporary tally committee is
-// selected at a proposal's voting end as a subset of this bootstrap
-// shareholder set; its members use the DKG shares they already hold.
-// See dao_tally_session_cycle.h.
+// This record describes one per-proposal Paillier public key and the
+// DKG committee that generated it. The tally committee is a subset of
+// this committee, selected at voting_end_height from the same
+// node_ready roster; its members hold shares of the same key.
 //
 // Field names below retain their historical spelling for wire
-// compatibility. Read them with bootstrap semantics:
-//   committee_size      -> bootstrap_shareholder_count
-//   threshold           -> bootstrap_threshold
-//   t                   -> bootstrap_sharing_degree
-//   committee_members   -> bootstrap_shareholder_members
-//   committee_id_hash   -> bootstrap_shareholder_set_hash
-//   V_K_i               -> bootstrap_shareholder verification keys
+// compatibility. Read them with per-proposal semantics:
+//   committee_size      -> DKG committee member count
+//   threshold           -> DKG threshold (t of committee_size)
+//   t                   -> DKG sharing degree (threshold - 1)
+//   committee_members   -> DKG committee member public keys
+//   committee_id_hash   -> DKG committee set hash
+//   V_K_i               -> per-member Paillier verification keys
 //
 // The whitepaper forbids a permanent GOVERNANCE committee. It does not
 // forbid the underlying distributed key-share custodians from
 // persisting. Those custodians are what this record names.
 // ====================================================================
 
-// A share set is the set of nodes that hold shares of the current
-// stable Paillier key, together with their per-member verification
-// keys VK_j = V^(Delta * s_j). It is independent of the stable key:
+// A share set is the set of nodes that hold shares of one
+// Paillier key, together with their per-member verification
+// keys VK_j = V^(Delta * s_j). It is independent of the key record:
 // resharing produces a new share set without changing N, V, or theta.
 //
 // share_set_id is a monotone uint64 used to bind protocol messages
