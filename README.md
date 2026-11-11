@@ -100,6 +100,7 @@ The dependencies are identical to Monero's, except that **libsecp256k1** is now 
 | pkg-config   | any           | NO       | `pkg-config`         | `base-devel` | `base-devel`       | `pkgconf`           | NO       |                 |
 | Boost        | 1.66          | NO       | `libboost-all-dev`   | `boost`      | `boost-devel`      | `boost-devel`       | NO       | C++ libraries   |
 | OpenSSL      | basically any | NO       | `libssl-dev`         | `openssl`    | `openssl-devel`    | `openssl-devel`     | NO       | sha256 sum      |
+| GMP          | 6.0           | NO       | `libgmp-dev`         | `gmp`        | `gmp-devel`        | `gmp-devel`         | YES      | CL backend (opt-in) |
 | libzmq       | 4.2.0         | NO       | `libzmq3-dev`        | `zeromq`     | `zeromq-devel`     | `zeromq-devel`      | NO       | ZeroMQ library  |
 | OpenPGM      | ?             | NO       | `libpgm-dev`         | `libpgm`     |                    | `openpgm-devel`     | NO       | For ZeroMQ      |
 | libnorm[2]   | ?             | NO       | `libnorm-dev`        |              |                    |                     | YES      | For ZeroMQ      |
@@ -144,10 +145,15 @@ sudo mv lib/libg* /usr/lib/
 Install all dependencies at once on Debian/Ubuntu (including libsecp256k1 if available):
 
 ```
-sudo apt update && sudo apt install build-essential cmake pkg-config libssl-dev libzmq3-dev libunbound-dev libsodium-dev libunwind8-dev liblzma-dev libreadline6-dev libexpat1-dev libpgm-dev qttools5-dev-tools libhidapi-dev libusb-1.0-0-dev libprotobuf-dev protobuf-compiler libudev-dev libboost-chrono-dev libboost-date-time-dev libboost-filesystem-dev libboost-locale-dev libboost-program-options-dev libboost-regex-dev libboost-serialization-dev libboost-system-dev libboost-thread-dev python3 ccache doxygen graphviz libsecp256k1-dev
+sudo apt update && sudo apt install build-essential cmake pkg-config libssl-dev libzmq3-dev libunbound-dev libsodium-dev libunwind8-dev liblzma-dev libreadline6-dev libexpat1-dev libpgm-dev qttools5-dev-tools libhidapi-dev libusb-1.0-0-dev libprotobuf-dev protobuf-compiler libudev-dev libboost-chrono-dev libboost-date-time-dev libboost-filesystem-dev libboost-locale-dev libboost-program-options-dev libboost-regex-dev libboost-serialization-dev libboost-system-dev libboost-thread-dev python3 ccache doxygen graphviz libgmp-dev libsecp256k1-dev
 ```
 
 If `libsecp256k1-dev` is not available, the vendored copy will be used automatically.
+
+`libgmp-dev` is only required if you enable the opt-in CL-over-class-groups
+backend with `-DVEILROOT_ENABLE_CL=ON`. That backend is research-grade
+(the vendored BICYCL library is not constant-time) and is off by default.
+Release builds and the Windows cross-compile do not need GMP.
 
 ### Build instructions
 
