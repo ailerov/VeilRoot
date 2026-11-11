@@ -153,6 +153,10 @@ set(unit_tests_sources
   voting_weight.cpp
   vns_transfer.cpp)
 
+if(VEILROOT_ENABLE_CL)
+  list(APPEND unit_tests_sources dao_crypto_backend_cl.cpp)
+endif()
+
 set(unit_tests_headers
   unit_tests_utils.h)
 
@@ -188,6 +192,10 @@ target_include_directories(unit_tests PRIVATE ${CMAKE_SOURCE_DIR}/external/ixweb
 # Enable DKG test-only accessors on both the test binary and the
 # governance library object files.
 target_compile_definitions(unit_tests PRIVATE VEILROOT_DAO_DKG_TESTING=1)
+if(VEILROOT_ENABLE_CL)
+  target_compile_definitions(unit_tests PRIVATE VEILROOT_ENABLE_CL=1)
+  target_link_libraries(unit_tests PRIVATE bicycl gmp::gmp)
+endif()
 # The core object files that the integration test links against need the
 # same test flag so blockchain.cpp's #ifdef takes the test branch too.
 target_compile_definitions(obj_cryptonote_core PRIVATE VEILROOT_DAO_DKG_TESTING=1)

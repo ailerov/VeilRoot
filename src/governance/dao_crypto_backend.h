@@ -70,6 +70,14 @@ public:
     virtual bool sample_r(BIGNUM* r_out) const = 0;
 
     virtual size_t ciphertext_size_hint() const = 0;
+
+#ifdef VEILROOT_ENABLE_CL
+    // TEST-ONLY: decrypt a ciphertext for round-trip verification in
+    // unit tests. Backends without a decryption path return false.
+    // Not called from production code paths.
+    virtual bool decrypt_for_testing(const std::vector<uint8_t>& /*ct*/,
+                                     BIGNUM* /*m_out*/) const { return false; }
+#endif
 };
 
 // Factory: uninitialised Paillier backend. Caller loads the modulus via
@@ -81,6 +89,13 @@ std::unique_ptr<DaoEncryptionBackend> make_paillier_backend();
 // invalid).
 std::unique_ptr<DaoEncryptionBackend>
     make_paillier_backend(const std::vector<uint8_t>& modulus);
+
+// Factory: CL-over-class-groups backend (research crypto only).
+// Returns nullptr when VEILROOT_ENABLE_CL is not defined at build
+// time. seclevel_bits defaults to 128; test code may pass 64 for
+// speed. Do NOT use in shipped binaries: BICYCL is not constant-time.
+std::unique_ptr<DaoEncryptionBackend>
+    make_cl_backend(size_t seclevel_bits = 128);
 
 } // namespace dao
 } // namespace cryptonote

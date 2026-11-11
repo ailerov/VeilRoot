@@ -40,7 +40,15 @@ set(governance_sources
     parameter_manager.cpp
 )
 
+if(VEILROOT_ENABLE_CL)
+    list(APPEND governance_sources dao_crypto_backend_cl.cpp)
+endif()
+
 monero_add_library(obj_governance OBJECT ${governance_sources})
+if(VEILROOT_ENABLE_CL)
+    target_compile_definitions(obj_obj_governance PRIVATE VEILROOT_ENABLE_CL=1)
+    target_link_libraries(obj_obj_governance PRIVATE bicycl gmp::gmp)
+endif()
 target_link_libraries(obj_obj_governance PRIVATE secp256k1)
 
 target_include_directories(obj_governance PRIVATE ${CMAKE_SOURCE_DIR}/src)

@@ -569,6 +569,17 @@ if (APPLE AND NOT IOS)
 endif()
 
 find_package(OpenSSL REQUIRED)
+
+# VEILROOT_ENABLE_CL -- CL-over-class-groups backend (research only).
+# BICYCL is NOT constant-time and NOT production-ready. Do not enable
+# in a shipped binary. Default OFF so mingw builds stay green.
+option(VEILROOT_ENABLE_CL
+    "Enable CL-over-class-groups DAO backend (research; requires gmp)"
+    OFF)
+if(VEILROOT_ENABLE_CL)
+    find_package(gmp REQUIRED)
+    message(STATUS "VEILROOT_ENABLE_CL=ON -- CL backend will be built")
+endif()
 message(STATUS "Using OpenSSL include dir at ${OPENSSL_INCLUDE_DIR}")
 include_directories(${OPENSSL_INCLUDE_DIR})
 if(STATIC AND NOT IOS)
@@ -670,6 +681,9 @@ ExternalProject_Add(generate_translations_header
   INSTALL_COMMAND ${CMAKE_COMMAND} -E echo "")
 include_directories("${CMAKE_CURRENT_BINARY_DIR}/translations")
 add_subdirectory(external)
+if(VEILROOT_ENABLE_CL)
+    add_subdirectory(external/bicycl)
+endif()
 
 # Final setup for libunbound
 include_directories(${UNBOUND_INCLUDE_DIR})

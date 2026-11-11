@@ -87,5 +87,15 @@ make_paillier_backend(const std::vector<uint8_t>& modulus)
     return std::make_unique<PaillierEncryptionBackend>(std::move(pk));
 }
 
+#ifndef VEILROOT_ENABLE_CL
+// Stub: CL backend was not compiled. Return nullptr so callers get a
+// clean failure instead of a link error.
+std::unique_ptr<DaoEncryptionBackend>
+make_cl_backend(size_t /*seclevel_bits*/)
+{
+    return nullptr;
+}
+#endif
+
 } // namespace dao
 } // namespace cryptonote
