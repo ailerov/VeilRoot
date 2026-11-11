@@ -16,6 +16,7 @@
 #include "governance/dao_consistency.h"
 #include "governance/dao_dkg.h"
 #include "governance/dao_paillier.h"
+#include "governance/dao_supply.h"
 #include "governance/dao_vote_or_proof.h"
 #include "governance/governance_payload.h"
 #include "cryptonote_basic/tx_extra.h"
@@ -55,6 +56,18 @@ bool bn_to_vec_be(const BIGNUM* b, std::vector<uint8_t>& out, size_t fixed)
     if (BN_num_bytes(b) > static_cast<int>(fixed)) return false;
     BN_bn2binpad(b, out.data(), static_cast<int>(fixed));
     return true;
+}
+
+bool bn_from_u128(BIGNUM* out, const dao_u128& v)
+{
+    if (!out) return false;
+    std::array<uint8_t, 16> bytes{};
+    dao_u128 n = v;
+    for (int i = 15; i >= 0; --i) {
+        bytes[i] = (n & 0xff).convert_to<uint8_t>();
+        n >>= 8;
+    }
+    return BN_bin2bn(bytes.data(), static_cast<int>(bytes.size()), out) != nullptr;
 }
 
 } // anonymous namespace
@@ -101,8 +114,8 @@ bool build_dao_v2_vote(
     rct::key R_W = rct::zero();
     rct::key R_B = rct::zero();
 
-    uint64_t W_total = 0;
-    uint64_t B_total = 0;
+    dao_u128 W_total = 0;
+    dao_u128 B_total = 0;
 
     std::vector<rct::key> nullifiers;
 
@@ -228,8 +241,8 @@ bool build_dao_v2_vote(
         ti.nullifiers.push_back(nf);
         ti.balance_commitments.push_back(B_i);
 
-        W_total += static_cast<uint64_t>(f_real) * s.real_amount;
-        B_total += s.real_amount;
+        W_total += dao_u128(f_real) * dao_u128(s.real_amount);
+        B_total += dao_u128(s.real_amount);
     }
 
     if (!ok) {
@@ -250,8 +263,11 @@ bool build_dao_v2_vote(
     BIGNUM* B_bn = BN_new();
     BIGNUM* S_signed_bn = BN_new();
     BIGNUM* S_paillier_bn = BN_new();
-    BN_set_word(W_bn, W_total);
-    BN_set_word(B_bn, B_total);
+    if (!bn_from_u128(W_bn, W_total) || !bn_from_u128(B_bn, B_total)) {
+        BN_free(N_bn);
+        BN_free(W_bn); BN_free(B_bn); BN_free(S_signed_bn); BN_free(S_paillier_bn);
+        return false;
+    }
 
     BN_copy(S_signed_bn, W_bn);
     if (!is_yes && !BN_is_zero(S_signed_bn))
