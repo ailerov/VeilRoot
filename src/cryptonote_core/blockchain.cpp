@@ -1183,8 +1183,10 @@ block Blockchain::pop_block_from_blockchain()
         m_db->add_proposal_record(cert.proposal_id, prop);
 
         // Remove the pending execution the applied result created.
-        // The delay used by apply_dao_v2_tally_result is 720.
-        const uint64_t delay = 720;
+        // Same delay formula as apply_dao_v2_tally_result, read at
+        // voting_end_height so the value is frozen for this proposal.
+        const uint64_t delay = governance().get_governance_parameter(
+            governance_parameter::execution_delay, prop.voting_end_height);
         try {
           m_db->remove_pending_execution(
               prop.voting_end_height + delay, cert.proposal_id);
@@ -4829,9 +4831,13 @@ bool Blockchain::validate_treasury_input(const txin_treasury& input, const trans
         return false;
     }
 
-    if (height < rec.voting_end_height + 1)
+    const uint64_t exec_delay = governance().get_governance_parameter(
+        governance_parameter::execution_delay, rec.voting_end_height);
+    if (height < rec.voting_end_height + exec_delay)
     {
-        MERROR_VER("Execution not due yet for proposal " << input.proposal_id);
+        MERROR_VER("Execution not due yet for proposal " << input.proposal_id
+                   << " (height " << height
+                   << " < due " << (rec.voting_end_height + exec_delay) << ")");
         return false;
     }
 
@@ -12109,7 +12115,8 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
 
       if (cert.passed)
       {
-        const uint64_t delay = 720;
+        const uint64_t delay = governance().get_governance_parameter(
+            governance_parameter::execution_delay, prop.voting_end_height);
         m_db->add_pending_execution(
             prop.voting_end_height + delay,
             cert.proposal_id);

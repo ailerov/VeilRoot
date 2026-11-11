@@ -163,11 +163,16 @@ protected:
 
     bool check(cryptonote::transaction& tx)
     {
+        // Height is well past voting_end_height + execution_delay.
+        // seed() sets voting_end_height = 50 and execution_delay is 720,
+        // so any height >= 770 clears the delay gate. Failures in the
+        // Rejects* tests must therefore come from their intended
+        // reason (recipient, amount, status), not from the delay.
         cryptonote::tx_verification_context tvc{};
         uint64_t     max_used_height = 0;
         crypto::hash max_used_id{};
         return m_bc->check_tx_inputs(tx, max_used_height, max_used_id,
-                                     tvc, false, 200);
+                                     tvc, false, 1000);
     }
 
     std::string                                 m_dir;

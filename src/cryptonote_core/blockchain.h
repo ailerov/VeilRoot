@@ -1273,6 +1273,7 @@ namespace cryptonote
     }
 
     GovernanceEngine& governance();
+    const GovernanceEngine& governance() const { return const_cast<Blockchain*>(this)->governance(); }
 
     /**
      * @brief get a number of outputs of a specific amount

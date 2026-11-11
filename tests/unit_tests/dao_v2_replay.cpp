@@ -160,7 +160,6 @@ bool construct_block_here(
     // still produce a PoW-valid result.
     const std::function<void(block&)>& modifier = {})
 {
-    std::cerr << "[cbh] enter height=" << height << "\n";
 
     auto& bc_storage = node.core->get_blockchain_storage();
     auto& db         = bc_storage.get_db();
@@ -181,7 +180,6 @@ bool construct_block_here(
         prev_id = bc_storage.get_block_id_by_height(height - 1);
         if (prev_id == crypto::null_hash)
         {
-            std::cerr << "[cbh] prev_id null at " << (height - 1) << "\n";
             return false;
         }
 
@@ -189,8 +187,6 @@ bool construct_block_here(
             const block prev = db.get_block_from_height(height - 1);
             last_ts = prev.timestamp;
         } catch (const std::exception& e) {
-            std::cerr << "[cbh] get_block_from_height threw: "
-                      << e.what() << "\n";
             return false;
         }
         try {
@@ -207,10 +203,8 @@ bool construct_block_here(
     uint64_t reward = 0;
     if (!get_block_reward(0, 0, already_generated, reward, blk.major_version))
     {
-        std::cerr << "[cbh] get_block_reward false\n";
         return false;
     }
-    std::cerr << "[cbh] reward=" << reward << "\n";
 
     transaction miner_tx;
     // max_outs must be at least 2 because the treasury split in
@@ -222,7 +216,6 @@ bool construct_block_here(
             miner_acc.get_keys().m_account_address,
             miner_tx, {}, 999, blk.major_version, {}, 18))
     {
-        std::cerr << "[cbh] construct_miner_tx false\n";
         return false;
     }
 
@@ -248,10 +241,8 @@ bool construct_block_here(
     const difficulty_type diff = 1;
     if (!miner::find_nonce_for_given_block(gbh, blk, diff, height, nullptr))
     {
-        std::cerr << "[cbh] find_nonce false\n";
         return false;
     }
-    std::cerr << "[cbh] ok nonce=" << blk.nonce << "\n";
 
     out = blk;
     return true;
@@ -275,9 +266,6 @@ TEST(DaoV2Replay, NodeBReceivesBlockOneFromNodeA)
     miner_acc.generate();
 
     const uint64_t a_start = a.core->get_current_blockchain_height();
-    std::cerr << "[replay] a_start=" << a_start
-              << " hf_version=" << (int)a.core->get_blockchain_storage().get_current_hard_fork_version()
-              << "\n";
 
     block blk;
     ASSERT_TRUE(construct_block_here(a, miner_acc, a_start, {}, blk));
@@ -1508,6 +1496,17 @@ TEST(DaoV2Replay, RejectsDuplicateTreasuryExecutionInBlock)
 
         out_id_1 = db.add_treasury_output(proposal_amount, seed_height);
         out_id_2 = db.add_treasury_output(proposal_amount, seed_height);
+
+        // Override execution_delay to 0 so the delay gate is neutral.
+        // This test proves duplicate-in-block rejection, not delay
+        // rejection; both tx must reach the duplicate check.
+        parameter_record dp{};
+        dp.parameter         = governance_parameter::execution_delay;
+        dp.value             = 0;
+        dp.activation_height = 0;
+        dp.proposal_height   = 0;
+        dp.proposal_id       = crypto::null_hash;
+        db.add_parameter_record(dp);
     }
 
     // Build one exec tx per output, both pointing at the same proposal.
