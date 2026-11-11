@@ -80,6 +80,7 @@
 
 #include <boost/asio/deadline_timer.hpp>
 #include <memory>
+#include <set>
 namespace cryptonote { class nostr_client; }
 
 namespace tools { class Notify; }
@@ -1415,7 +1416,8 @@ namespace cryptonote
   // validation; never mutates state. Runs before m_db->add_block().
   bool validate_dao_v2_dkg_activation_tx(
       const transaction& tx,
-      uint64_t block_height) const;
+      uint64_t block_height,
+      const std::set<crypto::public_key>* block_committees = nullptr) const;
 
   // Apply a validated DKG key-activation transaction. Called from the
   // block-application path after m_db->add_block() succeeds. Installs

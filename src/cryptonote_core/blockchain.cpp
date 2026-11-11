@@ -7137,6 +7137,11 @@ leave:
   {
     bool activation_seen_in_block = false;
     std::set<std::string> tally_proposals_in_block;
+    // Committees accepted earlier in this same block. Used by the
+    // activation validator to reject overlap between two proposals
+    // activated in the same block, since prior activations are not
+    // yet installed in LMDB during the validation loop.
+    std::set<crypto::public_key> activation_committees_in_block;
 
     for (const auto& tx_pair : txs)
     {
@@ -7152,7 +7157,7 @@ leave:
                 tx, governance_object::dkg_key_activation, blob) ||
             !activation.deserialize(blob) ||
             !validate_dao_v2_dkg_activation_tx(
-                tx, blockchain_height))
+                tx, blockchain_height, &activation_committees_in_block))
         {
           MERROR_VER(
               "DAO V2 DKG activation failed block consensus validation");
@@ -7160,6 +7165,12 @@ leave:
           bvc.m_verifivation_failed = true;
           return_txs_to_pool();
           return false;
+        }
+        for (const auto& m : activation.record.committee_members) {
+          if (m.size() != 32) continue;
+          crypto::public_key pk{};
+          std::memcpy(pk.data, m.data(), 32);
+          activation_committees_in_block.insert(pk);
         }
       }
 
@@ -11840,7 +11851,8 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
 
   bool Blockchain::validate_dao_v2_dkg_activation_tx(
       const transaction& tx,
-      uint64_t block_height) const
+      uint64_t block_height,
+      const std::set<crypto::public_key>* block_committees) const
   {
     if (!is_dao_v2_dkg_activation_tx(tx))
       return false;
@@ -11981,6 +11993,55 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
           MERROR("dkg-activation: committee_members do not match "
                  "node_ready selection at height " << act.selection_height);
           return false;
+        }
+      }
+    }
+
+    // 7b. Overlap check. Operator rule: nodes in one committee
+    // cannot simultaneously be in another. Reject if this
+    // activation's committee intersects either:
+    //   - any share set already installed in LMDB for a DIFFERENT
+    //     proposal key (prior-block activations), or
+    //   - any committee accepted earlier in this same block
+    //     (block_committees, populated by add_new_block).
+    // Same-block overlap is not visible in LMDB during the
+    // validation loop, so the caller passes a per-block set.
+    {
+      std::set<crypto::public_key> this_set;
+      for (const auto& m : rec.committee_members) {
+        if (m.size() != 32) return false;
+        crypto::public_key pk{};
+        std::memcpy(pk.data, m.data(), 32);
+        this_set.insert(pk);
+      }
+      if (this_set.empty()) return false;
+
+      bool overlap = false;
+      m_db->for_all_dao_share_sets(
+          [&](uint64_t /*ssid*/,
+              const dao::dao_share_set_record& ss) -> bool {
+            if (ss.key_id == rec.key_id) return true;  // own (impossible: dup check earlier)
+            for (const auto& m : ss.committee_members) {
+              if (m.size() != 32) continue;
+              crypto::public_key pk{};
+              std::memcpy(pk.data, m.data(), 32);
+              if (this_set.count(pk)) { overlap = true; return false; }
+            }
+            return true;
+          });
+      if (overlap) {
+        MERROR("dkg-activation: committee overlaps an already-active "
+               "proposal");
+        return false;
+      }
+
+      if (block_committees) {
+        for (const auto& pk : this_set) {
+          if (block_committees->count(pk)) {
+            MERROR("dkg-activation: committee overlaps another proposal "
+                   "activated in the same block");
+            return false;
+          }
         }
       }
     }
