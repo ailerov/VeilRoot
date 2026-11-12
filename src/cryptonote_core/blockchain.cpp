@@ -10914,45 +10914,7 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
         contributor_indices.push_back(static_cast<uint32_t>(i) + 1);
       }
       if (contributors.size() < cur_ss.threshold) {
-#ifdef VEILROOT_DAO_DKG_TESTING
-        // [B3d-inst] Test-only diagnostics. Under VEILROOT_DAO_DKG_TESTING.
-        std::cerr << "[B3d-inst] re-reshare abort proposal=" << proposal_id
-                  << " contributors=" << contributors.size()
-                  << " threshold=" << cur_ss.threshold
-                  << " committee_size=" << cur_ss.committee_members.size()
-                  << " ready_now=" << ready_now.size()
-                  << " ready_pks=" << ready_pks.size()
-                  << " cur_ss.height=" << cur_ss.height
-                  << " tip=" << get_current_blockchain_height()
-                  << " ssid=" << cur_ss.share_set_id
-                  << "\n";
-        for (size_t i = 0; i < cur_ss.committee_members.size(); ++i) {
-          crypto::public_key pk{};
-          std::memcpy(pk.data, cur_ss.committee_members[i].data(), 32);
-          std::cerr << "[B3d-inst]   member[" << i << "] in_ready_now="
-                    << (ready_now.count(pk) ? 1 : 0) << "\n";
-        }
-        {
-          const uint64_t tip = get_current_blockchain_height();
-          m_db->for_all_dao_v2_node_ready(
-              [&](const crypto::public_key& pk, uint64_t sh,
-                  const crypto::hash& bh) -> bool {
-                crypto::hash canon{};
-                bool canon_ok = true;
-                try { canon = get_block_id_by_height(sh); }
-                catch (...) { canon_ok = false; }
-                bool match = canon_ok && (canon == bh);
-                bool ttl_ok = (sh <= tip) &&
-                              ((tip - sh) <= k_reshare_retry_interval);
-                std::cerr << "[B3d-inst]   node_ready stored_h=" << sh
-                          << " age=" << (sh <= tip ? (tip - sh) : 0)
-                          << " ttl_ok=" << ttl_ok
-                          << " canon_match=" << match << "\n";
-                return true;
-              });
-        }
-#endif
-        MWARNING("B3d: re-reshare for " << proposal_id
+        MWARNING("re-reshare for " << proposal_id
                  << " aborted: only " << contributors.size()
                  << " reachable, need " << cur_ss.threshold);
         return;
@@ -10978,7 +10940,7 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
       size_t resp_in_committee = 0;
       for (const auto& pk : cur_vec) if (ready_now.count(pk)) ++resp_in_committee;
       if (resp_in_committee < cur_ss.threshold) {
-        MWARNING("B3d: re-reshare for " << proposal_id
+        MWARNING("re-reshare for " << proposal_id
                  << " aborted: " << resp_in_committee
                  << " responsive, need " << cur_ss.threshold);
         return;
@@ -11232,7 +11194,7 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
     auto runner = std::make_unique<dao::dao_reshare_runner>(cfg, cb);
     if (!runner->start()) {
       BN_free(delta);
-      MWARNING("B3b reshare: runner start failed for proposal "
+      MWARNING("reshare: runner start failed for proposal "
                << proposal_id);
       return;
     }
@@ -11246,7 +11208,7 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
     m_dao_v2_reshare_mu_i = std::move(mu_i);
 
     m_dao_v2_reshare_started_block[proposal_id] = current_block;
-    MINFO("B3d reshare: started for proposal " << proposal_id
+    MINFO("reshare: started for proposal " << proposal_id
           << " old_set=" << cur_id
           << " new_n=" << new_members.size()
           << " old_n=" << contributors.size());

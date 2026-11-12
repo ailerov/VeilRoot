@@ -97,11 +97,10 @@ bool build_dao_v2_vote(
         if (s.real_index >= s.P.size()) return false;
     }
 
-    // Backend-neutral path (audit Priority 6): the wallet calls the
-    // DaoEncryptionBackend interface. Today the factory returns the
-    // Paillier backend (wire-compatible with vote_proof_v2's
-    // fixed_512_byte fields); Phase 4.8 flips this to CL when the
-    // wire format migration lands. No caller change required at 4.8.
+    // The wallet calls DaoEncryptionBackend rather than concrete
+    // Paillier types. The factory currently returns the Paillier
+    // backend, whose ciphertext length matches vote_proof_v2's
+    // fixed_512_byte fields.
     auto backend = make_paillier_backend(paillier_modulus);
     if (!backend) return false;
 

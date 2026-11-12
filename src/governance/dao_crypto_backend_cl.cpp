@@ -4,15 +4,15 @@
 // CL-over-class-groups backend. RESEARCH CODE.
 //
 // BICYCL is not constant-time and is not production-ready. This file
-// is compiled only when VEILROOT_ENABLE_CL is defined, which is
-// never the case in shipped binaries until Phase 5 hardening lands.
+// is compiled only when VEILROOT_ENABLE_CL is defined; shipped
+// binaries leave that option off.
 //
-// Scope of this file (Phase 4.2d): full backend contract.
+// Implements the full DaoEncryptionBackend contract.
 // Constructor, encrypt, decrypt (test hook), ciphertext validity,
 // sample_r, serialize_modulus, deserialize_modulus, add, inverse,
 // scalar_mul.
 //
-// Wire formats (frozen for 4.2d, revocable in 4.4):
+// Wire formats:
 //   ciphertext   = QFI(c1) || QFI(c2)
 //   QFI(x)       = SCALAR(a) || SCALAR(b) || SCALAR(c)
 //   SCALAR(v)    = sign_byte (0 or 1) || u32(len) || magnitude_be
@@ -38,6 +38,7 @@
 #include <array>
 #include <cstring>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -133,8 +134,10 @@ bool qfi_from_bytes(const std::vector<uint8_t>& in, size_t& off, QFI& out)
     return true;
 }
 
-// secp256k1 scalar field order (q). Matches reference
-// benchmark_qclpvss.cpp:18 (`Mpz Q(ec_group_.order())`).
+// Ed25519 subgroup order (q):
+//   2^252 + 27742317777372353535851937790883648493
+// This is what rct::curveOrder() returns in Monero's RingCT
+// implementation.
 Mpz make_q()
 {
     // rct::curveOrder() returns LE bytes; Mpz ctor expects BE.
@@ -153,6 +156,17 @@ public:
         : seclevel_bits_(seclevel_bits)
     {
         Mpz q = make_q();
+        // q must exceed the signed tally range (2*W_MAX + 1,
+        // ~2^69) with margin. Ed25519 q has 252 bits; require
+        // at least 200 bits so a future change to make_q()
+        // cannot silently produce a q incompatible with the
+        // tally range.
+        if (mpz_sizeinbase(q.mpz_, 2) < 200)
+        {
+            throw std::runtime_error(
+                "CL backend: q must be >= 200 bits for DAO "
+                "signed-tally-range injectivity");
+        }
         SecLevel sl(static_cast<int>(seclevel_bits));
         cl_ = std::make_unique<CL_HSMqk>(q, 1, sl, randgen_, /*compact=*/false);
         sk_ = std::make_unique<CL_HSMqk::SecretKey>(*cl_, randgen_);
@@ -337,7 +351,13 @@ private:
 std::unique_ptr<DaoEncryptionBackend>
 make_cl_backend(size_t seclevel_bits)
 {
-    return std::make_unique<CLEncryptionBackend>(seclevel_bits);
+    try {
+        return std::make_unique<CLEncryptionBackend>(seclevel_bits);
+    } catch (const std::exception&) {
+        // Constructor rejected its parameters. Return nullptr
+        // rather than propagate, matching make_paillier_backend.
+        return nullptr;
+    }
 }
 
 } // namespace dao

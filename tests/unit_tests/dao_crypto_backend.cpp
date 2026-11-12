@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Interface contract test for DaoEncryptionBackend via the Paillier
-// backend. Phase 4.1; no caller change. The CL backend added in
-// Phase 4.2 will be tested through the same interface methods.
+// backend. The CL backend is tested through the same interface
+// methods in dao_crypto_backend_cl.cpp.
 
 #include <cstring>
 #include <vector>

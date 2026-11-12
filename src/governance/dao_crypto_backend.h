@@ -17,13 +17,12 @@ namespace dao {
 // Backend-neutral interface for the DAO vote-tally homomorphic
 // encryption scheme. One implementation per scheme:
 //   - PaillierEncryptionBackend (dao_crypto_backend.cpp)
-//   - CLEncryptionBackend      (Phase 4.2)
+//   - CLEncryptionBackend      (dao_crypto_backend_cl.cpp)
 //
-// The public surface is everything the current Paillier callers in
+// The public surface covers what the current Paillier callers in
 // dao_wallet_v2.cpp, dao_tally.cpp, dao_tally_share.cpp,
 // dao_threshold.cpp, dao_consistency.cpp, vote_proof_verifier.cpp,
-// dao_dkg.cpp currently touch. Callers are migrated to this interface
-// incrementally (Phase 4.3+). No caller change happens in 4.1.
+// dao_dkg.cpp currently touch.
 //
 // Contract:
 //   - encrypt(m, r, ct):       m in the backend's plaintext space,
@@ -96,6 +95,26 @@ std::unique_ptr<DaoEncryptionBackend>
 // speed. Do NOT use in shipped binaries: BICYCL is not constant-time.
 std::unique_ptr<DaoEncryptionBackend>
     make_cl_backend(size_t seclevel_bits = 128);
+
+// Weighted-tally maximum and plaintext-field injectivity.
+// DAO_WEIGHTED_MAX matches dao_tally.cpp's runtime W_MAX and
+// voting_weight.cpp's governance_weight_t maximum. Signed tally
+// values live in [-W_MAX, +W_MAX], 2*W_MAX + 1 distinct values.
+// For that range to be injectively encodable in Z_q, we require
+// 2*W_MAX + 1 <= q.
+//
+// Compile-time: 2*W_MAX + 1 < 2^69. The CL backend constructor
+// enforces q >= 2^200 at runtime. Chain q > 2^200 >> 2^69 >
+// 2*W_MAX + 1 establishes injectivity across the signed range.
+#if defined(__SIZEOF_INT128__)
+constexpr unsigned __int128 DAO_WEIGHTED_MAX =
+    (unsigned __int128)240000000ULL * (unsigned __int128)1000000000000ULL;
+constexpr unsigned __int128 DAO_SIGNED_RANGE_SIZE =
+    2 * DAO_WEIGHTED_MAX + 1;
+static_assert(
+    DAO_SIGNED_RANGE_SIZE < (((unsigned __int128)1) << 69),
+    "signed tally range must fit in 69 bits");
+#endif
 
 } // namespace dao
 } // namespace cryptonote

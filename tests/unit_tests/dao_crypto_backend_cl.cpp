@@ -1,9 +1,8 @@
 // Copyright (c) 2024-2026, The VeilRoot Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Phase 4.2b round-trip test for the CL-over-class-groups backend.
-// Compiled only under VEILROOT_ENABLE_CL. Phase 4.2c+ adds tests for
-// homomorphic add, scalar_mul, inverse, and modulus deserialize.
+// Tests for the CL-over-class-groups DaoEncryptionBackend. Compiled
+// only under VEILROOT_ENABLE_CL.
 
 #ifdef VEILROOT_ENABLE_CL
 
@@ -205,6 +204,37 @@ TEST(dao_crypto_backend_cl, modulus_roundtrip_cross_backend)
     BN_free(dummy);
 
     BN_free(m); BN_free(r); BN_free(dec);
+}
+
+
+TEST(dao_crypto_backend_cl, weighted_max_arithmetic_bounds)
+{
+    // Signed tally values in [-W_MAX, +W_MAX] must be injectively
+    // encodable in Z_q. Compile-time check in dao_crypto_backend.h:
+    // 2*W_MAX + 1 < 2^69. Runtime check in CLEncryptionBackend
+    // constructor: q >= 2^200. Chain:
+    //   q > 2^200 >> 2^69 > 2*W_MAX + 1  =>  injective.
+    // This test cross-checks the constants.
+#if defined(__SIZEOF_INT128__)
+    using u128 = unsigned __int128;
+
+    const u128 w_max = DAO_WEIGHTED_MAX;
+    const u128 signed_range = DAO_SIGNED_RANGE_SIZE;
+
+    const u128 expected_w_max =
+        (u128)240000000ULL * (u128)1000000000000ULL;
+    EXPECT_EQ(w_max, expected_w_max);
+
+    EXPECT_EQ(signed_range, 2 * w_max + 1);
+
+    EXPECT_LT(signed_range, (((u128)1) << 69));
+
+    const u128 four_w_max = 4 * w_max;
+    EXPECT_LT(four_w_max, (((u128)1) << 70));
+#endif
+
+    auto backend = make_test_backend();
+    EXPECT_NE(backend, nullptr);
 }
 
 #endif // VEILROOT_ENABLE_CL
