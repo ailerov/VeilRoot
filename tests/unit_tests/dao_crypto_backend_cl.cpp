@@ -237,4 +237,51 @@ TEST(dao_crypto_backend_cl, weighted_max_arithmetic_bounds)
     EXPECT_NE(backend, nullptr);
 }
 
+
+TEST(dao_crypto_backend_cl, wire_rejects_leading_zero_magnitude)
+{
+    auto backend = make_test_backend();
+    ASSERT_NE(backend, nullptr);
+    // SCALAR with sign=0, len=2, magnitude=[0x00,0x05] — leading zero.
+    std::vector<uint8_t> ct = {0, 0, 0, 0, 2, 0x00, 0x05};
+    EXPECT_FALSE(backend->is_valid_ciphertext(ct));
+}
+
+TEST(dao_crypto_backend_cl, wire_rejects_negative_a_or_c)
+{
+    auto backend = make_test_backend();
+    ASSERT_NE(backend, nullptr);
+    // SCALAR with sign=1 (negative) — 'a' must be positive in reduced form.
+    std::vector<uint8_t> ct = {1, 0, 0, 0, 1, 0x05};
+    EXPECT_FALSE(backend->is_valid_ciphertext(ct));
+}
+
+TEST(dao_crypto_backend_cl, wire_rejects_negative_zero_b)
+{
+    auto backend = make_test_backend();
+    ASSERT_NE(backend, nullptr);
+    // SCALAR(a)=1 encoded canonically, then SCALAR(b) with sign=1 len=0 (negative zero).
+    std::vector<uint8_t> ct = {0, 0, 0, 0, 1, 0x01,   1, 0, 0, 0, 0};
+    EXPECT_FALSE(backend->is_valid_ciphertext(ct));
+}
+
+TEST(dao_crypto_backend_cl, wire_rejects_ciphertext_from_other_discriminant)
+{
+    auto a = make_test_backend();
+    auto b = make_test_backend();  // independent p, different discriminant
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+
+    BIGNUM* m = BN_new(); BN_set_word(m, 42);
+    BIGNUM* r = BN_new();
+    ASSERT_TRUE(a->sample_r(r));
+    std::vector<uint8_t> ct;
+    ASSERT_TRUE(a->encrypt(m, r, ct));
+
+    EXPECT_TRUE(a->is_valid_ciphertext(ct));
+    EXPECT_FALSE(b->is_valid_ciphertext(ct));
+
+    BN_free(m); BN_free(r);
+}
+
 #endif // VEILROOT_ENABLE_CL

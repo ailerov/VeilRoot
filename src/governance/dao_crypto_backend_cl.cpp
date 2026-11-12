@@ -38,6 +38,7 @@
 #include <array>
 #include <cstring>
 #include <memory>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -100,16 +101,32 @@ void mpz_to_bytes_signed(std::vector<uint8_t>& out, const Mpz& v)
     out.insert(out.end(), bytes.begin(), bytes.end());
 }
 
-bool mpz_from_bytes_signed(const std::vector<uint8_t>& in, size_t& off, Mpz& out)
+// Canonical signed-magnitude decode:
+//   SCALAR(v) = sign_byte (0 = non-negative, 1 = negative) || u32(len) || magnitude_be
+// Rejects: sign_byte > 1, negative values when allow_negative=false,
+// zero with sign_byte=1 (negative zero), zero with len>0 (all-zero
+// magnitude), non-zero magnitudes with a leading zero byte.
+bool mpz_from_bytes_signed(const std::vector<uint8_t>& in, size_t& off, Mpz& out,
+                           bool allow_negative = true)
 {
     if (off >= in.size()) return false;
-    bool neg = in[off++] != 0;
+    uint8_t sign_byte = in[off++];
+    if (sign_byte > 1) return false;
     uint32_t len = 0;
     if (!u32_be_read(in, off, len)) return false;
     if (off + len > in.size()) return false;
+    if (len == 0) {
+        if (sign_byte != 0) return false;
+        out = Mpz();
+        return true;
+    }
+    if (in[off] == 0) return false;
     out = mpz_from_bytes_be(in.data() + off, len);
     off += len;
-    if (neg) mpz_neg(out.mpz_, out.mpz_);
+    if (sign_byte == 1) {
+        if (!allow_negative) return false;
+        mpz_neg(out.mpz_, out.mpz_);
+    }
     return true;
 }
 
@@ -120,17 +137,24 @@ void qfi_to_bytes(std::vector<uint8_t>& out, const QFI& f)
     mpz_to_bytes_signed(out, f.c());
 }
 
-bool qfi_from_bytes(const std::vector<uint8_t>& in, size_t& off, QFI& out)
+// In reduced binary quadratic forms 'a' and 'c' are positive; 'b'
+// may be negative. Any form whose reconstructed discriminant differs
+// from expected_disc is rejected — this binds a wire-encoded QFI to
+// the class group it was created in, so a ciphertext from a different
+// CL parameter set cannot be misinterpreted as valid here.
+bool qfi_from_bytes(const std::vector<uint8_t>& in, size_t& off, QFI& out,
+                    const Mpz& expected_disc)
 {
     Mpz a, b, c;
-    if (!mpz_from_bytes_signed(in, off, a)) return false;
-    if (!mpz_from_bytes_signed(in, off, b)) return false;
-    if (!mpz_from_bytes_signed(in, off, c)) return false;
+    if (!mpz_from_bytes_signed(in, off, a, /*allow_negative=*/false)) return false;
+    if (!mpz_from_bytes_signed(in, off, b, /*allow_negative=*/true))  return false;
+    if (!mpz_from_bytes_signed(in, off, c, /*allow_negative=*/false)) return false;
     try {
         out = QFI(a, b, c);
     } catch (...) {
         return false;
     }
+    if (out.discriminant() != expected_disc) return false;
     return true;
 }
 
@@ -155,6 +179,18 @@ public:
     explicit CLEncryptionBackend(size_t seclevel_bits)
         : seclevel_bits_(seclevel_bits)
     {
+        // RandGen's default constructor produces the same sequence
+        // for every instance. Without an explicit seed, two backends
+        // constructed with identical parameters would derive the
+        // same p, hence the same class group, defeating
+        // discriminant isolation. Seed from the OS before any
+        // operation that consumes randomness (including random_p
+        // during CL_HSMqk construction).
+        {
+            std::random_device rd;
+            Mpz seed(static_cast<unsigned long>(rd()));
+            randgen_.set_seed(seed);
+        }
         Mpz q = make_q();
         // q must exceed the signed tally range (2*W_MAX + 1,
         // ~2^69) with margin. Ed25519 q has 252 bits; require
@@ -196,10 +232,10 @@ public:
     {
         // Format mirrors serialize_modulus:
         //   u32(len_q) || q_be || u32(k) || SCALAR(p) || QFI(pk.elt())
-        // After success, this backend is public-key-only: sk_ is
-        // reset because the wire does not (and must not) carry
-        // secret material. Callers that need decryption must
-        // hold a backend with the original sk_.
+        // The class group is constructed from (q, k, p) BEFORE parsing
+        // pk so that pk's discriminant can be checked against the group
+        // we just built. sk_ is not restored: the wire carries public
+        // parameters only.
         size_t off = 0;
         uint32_t lq = 0;
         if (!u32_be_read(in, off, lq)) return false;
@@ -210,18 +246,28 @@ public:
         if (!u32_be_read(in, off, k)) return false;
         if (k == 0) return false;
         Mpz p;
-        if (!mpz_from_bytes_signed(in, off, p)) return false;
-        QFI pk_qfi;
-        if (!qfi_from_bytes(in, off, pk_qfi)) return false;
-        if (off != in.size()) return false;
+        if (!mpz_from_bytes_signed(in, off, p, /*allow_negative=*/false))
+            return false;
         try {
             cl_ = std::make_unique<CL_HSMqk>(
                 q, static_cast<size_t>(k), p, /*compact=*/false);
+        } catch (...) {
+            cl_.reset(); pk_.reset(); sk_.reset();
+            return false;
+        }
+        QFI pk_qfi;
+        if (!qfi_from_bytes(in, off, pk_qfi, cl_->Delta())) {
+            cl_.reset(); pk_.reset(); sk_.reset();
+            return false;
+        }
+        if (off != in.size()) {
+            cl_.reset(); pk_.reset(); sk_.reset();
+            return false;
+        }
+        try {
             pk_ = std::make_unique<CL_HSMqk::PublicKey>(*cl_, pk_qfi);
         } catch (...) {
-            cl_.reset();
-            pk_.reset();
-            sk_.reset();
+            cl_.reset(); pk_.reset(); sk_.reset();
             return false;
         }
         sk_.reset();
@@ -257,10 +303,10 @@ public:
         if (!pk_) return false;
         size_t off1 = 0, off2 = 0;
         QFI a1, a2, b1, b2;
-        if (!qfi_from_bytes(c1, off1, a1)) return false;
-        if (!qfi_from_bytes(c1, off1, a2)) return false;
-        if (!qfi_from_bytes(c2, off2, b1)) return false;
-        if (!qfi_from_bytes(c2, off2, b2)) return false;
+        if (!qfi_from_bytes(c1, off1, a1, cl_->Delta())) return false;
+        if (!qfi_from_bytes(c1, off1, a2, cl_->Delta())) return false;
+        if (!qfi_from_bytes(c2, off2, b1, cl_->Delta())) return false;
+        if (!qfi_from_bytes(c2, off2, b2, cl_->Delta())) return false;
         CL_HSMqk::CipherText ca(*cl_, a1, a2);
         CL_HSMqk::CipherText cb(*cl_, b1, b2);
         Mpz r = randgen_.random_mpz(cl_->encrypt_randomness_bound());
@@ -293,8 +339,8 @@ public:
     {
         size_t off = 0;
         QFI t;
-        if (!qfi_from_bytes(c, off, t)) return false;
-        if (!qfi_from_bytes(c, off, t)) return false;
+        if (!qfi_from_bytes(c, off, t, cl_->Delta())) return false;
+        if (!qfi_from_bytes(c, off, t, cl_->Delta())) return false;
         return off == c.size();
     }
 
@@ -314,8 +360,8 @@ public:
         if (!sk_) return false;
         size_t off = 0;
         QFI c1, c2;
-        if (!qfi_from_bytes(ct, off, c1)) return false;
-        if (!qfi_from_bytes(ct, off, c2)) return false;
+        if (!qfi_from_bytes(ct, off, c1, cl_->Delta())) return false;
+        if (!qfi_from_bytes(ct, off, c2, cl_->Delta())) return false;
         CL_HSMqk::CipherText ct_cl(*cl_, c1, c2);
         CL_HSMqk::ClearText pt = cl_->decrypt(*sk_, ct_cl);
         auto bytes = mpz_to_bytes_be(pt);
@@ -330,8 +376,8 @@ private:
         if (!pk_) return false;
         size_t off = 0;
         QFI c1, c2;
-        if (!qfi_from_bytes(c, off, c1)) return false;
-        if (!qfi_from_bytes(c, off, c2)) return false;
+        if (!qfi_from_bytes(c, off, c1, cl_->Delta())) return false;
+        if (!qfi_from_bytes(c, off, c2, cl_->Delta())) return false;
         CL_HSMqk::CipherText ct(*cl_, c1, c2);
         Mpz r = randgen_.random_mpz(cl_->encrypt_randomness_bound());
         CL_HSMqk::CipherText scaled = cl_->scal_ciphertexts(*pk_, ct, s, r);
