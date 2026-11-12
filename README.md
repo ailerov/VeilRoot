@@ -60,7 +60,7 @@ The repository is the main development branch; we encourage contributors to join
 
 ## Development resources
 
-- GitHub: https://github.com/ailerov/veilroot.git
+- GitHub: https://github.com/ailerov/VeilRoot.git
 - NOSTR: *npub1ex2mt0e7rfk7t0av77tfqh0zehp7zm994stqaxjj93gqn27r7m3qgkz0jy*
 
 ## Vulnerability response
@@ -159,7 +159,7 @@ Release builds and the Windows cross-compile do not need GMP.
 
 1. Clone the repository (with submodules):
    ```bash
-   git clone --recursive https://github.com/veilroot-project/veilroot
+   git clone --recursive https://github.com/ailerov/VeilRoot
    cd veilroot
    ```
 
