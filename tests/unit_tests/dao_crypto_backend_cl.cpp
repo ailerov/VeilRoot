@@ -156,4 +156,55 @@ TEST(dao_crypto_backend_cl, homomorphic_add_inverse)
     BN_free(dec); BN_free(expect);
 }
 
+
+TEST(dao_crypto_backend_cl, modulus_roundtrip_cross_backend)
+{
+    // Backend A holds the secret key; backend B is constructed empty
+    // and then loaded from A's serialized modulus. B must be able to
+    // encrypt under the same public key: A must be able to decrypt
+    // B's ciphertexts. Byte-for-byte ciphertext equality is a strong
+    // extra invariant given BICYCL's deterministic (m, r, pk) -> ct
+    // mapping.
+    auto a = make_test_backend();
+    ASSERT_NE(a, nullptr);
+
+    std::vector<uint8_t> mod1;
+    ASSERT_TRUE(a->serialize_modulus(mod1));
+    EXPECT_GT(mod1.size(), 0u);
+
+    auto b = make_test_backend();  // fresh backend, its own key
+    ASSERT_NE(b, nullptr);
+    ASSERT_TRUE(b->deserialize_modulus(mod1));
+
+    // Roundtrip: B reserializes to identical bytes.
+    std::vector<uint8_t> mod2;
+    ASSERT_TRUE(b->serialize_modulus(mod2));
+    EXPECT_EQ(mod1, mod2);
+
+    // Cross-backend encryption: B encrypts, A decrypts.
+    BIGNUM* m = BN_new(); BN_set_word(m, 4242);
+    BIGNUM* r = BN_new();
+    ASSERT_TRUE(b->sample_r(r));
+
+    std::vector<uint8_t> ct_b;
+    ASSERT_TRUE(b->encrypt(m, r, ct_b));
+
+    std::vector<uint8_t> ct_a;
+    ASSERT_TRUE(a->encrypt(m, r, ct_a));
+
+    // Same (m, r, pk) -> identical ciphertext bytes.
+    EXPECT_EQ(ct_a, ct_b);
+
+    BIGNUM* dec = BN_new();
+    ASSERT_TRUE(a->decrypt_for_testing(ct_b, dec));
+    EXPECT_BN_EQ(dec, m);
+
+    // B has no secret key after deserialize.
+    BIGNUM* dummy = BN_new();
+    EXPECT_FALSE(b->decrypt_for_testing(ct_b, dummy));
+    BN_free(dummy);
+
+    BN_free(m); BN_free(r); BN_free(dec);
+}
+
 #endif // VEILROOT_ENABLE_CL

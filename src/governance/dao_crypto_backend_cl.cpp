@@ -7,18 +7,22 @@
 // is compiled only when VEILROOT_ENABLE_CL is defined, which is
 // never the case in shipped binaries until Phase 5 hardening lands.
 //
-// Scope of this file (Phase 4.2c): constructor, encrypt, decrypt
-// (test hook only), ciphertext validity check, sample_r,
-// serialize_modulus, add, inverse, scalar_mul.
-// deserialize_modulus returns false -- lands in 4.2d with its own test.
+// Scope of this file (Phase 4.2d): full backend contract.
+// Constructor, encrypt, decrypt (test hook), ciphertext validity,
+// sample_r, serialize_modulus, deserialize_modulus, add, inverse,
+// scalar_mul.
 //
-// Wire format (frozen for 4.2c, revocable in 4.4):
-//   ciphertext = QFI(c1) || QFI(c2)
-//   QFI(x)     = SCALAR(a) || SCALAR(b) || SCALAR(c)
-//   SCALAR(v)  = sign_byte (0 or 1) || u32(len) || magnitude_be
+// Wire formats (frozen for 4.2d, revocable in 4.4):
+//   ciphertext   = QFI(c1) || QFI(c2)
+//   QFI(x)       = SCALAR(a) || SCALAR(b) || SCALAR(c)
+//   SCALAR(v)    = sign_byte (0 or 1) || u32(len) || magnitude_be
+//   public_params = u32(len_q) || q_be || u32(k) || SCALAR(p) ||
+//                   QFI(pk.elt())
 //   (sign-aware; mpz_export alone loses sign, which breaks b in
 //   reduced binary quadratic forms that have negative middle
-//   coefficient)
+//   coefficient. p is required: the class group is Cl(-p*q^{2k+1});
+//   omitting p would derive a fresh p and produce a semantically
+//   different group.)
 
 #include "governance/dao_crypto_backend.h"
 
@@ -146,6 +150,7 @@ class CLEncryptionBackend final : public DaoEncryptionBackend
 {
 public:
     explicit CLEncryptionBackend(size_t seclevel_bits)
+        : seclevel_bits_(seclevel_bits)
     {
         Mpz q = make_q();
         SecLevel sl(static_cast<int>(seclevel_bits));
@@ -158,19 +163,55 @@ public:
 
     bool serialize_modulus(std::vector<uint8_t>& out) const override
     {
+        // Wire: u32(len_q) || q_be || u32(k) || SCALAR(p) || QFI(pk.elt())
+        // p (the odd prime whose negation is the fundamental
+        // discriminant of K) is public and REQUIRED: reconstructing
+        // CL_HSMqk without it derives a fresh p, hence a different
+        // class group, hence semantically incompatible ciphertexts.
         out.clear();
         auto q_bytes = mpz_to_bytes_be(cl_->q());
         u32_be_append(out, static_cast<uint32_t>(q_bytes.size()));
         out.insert(out.end(), q_bytes.begin(), q_bytes.end());
         u32_be_append(out, static_cast<uint32_t>(cl_->k()));
+        mpz_to_bytes_signed(out, cl_->p());
         qfi_to_bytes(out, pk_->elt());
         return true;
     }
 
-    bool deserialize_modulus(const std::vector<uint8_t>& /*in*/) override
+    bool deserialize_modulus(const std::vector<uint8_t>& in) override
     {
-        // 4.2e.
-        return false;
+        // Format mirrors serialize_modulus:
+        //   u32(len_q) || q_be || u32(k) || SCALAR(p) || QFI(pk.elt())
+        // After success, this backend is public-key-only: sk_ is
+        // reset because the wire does not (and must not) carry
+        // secret material. Callers that need decryption must
+        // hold a backend with the original sk_.
+        size_t off = 0;
+        uint32_t lq = 0;
+        if (!u32_be_read(in, off, lq)) return false;
+        if (off + lq > in.size()) return false;
+        Mpz q = mpz_from_bytes_be(in.data() + off, lq);
+        off += lq;
+        uint32_t k = 0;
+        if (!u32_be_read(in, off, k)) return false;
+        if (k == 0) return false;
+        Mpz p;
+        if (!mpz_from_bytes_signed(in, off, p)) return false;
+        QFI pk_qfi;
+        if (!qfi_from_bytes(in, off, pk_qfi)) return false;
+        if (off != in.size()) return false;
+        try {
+            cl_ = std::make_unique<CL_HSMqk>(
+                q, static_cast<size_t>(k), p, /*compact=*/false);
+            pk_ = std::make_unique<CL_HSMqk::PublicKey>(*cl_, pk_qfi);
+        } catch (...) {
+            cl_.reset();
+            pk_.reset();
+            sk_.reset();
+            return false;
+        }
+        sk_.reset();
+        return true;
     }
 
     bool encrypt(const BIGNUM* m, const BIGNUM* r,
@@ -286,6 +327,7 @@ private:
         return true;
     }
 
+    size_t seclevel_bits_ = 128;
     mutable RandGen randgen_;
     std::unique_ptr<CL_HSMqk> cl_;
     std::unique_ptr<CL_HSMqk::SecretKey> sk_;
