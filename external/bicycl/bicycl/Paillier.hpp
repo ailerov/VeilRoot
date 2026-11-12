@@ -27,7 +27,8 @@
 #include <thread>
 #endif
 
-#include "bicycl/gmp_extras.hpp"
+#include "bicycl/arith/gmp_extras.hpp"
+#include "bicycl/cl/CL_HSM_utils.hpp"
 #include "bicycl/seclevel.hpp"
 
 namespace BICYCL
@@ -213,8 +214,8 @@ namespace BICYCL
       static Mpz random_r (RandGen &randgen, const Mpz &N);
   };
 
-  #include "Paillier.inl"
-
 } /* BICYCL namespace */
+
+#include "Paillier.inl"
 
 #endif /* BICYCL_PAILLIER_HPP */

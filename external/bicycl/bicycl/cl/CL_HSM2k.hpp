@@ -18,14 +18,14 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-#ifndef BICYCL_CL_HSM2K_HPP
-#define BICYCL_CL_HSM2K_HPP
+#ifndef BICYCL_CL_CL_HSM2K_HPP
+#define BICYCL_CL_CL_HSM2K_HPP
 
 #include <iostream>
 
-#include "bicycl/gmp_extras.hpp"
-#include "bicycl/qfi.hpp"
-#include "bicycl/CL_HSM_utils.hpp"
+#include "bicycl/arith/gmp_extras.hpp"
+#include "bicycl/arith/qfi.hpp"
+#include "bicycl/cl/CL_HSM_utils.hpp"
 #include "bicycl/seclevel.hpp"
 
 namespace BICYCL
@@ -35,6 +35,7 @@ namespace BICYCL
    * with subgroup a power of 2.
    *
    * Ref: ??
+   * @ingroup CL_ENCRYPTION
    */
   class CL_HSM2k
   {
@@ -77,20 +78,15 @@ namespace BICYCL
        * multiplied by 2^(distance_-2) to produced a random distribution that
        * is at distance 2^(distance_) of being uniform.
        */
-      unsigned int distance_;
+      size_t distance_;
 
       /** Actual bound use to draw random values
        * It is equal to 2^(distance_-2) times Cl_Delta_.class_number_bound_
        */
       Mpz exponent_bound_;
 
-      /** Precomputation data: a positive integer */
-      size_t d_;
-      size_t e_;
       /** Precomputation data: h_^(2^e_), h_^(2^d_), h_^(d_+e_) */
-      QFI h_e_precomp_;
-      QFI h_d_precomp_;
-      QFI h_de_precomp_;
+      QFIPrecomp h_precomp_;
 
     public:
       /** Class used to represent a secret key of the cryptosystem */
@@ -112,20 +108,7 @@ namespace BICYCL
       /**
        * Setup of the cryptosystem given @p N and @p k.
        */
-      CL_HSM2k (const Mpz &N, size_t k, unsigned int distance,
-                bool compact_variant);
-      /**
-       * Same as above, using default value `false` for @p compact_variant.
-       */
-      CL_HSM2k (const Mpz &N, size_t k, unsigned int distance);
-      /**
-       * Same as above, using default value for @p distance.
-       */
-      CL_HSM2k (const Mpz &N, size_t k, bool compact_variant);
-      /**
-       * Same as above, using default values.
-       */
-      CL_HSM2k (const Mpz &N, size_t k);
+      CL_HSM2k (const Mpz &N, size_t k, const CL_Params params={});
       /**
        * Copy constructor, only the value of compact variant can be changed.
        */
@@ -133,17 +116,16 @@ namespace BICYCL
       /**
        * Setup of the cryptosystem given the size of @p N and @p k.
        */
-      template <class... Ts>
-      CL_HSM2k (size_t N_bits, size_t k, RandGen &randgen, Ts... other_args);
+      CL_HSM2k (size_t N_bits, size_t k, RandGen &randgen,
+                const CL_Params params={});
       /**
        * Setup of the cryptosystem given the desired security level and @p k.
        *
        * The equivalence between security level and the size of \f$\Delta_K\f$
        * can be found in the class \ref SecLevel.
        */
-      template <class... Ts>
       CL_HSM2k (SecLevel seclevel, size_t k, RandGen &randgen,
-                                             Ts... other_args);
+                const CL_Params params={});
       /**@}*/
 
       /**
@@ -186,7 +168,7 @@ namespace BICYCL
       /** Return the bound for random exponents: same as #secretkey_bound */
       const Mpz & encrypt_randomness_bound () const;
       /** Return the distance */
-      unsigned int lambda_distance () const;
+      size_t lambda_distance () const;
       /**@}*/
 
       /**
@@ -238,6 +220,13 @@ namespace BICYCL
                                    const Mpz &, const Mpz &) const;
       /** Compute @p s times @p m */
       ClearText scal_cleartexts (const ClearText &, const Mpz &) const;
+      /** Homomorphically compute  @p ca plsu @p s times @p cb  */
+      CipherText addscal_ciphertexts (const PublicKey &pk, const CipherText &ca,
+                                  const CipherText &cb, const Mpz &s, RandGen &randgen) const;
+      /** Homomorphically compute  @p ca plsu @p s times @p cb using @p r  */
+      CipherText addscal_ciphertexts (const PublicKey &pk, const CipherText &ca,
+                                  const CipherText &cb, const Mpz &s, Mpz & r) const;
+
       /**@}*/
 
       /** Print the public parameters of the cryptosystem */
@@ -254,8 +243,8 @@ namespace BICYCL
       void F_kerphi_div (Mpz &, const Mpz &, Mpz &, Mpz &, Mpz &) const;
   };
 
-  #include "CL_HSM2k.inl"
-
 } /* BICYCL namespace */
 
-#endif /* BICYCL_CL_HSM2K_HPP */
+#include "CL_HSM2k.inl"
+
+#endif /* BICYCL_CL_CL_HSM2K_HPP */

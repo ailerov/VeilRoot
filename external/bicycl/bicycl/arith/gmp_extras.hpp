@@ -18,8 +18,8 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-#ifndef BICYCL_GMP_EXTRAS_HPP
-#define BICYCL_GMP_EXTRAS_HPP
+#ifndef BICYCL_ARITH_GMP_EXTRAS_HPP
+#define BICYCL_ARITH_GMP_EXTRAS_HPP
 
 #include <gmp.h>
 
@@ -28,6 +28,15 @@
 #include <string>
 #include <algorithm>
 #include <vector>
+
+#ifndef BICYCL_GMP_PRIMALITY_TESTS_ITERATION
+#define BICYCL_GMP_PRIMALITY_TESTS_ITERATION 30
+#endif
+
+/**
+ * @defgroup ARITH Arithmetic
+ * Implementation of mathematical objects and operations for class group cryptography
+ */
 
 namespace BICYCL
 {
@@ -77,12 +86,25 @@ namespace BICYCL
   /* forward declaration, needed to declare it friend of Mpz */
   class RandGen;
 
+  /**
+   * @brief Arithmetic over large integers. Wrapper class for libgmp.
+   * @ingroup ARITH
+   */
   class Mpz
   {
-    public:
+
+    protected:
       mpz_t mpz_;
 
     public:
+      /* exception */
+      class ModInverseException : public std::invalid_argument
+      {
+        public:
+          ModInverseException() : std::invalid_argument("not invertible")
+          {}
+      };
+
       /* constructors */
       Mpz ();
       Mpz (const Mpz &);
@@ -129,12 +151,14 @@ namespace BICYCL
       explicit operator mpz_srcptr() const;
       explicit operator unsigned long() const;
       explicit operator long() const;
+      explicit operator std::vector<unsigned char>() const;
 
       /* getters */
       /* */
       size_t nbits () const;
       size_t ndigits () const;
       size_t nlimbs () const;
+      size_t num_bytes() const;
       int sgn () const;
 
       /* tests */
@@ -165,6 +189,8 @@ namespace BICYCL
       static void abs (Mpz &, const Mpz &);
       static int cmpabs (const Mpz &, const Mpz &);
 
+      static void exor (Mpz &, const Mpz &, const Mpz &);
+
       static void add (Mpz &, const Mpz &, const Mpz &);
       static void add (Mpz &, const Mpz &, unsigned long);
 
@@ -188,6 +214,7 @@ namespace BICYCL
       static void divexact (Mpz &, const Mpz &, unsigned long);
       static void cdiv_qr (Mpz &, Mpz &, const Mpz &, const Mpz &);
       static void fdiv_qr (Mpz &, Mpz &, const Mpz &, const Mpz &);
+      static void fdiv_q (Mpz &, const Mpz &, const Mpz &);
 
       static void mod (Mpz &, const Mpz &, const Mpz &);
       static void mod2k (Mpz &, const Mpz &, mp_bitcnt_t);
@@ -196,6 +223,7 @@ namespace BICYCL
       static void mod_inverse (Mpz &, const Mpz &, const Mpz &);
       static void mod_inverse_2k (Mpz &, const Mpz &, mp_bitcnt_t k);
       static void mod_inverse_2k (Mpz &, const Mpz &, mp_bitcnt_t k, Mpz &);
+      static void pow_ui (Mpz &, const Mpz &, unsigned long);
       static void pow_mod (Mpz &, const Mpz &, const Mpz &, const Mpz &);
       static void pow_mod (Mpz &, const Mpz &, const Mpz &, const Mpz &,
                            size_t, const Mpz &, const Mpz &, const Mpz &);
@@ -206,6 +234,7 @@ namespace BICYCL
       static void sqrt (Mpz &, const Mpz &);
       static void root4th (Mpz &, const Mpz &);
       static void sqrt_mod_prime (Mpz &, const Mpz &, const Mpz &);
+      static void factorial(Mpz &, unsigned long int n);
 
       static size_t remove (Mpz &, const Mpz &, const Mpz &);
 
@@ -226,8 +255,6 @@ namespace BICYCL
       friend std::ostream & operator<< (std::ostream &, const Mpz &);
       friend std::istream & operator>> (std::istream &, Mpz &);
 
-      /* exception */
-      class ModInverseException;
 
     protected:
       static int richcmp (const Mpz &, const Mpz &);
@@ -281,8 +308,28 @@ namespace BICYCL
       void set (size_t i, int d0, int d1);
   };
 
-  #include "gmp_extras.inl"
+  class WNAF : protected std::vector<int16_t>
+  {
+    public:
+      using std::vector<int16_t>::size;
+      WNAF(const Mpz & n, unsigned int w);
+
+      int16_t operator[] (size_t i) const;
+  };
+
+  /* Util */
+  /**
+   * @internal
+   * @brief Get the number of significant bits of an unsigned int
+   *
+   * @param[in] n unsigned int to count the bits of
+   *
+   * @return size of n in bits
+   */
+  size_t nbits(mp_limb_t n);
 
 } /* BICYCL namespace */
 
-#endif /* BICYCL_GMP_EXTRAS_HPP */
+#include "gmp_extras.inl"
+
+#endif /* BICYCL_ARITH_GMP_EXTRAS_HPP */

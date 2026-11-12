@@ -18,21 +18,28 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-#ifndef BICYCL_QFI_HPP
-#define BICYCL_QFI_HPP
+#ifndef BICYCL_ARITH_QFI_HPP
+#define BICYCL_ARITH_QFI_HPP
 
-#include <iostream>
 #include <cstddef>
-#include <stdexcept>
+#include <iostream>
 
-#include "bicycl/openssl_wrapper.hpp"
-#include "bicycl/gmp_extras.hpp"
+#include "bicycl/arith/gmp_extras.hpp"
+#include "bicycl/arith/openssl_wrapper.hpp"
+
+/* If set to 1, use a variant of the compression algorithm for the compression
+ * of binary quadratic forms. This variant was developped by Luke Parker <lukeparker@serai.exchange>
+ * for the Trout++ project. The original implementation can be found here :
+ * https://github.com/kayabaNerve/trout/blob/develop/class-groups/src/crypto_bigint/encoding/compressed/mod.rs
+ */
+// #define BICYCL_USE_ALT_COMPRESSION 1
 
 namespace BICYCL
 {
   /* forward declaration */
   class ClassGroup; /* needed to declare it friend of QFI */
   class QFICompressedRepresentation;
+  class QFIPrecomp;
 
   /**
    * Binary forms of imaginary quadratic fields.
@@ -43,6 +50,8 @@ namespace BICYCL
    * and ensure that the output forms also satisfy these assumptions.
    *
    * Protected methods do not necessarily respect these assumptions.
+   *
+   * @ingroup ARITH
    */
   class QFI
   {
@@ -51,12 +60,16 @@ namespace BICYCL
 
     public:
       /** default ctor, set the form to (1,1,1) */
-      QFI ();
+      QFI();
       /** Use with care */
-      QFI (const Mpz &a, const Mpz &b, const Mpz &c, bool bypass_check=false);
-      QFI (const QFI & other) = default;
-      QFI (const QFICompressedRepresentation &compressed_form, const Mpz &disc);
-      QFI (QFI && other) = default;
+      QFI(const Mpz & a,
+          const Mpz & b,
+          const Mpz & c,
+          bool bypass_check = false);
+      QFI(const QFI & other) = default;
+      QFI(const QFICompressedRepresentation & compressed_form,
+          const Mpz & disc);
+      QFI(QFI && other) = default;
 
       /* assignment operators */
       QFI & operator= (const QFI & other) = default;
@@ -88,6 +101,9 @@ namespace BICYCL
       QFICompressedRepresentation compressed_repr () const;
 
       /* */
+      size_t num_bytes(bool in_compressed_representation) const;
+
+      /* */
       void lift (const Mpz &);
       void lift_2exp (unsigned int);
       void to_maximal_order (const Mpz &, const Mpz &, bool);
@@ -102,37 +118,55 @@ namespace BICYCL
       /* */
       struct OpsAuxVars
       {
-        Mpz Ax, Ay, Bx, By, Cx, Cy, Dx, Dy, m00, m01, m10, m11, t0, t1,
-            m, s,  F, u, v, x, y, H, l, q, by;
+          Mpz Ax, Ay, Bx, By, Cx, Cy, Dx, Dy, m00, m01, m10, m11, t0, t1, m, s,
+              F, u, v, x, y, H, l, q, by;
       };
 
     protected:
-      void set_c_from_disc (const Mpz &disc);
+      void set_c_from_disc (const Mpz & disc);
 
       /* methods for reduction */
       void normalize ();
-      void normalize (Mpz &tmp0, Mpz &tmp1);
+      void normalize (Mpz & tmp0, Mpz & tmp1);
       void rho ();
-      void rho (Mpz &tmp0, Mpz &tmp1);
+      void rho (Mpz & tmp0, Mpz & tmp1);
       void reduction ();
-      void reduction (Mpz &tmp0, Mpz &tmp1);
+      void reduction (Mpz & tmp0, Mpz & tmp1);
 
       /* */
-      void prime_to (const Mpz &l);
+      void prime_to (const Mpz & l);
       void prime_to_2exp ();
 
       /* compositions and exponentiations */
-      static void nucomp (QFI &, const QFI &, const QFI &, const Mpz &,
-                          bool negf2);
-      static void nucomp (QFI &, const QFI &, const QFI &, const Mpz &,
-                          bool negf2, OpsAuxVars &);
+      static void
+      nucomp (QFI &, const QFI &, const QFI &, const Mpz &, bool negf2);
+      static void nucomp (QFI &,
+                          const QFI &,
+                          const QFI &,
+                          const Mpz &,
+                          bool negf2,
+                          OpsAuxVars &);
       static void nudupl (QFI &, const QFI &, const Mpz &);
       static void nudupl (QFI &, const QFI &, const Mpz &, OpsAuxVars &);
-      static void nupow (QFI &, const QFI &, const Mpz &, const Mpz &) ;
-      static void nupow (QFI &, const QFI &, const Mpz &, const QFI &,
-                          const Mpz &, const Mpz &);
-      static void nupow (QFI &, const QFI &, const Mpz &, size_t, size_t,
-                          const QFI &, const QFI &, const QFI &, const Mpz &);
+      static void nupow (QFI & r, const QFI & f, const Mpz & n, const Mpz & L);
+      static void
+      nupow (QFI & r, const QFI & f, const Mpz & n, const Mpz & L, unsigned int w);
+      static void nupow (QFI & r,
+                         const QFI & f0,
+                         const Mpz & n0,
+                         const QFI & f1,
+                         const Mpz & n1,
+                         const Mpz & L);
+      static void nupow (QFI & r,
+                         const QFI & f,
+                         const Mpz & n,
+                         const QFIPrecomp & pre,
+                         const Mpz & L);
+      static void nupow (QFI & r,
+                         const std::vector<QFI> & fi,
+                         const std::vector<Mpz> & ni,
+                         unsigned int w,
+                         const Mpz & L);
 
       /* friend class */
       friend ClassGroup;
@@ -150,12 +184,13 @@ namespace BICYCL
       const Mpz b0;
       const bool is_neg;
 
-      QFICompressedRepresentation () = delete;
-      QFICompressedRepresentation (const Mpz &, const Mpz &, const Mpz &,
-                                   const Mpz &, bool);
+      QFICompressedRepresentation() = delete;
+      QFICompressedRepresentation(
+          const Mpz &, const Mpz &, const Mpz &, const Mpz &, bool);
 
       /* getters */
       size_t nbits () const;
+      size_t num_bytes() const;
 
       /* I/O */
       friend std::ostream & operator<< (std::ostream &,
@@ -172,35 +207,58 @@ namespace BICYCL
       mutable Mpz class_number_bound_;
 
     public:
-      explicit ClassGroup (const Mpz &discriminant);
+      explicit ClassGroup(const Mpz & discriminant);
 
       /* getters */
       const Mpz & discriminant () const;
       const Mpz & default_nucomp_bound () const;
+      const Mpz & class_number_bound () const;
 
       /* create qfi */
       QFI one () const;
       QFI primeform (const Mpz &) const;
-      template <size_t ngens=10, unsigned long coeff_bound=(1U << 16)>
-      QFI random (RandGen &randgen) const;
+      template <size_t ngens = 10, unsigned long coeff_bound = (1U << 16)>
+      QFI random (RandGen & randgen) const;
+
 
       /* */
-      const Mpz & class_number_bound () const;
-
-      /* */
-      void nucomp (QFI &, const QFI &, const QFI &) const;
-      void nucompinv (QFI &, const QFI &, const QFI &) const;
-      void nudupl (QFI &, const QFI &) const;
-      void nudupl (QFI &, const QFI &, size_t) const;
-      void nupow (QFI &, const QFI &, const Mpz &) const;
-      void nupow (QFI &, const QFI &, const Mpz &, const QFI &,
-                  const Mpz &) const;
-      void nupow (QFI &, const QFI &, const Mpz &, size_t, size_t, const QFI &,
-                  const QFI &, const QFI &) const;
+      void nucomp (QFI & r, const QFI & f1, const QFI & f2) const;
+      void nucompinv (QFI & r, const QFI & f1, const QFI &f2) const;
+      void nudupl (QFI & r, const QFI & f) const;
+      void nudupl (QFI & r, const QFI & f, size_t nitter) const;
+      void nupow (QFI & r, const QFI & f, const Mpz & n) const;
+      void nupow (QFI & r, const QFI & f, const Mpz & n, unsigned int w) const;
+      void nupow (QFI &, const QFI &, const Mpz &, const QFI &, const Mpz &) const;
+      void nupow (QFI & r,
+                  const QFI & f,
+                  const Mpz & n,
+                  const QFIPrecomp & pre) const;
+      void nupow (QFI & r,
+                  const std::vector<QFI> & fi,
+                  const std::vector<Mpz> & ni,
+                  unsigned int w) const;
   };
 
-  #include "qfi.inl"
+  class QFIPrecomp
+  {
+    private:
+      QFI ge_, gd_, gde_;
+      size_t e_, d_;
+
+    public:
+      QFIPrecomp() = default;
+      QFIPrecomp(const QFI & g, size_t exp_bitsize);
+
+      size_t e() const;
+      size_t d() const;
+      const QFI & ge() const;
+      const QFI & gd() const;
+      const QFI & gde() const;
+
+  };
 
 } /* BICYCL namespace */
 
-#endif /* BICYCL_QFI_HPP */
+#include "qfi.inl"
+
+#endif /* BICYCL_ARITH_QFI_HPP */

@@ -21,10 +21,10 @@
 #ifndef BICYCL_SECLEVEL_HPP
 #define BICYCL_SECLEVEL_HPP
 
+#include <array>
 #include <iostream>
 #include <stdexcept>
 #include <string>
-#include <vector>
 
 namespace BICYCL
 {
@@ -41,31 +41,31 @@ namespace BICYCL
   class SecLevel
   {
     public:
-      enum Value : unsigned int
-      {
-        _112 = 112,
-        _128 = 128,
-        _192 = 192,
-        _256 = 256,
-      };
-
-      static const std::vector<SecLevel> All ();
+      static const SecLevel _112;
+      static const SecLevel _128;
+      static const SecLevel _192;
+      static const SecLevel _256;
+      static const std::array<SecLevel, 4> All ();
 
       SecLevel() = delete;
-      constexpr SecLevel (Value seclevel) : value_(seclevel) { }
       explicit SecLevel (unsigned int s);
       explicit SecLevel (const std::string &s);
 
-      /* Allow switch, comparisons and usage as key std::map */
-      constexpr operator Value() const { return value_; }
+      SecLevel & operator= (const std::string &s);
+
+      size_t nbits() const { return value_; }
 
       /* */
       explicit operator bool() = delete;
 
       /* */
+      bool operator== (SecLevel const o) const { return value_ == o.value_; }
+
+      /* */
       size_t RSA_modulus_bitsize () const;
       size_t discriminant_bitsize () const;
-      unsigned int soundness () const;
+      size_t soundness () const;
+      size_t statistical () const;
       int elliptic_curve_openssl_nid () const;
       int sha3_openssl_nid () const;
 
@@ -74,7 +74,7 @@ namespace BICYCL
       friend std::string to_string (SecLevel seclevel);
 
     protected:
-      Value value_;
+      unsigned int value_;
   };
 } /* BICYCL namespace */
 

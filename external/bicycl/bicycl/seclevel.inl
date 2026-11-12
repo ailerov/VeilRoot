@@ -22,23 +22,24 @@
 #define BICYCL_SECLEVEL_INL
 
 /* */
+inline const SecLevel SecLevel::_112 {112u};
+inline const SecLevel SecLevel::_128 {128u};
+inline const SecLevel SecLevel::_192 {192u};
+inline const SecLevel SecLevel::_256 {256u};
+
+/* */
 inline
-const std::vector<SecLevel> SecLevel::All ()
+const std::array<SecLevel, 4> SecLevel::All ()
 {
   return { _112, _128, _192, _256 };
 }
 
 /* */
 inline
-SecLevel::SecLevel (unsigned int s)
+SecLevel::SecLevel (unsigned int s) : value_{s}
 {
-  switch(s)
-  {
-    case 112 : value_ = _112; break;
-    case 128 : value_ = _128; break;
-    case 192 : value_ = _192; break;
-    case 256 : value_ = _256; break;
-    default  : throw InvalidSecLevelException() ; break;
+  if (s != 112u && s != 128u && s != 192u && s != 256) {
+    throw InvalidSecLevelException();
   }
 }
 
@@ -46,21 +47,29 @@ SecLevel::SecLevel (unsigned int s)
 inline
 SecLevel::SecLevel (const std::string &s)
 {
-  if (s == "112")       value_ = _112;
-  else if (s == "128")  value_ = _128;
-  else if (s == "192")  value_ = _192;
-  else if (s == "256")  value_ = _256;
+  *this = s;
+}
+
+/* */
+inline
+SecLevel & SecLevel::operator= (const std::string &s)
+{
+  if (s == "112")       value_ = 112u;
+  else if (s == "128")  value_ = 128u;
+  else if (s == "192")  value_ = 192u;
+  else if (s == "256")  value_ = 256u;
   else                  throw InvalidSecLevelException();
+  return *this;
 }
 
 /* */
 inline
 size_t SecLevel::RSA_modulus_bitsize () const
 {
-  if (value_ == _112)        return 2048;
-  else if (value_ == _128)   return 3072;
-  else if (value_ == _192)   return 7680;
-  else if (value_ == _256)   return 15360;
+  if (value_ == 112u)        return 2048;
+  else if (value_ == 128u)   return 3072;
+  else if (value_ == 192u)   return 7680;
+  else if (value_ == 256u)   return 15360;
   else                       throw InvalidSecLevelException();
 }
 
@@ -68,28 +77,41 @@ size_t SecLevel::RSA_modulus_bitsize () const
 inline
 size_t SecLevel::discriminant_bitsize () const
 {
-  if (value_ == _112)        return 1348;
-  else if (value_ == _128)   return 1827;
-  else if (value_ == _192)   return 3598;
-  else if (value_ == _256)   return 5971;
+  if (value_ == 112u)        return 1348;
+  else if (value_ == 128u)   return 1827;
+  else if (value_ == 192u)   return 3598;
+  else if (value_ == 256u)   return 5971;
   else                       throw InvalidSecLevelException();
 }
 
 /* */
 inline
-unsigned int SecLevel::soundness () const
+size_t SecLevel::soundness () const
 {
-  return static_cast<unsigned int>(value_);
+  return value_;
+}
+
+inline
+size_t SecLevel::statistical () const
+{
+  /*
+   * Statistical security parameter to satisfy the requirements for the
+   * NIST's First Call for Multi-party Threshold schemes (+2 to be used as CL
+   * statistical distance).
+   */
+  if (value_ <= 128u)      return 42;
+  else if (value_ <= 256u) return 66;
+  else                     throw InvalidSecLevelException();
 }
 
 /* */
 inline
 int SecLevel::elliptic_curve_openssl_nid () const
 {
-  if (value_ == _112)        return OpenSSL::ECGroup::P224;
-  else if (value_ == _128)   return OpenSSL::ECGroup::P256;
-  else if (value_ == _192)   return OpenSSL::ECGroup::P384;
-  else if (value_ == _256)   return OpenSSL::ECGroup::P521;
+  if (value_ == 112u)        return ECGroup::P224;
+  else if (value_ == 128u)   return ECGroup::P256;
+  else if (value_ == 192u)   return ECGroup::P384;
+  else if (value_ == 256u)   return ECGroup::P521;
   else                       throw InvalidSecLevelException();
 }
 
@@ -97,10 +119,10 @@ int SecLevel::elliptic_curve_openssl_nid () const
 inline
 int SecLevel::sha3_openssl_nid () const
 {
-  if (value_ == _112)        return OpenSSL::HashAlgo::SHA3_224;
-  else if (value_ == _128)   return OpenSSL::HashAlgo::SHA3_256;
-  else if (value_ == _192)   return OpenSSL::HashAlgo::SHA3_384;
-  else if (value_ == _256)   return OpenSSL::HashAlgo::SHA3_512;
+  if (value_ == 112u)        return HashAlgo::SHA3_224;
+  else if (value_ == 128u)   return HashAlgo::SHA3_256;
+  else if (value_ == 192u)   return HashAlgo::SHA3_384;
+  else if (value_ == 256u)   return HashAlgo::SHA3_512;
   else                       throw InvalidSecLevelException();
 }
 
@@ -108,14 +130,6 @@ int SecLevel::sha3_openssl_nid () const
 inline
 std::ostream & operator<< (std::ostream &o, SecLevel seclevel)
 {
-  return o << static_cast<unsigned int>(seclevel.value_);
+  return o << seclevel.value_;
 }
-
-/* */
-inline
-std::string to_string (SecLevel seclevel)
-{
-  return std::to_string (static_cast<unsigned int>(seclevel.value_));
-}
-
 #endif /* BICYCL_SECLEVEL_INL */

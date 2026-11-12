@@ -1,9 +1,10 @@
 /*
  * BICYCL Implements CryptographY in CLass groups
- * Copyright (C) 2022  Cyril Bouvier <cyril.bouvier@lirmm.fr>
+ * Copyright (C) 2026  Cyril Bouvier <cyril.bouvier@lirmm.fr>
  *                     Guilhem Castagnos <guilhem.castagnos@math.u-bordeaux.fr>
  *                     Laurent Imbert <laurent.imbert@lirmm.fr>
  *                     Fabien Laguillaumie <fabien.laguillaumie@lirmm.fr>
+ *                     Quentin Combal <quentin.combal@lirmm.fr>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,25 +19,46 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-#ifndef BICYCL_CL_HSMQK_HPP
-#define BICYCL_CL_HSMQK_HPP
+
+/**
+ * @example CL_HSMqk_example.cpp
+ * This file is an example of how to use the BICYCL::CL_HSMqk class.\n
+ * It shows how to setup the CL cryptosystem, and perform encryption and decryption.
+ *
+ * @defgroup CL_THRESHOLD Threshold decryption
+ * @ingroup CL
+ * T-out-of-N threshold decryption using class groups
+ */
+
+
+#ifndef BICYCL_CL_CL_HSMQK_HPP
+#define BICYCL_CL_CL_HSMQK_HPP
 
 #include <iostream>
 #include <tuple>
-#include <stdexcept>
 
-#include "bicycl/openssl_wrapper.hpp"
-#include "bicycl/gmp_extras.hpp"
-#include "bicycl/qfi.hpp"
-#include "bicycl/CL_HSM_utils.hpp"
+#include "bicycl/arith/openssl_wrapper.hpp"
+#include "bicycl/arith/gmp_extras.hpp"
+#include "bicycl/arith/qfi.hpp"
+#include "bicycl/cl/CL_HSM_utils.hpp"
 #include "bicycl/seclevel.hpp"
 
+/**
+ * @defgroup CL Class Groups
+ * Set of classes for cryptography based on the hidden subgroup membership problem.
+ *
+ * @defgroup CL_ENCRYPTION Encryption
+ * @ingroup CL
+ * Encryption using class groups
+ */
 namespace BICYCL
 {
   /**
    * Class for the cryptosystem based on the hidden subgroup membership problem.
    *
    * Ref: ??
+   * @ingroup CL_ENCRYPTION
+   * @nosubgrouping
    */
   class CL_HSMqk
   {
@@ -77,25 +99,20 @@ namespace BICYCL
        */
       QFI h_;
 
-      /** The distance parameter used to produced a almost uniform distribution.
+      /** The distance parameter used to produce a almost uniform distribution.
        * Given a bound on the class number of \f$ \ClDeltaK \f$, this bound is
-       * multiplied by 2^(distance_-2) to produced a random distribution that
+       * multiplied by 2^(distance_-2) to produce a random distribution that
        * is at distance 2^(distance_) of being uniform.
        */
-      unsigned int distance_;
+      size_t distance_;
 
       /** Actual bound use to draw random values
        * It is equal to 2^(distance_-2) times Cl_Delta_.class_number_bound_
        */
       Mpz exponent_bound_;
 
-      /** Precomputation data: a positive integer */
-      size_t d_;
-      size_t e_;
       /** Precomputation data: h_^(2^e_), h_^(2^d_), h_^(d_+e_) */
-      QFI h_e_precomp_;
-      QFI h_d_precomp_;
-      QFI h_de_precomp_;
+      QFIPrecomp h_precomp_;
 
     public:
       /** Class used to represent a secret key of the cryptosystem */
@@ -117,22 +134,9 @@ namespace BICYCL
        *@{
        */
       /**
-       * Setup of the cryptosystem given @p q and @p p.
+       * Setup of the cryptosystem given @p q, @p k and @p p.
        */
-      CL_HSMqk (const Mpz &q, size_t k, const Mpz &p, unsigned int distance,
-           bool compact_variant);
-      /**
-       * Same as above, using default value `false` for @p compact_variant.
-       */
-      CL_HSMqk (const Mpz &q, size_t k, const Mpz &p, unsigned int distance);
-      /**
-       * Same as above, using default value for @p distance.
-       */
-      CL_HSMqk (const Mpz &q, size_t k, const Mpz &p, bool compact_variant);
-      /**
-       * Same as above, using default values.
-       */
-      CL_HSMqk (const Mpz &q, size_t k, const Mpz &p);
+      CL_HSMqk (const Mpz &q, size_t k, const Mpz &p, const CL_Params params={});
       /**
        * Copy constructor, only the value of compact variant can be changed.
        */
@@ -140,25 +144,22 @@ namespace BICYCL
       /**
        * Setup of the cryptosystem given @p q and the size of \f$\Delta_K\f$@p.
        */
-      template <class... Ts>
       CL_HSMqk (const Mpz &q, size_t k, size_t DeltaK_nbits, RandGen &randgen,
-                                                             Ts... args);
+                const CL_Params params={});
       /**
        * Setup of the cryptosystem given the size of @p q and the size of
        * \f$\Delta_K\f$@p.
        */
-      template <class... Ts>
       CL_HSMqk (size_t q_nbits, size_t k, size_t DeltaK_nbits, RandGen &randgen,
-                                                               Ts... args);
+                const CL_Params params={});
       /**
        * Setup of the cryptosystem given @p q and the desired security level.
        *
        * The equivalence between security level and the size of \f$\Delta_K\f$
        * can be found in the class \ref SecLevel.
        */
-      template <class... Ts>
       CL_HSMqk (const Mpz &q, size_t k, SecLevel seclevel, RandGen &randgen,
-                                                           Ts... args);
+                const CL_Params params={});
       /**
        * Setup of the cryptosystem given the size of @p q and the desired
        * security level.
@@ -166,9 +167,8 @@ namespace BICYCL
        * The equivalence between security level and the size of \f$\Delta_K\f$
        * can be found in the class \ref SecLevel.
        */
-      template <class... Ts>
       CL_HSMqk (size_t q_nbits, size_t k, SecLevel seclevel, RandGen &randgen,
-                                                             Ts... args);
+                const CL_Params params={});
       /**@}*/
 
       /**
@@ -211,7 +211,7 @@ namespace BICYCL
       /** Return the bound for random exponents: same as #secretkey_bound */
       const Mpz & encrypt_randomness_bound () const;
       /** Return the distance */
-      unsigned int lambda_distance () const;
+      size_t lambda_distance () const;
       /**@}*/
 
       /**
@@ -244,10 +244,10 @@ namespace BICYCL
       /** Encrypt @p m using public key @p pk */
       CipherText encrypt (const PublicKey &pk, const ClearText &m,
                           RandGen &randgen) const;
-      /** Encrypt @p m using public key @p pk and randomness @p r*/
+      /** Encrypt @p m using public key @p pk and randomness @p r */
       CipherText encrypt (const PublicKey &pk, const ClearText &m,
                           const Mpz&r) const;
-      /** Decrypt @p c using secret key @p sk*/
+      /** Decrypt @p c using secret key @p sk */
       ClearText decrypt (const SecretKey &sk, const CipherText &c) const;
       /** Homomorphically add ciphertexts @p ca and @p cb */
       CipherText add_ciphertexts (const PublicKey &pk, const CipherText &ca,
@@ -260,11 +260,18 @@ namespace BICYCL
       /** Homomorphically compute @p s times @p c */
       CipherText scal_ciphertexts (const PublicKey &pk, const CipherText &c,
                                    const Mpz &s, RandGen &randgen) const;
-      /** Homomorphically compute @p s times @p c using @p r*/
+      /** Homomorphically compute @p s times @p c using @p r */
       CipherText scal_ciphertexts (const PublicKey &pk, const CipherText &c,
                                    const Mpz &s, const Mpz &r) const;
       /** Compute @p s times @p m */
       ClearText scal_cleartexts (const ClearText &m, const Mpz &s) const;
+      /** Homomorphically compute  @p ca plsu @p s times @p cb  */
+      CipherText addscal_ciphertexts (const PublicKey &pk, const CipherText &ca,
+                                  const CipherText &cb, const Mpz &s, RandGen &randgen) const;
+      /** Homomorphically compute  @p ca plsu @p s times @p cb using @p r  */
+      CipherText addscal_ciphertexts (const PublicKey &pk, const CipherText &ca,
+                                  const CipherText &cb, const Mpz &s, Mpz & r) const;
+
       /**@}*/
 
       /** Print the public parameters of the cryptosystem */
@@ -281,32 +288,8 @@ namespace BICYCL
       size_t F_kerphi_div (Mpz &, const Mpz &, size_t, const Mpz &) const;
   };
 
-  /****/
-  class CL_HSMqk_ZKAoKProof
-  {
-    public:
-      CL_HSMqk_ZKAoKProof (const CL_HSMqk &C, OpenSSL::HashAlgo &H,
-                           const CL_HSMqk::PublicKey &pk,
-                           const CL_HSMqk::CipherText &c,
-                           const CL_HSMqk::ClearText &a,
-                           const Mpz &r, RandGen &randgen);
-
-      bool verify (const CL_HSMqk &C, OpenSSL::HashAlgo &H,
-                   const CL_HSMqk::PublicKey &pk,
-                   const CL_HSMqk::CipherText &c) const;
-
-    private:
-      Mpz k_from_hash (OpenSSL::HashAlgo &H, const CL_HSMqk::PublicKey &pk,
-                       const CL_HSMqk::CipherText &c,
-                       const QFI &t1, const QFI &t2) const;
-
-      Mpz u1_;
-      Mpz u2_;
-      Mpz k_;
-  };
-
-  #include "CL_HSMqk.inl"
-
 } /* BICYCL namespace */
 
-#endif /* BICYCL_CL_HSMQK_HPP */
+#include "CL_HSMqk.inl" // IWYU pragma: keep
+
+#endif /* BICYCL_CL_CL_HSMQK_HPP */

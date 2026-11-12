@@ -29,9 +29,9 @@
 #ifdef VEILROOT_ENABLE_CL
 
 #include "bicycl/bicycl.hpp"
-#include "bicycl/bicycl/CL_HSMqk.hpp"
-#include "bicycl/bicycl/gmp_extras.hpp"
-#include "bicycl/bicycl/qfi.hpp"
+#include "bicycl/bicycl/cl/CL_HSMqk.hpp"
+#include "bicycl/bicycl/arith/gmp_extras.hpp"
+#include "bicycl/bicycl/arith/qfi.hpp"
 #include "bicycl/bicycl/seclevel.hpp"
 #include "ringct/rctOps.h"
 
@@ -71,20 +71,17 @@ bool u32_be_read(const std::vector<uint8_t>& in, size_t& off, uint32_t& v)
 
 std::vector<uint8_t> mpz_to_bytes_be(const Mpz& v)
 {
-    if (mpz_sgn(v.mpz_) == 0) return {};
-    std::vector<uint8_t> buf(mpz_sizeinbase(v.mpz_, 2) / 8 + 2);
-    size_t count = 0;
-    mpz_export(buf.data(), &count, 1, 1, 0, 0, v.mpz_);
-    buf.resize(count);
-    return buf;
+    if (v.is_zero()) return {};
+    std::vector<unsigned char> vec =
+        static_cast<std::vector<unsigned char>>(v);
+    return std::vector<uint8_t>(vec.begin(), vec.end());
 }
 
 Mpz mpz_from_bytes_be(const uint8_t* data, size_t n)
 {
-    Mpz out;
-    if (n == 0) return out;
-    mpz_import(out.mpz_, n, 1, 1, 0, 0, data);
-    return out;
+    if (n == 0) return Mpz();
+    std::vector<unsigned char> vec(data, data + n);
+    return Mpz(vec);
 }
 
 // Sign-aware Mpz wire encoding. mpz_export/mpz_import only handle
@@ -92,10 +89,10 @@ Mpz mpz_from_bytes_be(const uint8_t* data, size_t n)
 // negative in reduced form, so sign must be preserved explicitly.
 void mpz_to_bytes_signed(std::vector<uint8_t>& out, const Mpz& v)
 {
-    bool neg = mpz_sgn(v.mpz_) < 0;
+    bool neg = v.sgn() < 0;
     out.push_back(neg ? 1 : 0);
-    Mpz abs_v = v;
-    if (neg) mpz_neg(abs_v.mpz_, abs_v.mpz_);
+    Mpz abs_v;
+    Mpz::abs(abs_v, v);
     auto bytes = mpz_to_bytes_be(abs_v);
     u32_be_append(out, static_cast<uint32_t>(bytes.size()));
     out.insert(out.end(), bytes.begin(), bytes.end());
@@ -125,7 +122,7 @@ bool mpz_from_bytes_signed(const std::vector<uint8_t>& in, size_t& off, Mpz& out
     off += len;
     if (sign_byte == 1) {
         if (!allow_negative) return false;
-        mpz_neg(out.mpz_, out.mpz_);
+        out.neg();
     }
     return true;
 }
@@ -197,14 +194,15 @@ public:
         // at least 200 bits so a future change to make_q()
         // cannot silently produce a q incompatible with the
         // tally range.
-        if (mpz_sizeinbase(q.mpz_, 2) < 200)
+        if (q.nbits() < 200)
         {
             throw std::runtime_error(
                 "CL backend: q must be >= 200 bits for DAO "
                 "signed-tally-range injectivity");
         }
         SecLevel sl(static_cast<int>(seclevel_bits));
-        cl_ = std::make_unique<CL_HSMqk>(q, 1, sl, randgen_, /*compact=*/false);
+        cl_ = std::make_unique<CL_HSMqk>(
+            q, 1, sl, randgen_, CL_Params{seclevel_bits});
         sk_ = std::make_unique<CL_HSMqk::SecretKey>(*cl_, randgen_);
         pk_ = std::make_unique<CL_HSMqk::PublicKey>(*cl_, *sk_);
     }
@@ -250,7 +248,8 @@ public:
             return false;
         try {
             cl_ = std::make_unique<CL_HSMqk>(
-                q, static_cast<size_t>(k), p, /*compact=*/false);
+                q, static_cast<size_t>(k), p,
+                CL_Params{seclevel_bits_});
         } catch (...) {
             cl_.reset(); pk_.reset(); sk_.reset();
             return false;

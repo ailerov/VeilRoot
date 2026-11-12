@@ -27,7 +27,7 @@
 #include <thread>
 #endif
 
-#include "bicycl/gmp_extras.hpp"
+#include "bicycl/arith/gmp_extras.hpp"
 #include "bicycl/seclevel.hpp"
 
 namespace BICYCL
@@ -120,8 +120,8 @@ namespace BICYCL
       ClearText decrypt (const SecretKey &, const CipherText &) const;
   };
 
-  #include "Joye_Libert.inl"
-
 } /* BICYCL namespace */
+
+#include "Joye_Libert.inl"
 
 #endif /* BICYCL_JOYE_LIBERT_HPP */

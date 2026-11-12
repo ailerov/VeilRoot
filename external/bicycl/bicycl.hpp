@@ -21,20 +21,18 @@
 #ifndef BICYCL_BICYCL_HPP
 #define BICYCL_BICYCL_HPP
 
-#ifndef BICYCL_GMP_PRIMALITY_TESTS_ITERATION
-#define BICYCL_GMP_PRIMALITY_TESTS_ITERATION 30
-#endif
-
-#include "bicycl/gmp_extras.hpp"
-#include "bicycl/openssl_wrapper.hpp"
-#include "bicycl/qfi.hpp"
-#include "bicycl/seclevel.hpp"
-#include "bicycl/ec.hpp"
-#include "bicycl/CL_HSMqk.hpp"
-#include "bicycl/CL_HSM2k.hpp"
-#include "bicycl/Paillier.hpp"
+#include "bicycl/arith/gmp_extras.hpp"
+#include "bicycl/arith/openssl_wrapper.hpp"
+#include "bicycl/arith/qfi.hpp"
+#include "bicycl/cl/CL_HSMqk.hpp"
+#include "bicycl/cl/CL_HSM2k.hpp"
+#include "bicycl/cl/CL_threshold.hpp"
+#include "bicycl/ec/ecdsa.hpp"
+#include "bicycl/ec/threshold_ECDSA.hpp"
+#include "bicycl/ec/twoParty_ECDSA.hpp"
 #include "bicycl/Joye_Libert.hpp"
-#include "bicycl/threshold_ECDSA.hpp"
+#include "bicycl/Paillier.hpp"
+#include "bicycl/seclevel.hpp"
 
 namespace BICYCL
 {
