@@ -14,6 +14,7 @@
 #include "crypto/crypto.h"
 #include "governance/dao_clsag.h"
 #include "governance/dao_consistency.h"
+#include "governance/dao_crypto_backend.h"
 #include "governance/dao_dkg.h"
 #include "governance/dao_paillier.h"
 #include "governance/dao_supply.h"
@@ -96,8 +97,13 @@ bool build_dao_v2_vote(
         if (s.real_index >= s.P.size()) return false;
     }
 
-    PaillierPublicKey ppk;
-    if (!ppk.deserialize_modulus(paillier_modulus)) return false;
+    // Backend-neutral path (audit Priority 6): the wallet calls the
+    // DaoEncryptionBackend interface. Today the factory returns the
+    // Paillier backend (wire-compatible with vote_proof_v2's
+    // fixed_512_byte fields); Phase 4.8 flips this to CL when the
+    // wire format migration lands. No caller change required at 4.8.
+    auto backend = make_paillier_backend(paillier_modulus);
+    if (!backend) return false;
 
     BIGNUM* N_bn = BN_new();
     if (!N_bn) return false;
@@ -308,12 +314,12 @@ bool build_dao_v2_vote(
     BIGNUM* r_S = BN_new();
     BIGNUM* r_B = BN_new();
     std::vector<uint8_t> E_W_raw, E_S_raw, E_B_raw;
-    if (!dao_dkg_sample_r(ppk, r_W) ||
-        !dao_dkg_sample_r(ppk, r_S) ||
-        !dao_dkg_sample_r(ppk, r_B) ||
-        !ppk.encrypt(W_bn, r_W, E_W_raw) ||
-        !ppk.encrypt(S_paillier_bn, r_S, E_S_raw) ||
-        !ppk.encrypt(B_bn, r_B, E_B_raw)) {
+    if (!backend->sample_r(r_W) ||
+        !backend->sample_r(r_S) ||
+        !backend->sample_r(r_B) ||
+        !backend->encrypt(W_bn, r_W, E_W_raw) ||
+        !backend->encrypt(S_paillier_bn, r_S, E_S_raw) ||
+        !backend->encrypt(B_bn, r_B, E_B_raw)) {
         BN_free(N_bn);
         BN_free(W_bn); BN_free(B_bn); BN_free(S_signed_bn); BN_free(S_paillier_bn);
         BN_free(r_W); BN_free(r_S); BN_free(r_B);
