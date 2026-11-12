@@ -7,15 +7,18 @@
 // is compiled only when VEILROOT_ENABLE_CL is defined, which is
 // never the case in shipped binaries until Phase 5 hardening lands.
 //
-// Scope of this file (Phase 4.2b): constructor, encrypt, decrypt
-// (test hook only), ciphertext validity check, sample_r, and
-// serialize_modulus. add/inverse/scalar_mul/deserialize_modulus
-// return false -- those land in 4.2c/4.2d/4.2e with their own tests.
+// Scope of this file (Phase 4.2c): constructor, encrypt, decrypt
+// (test hook only), ciphertext validity check, sample_r,
+// serialize_modulus, add, inverse, scalar_mul.
+// deserialize_modulus returns false -- lands in 4.2d with its own test.
 //
-// Wire format (frozen for 4.2b, revocable in 4.4):
+// Wire format (frozen for 4.2c, revocable in 4.4):
 //   ciphertext = QFI(c1) || QFI(c2)
-//   QFI(x)     = u32(len_a) || a_be || u32(len_b) || b_be || u32(len_c) || c_be
-//   (full (a,b,c) triple; no derivation, no bypass_check)
+//   QFI(x)     = SCALAR(a) || SCALAR(b) || SCALAR(c)
+//   SCALAR(v)  = sign_byte (0 or 1) || u32(len) || magnitude_be
+//   (sign-aware; mpz_export alone loses sign, which breaks b in
+//   reduced binary quadratic forms that have negative middle
+//   coefficient)
 
 #include "governance/dao_crypto_backend.h"
 
@@ -78,33 +81,46 @@ Mpz mpz_from_bytes_be(const uint8_t* data, size_t n)
     return out;
 }
 
+// Sign-aware Mpz wire encoding. mpz_export/mpz_import only handle
+// magnitude; binary quadratic form components (especially b) can be
+// negative in reduced form, so sign must be preserved explicitly.
+void mpz_to_bytes_signed(std::vector<uint8_t>& out, const Mpz& v)
+{
+    bool neg = mpz_sgn(v.mpz_) < 0;
+    out.push_back(neg ? 1 : 0);
+    Mpz abs_v = v;
+    if (neg) mpz_neg(abs_v.mpz_, abs_v.mpz_);
+    auto bytes = mpz_to_bytes_be(abs_v);
+    u32_be_append(out, static_cast<uint32_t>(bytes.size()));
+    out.insert(out.end(), bytes.begin(), bytes.end());
+}
+
+bool mpz_from_bytes_signed(const std::vector<uint8_t>& in, size_t& off, Mpz& out)
+{
+    if (off >= in.size()) return false;
+    bool neg = in[off++] != 0;
+    uint32_t len = 0;
+    if (!u32_be_read(in, off, len)) return false;
+    if (off + len > in.size()) return false;
+    out = mpz_from_bytes_be(in.data() + off, len);
+    off += len;
+    if (neg) mpz_neg(out.mpz_, out.mpz_);
+    return true;
+}
+
 void qfi_to_bytes(std::vector<uint8_t>& out, const QFI& f)
 {
-    auto a = mpz_to_bytes_be(f.a());
-    auto b = mpz_to_bytes_be(f.b());
-    auto c = mpz_to_bytes_be(f.c());
-    u32_be_append(out, static_cast<uint32_t>(a.size()));
-    out.insert(out.end(), a.begin(), a.end());
-    u32_be_append(out, static_cast<uint32_t>(b.size()));
-    out.insert(out.end(), b.begin(), b.end());
-    u32_be_append(out, static_cast<uint32_t>(c.size()));
-    out.insert(out.end(), c.begin(), c.end());
+    mpz_to_bytes_signed(out, f.a());
+    mpz_to_bytes_signed(out, f.b());
+    mpz_to_bytes_signed(out, f.c());
 }
 
 bool qfi_from_bytes(const std::vector<uint8_t>& in, size_t& off, QFI& out)
 {
-    auto read_one = [&](Mpz& v) -> bool {
-        uint32_t len = 0;
-        if (!u32_be_read(in, off, len)) return false;
-        if (off + len > in.size()) return false;
-        v = mpz_from_bytes_be(in.data() + off, len);
-        off += len;
-        return true;
-    };
     Mpz a, b, c;
-    if (!read_one(a)) return false;
-    if (!read_one(b)) return false;
-    if (!read_one(c)) return false;
+    if (!mpz_from_bytes_signed(in, off, a)) return false;
+    if (!mpz_from_bytes_signed(in, off, b)) return false;
+    if (!mpz_from_bytes_signed(in, off, c)) return false;
     try {
         out = QFI(a, b, c);
     } catch (...) {
@@ -179,14 +195,44 @@ public:
         return true;
     }
 
-    bool add(const std::vector<uint8_t>&, const std::vector<uint8_t>&,
-             std::vector<uint8_t>&) const override { return false; }
+    bool add(const std::vector<uint8_t>& c1,
+             const std::vector<uint8_t>& c2,
+             std::vector<uint8_t>& out) const override
+    {
+        if (!pk_) return false;
+        size_t off1 = 0, off2 = 0;
+        QFI a1, a2, b1, b2;
+        if (!qfi_from_bytes(c1, off1, a1)) return false;
+        if (!qfi_from_bytes(c1, off1, a2)) return false;
+        if (!qfi_from_bytes(c2, off2, b1)) return false;
+        if (!qfi_from_bytes(c2, off2, b2)) return false;
+        CL_HSMqk::CipherText ca(*cl_, a1, a2);
+        CL_HSMqk::CipherText cb(*cl_, b1, b2);
+        Mpz r = randgen_.random_mpz(cl_->encrypt_randomness_bound());
+        CL_HSMqk::CipherText sum = cl_->add_ciphertexts(*pk_, ca, cb, r);
+        out.clear();
+        qfi_to_bytes(out, sum.c1());
+        qfi_to_bytes(out, sum.c2());
+        return true;
+    }
 
-    bool inverse(const std::vector<uint8_t>&,
-                 std::vector<uint8_t>&) const override { return false; }
+    bool inverse(const std::vector<uint8_t>& c,
+                 std::vector<uint8_t>& out) const override
+    {
+        Mpz minus_one(-1L);
+        return scalar_mul_impl(c, minus_one, out);
+    }
 
-    bool scalar_mul(const std::vector<uint8_t>&, const BIGNUM*,
-                    std::vector<uint8_t>&) const override { return false; }
+    bool scalar_mul(const std::vector<uint8_t>& c,
+                    const BIGNUM* k,
+                    std::vector<uint8_t>& out) const override
+    {
+        int kb = BN_num_bytes(k);
+        std::vector<uint8_t> kbuf(kb);
+        BN_bn2bin(k, kbuf.data());
+        Mpz k_mpz = mpz_from_bytes_be(kbuf.data(), kbuf.size());
+        return scalar_mul_impl(c, k_mpz, out);
+    }
 
     bool is_valid_ciphertext(const std::vector<uint8_t>& c) const override
     {
@@ -223,6 +269,23 @@ public:
     }
 
 private:
+    bool scalar_mul_impl(const std::vector<uint8_t>& c, const Mpz& s,
+                         std::vector<uint8_t>& out) const
+    {
+        if (!pk_) return false;
+        size_t off = 0;
+        QFI c1, c2;
+        if (!qfi_from_bytes(c, off, c1)) return false;
+        if (!qfi_from_bytes(c, off, c2)) return false;
+        CL_HSMqk::CipherText ct(*cl_, c1, c2);
+        Mpz r = randgen_.random_mpz(cl_->encrypt_randomness_bound());
+        CL_HSMqk::CipherText scaled = cl_->scal_ciphertexts(*pk_, ct, s, r);
+        out.clear();
+        qfi_to_bytes(out, scaled.c1());
+        qfi_to_bytes(out, scaled.c2());
+        return true;
+    }
+
     mutable RandGen randgen_;
     std::unique_ptr<CL_HSMqk> cl_;
     std::unique_ptr<CL_HSMqk::SecretKey> sk_;
