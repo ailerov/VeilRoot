@@ -313,4 +313,100 @@ TEST(dao_cl_consistency, oversized_z_r_rejects)
     EXPECT_FALSE(dao_cl_consistency_verify(*f.CL, *f.pk, ct, C, ctx, p));
 }
 
+
+// ---- Serialization round-trip ----
+
+TEST(dao_cl_consistency, serialize_deserialize_roundtrip)
+{
+    Fixture f; ASSERT_TRUE(f.init());
+    Mpz W, r; rct::key rho, C;
+    CL_HSMqk::CipherText ct;
+    std::vector<uint8_t> c1b, c2b;
+    ASSERT_TRUE(build_case(f, 12345, W, r, rho, C, c1b, c2b, ct));
+    auto ctx = make_ctx("C_W-Enc(W)");
+
+    dao_cl_pedersen_proof p;
+    try {
+        ASSERT_TRUE(dao_cl_consistency_prove(*f.CL, *f.pk, ct, W, r, C, rho,
+                                             ctx, f.randgen, p));
+    } catch (const std::exception& e) {
+        FAIL() << "step1_prove threw: " << e.what();
+    } catch (...) {
+        FAIL() << "step1_prove threw unknown";
+    }
+
+    std::vector<uint8_t> wire;
+    try {
+        ASSERT_TRUE(p.serialize(wire));
+    } catch (const std::exception& e) {
+        FAIL() << "step2_serialize threw: " << e.what();
+    } catch (...) {
+        FAIL() << "step2_serialize threw unknown";
+    }
+    EXPECT_GT(wire.size(), 0u);
+
+    dao_cl_pedersen_proof p2;
+    try {
+        ASSERT_TRUE(p2.deserialize(wire));
+    } catch (const std::exception& e) {
+        FAIL() << "step3_deserialize threw: " << e.what();
+    } catch (...) {
+        FAIL() << "step3_deserialize threw unknown";
+    }
+
+    std::vector<uint8_t> wire2;
+    try {
+        ASSERT_TRUE(p2.serialize(wire2));
+    } catch (const std::exception& e) {
+        FAIL() << "step4_reserialize threw: " << e.what();
+    } catch (...) {
+        FAIL() << "step4_reserialize threw unknown";
+    }
+
+    if (wire != wire2) {
+        ADD_FAILURE() << "step5_roundtrip_differs: wire.size=" << wire.size()
+                      << " wire2.size=" << wire2.size();
+    }
+
+    try {
+        EXPECT_TRUE(dao_cl_consistency_verify(*f.CL, *f.pk, ct, C, ctx, p2))
+            << "step6_verify_rejects_deserialized";
+    } catch (const std::exception& e) {
+        FAIL() << "step6_verify threw: " << e.what();
+    } catch (...) {
+        FAIL() << "step6_verify threw unknown";
+    }
+
+    {
+        dao_cl_pedersen_proof bad;
+        std::vector<uint8_t> corrupted = wire;
+        corrupted.back() ^= 0xff;
+        bool de_ok = false;
+        try {
+            de_ok = bad.deserialize(corrupted);
+        } catch (const std::exception& e) {
+            FAIL() << "step7_deserialize_corrupt threw: " << e.what();
+        } catch (...) {
+            FAIL() << "step7_deserialize_corrupt threw unknown";
+        }
+        if (de_ok)
+            EXPECT_FALSE(dao_cl_consistency_verify(*f.CL, *f.pk, ct, C, ctx, bad))
+                << "step7_verify_accepts_corrupt";
+    }
+
+    {
+        dao_cl_pedersen_proof bad;
+        std::vector<uint8_t> truncated(wire.begin(), wire.end() - 1);
+        bool de_ok = false;
+        try {
+            de_ok = bad.deserialize(truncated);
+        } catch (const std::exception& e) {
+            FAIL() << "step8_deserialize_trunc threw: " << e.what();
+        } catch (...) {
+            FAIL() << "step8_deserialize_trunc threw unknown";
+        }
+        EXPECT_FALSE(de_ok) << "step8_accepts_truncated";
+    }
+}
+
 #endif // VEILROOT_ENABLE_CL

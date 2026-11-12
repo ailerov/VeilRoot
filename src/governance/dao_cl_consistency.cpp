@@ -568,7 +568,7 @@ bool dao_cl_consistency_verify(
     const rct::key& C,
     const dao_consistency_context& ctx,
     const dao_cl_pedersen_proof& proof)
-{
+try {
     // Group membership.
     if (pk.elt().discriminant() != CL.Cl_G().discriminant()) return false;
     if (CL.genus(pk.elt()) != CL_HSMqk::Genus({1, 1})) return false;
@@ -652,6 +652,157 @@ bool dao_cl_consistency_verify(
     }
 
     return true;
+}
+catch (const std::exception&) {
+    // A verifier that throws on adversarial input is a DoS surface.
+    return false;
+}
+catch (...) {
+    return false;
+}
+
+// ============================================================
+// Serialization
+// ============================================================
+
+bool dao_cl_range_proof::serialize(std::vector<uint8_t>& out) const
+{
+    // Wire format (canonical):
+    //   u8  n_outputs                 (must be 8)
+    //   8 x 32-byte rct::key V
+    //   32-byte A, A1, B
+    //   32-byte r1, s1, d1
+    //   u32 |L|, |L| x 32-byte L points
+    //   u32 |R|, |R| x 32-byte R points
+    out.clear();
+    if (bp.V.size() != 8) return false;
+    out.push_back(static_cast<uint8_t>(bp.V.size()));
+    for (const auto& v : bp.V)
+        out.insert(out.end(), v.bytes, v.bytes + 32);
+    out.insert(out.end(), bp.A.bytes,  bp.A.bytes  + 32);
+    out.insert(out.end(), bp.A1.bytes, bp.A1.bytes + 32);
+    out.insert(out.end(), bp.B.bytes,  bp.B.bytes  + 32);
+    out.insert(out.end(), bp.r1.bytes, bp.r1.bytes + 32);
+    out.insert(out.end(), bp.s1.bytes, bp.s1.bytes + 32);
+    out.insert(out.end(), bp.d1.bytes, bp.d1.bytes + 32);
+    u32_be_append(out, static_cast<uint32_t>(bp.L.size()));
+    for (const auto& p2 : bp.L)
+        out.insert(out.end(), p2.bytes, p2.bytes + 32);
+    u32_be_append(out, static_cast<uint32_t>(bp.R.size()));
+    for (const auto& p2 : bp.R)
+        out.insert(out.end(), p2.bytes, p2.bytes + 32);
+    return true;
+}
+
+bool dao_cl_range_proof::deserialize(const std::vector<uint8_t>& in)
+{
+    bp = rct::BulletproofPlus{};
+    if (in.empty()) return false;
+    size_t off = 0;
+    if (in[off++] != 8) return false;
+    auto read_key = [&](rct::key& k) -> bool {
+        if (off + 32 > in.size()) return false;
+        std::memcpy(k.bytes, in.data() + off, 32);
+        off += 32;
+        return true;
+    };
+    bp.V.resize(8);
+    for (size_t i = 0; i < 8; ++i)
+        if (!read_key(bp.V[i])) return false;
+    if (!read_key(bp.A))  return false;
+    if (!read_key(bp.A1)) return false;
+    if (!read_key(bp.B))  return false;
+    if (!read_key(bp.r1)) return false;
+    if (!read_key(bp.s1)) return false;
+    if (!read_key(bp.d1)) return false;
+    uint32_t lsz = 0;
+    if (!u32_be_read(in, off, lsz)) return false;
+    if (off + static_cast<size_t>(lsz) * 32 > in.size()) return false;
+    bp.L.resize(lsz);
+    for (uint32_t i = 0; i < lsz; ++i)
+        if (!read_key(bp.L[i])) return false;
+    uint32_t rsz = 0;
+    if (!u32_be_read(in, off, rsz)) return false;
+    if (rsz != lsz) return false;
+    if (off + static_cast<size_t>(rsz) * 32 > in.size()) return false;
+    bp.R.resize(rsz);
+    for (uint32_t i = 0; i < rsz; ++i)
+        if (!read_key(bp.R[i])) return false;
+    return off == in.size();
+}
+
+bool dao_cl_pedersen_proof::serialize(std::vector<uint8_t>& out) const
+{
+    // Wire format (canonical):
+    //   QFI  A1
+    //   QFI  A2
+    //   32-byte A3
+    //   32-byte e
+    //   u32 len, len-byte z_r (BE magnitude, no leading zero, non-negative)
+    //   32-byte z_W
+    //   32-byte z_rho
+    //   range proof
+    out.clear();
+    qfi_to_bytes(out, A1);
+    qfi_to_bytes(out, A2);
+    out.insert(out.end(), A3.bytes, A3.bytes + 32);
+    out.insert(out.end(), e.begin(), e.end());
+    if (z_r.sgn() < 0) return false;
+    auto zr_be = mpz_to_bytes_be(z_r);
+    u32_be_append(out, static_cast<uint32_t>(zr_be.size()));
+    out.insert(out.end(), zr_be.begin(), zr_be.end());
+    out.insert(out.end(), z_W.bytes,   z_W.bytes   + 32);
+    out.insert(out.end(), z_rho.bytes, z_rho.bytes + 32);
+    std::vector<uint8_t> range_bytes;
+    if (!range.serialize(range_bytes)) return false;
+    u32_be_append(out, static_cast<uint32_t>(range_bytes.size()));
+    out.insert(out.end(), range_bytes.begin(), range_bytes.end());
+    return true;
+}
+
+bool dao_cl_pedersen_proof::deserialize(const std::vector<uint8_t>& in)
+{
+    // QFI deserialization needs the class-group discriminant. The
+    // public entry point cannot know it without the CL context; this
+    // raw form is treated as an opaque container and validated inside
+    // dao_cl_consistency_verify against the caller-supplied CL. The
+    // discriminant on each QFI is only meaningful in that context, so
+    // here we decode structurally (any group) and let verify reject.
+    size_t off = 0;
+    QFI a1, a2;
+    // Structural QFI decode: same as qfi_from_bytes but without disc check.
+    auto qfi_read = [&](QFI& out_qfi) -> bool {
+        Mpz a, b, c;
+        if (!mpz_from_bytes_signed(in, off, a, false)) return false;
+        if (!mpz_from_bytes_signed(in, off, b, true))  return false;
+        if (!mpz_from_bytes_signed(in, off, c, false)) return false;
+        try { out_qfi = QFI(a, b, c); } catch (...) { return false; }
+        return true;
+    };
+    if (!qfi_read(A1)) return false;
+    if (!qfi_read(A2)) return false;
+    if (off + 32 > in.size()) return false;
+    std::memcpy(A3.bytes, in.data() + off, 32); off += 32;
+    if (off + 32 > in.size()) return false;
+    std::memcpy(e.data(), in.data() + off, 32); off += 32;
+    uint32_t zr_len = 0;
+    if (!u32_be_read(in, off, zr_len)) return false;
+    if (off + zr_len > in.size()) return false;
+    if (zr_len > 0 && in[off] == 0) return false;
+    z_r = mpz_from_bytes_be(in.data() + off, zr_len);
+    off += zr_len;
+    if (off + 32 > in.size()) return false;
+    std::memcpy(z_W.bytes, in.data() + off, 32); off += 32;
+    if (off + 32 > in.size()) return false;
+    std::memcpy(z_rho.bytes, in.data() + off, 32); off += 32;
+    uint32_t range_len = 0;
+    if (!u32_be_read(in, off, range_len)) return false;
+    if (off + range_len > in.size()) return false;
+    std::vector<uint8_t> range_bytes(in.begin() + off,
+                                     in.begin() + off + range_len);
+    off += range_len;
+    if (!range.deserialize(range_bytes)) return false;
+    return off == in.size();
 }
 
 } // namespace dao
