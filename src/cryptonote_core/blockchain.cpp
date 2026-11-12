@@ -10860,7 +10860,7 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
     // driven by partial-count stall, not roster mismatch.
     if (need_reshare && cur_set == ready_set) return;
 
-    // B3d: for re-reshare, "reachable" means committee members still
+    // For re-reshare, "reachable" means committee members still
     // in the ready pool at the CURRENT tip. Deterministic across
     // validators (same chain -> same ready set), unlike partials-
     // received which is a local map and can never exceed threshold on
@@ -11482,19 +11482,19 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
         if (rec.status != PROPOSAL_STATUS_ACTIVE) return true;
         if (rec.voting_end_height + 1 > height) return true;
 
-        // B3b: if a reshare for this proposal is still running, defer
+        // If a reshare for this proposal is still running, defer
         // production. On next block we retry.
         {
           std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
           if (m_dao_v2_reshare_runner) return true;
         }
 
-        // B3b: if the ready roster at voting-end differs from the
+        // If the ready roster at voting-end differs from the
         // acceptance-time committee, start a reshare. The existing
-        // produce-path below still uses key_rec.V_K_i until B3c wires
-        // the certificate evidence path. If a reshare is already
-        // active, this returns immediately and no produce occurs —
-        // the proposal stays untallied until B3c lands the consumer.
+        // produce-path below still uses key_rec.V_K_i until the
+        // certificate evidence path is wired. If a reshare is already
+        // active, this returns immediately and no produce occurs;
+        // the proposal stays untallied until the consumer lands.
         maybe_start_dao_v2_reshare_for_proposal(pid,
                                                  rec.voting_end_height);
 

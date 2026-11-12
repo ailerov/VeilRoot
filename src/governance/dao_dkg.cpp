@@ -5361,10 +5361,6 @@ bool dkg_run_with_transport(const dkg_config& cfg,
         }
         const BIGNUM* N = accepted_N;
 
-#ifdef VEILROOT_DAO_DKG_TESTING
-        std::cerr << "[dkg] ACCEPTED at attempt " << attempt
-                  << "  accepted_N bits=" << BN_num_bits(accepted_N) << "\n";
-#endif
 
         // Declare g_bar before any goto to avoid jumping over its
         // initializer.
@@ -5398,9 +5394,6 @@ bool dkg_run_with_transport(const dkg_config& cfg,
             BN_free(g_bar);
             continue;
         }
-#ifdef VEILROOT_DAO_DKG_TESTING
-        std::cerr << "[dkg] g_bar ok\n";
-#endif
 
         for (auto& p : parties) {
             dkg_msg m;
@@ -5416,34 +5409,19 @@ bool dkg_run_with_transport(const dkg_config& cfg,
             m.bytes_a.assign(nb, 0);
             BN_bn2bin(g_bar, m.bytes_a.data());
             if (!p->handle_message(m)) {
-#ifdef VEILROOT_DAO_DKG_TESTING
-                std::cerr << "[dkg] biprimality_base handle_message failed\n";
-#endif
                 BN_free(g_bar);
                 goto next_attempt;
             }
         }
-#ifdef VEILROOT_DAO_DKG_TESTING
-        std::cerr << "[dkg] biprimality_base broadcast ok\n";
-#endif
 
         // Phase 4: each party publishes Q_i.
         for (auto& p : parties) {
             if (!p->start_phase(4, cfg.k, cfg.security_bits, cfg.target_N_bits)) {
-#ifdef VEILROOT_DAO_DKG_TESTING
-                std::cerr << "[dkg] start_phase(4) failed at party " << p->id() << "\n";
-#endif
                 BN_free(g_bar);
                 goto next_attempt;
             }
         }
-#ifdef VEILROOT_DAO_DKG_TESTING
-        std::cerr << "[dkg] start_phase(4) ok for all parties\n";
-#endif
 
-#ifdef VEILROOT_DAO_DKG_TESTING
-        std::cerr << "[dkg] phase 4 publish done\n";
-#endif
         // Drain and collect Q_i (with proofs), verify each proof, then
         // run the biprimality predicate.
         {
@@ -5516,13 +5494,7 @@ bool dkg_run_with_transport(const dkg_config& cfg,
                 } else if (bi < 0) {
                     ok = false;
                 }
-#ifdef VEILROOT_DAO_DKG_TESTING
-                std::cerr << "[dkg] biprimality=" << bi << "\n";
-#endif
             } else {
-#ifdef VEILROOT_DAO_DKG_TESTING
-                std::cerr << "[dkg] Q collection/verify failed\n";
-#endif
             }
 
             for (auto* q : Q_own) if (q) BN_free(q);
@@ -5543,38 +5515,20 @@ bool dkg_run_with_transport(const dkg_config& cfg,
         // each party's own share of p and q.
         for (auto& p : parties) {
             if (!p->do_compute_share_pq()) {
-#ifdef VEILROOT_DAO_DKG_TESTING
-                std::cerr << "[dkg] do_compute_share_pq failed\n";
-#endif
                 BN_free(g_bar);
                 goto next_attempt;
             }
         }
-#ifdef VEILROOT_DAO_DKG_TESTING
-        std::cerr << "[dkg] share_pq ok\n";
-#endif
         if (!trial_division_check_factor(parties, transports, cfg, transcript, 0)) {
-#ifdef VEILROOT_DAO_DKG_TESTING
-            std::cerr << "[dkg] trial_div factor=0 failed\n";
-#endif
             out.trial_division_failures++;
             BN_free(g_bar);
             goto next_attempt;
         }
-#ifdef VEILROOT_DAO_DKG_TESTING
-        std::cerr << "[dkg] trial_div factor=0 ok\n";
-#endif
         if (!trial_division_check_factor(parties, transports, cfg, transcript, 1)) {
-#ifdef VEILROOT_DAO_DKG_TESTING
-            std::cerr << "[dkg] trial_div factor=1 failed\n";
-#endif
             out.trial_division_failures++;
             BN_free(g_bar);
             goto next_attempt;
         }
-#ifdef VEILROOT_DAO_DKG_TESTING
-        std::cerr << "[dkg] trial_div factor=1 ok\n";
-#endif
 
         // Candidate accepted.
         // Expert §2: BN_bn2binpad returns -1 on overflow, and the
@@ -5632,33 +5586,18 @@ bool dkg_run_with_transport(const dkg_config& cfg,
         if (beta_try > 1) out.beta_phase_retries++;
 
         // Phase 6: each party computes phi_share = N + 1 - p(i) - q(i).
-        #ifdef VEILROOT_DAO_DKG_TESTING
-        std::cerr << "[key-phase] try=" << beta_try << " start phase 6\n";
-        #endif
         for (auto& p : parties) {
             if (!p->do_phi_share_init()) {
-                #ifdef VEILROOT_DAO_DKG_TESTING
-                std::cerr << "[key-phase] phase 6 failed\n";
-                #endif
                 goto after_key_phase;
             }
         }
-        #ifdef VEILROOT_DAO_DKG_TESTING
-        std::cerr << "[key-phase] phase 6 ok\n";
-        #endif
 
         // Phase 7: beta_i, R_i generate + VSS deal + private share.
         for (auto& p : parties) {
             if (!p->do_beta_R_generate()) {
-                #ifdef VEILROOT_DAO_DKG_TESTING
-                std::cerr << "[key-phase] phase 7 failed\n";
-                #endif
                 goto after_key_phase;
             }
         }
-        #ifdef VEILROOT_DAO_DKG_TESTING
-        std::cerr << "[key-phase] phase 7 ok\n";
-        #endif
         {
             std::vector<dkg_msg> collected;
             drain_all(transports, collected, transcript);
@@ -5712,10 +5651,6 @@ bool dkg_run_with_transport(const dkg_config& cfg,
                                                  value_tag, C_bn, proof);
                 BN_free(C_bn);
                 if (!ok) {
-                    #ifdef VEILROOT_DAO_DKG_TESTING
-                    std::cerr << "[key-phase] range proof failed party "
-                              << j << " tag " << value_tag << "\n";
-                    #endif
                     goto after_key_phase;
                 }
             }
@@ -5726,28 +5661,16 @@ bool dkg_run_with_transport(const dkg_config& cfg,
         // Phase 8: aggregate Beta(i), F1(i), H_theta(i).
         for (auto& p : parties) {
             if (!p->do_beta_R_collect()) {
-                #ifdef VEILROOT_DAO_DKG_TESTING
-                std::cerr << "[key-phase] phase 8 failed\n";
-                #endif
                 goto after_key_phase;
             }
         }
-        #ifdef VEILROOT_DAO_DKG_TESTING
-        std::cerr << "[key-phase] phase 8 ok\n";
-        #endif
 
         // Phase 9: compute Theta(i).
         for (auto& p : parties) {
             if (!p->do_compute_theta_share()) {
-                #ifdef VEILROOT_DAO_DKG_TESTING
-                std::cerr << "[key-phase] phase 9 failed\n";
-                #endif
                 goto after_key_phase;
             }
         }
-        #ifdef VEILROOT_DAO_DKG_TESTING
-        std::cerr << "[key-phase] phase 9 ok\n";
-        #endif
 
         // Collect theta shares and reconstruct theta_tilde by Lagrange
         // at 0 over the 2t+1 = 15 largest-index shares.
@@ -5876,11 +5799,6 @@ bool dkg_run_with_transport(const dkg_config& cfg,
                     BN_free(C_beta_i); BN_free(C_phi_i);
 
                     if (!mvok || !ovok) {
-                        #ifdef VEILROOT_DAO_DKG_TESTING
-                        std::cerr << "[key-phase] theta proof failed party "
-                                  << j << " mul=" << mvok
-                                  << " open=" << ovok << "\n";
-                        #endif
                         proofs_ok = false; break;
                     }
                 }
@@ -5915,18 +5833,9 @@ bool dkg_run_with_transport(const dkg_config& cfg,
             }
             for (auto* x : theta_shares) if (x) BN_free(x);
 
-            #ifdef VEILROOT_DAO_DKG_TESTING
-            std::cerr << "[key-phase] theta_shares have_all=" << have_all << "\n";
-            #endif
             if (!theta_tilde) {
-                #ifdef VEILROOT_DAO_DKG_TESTING
-                std::cerr << "[key-phase] theta_tilde reconstruction failed\n";
-                #endif
                 goto after_key_phase;
             }
-            #ifdef VEILROOT_DAO_DKG_TESTING
-            std::cerr << "[key-phase] theta_tilde reconstructed\n";
-            #endif
 
             // theta = theta_tilde mod N, always in [0, N).
             BIGNUM* theta = BN_new();
@@ -5944,16 +5853,10 @@ bool dkg_run_with_transport(const dkg_config& cfg,
             BN_free(gcd);
 
             if (!invertible) {
-                #ifdef VEILROOT_DAO_DKG_TESTING
-                std::cerr << "[key-phase] gcd(theta,N) != 1, retrying\n";
-                #endif
                 BN_free(theta_tilde);
                 BN_free(theta);
                 continue;   // retry beta phase
             }
-            #ifdef VEILROOT_DAO_DKG_TESTING
-            std::cerr << "[key-phase] theta invertible\n";
-            #endif
 
             // Broadcast theta_tilde to all parties.
             for (auto& p : parties) {
@@ -5970,30 +5873,18 @@ bool dkg_run_with_transport(const dkg_config& cfg,
             // Phase 10: each party computes SK_i = N*F1(i) - theta_tilde.
             for (auto& p : parties) {
                 if (!p->do_compute_SK()) {
-                    #ifdef VEILROOT_DAO_DKG_TESTING
-                    std::cerr << "[key-phase] phase 10 failed\n";
-                    #endif
                     BN_free(theta_tilde); BN_free(theta);
                     goto after_key_phase;
                 }
             }
-            #ifdef VEILROOT_DAO_DKG_TESTING
-            std::cerr << "[key-phase] phase 10 ok\n";
-            #endif
 
             // Phase 11: V commit round.
             for (auto& p : parties) {
                 if (!p->do_v_commit()) {
-                    #ifdef VEILROOT_DAO_DKG_TESTING
-                    std::cerr << "[key-phase] phase 11 failed\n";
-                    #endif
                     BN_free(theta_tilde); BN_free(theta);
                     goto after_key_phase;
                 }
             }
-            #ifdef VEILROOT_DAO_DKG_TESTING
-            std::cerr << "[key-phase] phase 11 ok\n";
-            #endif
             // Phase 11: collect commitments, then deliver to parties.
             std::vector<std::vector<uint8_t>> v_commits(cfg.committee_size + 1);
             {
@@ -6027,9 +5918,6 @@ bool dkg_run_with_transport(const dkg_config& cfg,
             // Phase 12: V reveal round.
             for (auto& p : parties) {
                 if (!p->do_v_reveal()) {
-                    #ifdef VEILROOT_DAO_DKG_TESTING
-                    std::cerr << "[key-phase] phase 12 failed\n";
-                    #endif
                     BN_free(theta_tilde); BN_free(theta);
                     goto after_key_phase;
                 }
@@ -6061,9 +5949,6 @@ bool dkg_run_with_transport(const dkg_config& cfg,
                     if (!revealed[j]) { reveals_ok = false; break; }
 
                 if (!reveals_ok) {
-                    #ifdef VEILROOT_DAO_DKG_TESTING
-                    std::cerr << "[key-phase] V reveal does not match commitment\n";
-                    #endif
                     BN_free(theta_tilde); BN_free(theta);
                     goto after_key_phase;
                 }
@@ -6073,38 +5958,23 @@ bool dkg_run_with_transport(const dkg_config& cfg,
                     goto after_key_phase;
                 }
             }
-            #ifdef VEILROOT_DAO_DKG_TESTING
-            std::cerr << "[key-phase] phase 12 ok\n";
-            #endif
 
             // Phase 13: compute V.
             for (auto& p : parties) {
                 if (!p->do_compute_V()) {
-                    #ifdef VEILROOT_DAO_DKG_TESTING
-                    std::cerr << "[key-phase] phase 13 failed\n";
-                    #endif
                     BN_free(theta_tilde); BN_free(theta);
                     goto after_key_phase;
                 }
             }
-            #ifdef VEILROOT_DAO_DKG_TESTING
-            std::cerr << "[key-phase] phase 13 ok\n";
-            #endif
 
             // Derive V_K_i for each party and collect.
             out.V_K_i.assign(cfg.committee_size, {});
             for (size_t k = 0; k < parties.size(); ++k) {
                 if (!parties[k]->do_derive_VKi(out.V_K_i[k])) {
-                    #ifdef VEILROOT_DAO_DKG_TESTING
-                    std::cerr << "[key-phase] VKi failed at party " << k << "\n";
-                    #endif
                     BN_free(theta_tilde); BN_free(theta);
                     goto after_key_phase;
                 }
             }
-            #ifdef VEILROOT_DAO_DKG_TESTING
-            std::cerr << "[key-phase] VKi ok\n";
-            #endif
 
             // Fill record basics.
             out.record.version        = 1;

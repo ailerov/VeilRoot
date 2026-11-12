@@ -1559,12 +1559,11 @@ namespace cryptonote
   // and its result are preserved for retry on the next idle tick.
   bool maybe_commit_dao_v2_reshare();
 
-  // B3b: at voting-end, if the chain-state ready roster differs from
-  // the acceptance-time committee for this proposal, start a reshare
+  // At voting-end, if the chain-state ready roster differs from the
+  // acceptance-time committee for this proposal, start a reshare
   // of that proposal's key to the current roster. Deferred to the
   // existing single reshare runner; if one is already active, the
-  // caller skips and retries on the next tick. Trigger start only —
-  // the producer does not yet consume the new share set (B3c).
+  // caller skips and retries on the next tick.
   // Returns the highest share_set_id in the DB whose key_id matches,
   // or 0 if none. Bootstrap falls back to 1.
   uint64_t latest_share_set_id_for_key_id(
@@ -2012,7 +2011,7 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
         m_dao_v2_reshare_mu_i{nullptr, BN_free};
     mutable std::mutex m_dao_v2_reshare_mutex;
 
-    // B3d: per-proposal reshare/tally timing in blocks.
+    // Per-proposal reshare/tally timing in blocks.
     std::map<crypto::hash, uint64_t> m_dao_v2_reshare_started_block;
     // END_VNS_DAO_V2_RESHARE
     // END_VNS_DAO_V2_DKG

@@ -375,11 +375,11 @@ TEST(DaoV2Replay, NodeBReconstructsKeyRecordFromActivationBlock)
         }
     }
 
-    // Migrated to per-proposal. prop_id must exist as a chain
-    // proposal record before the activation apply path runs (defect 1
+    // prop_id must exist as a chain proposal record before the
+    // activation apply path runs (apply_dao_v2_dkg_activation
     // writes tally_key_id only if the proposal exists), and the
-    // per-proposal committee selector (defect 4) needs canonical
-    // node_ready records at the selection height.
+    // per-proposal committee selector needs canonical node_ready
+    // records at the selection height.
     const crypto::hash prop_id = []{
         crypto::hash h{};
         std::memset(h.data, 0xEE, 32);
@@ -1874,7 +1874,7 @@ TEST(DaoV2Replay, LegacyV1VoteRejectedInMempoolWhenV2Active)
 }
 
 // ------------------------------------------------------------------
-// B3c-3: full runner-driven reshare, end-to-end.
+// Full runner-driven reshare, end-to-end.
 //
 // Two live nodes A and B (positions 1 and 2 of a 3-party DKG committee
 // with offline member C). A fourth node D joins the ready roster.
@@ -1882,7 +1882,7 @@ TEST(DaoV2Replay, LegacyV1VoteRejectedInMempoolWhenV2Active)
 // through the runner via P2P. The resulting share set carries reshare
 // evidence. A v6 certificate built by the producer path verifies.
 // ------------------------------------------------------------------
-TEST(DaoV2Replay, B3c3RunnerReshareEndToEnd)
+TEST(DaoV2Replay, RunnerReshareEndToEnd)
 {
     using namespace cryptonote;
     using namespace cryptonote::dao;
@@ -2192,7 +2192,7 @@ TEST(DaoV2Replay, B3c3RunnerReshareEndToEnd)
 }
 
 // ------------------------------------------------------------------
-// B3d: dropout replacement.
+// Dropout replacement.
 //
 // Real 3-party DKG gives base committee {A,B,C} threshold 2.
 // First reshare to a 4-node committee {A,B,C,D} (D joins ready pool).
@@ -2202,7 +2202,7 @@ TEST(DaoV2Replay, B3c3RunnerReshareEndToEnd)
 // contribute, combine succeeds, new share set commits with evidence,
 // certificate built against it verifies.
 // ------------------------------------------------------------------
-static void run_b3d_dropout_case(int target_slot)
+static void run_dropout_replacement_case(int target_slot)
 {
     using namespace cryptonote;
     using namespace cryptonote::dao;
@@ -2681,10 +2681,10 @@ static void run_b3d_dropout_case(int target_slot)
 
 // Four iterations, one per possible sorted position of D in the
 // post-first-reshape committee. Each iteration runs in isolation.
-TEST(DaoV2Replay, B3dDropoutReplacement)
+TEST(DaoV2Replay, DropoutReplacement)
 {
     for (int target_slot = 1; target_slot <= 4; ++target_slot)
-        run_b3d_dropout_case(target_slot);
+        run_dropout_replacement_case(target_slot);
 }
 
 // ------------------------------------------------------------------
@@ -2829,8 +2829,8 @@ TEST(DaoV2Replay, LinkProofHandlesResharedWitness)
 // ------------------------------------------------------------------
 // Repeated reshares through 3 -> 4 -> 6 -> 16 members with threshold
 // increases at each stage (2 -> 2 -> 3 -> 8). Exercises the crypto
-// layer directly, no Blockchain instances (expert Option B). The B3d
-// replay test covers the blockchain integration; this test covers the
+// layer directly, no Blockchain instances. The dropout replacement
+// test covers the blockchain integration; this test covers the
 // mathematical property that repeated reshaping does not cause
 // unbounded share growth and that the original secret is preserved
 // across all three operations.
@@ -3410,7 +3410,7 @@ TEST(DaoV2Replay, ReshapeDescriptorOrderIndependent)
     bc_b.set_dao_v2_active_for_test(true);
     bc_c.set_dao_v2_active_for_test(true);
 
-    // 3-party DKG (identical setup to B3d).
+    // 3-party DKG.
     std::vector<crypto::public_key> committee;
     std::vector<crypto::secret_key> committee_sks;
     for (int i = 0; i < 3; ++i) {

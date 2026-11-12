@@ -2484,10 +2484,10 @@ TEST_F(DaoBootstrapIntegration, TwoProposalsIsolatedTallyKeys)
 }
 
 // ------------------------------------------------------------------
-// B3b: at voting-end, if the ready roster differs from the acceptance
+// At voting-end, if the ready roster differs from the acceptance
 // committee, a reshare must start for the proposal's key.
 // ------------------------------------------------------------------
-TEST_F(DaoBootstrapIntegration, B3bTriggerFiresOnRosterChange)
+TEST_F(DaoBootstrapIntegration, TriggerFiresOnRosterChange)
 {
     using namespace cryptonote;
     using namespace cryptonote::dao;
@@ -2607,7 +2607,7 @@ TEST_F(DaoBootstrapIntegration, B3bTriggerFiresOnRosterChange)
     EXPECT_TRUE(bc.has_dao_v2_reshare_runner_for_test());
 }
 
-TEST_F(DaoBootstrapIntegration, B3bTriggerNoOpOnSameRoster)
+TEST_F(DaoBootstrapIntegration, TriggerNoOpOnSameRoster)
 {
     using namespace cryptonote;
 

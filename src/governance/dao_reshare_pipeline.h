@@ -227,7 +227,7 @@ public:
     crypto::hash proposal_id() const;
 
     // Pure query: number of contributions currently held by the
-    // runner. Used by the B3d regression tests to assert that
+    // runner. Used by regression tests to assert that
     // invalid-sender and non-selected-sender messages are rejected
     // before mutating the contribution map. Does not mutate state;
     // not on any production code path.

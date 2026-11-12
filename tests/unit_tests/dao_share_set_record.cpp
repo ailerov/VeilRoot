@@ -93,7 +93,7 @@ TEST(DaoShareSetRecord, RejectsWrongVkSize)
 }
 
 // ------------------------------------------------------------------
-// B3c-2a: dao_share_set_record v2 with reshare evidence round-trips.
+// dao_share_set_record v2 with reshare evidence round-trips.
 // ------------------------------------------------------------------
 TEST(DaoShareSetRecordV2, EvidenceRoundTrip)
 {
@@ -142,7 +142,7 @@ TEST(DaoShareSetRecordV2, EvidenceRoundTrip)
 }
 
 // ------------------------------------------------------------------
-// B3c-2a: v1 (legacy) deserialization still works with empty evidence.
+// v1 (legacy) deserialization still works with empty evidence.
 // ------------------------------------------------------------------
 TEST(DaoShareSetRecordV2, V1DeserializesWithEmptyEvidence)
 {

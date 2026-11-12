@@ -86,9 +86,9 @@ struct dao_tally_certificate
     // key_rec.threshold (v5-equivalent behaviour).
     //
     // When per_event_share_set_id != 0, the cert claims a reshare
-    // occurred; B3c will verify the evidence and use these fields
-    // instead of key_rec's. Until B3c lands, dao_verify_tally_certificate
-    // rejects such certs.
+    // occurred. The evidence is verified against these fields
+    // instead of key_rec's; certs whose evidence does not verify
+    // are rejected.
     uint64_t                              per_event_share_set_id = 0;
     uint32_t                              threshold              = 0;
     std::vector<std::vector<uint8_t>>     member_pubkeys;   // 32 bytes each
