@@ -20,7 +20,7 @@ namespace cryptonote { namespace dao {
 //     actively secure. Replacing it is the wall-clock fix.
 //
 // Active security of the FULL pipeline comes from the runner-level
-// delayed consistency + masked GCD checks (expert Q4). ABB itself is
+// delayed consistency + masked GCD checks. ABB itself is
 // semi-honest.
 
 struct dao_abb_share { uint32_t value = 0; };

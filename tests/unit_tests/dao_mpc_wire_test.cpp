@@ -472,7 +472,7 @@ TEST(dao_mpc_wire, single_prime_sieve_round)
 //   - aggregate P ≡ ∏ u_j^(r) (mod r) for every sieve prime r
 //   - aggregate P coprime to every sieve prime
 //   - aggregate P mod 4 == 3
-//   - aggregate P bit length in expert's bound
+//   - aggregate P bit length in the bound
 //   - per-party contribution in [L, U)
 //
 // Uses the same wire helpers as single_prime_sieve_round.

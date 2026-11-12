@@ -5531,7 +5531,7 @@ bool dkg_run_with_transport(const dkg_config& cfg,
         }
 
         // Candidate accepted.
-        // Expert §2: BN_bn2binpad returns -1 on overflow, and the
+        // BN_bn2binpad returns -1 on overflow, and the
         // previous code silently emitted uninitialized buffer content
         // in that case. Reject any N that cannot fit the fixed
         // PAILLIER_MODULUS_BYTES wire format before encoding.
@@ -6673,7 +6673,7 @@ struct dkg_p2p_runner::impl
 
     // Sample modulus M_0 = 4 * prod(sieve primes). Constructed once
     // in start(), sized for (target_N_bits, committee_size). Used by
-    // passes_local_small_prime_screen (expert Q4 step 4).
+    // passes_local_small_prime_screen.
     BIGNUM*  sieve_M0_          = nullptr;
     uint32_t sieve_prime_count_ = 0;
 
@@ -6705,7 +6705,7 @@ struct dkg_p2p_runner::impl
         return false;
     }
 
-    // Expert Q4 step 4: gcd(N, M_sample) == 1. N = P*Q is odd; M_0
+    // gcd(N, M_sample) == 1. N = P*Q is odd; M_0
     // = 4*M_sample. gcd(N,4)=1 always, so gcd(N,M_0)==1 <=> gcd(N,
     // M_sample)==1.
     bool passes_local_small_prime_screen(const BIGNUM* N)
@@ -7247,7 +7247,7 @@ bool dkg_p2p_runner::impl::run_modulus_attempt(BIGNUM* N_out)
     // mode skips this and uses the party's injected test contribution.
     if (!is_fixture_mode()) {
         const uint32_t lambda = cfg.target_N_bits / 2;
-        const uint32_t sigma  = 80;   // expert-specified, separate from security_bits
+        const uint32_t sigma  = 80;   // separate from security_bits
         std::vector<uint32_t> sieve_primes;
         if (!dao_mpc_crt::near_primorial_primes(lambda, n, sieve_primes))
             return false;
@@ -7749,9 +7749,9 @@ void dkg_p2p_runner::impl::run()
 
         // Length gate. Fixture mode asserts exact target_N_bits (the
         // fixture N is a known value). Production sieve produces N in
-        // [2^target, 2^(target + 2*sigma)) by construction (expert Q1);
+        // [2^target, 2^(target + 2*sigma)) by construction;
         // accept that full range rather than requiring exact equality.
-        // NOTE: with Paillier format fixed at 2048-bit (expert §2),
+        // NOTE: with Paillier format fixed at 2048-bit,
         // candidates above 2048 bits are rejected at the encode step,
         // not here. This gate stays as-is while Eratosthenes remains
         // an experimental path; the Miller–Rabin production path will
@@ -7824,7 +7824,7 @@ void dkg_p2p_runner::impl::run()
                         if (reject_q) candidate_reject = true;
                     }
                 } else {
-                    // Production path (expert Q4 step 4): replace
+                    // Production path: replace
                     // distributed trial division with a local gcd
                     // check against the full sieve modulus M_0.
                     // The sieve construction already forces P and Q
@@ -7861,7 +7861,7 @@ void dkg_p2p_runner::impl::run()
 
             // Candidate cannot be encoded into PAILLIER_MODULUS_BYTES.
             // Clear accepted so the DKG does not proceed with a
-            // partially-written or truncated buffer. Expert §2: this
+            // partially-written or truncated buffer. This
             // path is defensive (length gate above should already have
             // rejected any nb != PAILLIER_MODULUS_BITS).
             result.N.assign(PAILLIER_MODULUS_BYTES, 0);
@@ -8473,7 +8473,7 @@ bool dkg_p2p_runner::start()
     // sampling construction would not reject it. So the local
     // gcd(N, M_0) check uses ALL primes below the sieve bound, not
     // only the sieved ones. This gives coprimality to every small
-    // prime below the bound (expert Q4 step 4 + defense in depth).
+    // prime below the bound (defense in depth).
     if (!p_->sieve_M0_) {
         const uint32_t kappa = p_->cfg.target_N_bits / 2;
         // Determine the sieve bound from the near-primorial selection

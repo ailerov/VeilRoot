@@ -5,7 +5,7 @@
 // VSS in dao_dkg.{h,cpp}: this one commits over the Paillier group
 // Z*_{N^2} with base V, and permits signed coefficients.
 //
-// Construction (expert §2):
+// Construction:
 //   q_i(x)  = mu_i * s_i + Delta * sum_{k=1..t_new-1} b_{i,k} x^k
 //   C_i,0   = V^(mu_i * s_i)          mod N^2
 //   C_i,k   = V^(Delta * b_{i,k})     mod N^2     k >= 1
@@ -35,13 +35,13 @@
 namespace cryptonote {
 namespace dao {
 
-// Coefficient scale per expert Stage D ruling.
+// Coefficient scale.
 constexpr uint32_t DAO_RESHARE_COEFF_BITS       = 64;
 constexpr uint32_t DAO_RESHARE_COEFF_SCALE_BITS = 8281;
 
 // Signed serialization: 1 sign byte (0 = nonneg, 1 = negative) then
 // 512 bytes of big-endian magnitude.
-// Response magnitude width. |q_i(j)| < 2^8420 by the expert's
+// Response magnitude width. |q_i(j)| < 2^8420 by the
 // bound for n_new=16, degree=7, |mu_i*s_i| < 2^8261, scaled
 // coefficients. 8420/8 = 1052.5 -> 1053 bytes magnitude.
 constexpr size_t DAO_RESHARE_SIGNED_BYTES = 1268 + 1053;

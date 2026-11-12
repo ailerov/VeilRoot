@@ -567,9 +567,8 @@ TEST(dao_dkg_distributed, ordered_startup_no_lost_messages)
     cfg.security_bits  = 32;
     cfg.qproof_rounds  = DAO_DKG_QPROOF_ROUNDS_TEST;
     cfg.max_attempts   = 2000;
-    // Diagnostic-only: 10s so the DKG emits its own
-    // "[dkg] collect timeout phase=N got=... pending=... expected=..."
-    // before this test's 60s wait. Revert to 600 once diagnosed.
+    // Short timeout (10s) so a hung DKG fails this test
+    // quickly. Production default is 600s.
     cfg.phase_timeout_seconds = 10;
     cfg.test_seed      = FIXED_TEST_CANDIDATE_SEED_3;
     cfg.member_ids     = run.pks;

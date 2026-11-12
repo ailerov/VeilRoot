@@ -290,7 +290,7 @@ bool dao_mpc_crt::lift_to_range(const BIGNUM* U, const BIGNUM* Q,
 }
 
 // ================================================================
-// Production-path helpers (expert-specified).
+// Production-path helpers.
 // ================================================================
 
 bool dao_mpc_crt::sieve_modulus_mod4(const std::vector<uint32_t>& primes,

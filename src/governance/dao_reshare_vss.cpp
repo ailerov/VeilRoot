@@ -226,7 +226,7 @@ bool dao_reshare_vss_deal(
     coeff_proofs_out.range_proofs.assign(t_new, {});
     coeff_proofs_out.link_proofs.assign(t_new, {});
 
-    // Expert Stage D sampling. x is uniform in [0, 2^65), b = x - 2^64
+    // Sampling. x is uniform in [0, 2^65), b = x - 2^64
     // so b is in [-2^64, 2^64). The Paillier commitment uses scale
     // 2^8281 so the effective nonconstant contribution is
     // Delta * 2^8281 * b_k, sized to mask the constant mu_i*s_i

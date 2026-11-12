@@ -19,7 +19,7 @@ namespace cryptonote { namespace dao {
 //     use in production. Removal scheduled once the corrected range
 //     construction lands.
 //
-// BLOCKED, awaiting paper / expert:
+// Not yet implemented:
 //   - FABBWithErrors.Share additive-sharing distribution (current
 //     to_additive_shares only proves the sum identity, not the
 //     required distribution).
@@ -61,7 +61,7 @@ struct dao_mpc_crt
                               BIGNUM* out, BN_CTX* ctx);
 
     // ================================================================
-    // PRODUCTION PATH (per Eratosthenes, expert confirmed):
+    // PRODUCTION PATH (per Eratosthenes):
     //
     // 1. M_s = prod(sieve primes), M_0 = 4*M_s.
     // 2. W_i = CRTRec({a_i^(r)}, 3*delta_{i,1} mod 4) in [0, M_0).
@@ -84,7 +84,7 @@ struct dao_mpc_crt
         const std::vector<std::vector<uint32_t>>& shares,
         std::vector<BIGNUM*>& out, BN_CTX* ctx);
 
-    // p = W + k*M_0 uniform in [L, U). Exact helper from expert.
+    // p = W + k*M_0 uniform in [L, U).
     // residue must be W (already including mod-4). modulus must be M_0.
     static bool reconstruct_to_contribution(
         const BIGNUM* residue, const BIGNUM* modulus,

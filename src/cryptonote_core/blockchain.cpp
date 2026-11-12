@@ -2239,7 +2239,7 @@ bool Blockchain::create_block_template(block& b, const crypto::hash *from_block,
     if (parent_in_main)
     {
       cryptonote::block prev_block;
-      CHECK_AND_ASSERT_MES(get_block_by_hash(*from_block, prev_block), false, "From block not found"); // TODO
+      CHECK_AND_ASSERT_MES(get_block_by_hash(*from_block, prev_block), false, "From block not found");
       uint64_t from_block_height = cryptonote::get_block_height(prev_block);
       height = from_block_height + 1;
       if (m_hardfork->get_current_version() >= RX_BLOCK_VERSION)

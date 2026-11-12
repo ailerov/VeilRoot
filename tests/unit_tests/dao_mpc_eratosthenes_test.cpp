@@ -140,7 +140,7 @@ TEST(dao_mpc_eratosthenes, multiply_tree_matches_sequential_n4)
 }
 
 // ================================================================
-// Expert-specified tests: uniform lift (Q1) + pairwise masks (Q3).
+// Tests: uniform lift + pairwise masks.
 // ================================================================
 
 namespace {
@@ -257,7 +257,7 @@ TEST(dao_mpc_eratosthenes, lift_bounds_n16)
 
 TEST(dao_mpc_eratosthenes, mask_uniformity_n3)
 {
-    // Expert test 1: for each corrupt party and each fixed corrupt
+    // Test 1: for each corrupt party and each fixed corrupt
     // output, honest outputs are uniform over the fixed-sum line.
     dao_mpc_field f; f.r = 7;
     const uint32_t n = 3;

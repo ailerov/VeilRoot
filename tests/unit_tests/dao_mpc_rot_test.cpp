@@ -209,12 +209,12 @@ TEST(dao_mpc_rot, triple_store_isolated_sessions)
 }
 
 // ------------------------------------------------------------------
-// Communication accounting per expert's formula.
+// Communication accounting per the formula.
 // ------------------------------------------------------------------
 
 TEST(dao_mpc_rot, bytes_per_party_per_triple_formula)
 {
-    // Expert: (n - 1) * (128*k + k^2) bits per party per triple.
+    // (n - 1) * (128*k + k^2) bits per party per triple.
     // r = 739 → k = 10.
     EXPECT_EQ(dao_rot_k_of(739), 10u);
     EXPECT_EQ(dao_rot_k_of(101),  7u);
@@ -277,7 +277,7 @@ TEST(dao_mpc_rot, bench_per_triple_arithmetic_n16)
 
 
 // ================================================================
-// Expert-required Combine tests.
+// Combine tests.
 // ================================================================
 
 namespace {
@@ -609,7 +609,7 @@ TEST(dao_mpc_input, epsilon_is_uniform_for_fixed_x)
 
 TEST(dao_mpc_input, count_matches_expert_numbers)
 {
-    // Expert: I = C * 2 * L * n.  L = 126, C = 32.
+    // I = C * 2 * L * n.  L = 126, C = 32.
     EXPECT_EQ(input_tuple_count(32, 2, 126, 3), 24192ull);
     EXPECT_EQ(input_tuple_count(32, 2, 126, 16), 129024ull);
     // One candidate, one factor, one prime, one party.

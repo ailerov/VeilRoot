@@ -425,7 +425,7 @@ TEST(DaoReshareVss, RejectsSwappedC0)
 }
 
 
-// Expert §7: for n_new = 16 and degree 7, |q_i(j)| < 2^8420 and the
+// For n_new = 16 and degree 7, |q_i(j)| < 2^8420 and the
 // signed serialization must be exactly DAO_RESHARE_SIGNED_BYTES bytes.
 TEST(DaoReshareVss, MaxQjFits)
 {
@@ -478,7 +478,7 @@ TEST(DaoReshareVss, MaxQjFits)
     }
 }
 
-// Expert §7: coefficients at boundary values round-trip through the
+// Coefficients at boundary values round-trip through the
 // signed serializer and deserializer.
 TEST(DaoReshareVss, SignedRoundTripBoundary)
 {
@@ -511,7 +511,7 @@ TEST(DaoReshareVss, SignedRoundTripBoundary)
     BN_free(pos); BN_free(neg);
 }
 
-// Expert §7: max absolute mu_i over all permitted subsets of
+// Max absolute mu_i over all permitted subsets of
 // indices 1..16 must be under 2^65.
 TEST(DaoReshareVss, MuMaxBound)
 {

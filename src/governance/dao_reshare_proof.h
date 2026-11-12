@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Common-exponent proof of knowledge in the hidden-order group
-// Z*_{N^2}, per the expert ruling for DAO V2 resharing.
+// Z*_{N^2} for DAO V2 resharing.
 //
 // The proof establishes that a single integer s_i satisfies both
 // public relations, without revealing s_i:

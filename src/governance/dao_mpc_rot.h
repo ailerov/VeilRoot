@@ -20,7 +20,7 @@ namespace cryptonote { namespace dao {
 //     later; arithmetic is identical.
 //
 // Active-security comes from the runner-level delayed consistency +
-// masked GCD checks (expert Q4), not from the sampling multiplications.
+// masked GCD checks, not from the sampling multiplications.
 
 struct dao_rot_cross_terms {
     uint32_t c_ij_i = 0;   // P_i's share of a_i * b_j (sender side)
@@ -50,7 +50,7 @@ bool generate_triples_rot_batch(
     uint32_t r, uint32_t n, uint32_t count,
     std::vector<std::vector<dao_abb_triple>>& out, BN_CTX* ctx);
 
-// Communication cost per party per triple, expert's formula:
+// Communication cost per party per triple:
 //   (n - 1) * (128 * k + k^2) bits
 uint64_t dao_rot_bytes_per_party_per_triple(uint32_t r, uint32_t n);
 
@@ -61,7 +61,7 @@ uint64_t dao_rot_bytes_per_party_per_triple(uint32_t r, uint32_t n);
 // ================================================================
 // F_Rand-based Combine (Eratosthenes Figure 19, step 5).
 //
-// Per expert: scalar multiplication by a common random r.
+// Scalar multiplication by a common random r.
 //   a_i' = r * raw_a_i
 //   b_i' = raw_b_i
 //   c_i' = r * raw_c_i
@@ -96,7 +96,7 @@ bool frand_common(const dao_rot_frand_ctx& ctx, uint32_t attempt,
 bool sample_nonzero_common_field_element(const dao_rot_frand_ctx& ctx,
                                          uint32_t modulus, uint32_t& r);
 
-// Beaver Combine step (expert interpretation B, scalar).
+// Beaver Combine step (scalar).
 bool combine_triple(const dao_mpc_field& field, uint32_t common_r,
                     uint32_t raw_a_i, uint32_t raw_b_i, uint32_t raw_c_i,
                     uint32_t& a_i, uint32_t& b_i, uint32_t& c_i);
