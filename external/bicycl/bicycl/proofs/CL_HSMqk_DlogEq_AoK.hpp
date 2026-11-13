@@ -158,6 +158,15 @@ class CL_HSMqk_DlogEq_AoK
      */
     CL_HSMqk_DlogEq_AoK() = default;
 
+    /**
+     * @brief Reconstruction constructor from (u, R1, R2).
+     * @details Supplies only the wire-visible proof components, matching
+     * the analogous constructor on CL_HSMqk_Batch_Dlog_AoK. Verification
+     * recomputes the challenge from the proof statement.
+     */
+    CL_HSMqk_DlogEq_AoK(const Mpz & u, const QFI & R1, const QFI & R2)
+      : u_(u), R1_(R1), R2_(R2) {}
+
   private:
     /**
      * @brief Compute the hash-challenge used in the proof

@@ -128,6 +128,11 @@ struct cl_dkg_p2p_runner::impl
         case cl_dkg_subtype::keygen_complaint:
         case cl_dkg_subtype::keygen_complete:
             return true;
+        case cl_dkg_subtype::reshare_prestate:
+        case cl_dkg_subtype::reshare_contribution:
+        case cl_dkg_subtype::reshare_private_share:
+        case cl_dkg_subtype::reshare_complete:
+            return true;
         }
         return true;
     }

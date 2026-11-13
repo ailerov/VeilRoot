@@ -30,6 +30,19 @@ public:
         : BICYCL::CL_HSMqk_Batch_Dlog_AoK(u, R) {}
 };
 
+// Reconstructs a peer's DLog-Eq AoK from its public (u, R1, R2) parts.
+// The base class keeps the (u, R1, R2) constructor protected so that
+// only the verifier path can rebuild a proof without the prover's
+// witness.
+class CLDlogEqAoKExposed : public BICYCL::CL_HSMqk_DlogEq_AoK
+{
+public:
+    CLDlogEqAoKExposed(const BICYCL::Mpz& u,
+                       const BICYCL::QFI& R1,
+                       const BICYCL::QFI& R2)
+        : BICYCL::CL_HSMqk_DlogEq_AoK(u, R1, R2) {}
+};
+
 // Subtype of one CL DKG message. Every subtype shares the outer
 // dkg_msg_type::cl_dkg_envelope; the outer header carries the routing
 // fields (sender, recipient, proposal, committee) unchanged.
@@ -40,7 +53,13 @@ enum class cl_dkg_subtype : uint8_t
     keygen_private_share = 0x03,
     keygen_complaint     = 0x04,
     keygen_complete      = 0x05,
+
+    reshare_prestate        = 0x10,
+    reshare_contribution    = 0x11,
+    reshare_private_share   = 0x12,
+    reshare_complete        = 0x13,
 };
+
 
 // One canonical CL DKG payload. The body is subtype-specific; the
 // envelope prepends a fixed domain, version, subtype, and length.
@@ -82,6 +101,51 @@ bool cl_dkg_encode_complaint(uint32_t against_sender_id,
 bool cl_dkg_decode_complaint(const cl_dkg_payload& in,
                              uint32_t& against_sender_id,
                              uint32_t& reason);
+
+// One reshare contribution as it travels on the wire. This is the
+// public part only; each recipient's private share arrives on a
+// separate unicast message.
+struct cl_reshare_contribution_wire
+{
+    uint32_t                 dealer_id = 0;
+    BICYCL::Mpz              c_i;
+    BICYCL::Mpz              q_i;
+    BICYCL::Mpz              r_i;
+    BICYCL::Mpz              L_i;
+    std::vector<BICYCL::QFI> commitments;
+    BICYCL::Mpz              batch_u;
+    BICYCL::QFI              batch_R;
+    BICYCL::Mpz              link_u;
+    BICYCL::QFI              link_R1;
+    BICYCL::QFI              link_R2;
+};
+
+bool cl_dkg_encode_reshare_prestate(uint32_t dealer_id,
+                                    const BICYCL::Mpz& q_i,
+                                    const BICYCL::Mpz& r_i,
+                                    const BICYCL::Mpz& L_i,
+                                    cl_dkg_payload& out);
+bool cl_dkg_decode_reshare_prestate(const cl_dkg_payload& in,
+                                    uint32_t& dealer_id,
+                                    BICYCL::Mpz& q_i,
+                                    BICYCL::Mpz& r_i,
+                                    BICYCL::Mpz& L_i);
+
+bool cl_dkg_encode_reshare_contribution(
+    const cl_reshare_contribution_wire& in, cl_dkg_payload& out);
+bool cl_dkg_decode_reshare_contribution(
+    const cl_dkg_payload& in,
+    const BICYCL::Mpz& expected_disc,
+    std::size_t max_commitments,
+    cl_reshare_contribution_wire& out);
+
+bool cl_dkg_encode_reshare_private_share(const BICYCL::Mpz& share,
+                                         cl_dkg_payload& out);
+bool cl_dkg_decode_reshare_private_share(const cl_dkg_payload& in,
+                                         BICYCL::Mpz& out);
+
+bool cl_dkg_encode_reshare_complete(cl_dkg_payload& out);
+bool cl_dkg_decode_reshare_complete(const cl_dkg_payload& in);
 
 // DERIVE q FROM Ed25519 SUBGROUP ORDER (matches CL encryption backend).
 // CONSTRUCTS AN HSMqk INSTANCE WITH q = CURVE ORDER, k = 1, AND THE

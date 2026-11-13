@@ -345,6 +345,122 @@ bool cl_dkg_deserialize_gammas(
     return off == in.size();
 }
 
+bool cl_dkg_encode_reshare_prestate(uint32_t dealer_id,
+                                    const BICYCL::Mpz& q_i,
+                                    const BICYCL::Mpz& r_i,
+                                    const BICYCL::Mpz& L_i,
+                                    cl_dkg_payload& out)
+{
+    std::vector<uint8_t> body;
+    u32_be_append(body, dealer_id);
+    if (!mpz_to_bytes_signed(body, q_i)) return false;
+    if (!mpz_to_bytes_signed(body, r_i)) return false;
+    if (!mpz_to_bytes_signed(body, L_i)) return false;
+    out.subtype = cl_dkg_subtype::reshare_prestate;
+    out.body = std::move(body);
+    return true;
+}
+
+bool cl_dkg_decode_reshare_prestate(const cl_dkg_payload& in,
+                                    uint32_t& dealer_id,
+                                    BICYCL::Mpz& q_i,
+                                    BICYCL::Mpz& r_i,
+                                    BICYCL::Mpz& L_i)
+{
+    if (in.subtype != cl_dkg_subtype::reshare_prestate) return false;
+    std::size_t off = 0;
+    if (!u32_be_read(in.body, off, dealer_id)) return false;
+    if (!mpz_from_bytes_signed(in.body, off, q_i, true)) return false;
+    if (!mpz_from_bytes_signed(in.body, off, r_i, true)) return false;
+    if (!mpz_from_bytes_signed(in.body, off, L_i, true)) return false;
+    return off == in.body.size();
+}
+
+bool cl_dkg_encode_reshare_contribution(
+    const cl_reshare_contribution_wire& in, cl_dkg_payload& out)
+{
+    std::vector<uint8_t> body;
+    u32_be_append(body, in.dealer_id);
+    if (!mpz_to_bytes_signed(body, in.c_i)) return false;
+    if (!mpz_to_bytes_signed(body, in.q_i)) return false;
+    if (!mpz_to_bytes_signed(body, in.r_i)) return false;
+    if (!mpz_to_bytes_signed(body, in.L_i)) return false;
+    u32_be_append(body, static_cast<uint32_t>(in.commitments.size()));
+    for (const auto& f : in.commitments) {
+        if (!qfi_to_bytes(body, f)) return false;
+    }
+    if (!mpz_to_bytes_signed(body, in.batch_u)) return false;
+    if (!qfi_to_bytes(body, in.batch_R)) return false;
+    if (!mpz_to_bytes_signed(body, in.link_u)) return false;
+    if (!qfi_to_bytes(body, in.link_R1)) return false;
+    if (!qfi_to_bytes(body, in.link_R2)) return false;
+    out.subtype = cl_dkg_subtype::reshare_contribution;
+    out.body = std::move(body);
+    return true;
+}
+
+bool cl_dkg_decode_reshare_contribution(
+    const cl_dkg_payload& in,
+    const BICYCL::Mpz& expected_disc,
+    std::size_t max_commitments,
+    cl_reshare_contribution_wire& out)
+{
+    if (in.subtype != cl_dkg_subtype::reshare_contribution) return false;
+    std::size_t off = 0;
+    if (!u32_be_read(in.body, off, out.dealer_id)) return false;
+    if (!mpz_from_bytes_signed(in.body, off, out.c_i, true)) return false;
+    if (!mpz_from_bytes_signed(in.body, off, out.q_i, true)) return false;
+    if (!mpz_from_bytes_signed(in.body, off, out.r_i, true)) return false;
+    if (!mpz_from_bytes_signed(in.body, off, out.L_i, true)) return false;
+    uint32_t cnt = 0;
+    if (!u32_be_read(in.body, off, cnt)) return false;
+    if (cnt == 0 || cnt > max_commitments) return false;
+    out.commitments.clear();
+    out.commitments.reserve(cnt);
+    for (uint32_t i = 0; i < cnt; ++i) {
+        BICYCL::QFI f;
+        if (!qfi_from_bytes(in.body, off, f, expected_disc)) return false;
+        out.commitments.push_back(std::move(f));
+    }
+    if (!mpz_from_bytes_signed(in.body, off, out.batch_u, true)) return false;
+    if (!qfi_from_bytes(in.body, off, out.batch_R, expected_disc)) return false;
+    if (!mpz_from_bytes_signed(in.body, off, out.link_u, true)) return false;
+    if (!qfi_from_bytes(in.body, off, out.link_R1, expected_disc)) return false;
+    if (!qfi_from_bytes(in.body, off, out.link_R2, expected_disc)) return false;
+    return off == in.body.size();
+}
+
+bool cl_dkg_encode_reshare_private_share(const BICYCL::Mpz& share,
+                                         cl_dkg_payload& out)
+{
+    std::vector<uint8_t> body;
+    if (!mpz_to_bytes_signed(body, share)) return false;
+    out.subtype = cl_dkg_subtype::reshare_private_share;
+    out.body = std::move(body);
+    return true;
+}
+
+bool cl_dkg_decode_reshare_private_share(const cl_dkg_payload& in,
+                                         BICYCL::Mpz& out)
+{
+    if (in.subtype != cl_dkg_subtype::reshare_private_share) return false;
+    std::size_t off = 0;
+    if (!mpz_from_bytes_signed(in.body, off, out, true)) return false;
+    return off == in.body.size();
+}
+
+bool cl_dkg_encode_reshare_complete(cl_dkg_payload& out)
+{
+    out.subtype = cl_dkg_subtype::reshare_complete;
+    out.body.clear();
+    return true;
+}
+
+bool cl_dkg_decode_reshare_complete(const cl_dkg_payload& in)
+{
+    return in.subtype == cl_dkg_subtype::reshare_complete && in.body.empty();
+}
+
 } // namespace dao
 } // namespace cryptonote
 
