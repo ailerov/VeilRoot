@@ -8,6 +8,7 @@
 #include "governance/dao_cl_dkg_payload.h"
 #include "governance/dao_cl_party.h"
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -131,7 +132,7 @@ struct cl_dkg_p2p_runner::impl
         return true;
     }
 
-    void fill_ctx(cl_dkg_result& out) const
+    bool fill_result(cl_dkg_result& out) const
     {
         const auto& cl = *cfg.cl;
         out.ctx.q.clear();
@@ -143,6 +144,19 @@ struct cl_dkg_p2p_runner::impl
         cl_dkg_qfi_to_bytes(out.ctx.pk_qfi, party->public_key().elt());
         out.ctx.D.clear();
         cl_dkg_mpz_to_bytes_signed(out.ctx.D, party->interpolation_scale());
+
+        out.local_secret_share.clear();
+        if (!party->serialize_secret_share(out.local_secret_share)) return false;
+
+        out.gammas_serialized.clear();
+        if (!cl_dkg_serialize_gammas(party->gammas(), out.gammas_serialized))
+            return false;
+
+        out.qualified_ids.clear();
+        for (unsigned int id : party->qualified_players())
+            out.qualified_ids.push_back(id);
+        std::sort(out.qualified_ids.begin(), out.qualified_ids.end());
+        return true;
     }
 
     void mark_finished(bool ok)
@@ -206,7 +220,7 @@ struct cl_dkg_p2p_runner::impl
         if (!broadcast(comp)) { mark_finished(false); return; }
 
         std::lock_guard<std::mutex> lk(mu);
-        fill_ctx(result);
+        if (!fill_result(result)) { result.ok = false; finished = true; running = false; cv.notify_all(); return; }
         result.ok = true;
         finished = true;
         running = false;

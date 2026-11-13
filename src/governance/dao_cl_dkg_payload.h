@@ -12,6 +12,7 @@
 
 #include "bicycl/bicycl/arith/gmp_extras.hpp"
 #include "bicycl/bicycl/cl/CL_HSMqk.hpp"
+#include "bicycl/bicycl/cl/CL_threshold.hpp"
 #include "bicycl/bicycl/arith/qfi.hpp"
 #include "bicycl/bicycl/proofs/CL_HSMqk_Batch_Dlog_AoK.hpp"
 
@@ -94,6 +95,19 @@ std::shared_ptr<BICYCL::CL_HSMqk> cl_dkg_make_hsmq(
 void cl_dkg_mpz_to_bytes_be(std::vector<uint8_t>& out, const BICYCL::Mpz& v);
 bool cl_dkg_mpz_to_bytes_signed(std::vector<uint8_t>& out, const BICYCL::Mpz& v);
 bool cl_dkg_qfi_to_bytes(std::vector<uint8_t>& out, const BICYCL::QFI& f);
+bool cl_dkg_qfi_from_bytes(const std::vector<uint8_t>& in, std::size_t& off,
+                           BICYCL::QFI& out, const BICYCL::Mpz& expected_disc);
+
+// Canonical gamma-map codec. Entries are sorted by player id so
+// the output is byte-identical regardless of the source map's
+// iteration order.
+bool cl_dkg_serialize_gammas(
+    const BICYCL::CL_Threshold_Static::ParticipantsValueMap<BICYCL::QFI>& g,
+    std::vector<uint8_t>& out);
+bool cl_dkg_deserialize_gammas(
+    const std::vector<uint8_t>& in,
+    const BICYCL::Mpz& expected_disc,
+    BICYCL::CL_Threshold_Static::ParticipantsValueMap<BICYCL::QFI>& out);
 
 } // namespace dao
 } // namespace cryptonote

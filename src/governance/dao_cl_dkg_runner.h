@@ -42,6 +42,18 @@ struct cl_dkg_result
 {
     bool ok = false;
     cl_key_context ctx;
+
+    // This node's secret share, encoded by serialize_secret_share() on
+    // the wrapped player. Persist to the node's local store; never to
+    // consensus state.
+    std::vector<uint8_t> local_secret_share;
+
+    // Public verification values, one per qualified player. Canonical
+    // encoding; consensus-visible and bound to the share-set record.
+    std::vector<uint8_t> gammas_serialized;
+
+    // Qualified player identifiers (0-based internal ids), sorted.
+    std::vector<uint32_t> qualified_ids;
 };
 
 class cl_dkg_p2p_runner

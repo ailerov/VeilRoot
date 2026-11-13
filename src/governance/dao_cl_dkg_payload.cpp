@@ -5,6 +5,7 @@
 
 #ifdef VEILROOT_ENABLE_CL
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <memory>
@@ -299,6 +300,49 @@ bool cl_dkg_mpz_to_bytes_signed(std::vector<uint8_t>& out, const BICYCL::Mpz& v)
 bool cl_dkg_qfi_to_bytes(std::vector<uint8_t>& out, const BICYCL::QFI& f)
 {
     return qfi_to_bytes(out, f);
+}
+
+bool cl_dkg_qfi_from_bytes(const std::vector<uint8_t>& in, std::size_t& off,
+                           BICYCL::QFI& out, const BICYCL::Mpz& expected_disc)
+{
+    return qfi_from_bytes(in, off, out, expected_disc);
+}
+
+bool cl_dkg_serialize_gammas(
+    const BICYCL::CL_Threshold_Static::ParticipantsValueMap<BICYCL::QFI>& g,
+    std::vector<uint8_t>& out)
+{
+    out.clear();
+    std::vector<unsigned int> ids;
+    ids.reserve(g.size());
+    for (const auto& kv : g) ids.push_back(kv.first);
+    std::sort(ids.begin(), ids.end());
+    u32_be_append(out, static_cast<uint32_t>(ids.size()));
+    for (unsigned int id : ids) {
+        u32_be_append(out, id);
+        if (!qfi_to_bytes(out, g.at(id))) return false;
+    }
+    return true;
+}
+
+bool cl_dkg_deserialize_gammas(
+    const std::vector<uint8_t>& in,
+    const BICYCL::Mpz& expected_disc,
+    BICYCL::CL_Threshold_Static::ParticipantsValueMap<BICYCL::QFI>& out)
+{
+    out.clear();
+    std::size_t off = 0;
+    uint32_t count = 0;
+    if (!u32_be_read(in, off, count)) return false;
+    if (count == 0 || count > 256) return false;
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t id = 0;
+        if (!u32_be_read(in, off, id)) return false;
+        QFI f;
+        if (!qfi_from_bytes(in, off, f, expected_disc)) return false;
+        out[id] = std::move(f);
+    }
+    return off == in.size();
 }
 
 } // namespace dao
