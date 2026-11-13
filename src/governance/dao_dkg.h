@@ -624,11 +624,13 @@ struct dao_tally_key_record
     std::vector<uint8_t> vss_g;
     std::vector<uint8_t> vss_h;
 
-    // CL-over-class-groups public parameters. When non-empty, the
-    // record's ballot encryption, tally, and reshare all use the CL
-    // backend. Layout: u32(len_q) || q_be || u32(k) || SCALAR(p) ||
-    // QFI(pk.elt()), matching CLEncryptionBackend::serialize_modulus.
-    // Empty for legacy Paillier-era records.
+    // CL-over-class-groups public parameters. Canonical layout is
+    // defined by cl_key_context (dao_crypto_backend.h), including the
+    // immutable interpolation scale D. Because key_id =
+    // SHA256(serialized-record-with-key_id-zero), D is bound into
+    // key_id automatically. This field replaces the historical
+    // Paillier N/G/theta/V/V_K_i fields during the runtime swap;
+    // it is not optional.
     std::vector<uint8_t> cl_modulus;
 
     uint64_t             activation_height = 0;

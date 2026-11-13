@@ -89,16 +89,35 @@ std::unique_ptr<DaoEncryptionBackend> make_paillier_backend();
 std::unique_ptr<DaoEncryptionBackend>
     make_paillier_backend(const std::vector<uint8_t>& modulus);
 
-// Structural check of a serialized CL modulus (as produced by
-// CLEncryptionBackend::serialize_modulus). Does NOT require CL to be
-// compiled in — only checks the byte layout, so every validator can
-// agree on whether a key record's CL parameters are well-formed.
+// Canonical CL key context. Carries every immutable public parameter
+// of a proposal's CL encryption key, including the key-lifetime
+// interpolation scale D. Bound into the on-chain key_id via the
+// record's existing SHA256 rule.
 //
-// Layout: u32(len_q) || q_be (len_q bytes) || u32(k) ||
-//         SCALAR(p) || QFI(pk)
-// where SCALAR(v) = sign_byte || u32(len) || magnitude_be (BE, no
-// leading zero, len < 4096), and QFI(x) = SCALAR(a) || SCALAR(b) ||
-// SCALAR(c). The container is length-implied by total size.
+// Wire format (version 1):
+//   domain "VeilRoot-DAO-CL-KeyCtx-V1\0"
+//   u8      version = 1
+//   u32     len_q
+//   bytes   q (BE, no leading zero)
+//   u32     k
+//   SCALAR  p
+//   QFI     pk_qfi (canonical a,b,c)
+//   SCALAR  D
+struct cl_key_context
+{
+    std::vector<uint8_t> q;
+    uint32_t             k = 0;
+    std::vector<uint8_t> p;       // sign_byte || magnitude BE
+    std::vector<uint8_t> pk_qfi;  // full QFI wire
+    std::vector<uint8_t> D;       // sign_byte(0) || magnitude BE
+};
+
+bool dao_cl_key_context_serialize(const cl_key_context& ctx,
+                                  std::vector<uint8_t>& out);
+bool dao_cl_key_context_parse(const std::vector<uint8_t>& in,
+                              cl_key_context& out);
+
+// Structural check used by the activation validator.
 bool dao_cl_modulus_wire_valid(const std::vector<uint8_t>& in);
 
 // Factory: CL-over-class-groups backend (research crypto only).
