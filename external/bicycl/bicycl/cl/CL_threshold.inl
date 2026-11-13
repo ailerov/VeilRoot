@@ -1713,6 +1713,63 @@ namespace BICYCL
     //----------------------------------------------------------//
     Gamma_ = Gamma;
   }
+
+  inline bool CL_Threshold_Static::serialize_secret_share
+      (std::vector<uint8_t> &out) const
+  {
+    try
+    {
+      out.clear();
+      out.push_back(sk_share_.sgn() < 0 ? 1u : 0u);
+      Mpz abs_v;
+      Mpz::abs(abs_v, sk_share_);
+      std::vector<unsigned char> mag;
+      if (!abs_v.is_zero())
+        mag = static_cast<std::vector<unsigned char>>(abs_v);
+      if (mag.size() > 4096u) return false;
+      out.push_back(static_cast<uint8_t>((mag.size() >> 24) & 0xff));
+      out.push_back(static_cast<uint8_t>((mag.size() >> 16) & 0xff));
+      out.push_back(static_cast<uint8_t>((mag.size() >>  8) & 0xff));
+      out.push_back(static_cast<uint8_t>( mag.size()        & 0xff));
+      out.insert(out.end(), mag.begin(), mag.end());
+      return true;
+    }
+    catch (...) { return false; }
+  }
+
+  inline bool CL_Threshold_Static::restore_decryption_state
+      (const CL_HSMqk &CL_Hsmq,
+       const PublicKey &public_key,
+       const ParticipantsValueMap<QFI> &gammas,
+       const ParticipantsSet &qualified_players,
+       const Mpz &local_secret_share)
+  {
+    try
+    {
+      if (qualified_players.count(i_) == 0u) return false;
+      for (unsigned int j : qualified_players)
+        if (gammas.count(j) == 0u) return false;
+      if (gammas.count(i_) == 0u) return false;
+
+      if (delta2_.is_zero())
+        Mpz::mul(delta2_, delta_, delta_);
+
+      QFI h_delta2;
+      CL_Hsmq.Cl_G().nupow(h_delta2, h_delta_, delta_);
+
+      QFI test_gamma;
+      CL_Hsmq.Cl_G().nupow(test_gamma, h_delta2, local_secret_share);
+      if (!(test_gamma == gammas.at(i_))) return false;
+
+      pk_ = public_key;
+      Gamma_ = gammas;
+      QualifiedPlayersSet_ = qualified_players;
+      sk_share_ = local_secret_share;
+      return true;
+    }
+    catch (...) { return false; }
+  }
+
 }
 
 #endif /* BICYCL_CL_CL_THRESHOLD_INL */

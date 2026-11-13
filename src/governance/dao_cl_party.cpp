@@ -150,6 +150,36 @@ const BICYCL::Mpz& CLCommitteeParty::interpolation_scale() const
     return player_->interpolation_scale();
 }
 
+const BICYCL::CL_Threshold_Static::ParticipantsValueMap<BICYCL::QFI>&
+CLCommitteeParty::gammas() const
+{
+    return player_->Gammas();
+}
+
+const BICYCL::CL_Threshold_Static::ParticipantsSet&
+CLCommitteeParty::qualified_players() const
+{
+    return player_->QualifiedPlayerSet();
+}
+
+bool CLCommitteeParty::serialize_secret_share(std::vector<uint8_t>& out) const
+{
+    return player_->serialize_secret_share(out);
+}
+
+bool CLCommitteeParty::restore_decryption_state(
+    const BICYCL::CL_HSMqk::PublicKey& public_key,
+    const BICYCL::CL_Threshold_Static::ParticipantsValueMap<BICYCL::QFI>& gammas,
+    const BICYCL::CL_Threshold_Static::ParticipantsSet& qualified_players,
+    const BICYCL::Mpz& local_secret_share)
+{
+    if (!player_->restore_decryption_state(
+            *cl_, public_key, gammas, qualified_players, local_secret_share))
+        return false;
+    keygen_done_ = true;
+    return true;
+}
+
 } // namespace dao
 } // namespace cryptonote
 

@@ -645,6 +645,42 @@ class CL_Threshold_Static
     /* Key-lifetime interpolation scale D, fixed across reshare. */
     const Mpz & interpolation_scale () const { return delta_; }
 
+    /**
+     * @brief Serialize the local secret share.
+     * @details Wire format is sign_byte || u32(len) || magnitude_be,
+     * with sign_byte 0 or 1 and magnitude minimal (no leading zero).
+     * Only the secret share is emitted; the public decryption state
+     * (public key, Gamma values, qualified player set) is recovered
+     * from the on-chain key record.
+     *
+     * @return true on success.
+     */
+    bool serialize_secret_share (std::vector<uint8_t> &out) const;
+
+    /**
+     * @brief Restore decryption state from public parameters and a
+     * locally persisted secret share.
+     * @details Installs the public key, the qualified player set, and
+     * the Gamma values, then verifies that the supplied secret share
+     * is consistent with this player's Gamma value:
+     *   Gamma_i == (h^delta)^(delta * s_i)
+     * Only on success is the share installed. Callers should treat a
+     * false return as a corrupted or mismatched local share.
+     *
+     * @param[in] CL_Hsmq The CL cryptosystem
+     * @param[in] public_key The public key this share belongs to
+     * @param[in] gammas Public verification value per qualified player
+     * @param[in] qualified_players The set of qualified players
+     * @param[in] local_secret_share The persisted secret share
+     * @return true if the share matches and is installed
+     */
+    bool restore_decryption_state (
+        const CL_HSMqk &CL_Hsmq,
+        const PublicKey &public_key,
+        const ParticipantsValueMap<QFI> &gammas,
+        const ParticipantsSet &qualified_players,
+        const Mpz &local_secret_share);
+
     void add_reshare_contribution (
         const CL_HSMqk & CL,
         unsigned int old_dealer_id,

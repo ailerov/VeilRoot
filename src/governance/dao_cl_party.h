@@ -53,6 +53,25 @@ public:
     // (default n!), immutable for the key lifetime. Required by the
     // reshare path and by the key context record.
     const BICYCL::Mpz& interpolation_scale() const;
+
+    // Public state accessors for the restore path.
+    const BICYCL::CL_Threshold_Static::ParticipantsValueMap<BICYCL::QFI>&
+        gammas() const;
+    const BICYCL::CL_Threshold_Static::ParticipantsSet&
+        qualified_players() const;
+
+    // Persist this player's secret share. Wire format is the
+    // sign-magnitude encoding documented on the wrapped type.
+    bool serialize_secret_share(std::vector<uint8_t>& out) const;
+
+    // Install decryption state from the key context and a persisted
+    // secret share. Verifies the share against the player's Gamma
+    // value before installing; returns false on mismatch.
+    bool restore_decryption_state(
+        const BICYCL::CL_HSMqk::PublicKey& public_key,
+        const BICYCL::CL_Threshold_Static::ParticipantsValueMap<BICYCL::QFI>& gammas,
+        const BICYCL::CL_Threshold_Static::ParticipantsSet& qualified_players,
+        const BICYCL::Mpz& local_secret_share);
     unsigned int committee_size() const { return n_; }
     unsigned int threshold() const { return t_ + 1; }
 
