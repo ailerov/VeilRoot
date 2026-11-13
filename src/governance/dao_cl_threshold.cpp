@@ -114,71 +114,59 @@ CLCommittee::CLCommittee(std::shared_ptr<CL_HSMqk> cl,
                          unsigned int t,
                          size_t soundness_bits)
     : cl_(std::move(cl)),
-      n_(n),
-      t_(t),
+      n_(n), t_(t),
       soundness_bits_(soundness_bits)
 {
     if (!cl_) throw std::invalid_argument("CLCommittee: null CL_HSMqk");
     if (n < 2) throw std::invalid_argument("CLCommittee: n must be >= 2");
     if (t >= n) throw std::invalid_argument("CLCommittee: t must be < n");
     for (unsigned int i = 0; i < n_; ++i) {
-        players_.push_back(std::make_unique<CL_Threshold_Static>(
-            *cl_, n_, t_, i, soundness_bits_));
+        parties_.push_back(std::make_unique<CLCommitteeParty>(
+            cl_, n_, t_, i, soundness_bits_));
     }
 }
 
 bool CLCommittee::run_keygen_inproc(RandGen& randgen)
 {
     try {
-        // Step 1: each player deals its VSS.
-        for (auto& p : players_)
-            p->keygen_dealing(*cl_, randgen);
+        for (auto& p : parties_)
+            if (!p->keygen_dealing(randgen)) return false;
 
-        // Step 2: broadcast commitments and proofs to all others.
         for (unsigned int i = 0; i < n_; ++i) {
             for (unsigned int j = 0; j < n_; ++j) {
                 if (i == j) continue;
-                players_[j]->keygen_add_commitments(
-                    i, players_[i]->C());
-                players_[j]->keygen_add_proof(
-                    i, players_[i]->batch_proof());
+                if (!parties_[j]->keygen_add_commitments(
+                        i, parties_[i]->keygen_commitments())) return false;
+                if (!parties_[j]->keygen_add_proof(
+                        i, parties_[i]->keygen_batch_proof())) return false;
             }
         }
 
-        // Step 3: exchange private shares.
         for (unsigned int i = 0; i < n_; ++i) {
             for (unsigned int j = 0; j < n_; ++j) {
                 if (i == j) continue;
-                players_[j]->keygen_add_share(i, players_[i]->y_k(j));
+                if (!parties_[j]->keygen_add_share(
+                        i, parties_[i]->keygen_y_k(j))) return false;
             }
         }
 
-        // Step 4: verify all received shares and proofs.
-        for (auto& p : players_) {
-            if (!p->keygen_check_verify_all_players(*cl_))
-                return false;
-        }
+        for (auto& p : parties_)
+            if (!p->keygen_check_verify_all()) return false;
 
-        // Step 5: extract implicit values, pk becomes available.
-        for (auto& p : players_)
-            p->keygen_extract(*cl_);
+        for (auto& p : parties_)
+            if (!p->keygen_extract()) return false;
 
         keygen_done_ = true;
         return true;
     }
-    catch (const std::exception&) {
-        return false;
-    }
-    catch (...) {
-        return false;
-    }
+    catch (...) { return false; }
 }
 
 const CL_HSMqk::PublicKey& CLCommittee::public_key() const
 {
     if (!keygen_done_)
         throw std::logic_error("CLCommittee: keygen not yet completed");
-    return players_.front()->pk();
+    return parties_.front()->public_key();
 }
 
 bool CLCommittee::serialize_public_params(std::vector<uint8_t>& out) const
@@ -187,18 +175,14 @@ bool CLCommittee::serialize_public_params(std::vector<uint8_t>& out) const
     try {
         out.clear();
         auto qb = mpz_to_bytes_be(cl_->q());
-        auto pb = mpz_to_bytes_be(cl_->p());
         u32_be_append(out, static_cast<uint32_t>(qb.size()));
         out.insert(out.end(), qb.begin(), qb.end());
-        u32_be_append(out, 1u);  // k = 1
+        u32_be_append(out, 1u);
         mpz_to_bytes_signed(out, cl_->p());
-        qfi_to_bytes(out, players_.front()->pk().elt());
-        (void)pb;
+        qfi_to_bytes(out, parties_.front()->public_key().elt());
         return true;
     }
-    catch (...) {
-        return false;
-    }
+    catch (...) { return false; }
 }
 
 bool CLCommittee::ciphertext_from_bytes(
@@ -216,9 +200,7 @@ bool CLCommittee::ciphertext_from_bytes(
         out = CL_HSMqk::CipherText(*cl_, c1, c2);
         return true;
     }
-    catch (...) {
-        return false;
-    }
+    catch (...) { return false; }
 }
 
 bool CLCommittee::ciphertext_to_bytes(
@@ -231,9 +213,7 @@ bool CLCommittee::ciphertext_to_bytes(
         qfi_to_bytes(out, in.c2());
         return true;
     }
-    catch (...) {
-        return false;
-    }
+    catch (...) { return false; }
 }
 
 bool CLCommittee::partial_decrypt(unsigned int i,
@@ -241,19 +221,13 @@ bool CLCommittee::partial_decrypt(unsigned int i,
                                   RandGen& randgen)
 {
     if (!keygen_done_ || i >= n_) return false;
-    try {
-        players_[i]->decrypt_partial(*cl_, randgen, ct);
-        return true;
-    }
-    catch (...) {
-        return false;
-    }
+    return parties_[i]->partial_decrypt(ct, randgen);
 }
 
 const CL_Threshold_Static::PartialDecryption&
 CLCommittee::partial_dec_for_test(unsigned int i) const
 {
-    return players_[i]->part_dec();
+    return parties_[i]->partial();
 }
 
 void CLCommittee::add_partial_dec(
@@ -261,18 +235,13 @@ void CLCommittee::add_partial_dec(
     const CL_Threshold_Static::PartialDecryption& pd)
 {
     if (i >= n_ || j >= n_) return;
-    players_[i]->decrypt_add_partial_dec(j, pd);
+    parties_[i]->add_partial_dec(j, pd);
 }
 
 bool CLCommittee::verify_partials(unsigned int i, RandGen& randgen)
 {
     if (!keygen_done_ || i >= n_) return false;
-    try {
-        return players_[i]->decrypt_verify_batch(*cl_, randgen);
-    }
-    catch (...) {
-        return false;
-    }
+    return parties_[i]->verify_partials(randgen);
 }
 
 bool CLCommittee::combine(unsigned int i,
@@ -280,13 +249,7 @@ bool CLCommittee::combine(unsigned int i,
                           const CL_HSMqk::CipherText& ct)
 {
     if (!keygen_done_ || i >= n_) return false;
-    try {
-        players_[i]->decrypt_combine(out, *cl_, ct);
-        return true;
-    }
-    catch (...) {
-        return false;
-    }
+    return parties_[i]->combine(out, ct);
 }
 
 } // namespace dao

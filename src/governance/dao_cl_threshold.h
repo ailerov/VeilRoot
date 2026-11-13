@@ -14,13 +14,20 @@
 #include "bicycl/bicycl/cl/CL_HSMqk.hpp"
 #include "bicycl/bicycl/cl/CL_threshold.hpp"
 
+#include "governance/dao_cl_party.h"
+
 namespace cryptonote {
 namespace dao {
 
 // In-process orchestration of a t+1-of-n Threshold-CL committee over
-// one CL class group. Wraps BICYCL's CL_Threshold_Static so the
-// ceremony can be driven synchronously; a networked deployment drives
-// the same stages over p2p.
+// one CL class group. Holds n CLCommitteeParty objects, one per
+// simulated node. Public surface unchanged from before the party
+// refactor; existing tests exercise this class.
+//
+// The single-party class CLCommitteeParty is what a production
+// node's P2P runner holds. CLCommittee uses the exact same party
+// implementation for its in-process simulation, so the harness and
+// the runtime cannot diverge cryptographically.
 class CLCommittee
 {
 public:
@@ -29,46 +36,31 @@ public:
                 unsigned int t,
                 size_t soundness_bits);
 
-    // Run the keygen ceremony in-process. All n players participate.
-    // After success, public_key() is valid and all players hold shares.
     bool run_keygen_inproc(BICYCL::RandGen& randgen);
 
     const BICYCL::CL_HSMqk::PublicKey& public_key() const;
 
-    // Serialized (q, k, p, pk) wire, matching the format consumed by
-    // DaoEncryptionBackend::deserialize_modulus. Returned bytes can be
-    // handed to a freshly constructed backend to encrypt ballots under
-    // the committee's shared public key.
     bool serialize_public_params(std::vector<uint8_t>& out) const;
 
-    // Parse a wire-format ciphertext (QFI(c1) || QFI(c2)) into a
-    // CL_HSMqk::CipherText under this committee's class group.
     bool ciphertext_from_bytes(const std::vector<uint8_t>& in,
                                BICYCL::CL_HSMqk::CipherText& out) const;
 
-    // Serialize a CL_HSMqk::CipherText into the same wire format.
     bool ciphertext_to_bytes(const BICYCL::CL_HSMqk::CipherText& in,
                              std::vector<uint8_t>& out) const;
 
-    // Partial decryption: player `i` produces its share plus proof.
     bool partial_decrypt(unsigned int i,
                          const BICYCL::CL_HSMqk::CipherText& ct,
                          BICYCL::RandGen& randgen);
 
-    // Expose player i's most recent partial decryption for exchange.
     const BICYCL::CL_Threshold_Static::PartialDecryption&
         partial_dec_for_test(unsigned int i) const;
 
-    // Distribute player j's partial decryption to player i.
     void add_partial_dec(
         unsigned int i, unsigned int j,
         const BICYCL::CL_Threshold_Static::PartialDecryption& pd);
 
-    // Player i verifies all collected partial decryptions for the
-    // ciphertext it last called partial_decrypt on.
     bool verify_partials(unsigned int i, BICYCL::RandGen& randgen);
 
-    // Player i combines its collected partials to recover the plaintext.
     bool combine(unsigned int i,
                  BICYCL::CL_HSMqk::ClearText& out,
                  const BICYCL::CL_HSMqk::CipherText& ct);
@@ -82,7 +74,7 @@ private:
     unsigned int t_;
     size_t soundness_bits_;
     bool keygen_done_ = false;
-    std::vector<std::unique_ptr<BICYCL::CL_Threshold_Static>> players_;
+    std::vector<std::unique_ptr<CLCommitteeParty>> parties_;
 };
 
 } // namespace dao
