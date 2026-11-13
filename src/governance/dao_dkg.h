@@ -185,6 +185,11 @@ enum class dkg_msg_type : uint8_t
     // over H(domain || genesis_hash || sender_pubkey) by the sender.
     node_ready                 = 0x85,
 
+    // One envelope type carries every CL keygen and reshare
+    // message. The subtype lives inside the canonical payload in
+    // bytes_a; the outer header version is unchanged.
+    cl_dkg_envelope            = 0x90,
+
     // Dynamic tally-share Reset (separate ceremony from DKG).
     reshare_start            = 0x74,
     reshare_commit           = 0x75,
