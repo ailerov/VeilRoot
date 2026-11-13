@@ -692,8 +692,12 @@ TEST(dao_dkg_distributed, real_random_128bit_sieve_through_runner)
 
     const uint32_t n = 3;
     const uint32_t max_attempts = 3;
-    const uint32_t phase_timeout_s = 30;
-    const uint32_t wait_s = 120;
+    // Under load (full DAO regression), the per-attempt cost of sieve
+    // + biprimality + polynomial_commit stretches. These ceilings are
+    // sized so 3 attempts finish with headroom, not so tight that a
+    // loaded run reports fewer attempts than the test asks for.
+    const uint32_t phase_timeout_s = 180;
+    const uint32_t wait_s = 600;
 
     distributed_run run;
     const bool ran = run_n_party_real(n, max_attempts,

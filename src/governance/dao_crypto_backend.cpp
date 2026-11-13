@@ -79,6 +79,60 @@ std::unique_ptr<DaoEncryptionBackend> make_paillier_backend()
     return std::make_unique<PaillierEncryptionBackend>();
 }
 
+namespace {
+
+bool read_u32_be(const std::vector<uint8_t>& in, size_t& off, uint32_t& v)
+{
+    if (off + 4 > in.size()) return false;
+    v = (static_cast<uint32_t>(in[off    ]) << 24)
+      | (static_cast<uint32_t>(in[off + 1]) << 16)
+      | (static_cast<uint32_t>(in[off + 2]) <<  8)
+      |  static_cast<uint32_t>(in[off + 3]);
+    off += 4;
+    return true;
+}
+
+bool read_scalar_be(const std::vector<uint8_t>& in, size_t& off)
+{
+    if (off >= in.size()) return false;
+    uint8_t sign = in[off++];
+    if (sign > 1) return false;
+    uint32_t len = 0;
+    if (!read_u32_be(in, off, len)) return false;
+    if (len >= 4096) return false;
+    if (off + len > in.size()) return false;
+    if (len > 0 && in[off] == 0) return false;  // no leading zero
+    off += len;
+    return true;
+}
+
+bool read_qfi(const std::vector<uint8_t>& in, size_t& off)
+{
+    return read_scalar_be(in, off)
+        && read_scalar_be(in, off)
+        && read_scalar_be(in, off);
+}
+
+} // namespace
+
+bool dao_cl_modulus_wire_valid(const std::vector<uint8_t>& in)
+{
+    if (in.empty()) return false;
+    size_t off = 0;
+    uint32_t len_q = 0;
+    if (!read_u32_be(in, off, len_q)) return false;
+    if (len_q == 0 || len_q >= 4096) return false;
+    if (off + len_q > in.size()) return false;
+    if (in[off] == 0) return false;  // no leading zero
+    off += len_q;
+    uint32_t k = 0;
+    if (!read_u32_be(in, off, k)) return false;
+    if (k == 0 || k >= 1024) return false;
+    if (!read_scalar_be(in, off)) return false;  // p
+    if (!read_qfi(in, off)) return false;        // pk
+    return off == in.size();
+}
+
 std::unique_ptr<DaoEncryptionBackend>
 make_paillier_backend(const std::vector<uint8_t>& modulus)
 {

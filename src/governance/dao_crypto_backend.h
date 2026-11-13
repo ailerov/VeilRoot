@@ -89,6 +89,18 @@ std::unique_ptr<DaoEncryptionBackend> make_paillier_backend();
 std::unique_ptr<DaoEncryptionBackend>
     make_paillier_backend(const std::vector<uint8_t>& modulus);
 
+// Structural check of a serialized CL modulus (as produced by
+// CLEncryptionBackend::serialize_modulus). Does NOT require CL to be
+// compiled in — only checks the byte layout, so every validator can
+// agree on whether a key record's CL parameters are well-formed.
+//
+// Layout: u32(len_q) || q_be (len_q bytes) || u32(k) ||
+//         SCALAR(p) || QFI(pk)
+// where SCALAR(v) = sign_byte || u32(len) || magnitude_be (BE, no
+// leading zero, len < 4096), and QFI(x) = SCALAR(a) || SCALAR(b) ||
+// SCALAR(c). The container is length-implied by total size.
+bool dao_cl_modulus_wire_valid(const std::vector<uint8_t>& in);
+
 // Factory: CL-over-class-groups backend (research crypto only).
 // Returns nullptr when VEILROOT_ENABLE_CL is not defined at build
 // time. seclevel_bits defaults to 128; test code may pass 64 for

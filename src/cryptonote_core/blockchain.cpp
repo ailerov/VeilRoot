@@ -78,6 +78,7 @@
 #include "governance/tally_manager.h"
 #include "governance/dao_tally.h"
 #include "governance/dao_dkg.h"
+#include "governance/dao_crypto_backend.h"
 #include "governance/dao_dkg_transport.h"
 #include <openssl/sha.h>
 #include <openssl/evp.h>
@@ -11920,6 +11921,16 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
     if (rec.delta.size() != 32) return false;
     if (rec.N.size() != dao::PAILLIER_MODULUS_BYTES) return false;
     if (rec.G.size() != dao::PAILLIER_MODULUS_BYTES) return false;
+
+    // Optional CL public parameters. Structural only; both Paillier
+    // and CL records accepted during migration. Records that claim CL
+    // but have malformed bytes are rejected.
+    if (!rec.cl_modulus.empty() &&
+        !dao::dao_cl_modulus_wire_valid(rec.cl_modulus))
+    {
+        MERROR("dkg-activation: malformed cl_modulus");
+        return false;
+    }
     if (rec.theta.size() != dao::PAILLIER_MODULUS_BYTES) return false;
     if (rec.V.size() != dao::PAILLIER_CT_BYTES) return false;
     if (rec.key_id.size() != 32) return false;
