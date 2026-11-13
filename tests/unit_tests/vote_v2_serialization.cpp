@@ -41,9 +41,11 @@ static vote_proof_v2 make_serializable_v2(size_t n_inputs)
     vp.C_W = make_key(0xAB);
     vp.C_S = make_key(0xCD);
 
+    vp.E_W.resize(512);
+    vp.E_S.resize(512);
     for (int i = 0; i < 512; ++i) {
-        vp.E_W.data[i] = static_cast<uint8_t>(i & 0xff);
-        vp.E_S.data[i] = static_cast<uint8_t>((i + 1) & 0xff);
+        vp.E_W[i] = static_cast<uint8_t>(i & 0xff);
+        vp.E_S[i] = static_cast<uint8_t>((i + 1) & 0xff);
     }
 
     vp.transcript_hash = make_hash(0x20);
@@ -61,10 +63,10 @@ static vote_proof_v2 make_serializable_v2(size_t n_inputs)
     return vp;
 }
 
-TEST(vote_proof_v2_serialization, version_field_is_two)
+TEST(vote_proof_v2_serialization, version_field_is_three)
 {
     vote_proof_v2 vp;
-    EXPECT_EQ(static_cast<uint8_t>(2), vp.version);
+    EXPECT_EQ(static_cast<uint8_t>(3), vp.version);
     EXPECT_EQ(vote_proof_v2::VERSION, vp.version);
 }
 
@@ -159,8 +161,8 @@ TEST(vote_proof_v2_serialization, aggregate_fields_roundtrip)
 
     EXPECT_EQ(std::memcmp(vp.C_W.bytes, out.C_W.bytes, 32), 0);
     EXPECT_EQ(std::memcmp(vp.C_S.bytes, out.C_S.bytes, 32), 0);
-    EXPECT_EQ(vp.E_W.data, out.E_W.data);
-    EXPECT_EQ(vp.E_S.data, out.E_S.data);
+    EXPECT_EQ(vp.E_W, out.E_W);
+    EXPECT_EQ(vp.E_S, out.E_S);
     EXPECT_EQ(vp.transcript_hash, out.transcript_hash);
 }
 

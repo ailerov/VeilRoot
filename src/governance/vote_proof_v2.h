@@ -20,14 +20,7 @@
 namespace cryptonote {
 
 // Fixed 512-byte Paillier ciphertext. Serialized raw (no length prefix).
-struct fixed_512_byte
-{
-    std::array<uint8_t, 512> data{{}};
-};
-
 } // namespace cryptonote
-
-BLOB_SERIALIZER(cryptonote::fixed_512_byte);
 
 namespace cryptonote {
 
@@ -53,7 +46,7 @@ struct vote_input_v2
 // V2 DAO vote wire format. Frozen by spec section 18.
 struct vote_proof_v2
 {
-    enum : uint8_t { VERSION = 2 };
+    enum : uint8_t { VERSION = 3 };
 
     uint8_t      version         = VERSION;
     crypto::hash proposal_id;
@@ -67,9 +60,9 @@ struct vote_proof_v2
     rct::key C_S;
     rct::key C_B;
 
-    fixed_512_byte E_W;
-    fixed_512_byte E_S;
-    fixed_512_byte E_B;
+    std::vector<uint8_t> E_W;
+    std::vector<uint8_t> E_S;
+    std::vector<uint8_t> E_B;
 
     dao::dao_consistency_proof proof_W;
     dao::dao_consistency_proof proof_S;

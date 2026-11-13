@@ -273,13 +273,12 @@ verification_result VoteProofVerifier::verify(
         return fail(why);
     };
 
-    if (proof.E_W.data.size() != dao::PAILLIER_CT_BYTES ||
-        proof.E_S.data.size() != dao::PAILLIER_CT_BYTES ||
-        proof.E_B.data.size() != dao::PAILLIER_CT_BYTES)
+    if (proof.E_W.size() != dao::PAILLIER_CT_BYTES ||
+        proof.E_S.size() != dao::PAILLIER_CT_BYTES ||
+        proof.E_B.size() != dao::PAILLIER_CT_BYTES)
         return bail_N("step21: ciphertext size");
 
-    auto valid_ct = [&](const std::array<uint8_t, 512>& raw) -> bool {
-        std::vector<uint8_t> v(raw.begin(), raw.end());
+    auto valid_ct = [&](const std::vector<uint8_t>& v) -> bool {
         BIGNUM* c = BN_bin2bn(v.data(), static_cast<int>(v.size()), nullptr);
         if (!c) return false;
         BN_CTX* ctx = BN_CTX_new();
@@ -291,9 +290,9 @@ verification_result VoteProofVerifier::verify(
         BN_free(g); BN_free(N2); BN_CTX_free(ctx); BN_free(c);
         return ok;
     };
-    if (!valid_ct(proof.E_W.data)) return bail_N("step21: E_W invalid");
-    if (!valid_ct(proof.E_S.data)) return bail_N("step21: E_S invalid");
-    if (!valid_ct(proof.E_B.data)) return bail_N("step21: E_B invalid");
+    if (!valid_ct(proof.E_W)) return bail_N("step21: E_W invalid");
+    if (!valid_ct(proof.E_S)) return bail_N("step21: E_S invalid");
+    if (!valid_ct(proof.E_B)) return bail_N("step21: E_B invalid");
 
     // Build the canonical vote-input transcript.
     dao::dao_vote_transcript_input ti;
@@ -319,9 +318,9 @@ verification_result VoteProofVerifier::verify(
     ti.C_W = proof.C_W;
     ti.C_S = proof.C_S;
     ti.C_B = proof.C_B;
-    ti.E_W.assign(proof.E_W.data.begin(), proof.E_W.data.end());
-    ti.E_S.assign(proof.E_S.data.begin(), proof.E_S.data.end());
-    ti.E_B.assign(proof.E_B.data.begin(), proof.E_B.data.end());
+    ti.E_W = proof.E_W;
+    ti.E_S = proof.E_S;
+    ti.E_B = proof.E_B;
 
     std::vector<uint8_t> transcript_digest = dao::dao_vote_input_transcript(ti);
     if (transcript_digest.size() != 32)
@@ -340,9 +339,9 @@ verification_result VoteProofVerifier::verify(
     dao::dao_consistency_context cctx_b = cctx_w;
     cctx_b.domain = "C_B-Enc(B)";
 
-    std::vector<uint8_t> E_W_vec(proof.E_W.data.begin(), proof.E_W.data.end());
-    std::vector<uint8_t> E_S_vec(proof.E_S.data.begin(), proof.E_S.data.end());
-    std::vector<uint8_t> E_B_vec(proof.E_B.data.begin(), proof.E_B.data.end());
+    const std::vector<uint8_t>& E_W_vec = proof.E_W;
+    const std::vector<uint8_t>& E_S_vec = proof.E_S;
+    const std::vector<uint8_t>& E_B_vec = proof.E_B;
 
     // Step 22: proof_W.
     if (!dao::dao_consistency_verify(cctx_w, N, E_W_vec, proof.C_W,

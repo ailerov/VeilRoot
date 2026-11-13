@@ -169,12 +169,9 @@ bool VoteManager::rollback_block(const block& blk,
         // Reverse the aggregate contribution.
         dao_proposal_aggregate agg;
         if (bdb.get_dao_proposal_aggregate(proof.proposal_id, agg)) {
-            std::vector<uint8_t> E_W_in(proof.E_W.data.begin(),
-                                        proof.E_W.data.end());
-            std::vector<uint8_t> E_S_in(proof.E_S.data.begin(),
-                                        proof.E_S.data.end());
-            std::vector<uint8_t> E_B_in(proof.E_B.data.begin(),
-                                        proof.E_B.data.end());
+            const std::vector<uint8_t>& E_W_in = proof.E_W;
+            const std::vector<uint8_t>& E_S_in = proof.E_S;
+            const std::vector<uint8_t>& E_B_in = proof.E_B;
             std::vector<uint8_t> inv, tmp;
             bool ok = true;
             if (!agg.aggregate_E_W.empty()) {
@@ -643,9 +640,9 @@ bool VoteManager::apply_dao_vote(const vote_proof_v2& proof,
         agg.aggregate_C_B = rct::identity();
     }
 
-    std::vector<uint8_t> E_W_in(proof.E_W.data.begin(), proof.E_W.data.end());
-    std::vector<uint8_t> E_S_in(proof.E_S.data.begin(), proof.E_S.data.end());
-    std::vector<uint8_t> E_B_in(proof.E_B.data.begin(), proof.E_B.data.end());
+    const std::vector<uint8_t>& E_W_in = proof.E_W;
+    const std::vector<uint8_t>& E_S_in = proof.E_S;
+    const std::vector<uint8_t>& E_B_in = proof.E_B;
 
     if (have_agg && !agg.aggregate_E_W.empty() && !agg.aggregate_E_S.empty() &&
         !agg.aggregate_E_B.empty()) {

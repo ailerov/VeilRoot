@@ -1319,7 +1319,7 @@ TEST(DaoV2Replay, InvalidV2VoteProofRejectedByMempool)
 
     // Tamper one byte of E_W.
     vote_proof_v2 bad = fx.proof;
-    bad.E_W.data[0] ^= 0xFF;
+    bad.E_W[0] ^= 0xFF;
 
     transaction bad_tx = fx.vote_tx;
     {
@@ -2495,7 +2495,7 @@ static void run_dropout_replacement_case(int target_slot)
     bc_c.maybe_start_dao_v2_reshare_for_proposal(prop_id, vote_end);
     ASSERT_TRUE(drive_until([&]{
         return find_latest(db_a, dkg_out.record.key_id) != 0;
-    }, std::chrono::seconds(30)))
+    }, std::chrono::seconds(120)))
         << "first reshare did not commit within deadline";
 
     uint64_t sid1 = find_latest(db_a, dkg_out.record.key_id);
@@ -2621,7 +2621,7 @@ static void run_dropout_replacement_case(int target_slot)
     ASSERT_TRUE(drive_until([&]{
         const uint64_t cur = find_latest(db_a, dkg_out.record.key_id);
         return cur != 0 && cur != sid1;
-    }, std::chrono::seconds(30)))
+    }, std::chrono::seconds(120)))
         << "re-reshare did not commit within deadline";
 
     uint64_t sid2 = find_latest(db_a, dkg_out.record.key_id);

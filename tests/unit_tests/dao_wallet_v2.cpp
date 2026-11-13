@@ -162,14 +162,12 @@ synthetic_source make_source(uint64_t base_abs, uint64_t amount,
 }
 
 bool decrypt_bn_equals_u128(const dao::PaillierPrivateKey& psk,
-                            const cryptonote::fixed_512_byte& ct,
+                            const std::vector<uint8_t>& ct,
                             boost::multiprecision::uint128_t expected)
 {
     BIGNUM* m = BN_new();
     if (!m) return false;
-    std::vector<uint8_t> ctvec(512);
-    std::memcpy(ctvec.data(), ct.data.data(), 512);
-    bool ok = psk.decrypt(ctvec, m);
+    bool ok = psk.decrypt(ct, m);
     if (ok) {
         std::array<uint8_t, 16> buf{};
         boost::multiprecision::uint128_t v = expected;
@@ -524,9 +522,7 @@ TEST(dao_wallet_v2, no_vote_signed_total_above_2p64_roundtrips)
 
     BIGNUM* m = BN_new();
     ASSERT_NE(m, nullptr);
-    std::vector<uint8_t> ctvec(512);
-    std::memcpy(ctvec.data(), proof.E_S.data.data(), 512);
-    ASSERT_TRUE(psk.decrypt(ctvec, m));
+    ASSERT_TRUE(psk.decrypt(proof.E_S, m));
 
     std::array<uint8_t, 16> buf{};
     boost::multiprecision::uint128_t wv =

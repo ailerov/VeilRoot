@@ -42,15 +42,9 @@ struct ValidVote
 
     std::unordered_map<uint64_t, output_data_t> outputs;
 
-    std::vector<uint8_t> E_W() const
-    { return std::vector<uint8_t>(proof.E_W.data.begin(),
-                                  proof.E_W.data.end()); }
-    std::vector<uint8_t> E_S() const
-    { return std::vector<uint8_t>(proof.E_S.data.begin(),
-                                  proof.E_S.data.end()); }
-    std::vector<uint8_t> E_B() const
-    { return std::vector<uint8_t>(proof.E_B.data.begin(),
-                                  proof.E_B.data.end()); }
+    std::vector<uint8_t> E_W() const { return proof.E_W; }
+    std::vector<uint8_t> E_S() const { return proof.E_S; }
+    std::vector<uint8_t> E_B() const { return proof.E_B; }
 };
 
 inline rct::key mk_scalar(uint8_t v)
@@ -208,7 +202,7 @@ inline bool build_valid_vote(
 
     // --- Build transcript input ---
     dao::dao_vote_transcript_input ti;
-    ti.version                    = 2;
+    ti.version                    = vote_proof_v2::VERSION;
     ti.proposal_id                = proposal_id;
     ti.proposal_submission_height = proposal_submission_height;
     ti.vote_height                = vote_height;
@@ -244,7 +238,7 @@ inline bool build_valid_vote(
     // --- Consistency proofs W, S, B ---
     dao::dao_consistency_context cctx;
     cctx.domain                = "C_W-Enc(W)";
-    cctx.version               = 2;
+    cctx.version               = vote_proof_v2::VERSION;
     cctx.proposal_id           = proposal_id;
     cctx.vote_height           = vote_height;
     std::memcpy(cctx.tally_key_id.data, fx.key_rec.key_id.data(), 32);
@@ -280,7 +274,7 @@ inline bool build_valid_vote(
 
     // --- Direction OR proof (independent of B) ---
     dao_or_context octx;
-    octx.version     = 2;
+    octx.version     = vote_proof_v2::VERSION;
     octx.proposal_id = proposal_id;
     octx.vote_height = vote_height;
     {
@@ -370,9 +364,9 @@ inline bool build_valid_vote(
     fx.proof.C_W = V;
     fx.proof.C_S = C_S;
     fx.proof.C_B = B_l;
-    std::memcpy(fx.proof.E_W.data.data(), E_W_raw.data(), 512);
-    std::memcpy(fx.proof.E_S.data.data(), E_S_raw.data(), 512);
-    std::memcpy(fx.proof.E_B.data.data(), E_B_raw.data(), 512);
+    fx.proof.E_W = E_W_raw;
+    fx.proof.E_S = E_S_raw;
+    fx.proof.E_B = E_B_raw;
     fx.proof.proof_W = pW;
     fx.proof.proof_S = pS;
     fx.proof.proof_B = pB;

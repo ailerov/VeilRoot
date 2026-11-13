@@ -100,7 +100,7 @@ bool build_dao_v2_vote(
     // The wallet calls DaoEncryptionBackend rather than concrete
     // Paillier types. The factory currently returns the Paillier
     // backend, whose ciphertext length matches vote_proof_v2's
-    // fixed_512_byte fields.
+    // 512-byte ciphertext fields today.
     auto backend = make_paillier_backend(paillier_modulus);
     if (!backend) return false;
 
@@ -125,7 +125,7 @@ bool build_dao_v2_vote(
     std::vector<rct::key> nullifiers;
 
     dao_vote_transcript_input ti;
-    ti.version                    = 2;
+    ti.version                    = vote_proof_v2::VERSION;
     ti.proposal_id                = proposal_id;
     ti.proposal_submission_height = proposal_submission_height;
     ti.vote_height                = vote_height;
@@ -342,7 +342,7 @@ bool build_dao_v2_vote(
 
     // Consistency proofs.
     dao_consistency_context cctx;
-    cctx.version               = 2;
+    cctx.version               = vote_proof_v2::VERSION;
     cctx.proposal_id           = proposal_id;
     cctx.vote_height           = vote_height;
     cctx.tally_key_id          = tally_key_id;
@@ -375,7 +375,7 @@ bool build_dao_v2_vote(
 
     // Direction OR proof.
     dao_or_context octx;
-    octx.version     = 2;
+    octx.version     = vote_proof_v2::VERSION;
     octx.proposal_id = proposal_id;
     octx.vote_height = vote_height;
     octx.nullifiers  = nullifiers;
@@ -398,9 +398,9 @@ bool build_dao_v2_vote(
     out.C_W = C_W;
     out.C_S = C_S;
     out.C_B = C_B;
-    std::memcpy(out.E_W.data.data(), E_W_raw.data(), 512);
-    std::memcpy(out.E_S.data.data(), E_S_raw.data(), 512);
-    std::memcpy(out.E_B.data.data(), E_B_raw.data(), 512);
+    out.E_W = std::move(E_W_raw);
+    out.E_S = std::move(E_S_raw);
+    out.E_B = std::move(E_B_raw);
     std::memcpy(out.transcript_hash.data, digest.data(), 32);
 
     BN_free(N_bn);
