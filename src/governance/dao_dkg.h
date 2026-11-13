@@ -624,6 +624,13 @@ struct dao_tally_key_record
     std::vector<uint8_t> vss_g;
     std::vector<uint8_t> vss_h;
 
+    // CL-over-class-groups public parameters. When non-empty, the
+    // record's ballot encryption, tally, and reshare all use the CL
+    // backend. Layout: u32(len_q) || q_be || u32(k) || SCALAR(p) ||
+    // QFI(pk.elt()), matching CLEncryptionBackend::serialize_modulus.
+    // Empty for legacy Paillier-era records.
+    std::vector<uint8_t> cl_modulus;
+
     uint64_t             activation_height = 0;
     std::vector<uint8_t> dkg_transcript_hash;  // 32 bytes
 

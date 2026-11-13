@@ -1763,6 +1763,10 @@ bool dao_tally_key_record::serialize(std::vector<uint8_t>& out) const
     out.insert(out.end(), dkg_transcript_hash.begin(), dkg_transcript_hash.end());
     out.insert(out.end(), key_id.begin(), key_id.end());
     return true;
+
+    // Optional trailing field: CL public parameters, if present.
+    // Old records simply omit it; readers must accept empty.
+    push_bytes(out, cl_modulus);
 }
 
 bool dao_tally_key_record::deserialize(const std::vector<uint8_t>& in)
@@ -1810,6 +1814,14 @@ bool dao_tally_key_record::deserialize(const std::vector<uint8_t>& in)
     threshold = th;
     t = tt;
     return true;
+
+    // Optional trailing field: CL public parameters, if present.
+    // Backward-compatible: absent → empty.
+    if (off < in.size()) {
+        if (!pull_bytes(in, off, cl_modulus)) return false;
+    } else {
+        cl_modulus.clear();
+    }
 }
 
 // ====================================================================
