@@ -5,8 +5,15 @@
 
 #ifdef VEILROOT_ENABLE_CL
 
+#include <array>
 #include <cstring>
+#include <memory>
 #include <utility>
+
+#include "bicycl/bicycl.hpp"
+#include "bicycl/bicycl/cl/CL_HSMqk.hpp"
+#include "bicycl/bicycl/seclevel.hpp"
+#include "ringct/rctOps.h"
 
 namespace cryptonote {
 namespace dao {
@@ -264,6 +271,34 @@ bool cl_dkg_decode_complaint(const cl_dkg_payload& in,
     if (!u32_be_read(in.body, off, reason)) return false;
     if (off != in.body.size()) return false;
     return true;
+}
+
+std::shared_ptr<BICYCL::CL_HSMqk> cl_dkg_make_hsmq(
+    std::size_t seclevel_bits, BICYCL::RandGen& randgen)
+{
+    std::array<uint8_t, 32> be{};
+    const auto L = rct::curveOrder();
+    for (std::size_t i = 0; i < 32; ++i) be[i] = L.bytes[31 - i];
+    Mpz q(std::vector<uint8_t>(be.begin(), be.end()));
+    SecLevel sl(static_cast<int>(seclevel_bits));
+    return std::make_shared<CL_HSMqk>(
+        q, 1, sl, randgen, CL_Params{seclevel_bits});
+}
+
+void cl_dkg_mpz_to_bytes_be(std::vector<uint8_t>& out, const BICYCL::Mpz& v)
+{
+    auto be = mpz_to_bytes_be(v);
+    out.insert(out.end(), be.begin(), be.end());
+}
+
+bool cl_dkg_mpz_to_bytes_signed(std::vector<uint8_t>& out, const BICYCL::Mpz& v)
+{
+    return mpz_to_bytes_signed(out, v);
+}
+
+bool cl_dkg_qfi_to_bytes(std::vector<uint8_t>& out, const BICYCL::QFI& f)
+{
+    return qfi_to_bytes(out, f);
 }
 
 } // namespace dao

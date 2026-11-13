@@ -48,6 +48,11 @@ public:
                      const BICYCL::Mpz& D);
 
     unsigned int local_id() const { return local_id_; }
+
+    // Interpolation scale Delta. Fixed at key generation time
+    // (default n!), immutable for the key lifetime. Required by the
+    // reshare path and by the key context record.
+    const BICYCL::Mpz& interpolation_scale() const;
     unsigned int committee_size() const { return n_; }
     unsigned int threshold() const { return t_ + 1; }
 

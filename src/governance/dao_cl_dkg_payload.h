@@ -5,11 +5,13 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #ifdef VEILROOT_ENABLE_CL
 
 #include "bicycl/bicycl/arith/gmp_extras.hpp"
+#include "bicycl/bicycl/cl/CL_HSMqk.hpp"
 #include "bicycl/bicycl/arith/qfi.hpp"
 #include "bicycl/bicycl/proofs/CL_HSMqk_Batch_Dlog_AoK.hpp"
 
@@ -79,6 +81,19 @@ bool cl_dkg_encode_complaint(uint32_t against_sender_id,
 bool cl_dkg_decode_complaint(const cl_dkg_payload& in,
                              uint32_t& against_sender_id,
                              uint32_t& reason);
+
+// DERIVE q FROM Ed25519 SUBGROUP ORDER (matches CL encryption backend).
+// CONSTRUCTS AN HSMqk INSTANCE WITH q = CURVE ORDER, k = 1, AND THE
+// GIVEN SECURITY LEVEL. callers must supply a RandGen seeded from
+// their own entropy source.
+std::shared_ptr<BICYCL::CL_HSMqk> cl_dkg_make_hsmq(
+    std::size_t seclevel_bits, BICYCL::RandGen& randgen);
+
+// CANONICAL WIRE HELPERS USED BY THE RUNNER AND ANY CONSENSUS-SIDE
+// DECODER.
+void cl_dkg_mpz_to_bytes_be(std::vector<uint8_t>& out, const BICYCL::Mpz& v);
+bool cl_dkg_mpz_to_bytes_signed(std::vector<uint8_t>& out, const BICYCL::Mpz& v);
+bool cl_dkg_qfi_to_bytes(std::vector<uint8_t>& out, const BICYCL::QFI& f);
 
 } // namespace dao
 } // namespace cryptonote

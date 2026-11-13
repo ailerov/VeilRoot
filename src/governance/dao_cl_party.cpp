@@ -145,6 +145,11 @@ bool CLCommitteeParty::combine(CL_HSMqk::ClearText& out,
     catch (...) { return false; }
 }
 
+const BICYCL::Mpz& CLCommitteeParty::interpolation_scale() const
+{
+    return player_->interpolation_scale();
+}
+
 } // namespace dao
 } // namespace cryptonote
 
