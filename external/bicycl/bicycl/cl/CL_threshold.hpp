@@ -33,6 +33,7 @@
 #ifndef BICYCL_CL_CL_THRESHOLD_HPP
 #define BICYCL_CL_CL_THRESHOLD_HPP
 
+#include <memory>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -169,6 +170,13 @@ class CL_Threshold_Static
                         unsigned int t,
                         unsigned int i,
                         size_t soundness);
+
+    CL_Threshold_Static(const CL_HSMqk & cl_hsmq,
+                        unsigned int n,
+                        unsigned int t,
+                        unsigned int i,
+                        size_t soundness,
+                        const Mpz & D);
     /**@}*/
 
     /******************************************************
@@ -570,6 +578,90 @@ class CL_Threshold_Static
      */
     void lagrange_at_zero (Mpz & Lj0, unsigned int j) const;
 
+    /*
+     * ============================================================
+     * VeilRoot reshare extension.
+     *
+     * Redistribute the aggregate Threshold-CL key from this
+     * (old) committee to a new committee of size new_n and
+     * threshold new_t while preserving pk byte-for-byte.
+     *
+     * BICYCL's factorial delta = n! changes with committee size.
+     * The construction is:
+     *   a_i_new = lambda_i * sk_share_i_old * inv(delta_new^2) mod q
+     *   F_i_new(X) = delta_new * a_i_new + sum_{k=1..new_t} r_k X^k
+     * The new shares sum to a polynomial whose constant term is
+     * x_old / delta_new, which the unchanged decrypt_combine
+     * recovers. The public key pk remains (prod_i C_i[0])^{delta_new^2}
+     * = h^{x_old}, identical to pk_old.
+     *
+     * Protocol:
+     *   old member:  create_reshare_contribution()
+     *   new member:  begin_reshare() once, add_reshare_contribution()
+     *                per verified contribution, finalize_reshare()
+     *   after finalize: decrypt_partial / verify / combine unchanged
+     * ============================================================
+     */
+  public:
+
+    struct ReshareContribution
+    {
+        unsigned int                              old_dealer_id = 0;
+        Mpz                                       c_i;
+        Mpz                                       q_i;
+        Mpz                                       r_i;
+        Mpz                                       L_i;
+        std::vector<QFI>                          commitments;
+        std::unique_ptr<CL_HSMqk_Batch_Dlog_AoK>  batch_proof;
+        std::unique_ptr<CL_HSMqk_DlogEq_AoK>      old_share_link_proof;
+        std::vector<Mpz>                          shares;
+    };
+
+    void begin_reshare (const ParticipantsSet & old_contributor_set,
+                        unsigned int n_old,
+                        unsigned int t_old);
+
+    struct ResharePreState
+    {
+        Mpz q_i;
+        Mpz r_i;
+        Mpz L_i;
+    };
+
+    /* Compute (q_i, r_i, L_i) without any proofs. Fast arithmetic only.
+     * Coordinator uses this to compute the correction R from all
+     * remainders before finalizing full contributions. */
+    ResharePreState compute_reshare_prestate (
+        const ParticipantsSet & old_contributor_set) const;
+
+    ReshareContribution create_reshare_contribution (
+        const CL_HSMqk & CL,
+        const ParticipantsSet & old_contributor_set,
+        unsigned int new_n,
+        unsigned int new_t,
+        RandGen & randgen,
+        const Mpz & c_i = Mpz(0UL)) const;
+
+    /* Key-lifetime interpolation scale D, fixed across reshare. */
+    const Mpz & interpolation_scale () const { return delta_; }
+
+    void add_reshare_contribution (
+        const CL_HSMqk & CL,
+        unsigned int old_dealer_id,
+        const Mpz & share_for_this_player,
+        const Mpz & c_i,
+        const Mpz & r_i,
+        const Mpz & L_i,
+        const std::vector<QFI> & commitments,
+        const CL_HSMqk_Batch_Dlog_AoK & batch_proof,
+        const CL_HSMqk_DlogEq_AoK & link_proof,
+        const QFI & gamma_old);
+
+    void finalize_reshare (const CL_HSMqk & CL,
+                           const PublicKey & expected_old_pk);
+
+  private:
+
     /**
      * @internal
      * @brief Get the bitsize from which to sample the random polynom coefficients.
@@ -701,6 +793,22 @@ class CL_Threshold_Static
      *  Defined during decrypt verify phase.
      */
     ParticipantsSet DecryptionPlayersSet_;
+
+    /*
+     * Reshare state (VeilRoot extension). Populated by begin_reshare,
+     * consumed by add_reshare_contribution, cleared by finalize_reshare.
+     */
+    struct ReshareState
+    {
+        bool                                         active    = false;
+        bool                                         finalized = false;
+        ParticipantsSet                              expected_old_contributors;
+        unsigned int                                 n_old     = 0;
+        unsigned int                                 t_old     = 0;
+        ParticipantsValueMap<Mpz>                    received_shares;
+        ParticipantsValueMap<std::vector<QFI>>       received_commitments;
+    };
+    ReshareState reshare_state_;
 
   protected:
     /**

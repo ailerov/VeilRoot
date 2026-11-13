@@ -44,6 +44,7 @@ if(VEILROOT_ENABLE_CL)
     list(APPEND governance_sources dao_crypto_backend_cl.cpp)
     list(APPEND governance_sources dao_cl_consistency.cpp)
     list(APPEND governance_sources dao_cl_threshold.cpp)
+    list(APPEND governance_sources dao_cl_reshare.cpp)
 endif()
 
 monero_add_library(obj_governance OBJECT ${governance_sources})

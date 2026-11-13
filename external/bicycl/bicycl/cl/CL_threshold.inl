@@ -23,6 +23,7 @@
 #define BICYCL_CL_CL_THRESHOLD_INL
 
 #include "CL_threshold.hpp"
+#include <sstream>
 
 namespace BICYCL
 {
@@ -149,6 +150,51 @@ namespace BICYCL
 
     // Precompute h^(delta^2)
     // OPTIMIZE when to use precomp ? When to use wnaf* ?
+    CL_Hsmq.Cl_G().nupow(h_delta2_, h_delta_, delta_, h_delta_precomp_);
+  }
+
+  inline
+  CL_Threshold_Static::CL_Threshold_Static(const CL_HSMqk & CL_Hsmq,
+                                           unsigned int n,
+                                           unsigned int t,
+                                           unsigned int i,
+                                           size_t soundness_bytes,
+                                           const Mpz & D)
+    :
+      soundness_bytes_{soundness_bytes},
+      n_{n},
+      t_{t},
+      i_{i}
+  {
+    if (n < 2u)
+      throw std::invalid_argument("CL_Threshold_Static: n must be > 1");
+    if (t < 1u)
+      throw std::invalid_argument("CL_Threshold_Static: t must be > 0");
+    if (t >= n)
+      throw std::invalid_argument("CL_Threshold_Static: t must be < n");
+    if (i >= n)
+      throw std::invalid_argument("CL_Threshold_Static: i must be < n");
+    if (soundness_bytes == 0u or soundness_bytes > 32u)
+      throw std::invalid_argument(
+          "CL_Threshold_Static: soundness must be > 0 and < 256 bits");
+    if (D.sgn() <= 0)
+      throw std::invalid_argument(
+          "CL_Threshold_Static: D must be positive");
+
+    delta_ = D;
+    Mpz::mul(delta2_, delta_, delta_);
+    Mpz::mod_inverse(delta2_inv_, delta2_, CL_Hsmq.q());
+
+    for (unsigned int k = 0u; k < n; ++k)
+      QualifiedPlayersSet_.insert(k);
+
+    y_self_.reserve(n_);
+    y_others_.reserve(n_);
+    keygen_batch_proofs_.reserve(n_);
+    Gamma_.reserve(n_);
+
+    CL_Hsmq.power_of_h(h_delta_, delta_);
+    h_delta_precomp_ = QFIPrecomp(h_delta_, poly_coeff_bitsize_bound(CL_Hsmq));
     CL_Hsmq.Cl_G().nupow(h_delta2_, h_delta_, delta_, h_delta_precomp_);
   }
 
@@ -1248,6 +1294,379 @@ namespace BICYCL
   /*
    * Faster keygen_extract with Gamma already computed.
    */
+  /* ========================================================== */
+  /* VeilRoot reshare extension implementation.                */
+  /* ========================================================== */
+
+  inline
+  void CL_Threshold_Static::begin_reshare(
+      const ParticipantsSet & old_contributor_set,
+      unsigned int n_old,
+      unsigned int t_old)
+  {
+    if (reshare_state_.active)
+      throw ProtocolLogicError(
+          "begin_reshare: reshare already active");
+    if (sk_share_.sgn() != 0)
+      throw ProtocolLogicError(
+          "begin_reshare: instance already has a share");
+    if (old_contributor_set.size() != static_cast<size_t>(t_old + 1u))
+      throw std::invalid_argument(
+          "begin_reshare: old_contributor_set must have t_old + 1 members");
+    if (n_old < t_old + 1u)
+      throw std::invalid_argument(
+          "begin_reshare: n_old must be >= t_old + 1");
+
+    reshare_state_.active = true;
+    reshare_state_.finalized = false;
+    reshare_state_.expected_old_contributors = old_contributor_set;
+    reshare_state_.n_old = n_old;
+    reshare_state_.t_old = t_old;
+    reshare_state_.received_shares.clear();
+    reshare_state_.received_commitments.clear();
+  }
+
+  inline
+  CL_Threshold_Static::ResharePreState
+  CL_Threshold_Static::compute_reshare_prestate(
+      const ParticipantsSet & old_contributor_set) const
+  {
+    if (sk_share_.sgn() == 0)
+      throw ProtocolLogicError(
+          "compute_reshare_prestate: no share");
+    if (old_contributor_set.find(i_) == old_contributor_set.end())
+      throw std::invalid_argument(
+          "compute_reshare_prestate: not in old_contributor_set");
+    if (old_contributor_set.size() != static_cast<size_t>(t_ + 1u))
+      throw std::invalid_argument(
+          "compute_reshare_prestate: old set size != t_old + 1");
+
+    const Mpz& D = delta_;
+    Mpz D2;
+    Mpz::mul(D2, D, D);
+
+    Mpz L_i = D;
+    {
+      unsigned int xi = i_ + 1u;
+      bool neg = false;
+      for (unsigned int k : old_contributor_set)
+      {
+        unsigned int xk = k + 1u;
+        if (xk == xi) continue;
+        if (xk > xi)
+          Mpz::divexact(L_i, L_i, static_cast<unsigned long>(xk - xi));
+        else
+        {
+          neg = !neg;
+          Mpz::divexact(L_i, L_i, static_cast<unsigned long>(xi - xk));
+        }
+        Mpz::mul(L_i, L_i, static_cast<unsigned long>(xk));
+      }
+      if (neg) L_i.neg();
+    }
+
+    Mpz u_i;
+    Mpz::mul(u_i, L_i, sk_share_);
+    Mpz q_i, r_i;
+    Mpz::fdiv_qr(q_i, r_i, u_i, D2);
+
+    ResharePreState out;
+    out.q_i = q_i;
+    out.r_i = r_i;
+    out.L_i = L_i;
+    return out;
+  }
+
+  inline
+  CL_Threshold_Static::ReshareContribution
+  CL_Threshold_Static::create_reshare_contribution(
+      const CL_HSMqk & CL,
+      const ParticipantsSet & old_contributor_set,
+      unsigned int new_n,
+      unsigned int new_t,
+      RandGen & randgen,
+      const Mpz & c_i) const
+  {
+    ResharePreState pre = compute_reshare_prestate(old_contributor_set);
+
+    const Mpz& D = delta_;
+    Mpz D2;
+    Mpz::mul(D2, D, D);
+
+    // a_i_new = q_i + c_i
+    Mpz a_new;
+    Mpz::add(a_new, pre.q_i, c_i);
+
+    // Random coefficients for new polynomial.
+    size_t r_rand_bound = poly_coeff_bitsize_bound(CL);
+    std::vector<Mpz> r(new_t);
+    for (unsigned int k = 0; k < new_t; ++k)
+      r[k] = randgen.random_mpz_2exp(r_rand_bound);
+
+    // Commitments: C[0] = h^{a_new}, C[k] = h^{D * r_k}
+    std::vector<QFI> C(new_t + 1);
+    CL.power_of_h(C[0], a_new);
+    QFI h_D;
+    CL.power_of_h(h_D, D);
+    for (unsigned int k = 1; k <= new_t; ++k)
+      CL.Cl_G().nupow(C[k], h_D, r[k - 1u]);
+
+    // Shares: y_ij = D*a_new + sum_{k=1}^{new_t} r_k * x_j^k, x_j = j+1
+    Mpz Da;
+    Mpz::mul(Da, D, a_new);
+    std::vector<Mpz> shares(new_n);
+    for (unsigned int j = 0; j < new_n; ++j)
+    {
+      Mpz xj(static_cast<unsigned long>(j + 1u));
+      Mpz xj_pow = xj;
+      Mpz eval = Da;
+      for (unsigned int k = 0; k < new_t; ++k)
+      {
+        Mpz term;
+        Mpz::mul(term, r[k], xj_pow);
+        Mpz::add(eval, eval, term);
+        Mpz::mul(xj_pow, xj_pow, xj);
+      }
+      shares[j] = eval;
+    }
+
+    // Batch proof of knowledge of (a_new, r_1..r_new_t) in commitments C.
+    size_t a_bits = a_new.nbits() + 128u;
+    auto batch_proof = std::make_unique<CL_HSMqk_Batch_Dlog_AoK>(
+        CL, soundness_bytes_, randgen,
+        a_bits, r_rand_bound, new_t, D, a_new, r, C);
+
+    // Contributor-link proof (DLogEq): witness q_i
+    //   q1 = C[0] * h^{-c_i} = h^{q_i}
+    //   q2 = T_i = h^{D^4 * q_i}  (recomputed by verifier from public data)
+    Mpz D4;
+    Mpz::mul(D4, D2, D2);
+    QFI h_D4;
+    CL.Cl_G().nupow(h_D4, CL.h(), D4);
+
+    QFI T_i;
+    {
+      QFI gamma_pow, h_neg;
+      CL.Cl_G().nupow(gamma_pow, Gamma_.at(i_), pre.L_i);
+      Mpz neg_D2r;
+      Mpz::mul(neg_D2r, D2, pre.r_i);
+      neg_D2r.neg();
+      CL.power_of_h(h_neg, neg_D2r);
+      CL.Cl_G().nucomp(T_i, gamma_pow, h_neg);
+    }
+
+    QFI C0_adj;
+    {
+      Mpz neg_c;
+      neg_c = c_i;
+      neg_c.neg();
+      QFI h_neg_c;
+      CL.power_of_h(h_neg_c, neg_c);
+      CL.Cl_G().nucomp(C0_adj, C[0], h_neg_c);
+    }
+    auto link_proof = std::make_unique<CL_HSMqk_DlogEq_AoK>(
+        CL, soundness_bytes_, randgen, pre.q_i,
+        CL.h(), h_D4, C0_adj, T_i);
+
+    ReshareContribution out;
+    out.old_dealer_id = i_;
+    out.c_i = c_i;
+    out.q_i = pre.q_i;
+    out.r_i = pre.r_i;
+    out.L_i = pre.L_i;
+    out.commitments = std::move(C);
+    out.batch_proof = std::move(batch_proof);
+    out.old_share_link_proof = std::move(link_proof);
+    out.shares = std::move(shares);
+    return out;
+  }
+
+  inline
+  void CL_Threshold_Static::add_reshare_contribution(
+      const CL_HSMqk & CL,
+      unsigned int old_dealer_id,
+      const Mpz & share_for_this_player,
+      const Mpz & c_i,
+      const Mpz & r_i,
+      const Mpz & L_i,
+      const std::vector<QFI> & commitments,
+      const CL_HSMqk_Batch_Dlog_AoK & batch_proof,
+      const CL_HSMqk_DlogEq_AoK & link_proof,
+      const QFI & gamma_old)
+  {
+    if (!reshare_state_.active)
+      throw ProtocolLogicError(
+          "add_reshare_contribution: reshare not active");
+    if (reshare_state_.finalized)
+      throw ProtocolLogicError(
+          "add_reshare_contribution: reshare already finalized");
+    if (reshare_state_.expected_old_contributors.find(old_dealer_id)
+        == reshare_state_.expected_old_contributors.end())
+      throw std::invalid_argument(
+          "add_reshare_contribution: dealer not in expected set");
+    if (reshare_state_.received_shares.find(old_dealer_id)
+        != reshare_state_.received_shares.end())
+      throw std::invalid_argument(
+          "add_reshare_contribution: duplicate dealer");
+    if (commitments.size() != static_cast<size_t>(t_ + 1u))
+      throw std::invalid_argument(
+          "add_reshare_contribution: wrong commitment count");
+
+    // 1. Batch proof of VSS polynomial.
+    if (!batch_proof.verify(
+            soundness_bytes_, CL, delta_, t_ + 1u, commitments))
+      throw std::invalid_argument(
+          "add_reshare_contribution: batch proof failed");
+
+    // 2. DLogEq link proof.
+    //    q1 = C[0] * h^{-c_i} = h^{q_i}
+    //    q2 = T_i = Gamma_i^{L_i} * h^{-D2*r_i} = h^{D^4 * q_i}
+    Mpz D2;
+    Mpz::mul(D2, delta_, delta_);
+    Mpz D4;
+    Mpz::mul(D4, D2, D2);
+
+    QFI C0_adj;
+    {
+      Mpz neg_c;
+      neg_c = c_i;
+      neg_c.neg();
+      QFI h_neg_c;
+      CL.power_of_h(h_neg_c, neg_c);
+      CL.Cl_G().nucomp(C0_adj, commitments[0], h_neg_c);
+    }
+    QFI h_D4;
+    CL.Cl_G().nupow(h_D4, CL.h(), D4);
+    QFI T_i;
+    {
+      QFI gamma_pow, h_neg;
+      CL.Cl_G().nupow(gamma_pow, gamma_old, L_i);
+      Mpz neg_D2r;
+      Mpz::mul(neg_D2r, D2, r_i);
+      neg_D2r.neg();
+      CL.power_of_h(h_neg, neg_D2r);
+      CL.Cl_G().nucomp(T_i, gamma_pow, h_neg);
+    }
+    if (!link_proof.verify(CL, soundness_bytes_,
+                            CL.h(), h_D4, C0_adj, T_i))
+      throw std::invalid_argument(
+          "add_reshare_contribution: link proof failed");
+
+    // 3. VSS share check: h^{D*y_ij} == C[0]^{D2} * prod(C[k]^{x_j^k})
+    Mpz Dy;
+    Mpz::mul(Dy, delta_, share_for_this_player);
+    QFI lhs;
+    CL.power_of_h(lhs, Dy);
+
+    QFI rhs;
+    {
+      QFI c0_delta2;
+      CL.Cl_G().nupow(c0_delta2, commitments[0], D2);
+      QFI prod = CL.Cl_G().one();
+      Mpz exponent = Mpz(static_cast<unsigned long>(i_ + 1));
+      for (unsigned int k = t_; k > 0u; --k)
+      {
+        CL.Cl_G().nucomp(prod, prod, commitments[k]);
+        CL.Cl_G().nupow(prod, prod, exponent, 2);
+      }
+      CL.Cl_G().nucomp(rhs, c0_delta2, prod);
+    }
+    if (!(lhs == rhs))
+      throw std::invalid_argument(
+          "add_reshare_contribution: share failed VSS check");
+
+    reshare_state_.received_shares[old_dealer_id] = share_for_this_player;
+    reshare_state_.received_commitments[old_dealer_id] = commitments;
+  }
+
+  inline
+  void CL_Threshold_Static::finalize_reshare(
+      const CL_HSMqk & CL,
+      const PublicKey & expected_old_pk)
+  {
+    if (!reshare_state_.active)
+      throw ProtocolLogicError("finalize_reshare: not active");
+    if (reshare_state_.finalized)
+      throw ProtocolLogicError("finalize_reshare: already finalized");
+
+    if (reshare_state_.received_shares.size()
+        != reshare_state_.expected_old_contributors.size())
+      throw ProtocolLogicError(
+          "finalize_reshare: missing contributions");
+    for (unsigned int d : reshare_state_.expected_old_contributors)
+    {
+      if (reshare_state_.received_shares.find(d)
+          == reshare_state_.received_shares.end())
+        throw ProtocolLogicError(
+            "finalize_reshare: missing contribution from dealer");
+    }
+
+    /* Sum shares. Do NOT reduce mod q: h has unknown order > q,
+     * and Gamma is computed from the raw integer share. Reducing
+     * here would break the partial-decryption DLogEq between
+     * Gamma_j and w_j. Same convention as keygen_extract(). */
+    Mpz sum(0UL);
+    for (auto & kv : reshare_state_.received_shares)
+      Mpz::add(sum, sum, kv.second);
+
+    /* Aggregate commitments */
+    std::vector<QFI> C_agg(t_ + 1);
+    for (auto & kv : reshare_state_.received_commitments)
+    {
+      for (unsigned int k = 0; k <= t_; ++k)
+        CL.Cl_G().nucomp(C_agg[k], C_agg[k], kv.second[k]);
+    }
+
+    /* Verify pk = C_agg[0]^{delta_new^2} equals expected_old_pk */
+    QFI pk_temp;
+    CL.Cl_G().nupow(pk_temp, C_agg[0], delta2_);
+    if (!(pk_temp == expected_old_pk.elt()))
+      throw ProtocolLogicError(
+          "finalize_reshare: pk mismatch (reshare produced a "
+          "different public key than expected)");
+
+    /* Install */
+    sk_share_ = sum;
+    pk_ = expected_old_pk;
+
+    /* Clear keygen state that must not survive */
+    y_self_.clear();
+    y_others_.clear();
+    C_.clear();
+    keygen_batch_proofs_.clear();
+    ai_ = Mpz(0UL);
+
+    /* Set qualified = new committee */
+    QualifiedPlayersSet_.clear();
+    for (unsigned int k = 0; k < n_; ++k)
+      QualifiedPlayersSet_.insert(k);
+    ComplaintsSet_.clear();
+
+    /* Compute Gamma from aggregate commitments, mirroring keygen_extract */
+    Gamma_.clear();
+    for (unsigned int j = 0; j < n_; ++j)
+    {
+      QFI gamma_temp;
+      Mpz exponent = Mpz(static_cast<unsigned long>(j + 1));
+      QFI prod = CL.Cl_G().one();
+      for (unsigned int k = t_; k > 0u; --k)
+      {
+        CL.Cl_G().nucomp(prod, prod, C_agg[k]);
+        CL.Cl_G().nupow(prod, prod, exponent, 2);
+      }
+      CL.Cl_G().nucomp(gamma_temp, prod, pk_.elt());
+      CL.Cl_G().nupow(gamma_temp, gamma_temp, delta_);
+      Gamma_[j] = gamma_temp;
+    }
+
+    /* Clear reshare-specific state */
+    reshare_state_.active = false;
+    reshare_state_.finalized = true;
+    reshare_state_.expected_old_contributors.clear();
+    reshare_state_.received_shares.clear();
+    reshare_state_.received_commitments.clear();
+  }
+
   inline
   void CL_Threshold_Static::keygen_extract_for_benchs(
       const CL_HSMqk & CL_Hsmq, const ParticipantsValueMap<QFI> & Gamma)
