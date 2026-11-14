@@ -15,6 +15,7 @@
 #include "bicycl/bicycl/cl/CL_threshold.hpp"
 #include "bicycl/bicycl/arith/qfi.hpp"
 #include "bicycl/bicycl/proofs/CL_HSMqk_Batch_Dlog_AoK.hpp"
+#include "bicycl/bicycl/proofs/CL_HSMqk_DlogEq_AoK.hpp"
 
 namespace cryptonote {
 namespace dao {
@@ -161,6 +162,9 @@ bool cl_dkg_mpz_to_bytes_signed(std::vector<uint8_t>& out, const BICYCL::Mpz& v)
 bool cl_dkg_qfi_to_bytes(std::vector<uint8_t>& out, const BICYCL::QFI& f);
 bool cl_dkg_qfi_from_bytes(const std::vector<uint8_t>& in, std::size_t& off,
                            BICYCL::QFI& out, const BICYCL::Mpz& expected_disc);
+bool cl_dkg_mpz_from_bytes_signed(const std::vector<uint8_t>& in,
+                                  std::size_t& off, BICYCL::Mpz& out,
+                                  bool allow_negative = true);
 
 // Canonical gamma-map codec. Entries are sorted by player id so
 // the output is byte-identical regardless of the source map's

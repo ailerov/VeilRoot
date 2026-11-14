@@ -308,6 +308,13 @@ bool cl_dkg_qfi_from_bytes(const std::vector<uint8_t>& in, std::size_t& off,
     return qfi_from_bytes(in, off, out, expected_disc);
 }
 
+bool cl_dkg_mpz_from_bytes_signed(const std::vector<uint8_t>& in,
+                                  std::size_t& off, BICYCL::Mpz& out,
+                                  bool allow_negative)
+{
+    return mpz_from_bytes_signed(in, off, out, allow_negative);
+}
+
 bool cl_dkg_serialize_gammas(
     const BICYCL::CL_Threshold_Static::ParticipantsValueMap<BICYCL::QFI>& g,
     std::vector<uint8_t>& out)

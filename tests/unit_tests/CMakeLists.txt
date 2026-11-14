@@ -162,6 +162,7 @@ if(VEILROOT_ENABLE_CL)
   list(APPEND unit_tests_sources dao_cl_party_restore.cpp)
   list(APPEND unit_tests_sources dao_cl_dkg_e2e.cpp)
   list(APPEND unit_tests_sources dao_cl_reshare_e2e.cpp)
+  list(APPEND unit_tests_sources dao_cl_tally_wire.cpp)
   list(APPEND unit_tests_sources dao_cl_reshare.cpp)
 endif()
 
