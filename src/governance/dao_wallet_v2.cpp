@@ -13,7 +13,9 @@
 
 #include "crypto/crypto.h"
 #include "governance/dao_clsag.h"
-#include "governance/dao_consistency.h"
+#include "governance/dao_cl_ballot.h"
+#include "governance/dao_cl_consistency.h"
+#include "governance/dao_cl_tally_wire.h"
 #include "governance/dao_crypto_backend.h"
 #include "governance/dao_dkg.h"
 #include "governance/dao_paillier.h"
@@ -26,10 +28,28 @@
 #include "serialization/string.h"
 #include "cryptonote_config.h"
 
+#include "bicycl/bicycl.hpp"
+#include "bicycl/bicycl/arith/gmp_extras.hpp"
+#include "bicycl/bicycl/cl/CL_HSMqk.hpp"
+
 namespace cryptonote {
 namespace dao {
 
 namespace {
+
+BICYCL::Mpz dao_u128_to_mpz(const dao_u128& v)
+{
+    std::array<uint8_t, 16> bytes{};
+    dao_u128 n = v;
+    for (int i = 15; i >= 0; --i) {
+        bytes[i] = (n & 0xff).convert_to<uint8_t>();
+        n >>= 8;
+    }
+    size_t start = 0;
+    while (start < 15 && bytes[start] == 0) ++start;
+    return BICYCL::Mpz(std::vector<uint8_t>(
+        bytes.begin() + static_cast<std::ptrdiff_t>(start), bytes.end()));
+}
 
 uint8_t age_factor_from_height(uint64_t vote_height, uint64_t output_height)
 {
@@ -78,7 +98,7 @@ bool build_dao_v2_vote(
     uint64_t proposal_submission_height,
     uint64_t vote_height,
     const crypto::hash& tally_key_id,
-    const std::vector<uint8_t>& paillier_modulus,
+    const std::vector<uint8_t>& cl_key_context,
     uint8_t direction,
     const std::vector<dao_v2_vote_source>& sources,
     vote_proof_v2& out)
@@ -87,7 +107,7 @@ bool build_dao_v2_vote(
 
     if (direction > 1) return false;
     if (sources.empty()) return false;
-    if (paillier_modulus.size() != 256) return false;
+    if (cl_key_context.empty()) return false;
 
     for (const auto& s : sources) {
         if (s.P.empty() || s.P.size() != s.C.size()) return false;
@@ -97,17 +117,21 @@ bool build_dao_v2_vote(
         if (s.real_index >= s.P.size()) return false;
     }
 
-    // The wallet calls DaoEncryptionBackend rather than concrete
-    // Paillier types. The factory currently returns the Paillier
-    // backend, whose ciphertext length matches vote_proof_v2's
-    // 512-byte ciphertext fields today.
-    auto backend = make_paillier_backend(paillier_modulus);
-    if (!backend) return false;
+    dao_cl_proposal_key key;
+    if (!dao_cl_load_proposal_key(cl_key_context, key)) return false;
+    if (!dao_cl_check_ballot_modulus(*key.cl)) return false;
 
-    BIGNUM* N_bn = BN_new();
-    if (!N_bn) return false;
-    BN_bin2bn(paillier_modulus.data(),
-              static_cast<int>(paillier_modulus.size()), N_bn);
+    // Validate the mapping between tally_key_id and the proposal key
+    // context: the caller is responsible for having read the record
+    // that binds this tally_key_id to this cl_key_context; the wire
+    // carries only the key id, so the binding check is done by the
+    // consensus verifier. The wallet only checks that the id is
+    // populated.
+    bool tally_key_id_set = false;
+    for (unsigned char b : tally_key_id.data) {
+        if (b != 0) { tally_key_id_set = true; break; }
+    }
+    if (!tally_key_id_set) return false;
 
     out.version         = vote_proof_v2::VERSION;
     out.proposal_id     = proposal_id;
@@ -148,7 +172,6 @@ bool build_dao_v2_vote(
 
         const uint8_t f_real = age_factors[real_index];
 
-        // Real commitment and self-check.
         const rct::key C_real = rct::commit(s.real_amount, s.real_mask);
         if (std::memcmp(C_real.bytes, s.C[real_index].bytes, 32) != 0) {
             ok = false;
@@ -189,7 +212,6 @@ bool build_dao_v2_vote(
             R_B = nxt;
         }
 
-        // Weighted CLSAG.
         dao_clsag_context cc;
         cc.proposal_id                = proposal_id;
         cc.proposal_submission_height = proposal_submission_height;
@@ -250,80 +272,68 @@ bool build_dao_v2_vote(
         B_total += dao_u128(s.real_amount);
     }
 
-    if (!ok) {
-        BN_free(N_bn);
-        return false;
-    }
+    if (!ok) return false;
 
-    // Signed weight. Three values, deliberately distinct:
-    //   S_signed_bn   mathematical signed value (+W / -W), used for
-    //                 C_S and for the consistency proof `m` argument.
-    //   S_paillier_bn Paillier plaintext representative (+W / N-W),
-    //                 used only for E_S.
-    // The consistency prover internally reduces the signed value mod
-    // N for the Paillier side and mod the curve order for the curve
-    // side, so passing S_signed_bn is correct in both places.
     const bool is_yes = (direction == 0);
-    BIGNUM* W_bn = BN_new();
-    BIGNUM* B_bn = BN_new();
-    BIGNUM* S_signed_bn = BN_new();
-    BIGNUM* S_paillier_bn = BN_new();
-    if (!bn_from_u128(W_bn, W_total) || !bn_from_u128(B_bn, B_total)) {
-        BN_free(N_bn);
-        BN_free(W_bn); BN_free(B_bn); BN_free(S_signed_bn); BN_free(S_paillier_bn);
-        return false;
-    }
 
-    BN_copy(S_signed_bn, W_bn);
-    if (!is_yes && !BN_is_zero(S_signed_bn))
-        BN_set_negative(S_signed_bn, 1);
-
-    if (!is_yes && !BN_is_zero(W_bn))
-        BN_sub(S_paillier_bn, N_bn, W_bn);
-    else
-        BN_copy(S_paillier_bn, W_bn);
-
-    // C_S over signed total.
+    // C_S is computed over the signed total S = ±W.
     rct::key R_S = rct::skGen();
     rct::key S_scalar = rct::zero();
     {
-        // S_scalar = S_signed mod curve_order, little-endian.
-        BIGNUM* L = nullptr;
-        BN_hex2bn(&L, "1000000000000000000000000000000014def9dea2f79cd65812631a5cf5d3ed");
-        BN_CTX* sctx = BN_CTX_new();
-        BIGNUM* S_red = BN_new();
-        if (L && sctx && S_red &&
-            BN_nnmod(S_red, S_signed_bn, L, sctx)) {
-            std::array<uint8_t, 32> s_be{};
-            BN_bn2binpad(S_red, s_be.data(), 32);
-            for (int i = 0; i < 32; ++i)
-                S_scalar.bytes[i] = s_be[31 - i];
+        rct::key W_scalar = rct::zero();
+        // W_total fits in 128 bits; convert to scalar LE.
+        {
+            dao_u128 n = W_total;
+            for (int i = 0; i < 16; ++i) {
+                W_scalar.bytes[i] = (n & 0xff).convert_to<uint8_t>();
+                n >>= 8;
+            }
         }
-        BN_free(L);
-        BN_free(S_red);
-        BN_CTX_free(sctx);
+        if (is_yes) {
+            S_scalar = W_scalar;
+        } else {
+            // -W mod q
+            rct::key zero = rct::zero();
+            sc_sub(S_scalar.bytes, zero.bytes, W_scalar.bytes);
+        }
     }
     rct::key SH{}, RSG{}, C_S{};
     rct::scalarmultKey(SH, rct::H, S_scalar);
     rct::scalarmultBase(RSG, R_S);
     rct::addKeys(C_S, SH, RSG);
 
-    // Encrypt W, S, B.
-    BIGNUM* r_W = BN_new();
-    BIGNUM* r_S = BN_new();
-    BIGNUM* r_B = BN_new();
-    std::vector<uint8_t> E_W_raw, E_S_raw, E_B_raw;
-    if (!backend->sample_r(r_W) ||
-        !backend->sample_r(r_S) ||
-        !backend->sample_r(r_B) ||
-        !backend->encrypt(W_bn, r_W, E_W_raw) ||
-        !backend->encrypt(S_paillier_bn, r_S, E_S_raw) ||
-        !backend->encrypt(B_bn, r_B, E_B_raw)) {
-        BN_free(N_bn);
-        BN_free(W_bn); BN_free(B_bn); BN_free(S_signed_bn); BN_free(S_paillier_bn);
-        BN_free(r_W); BN_free(r_S); BN_free(r_B);
-        return false;
+    // Encode CL plaintexts.
+    BICYCL::Mpz W_mpz      = dao_u128_to_mpz(W_total);
+    BICYCL::Mpz B_mpz      = dao_u128_to_mpz(B_total);
+    BICYCL::Mpz S_signed_mpz;
+    {
+        if (is_yes) {
+            S_signed_mpz = W_mpz;
+        } else {
+            S_signed_mpz = W_mpz;
+            S_signed_mpz.neg();
+        }
     }
+
+    BICYCL::Mpz cl_S_res;
+    if (!dao_cl_encode_signed_plaintext(S_signed_mpz, key.cl->q(), cl_S_res))
+        return false;
+
+    BICYCL::RandGen rng;
+    {
+        std::random_device rd;
+        rng.set_seed(BICYCL::Mpz(static_cast<unsigned long>(rd())));
+    }
+
+    // Sample randomness.
+    BICYCL::Mpz r_W = dao_cl_sample_randomness(*key.cl, rng);
+    BICYCL::Mpz r_S = dao_cl_sample_randomness(*key.cl, rng);
+    BICYCL::Mpz r_B = dao_cl_sample_randomness(*key.cl, rng);
+
+    std::vector<uint8_t> E_W_raw, E_S_raw, E_B_raw;
+    if (!dao_cl_encrypt_at_pk(*key.cl, *key.pk, W_mpz, r_W, E_W_raw)) return false;
+    if (!dao_cl_encrypt_at_pk(*key.cl, *key.pk, cl_S_res, r_S, E_S_raw)) return false;
+    if (!dao_cl_encrypt_at_pk(*key.cl, *key.pk, B_mpz, r_B, E_B_raw)) return false;
 
     ti.C_W = C_W;
     ti.C_S = C_S;
@@ -333,14 +343,14 @@ bool build_dao_v2_vote(
     ti.E_B = E_B_raw;
 
     std::vector<uint8_t> digest = dao_vote_input_transcript(ti);
-    if (digest.size() != 32) {
-        BN_free(N_bn);
-        BN_free(W_bn); BN_free(B_bn); BN_free(S_signed_bn); BN_free(S_paillier_bn);
-        BN_free(r_W); BN_free(r_S); BN_free(r_B);
-        return false;
-    }
+    if (digest.size() != 32) return false;
 
-    // Consistency proofs.
+    // CL contexts.
+    BICYCL::CL_HSMqk::CipherText ct_W, ct_S, ct_B;
+    if (!dao_cl_ciphertext_from_wire(*key.cl, E_W_raw, ct_W)) return false;
+    if (!dao_cl_ciphertext_from_wire(*key.cl, E_S_raw, ct_S)) return false;
+    if (!dao_cl_ciphertext_from_wire(*key.cl, E_B_raw, ct_B)) return false;
+
     dao_consistency_context cctx;
     cctx.version               = vote_proof_v2::VERSION;
     cctx.proposal_id           = proposal_id;
@@ -348,30 +358,30 @@ bool build_dao_v2_vote(
     cctx.tally_key_id          = tally_key_id;
     cctx.vote_input_transcript = digest;
 
+    // W: full CL consistency proof.
     cctx.domain = "C_W-Enc(W)";
-    if (!dao_consistency_prove(cctx, N_bn, E_W_raw, C_W, W_bn,
-                               r_W, R_W, out.proof_W)) {
-        BN_free(N_bn);
-        BN_free(W_bn); BN_free(B_bn); BN_free(S_signed_bn); BN_free(S_paillier_bn);
-        BN_free(r_W); BN_free(r_S); BN_free(r_B);
-        return false;
-    }
+    dao_cl_pedersen_proof proof_w;
+    if (!dao_cl_consistency_prove(*key.cl, *key.pk, ct_W, W_mpz, r_W,
+                                   C_W, R_W, cctx, rng, proof_w)) return false;
+    if (!proof_w.serialize(out.proof_W)) return false;
+
+    // S: DLogEq-only CL consistency proof. Plaintext is the canonical
+    // residue in Z_q; the Pedersen commitment uses the mathematical
+    // signed S (equivalent to the same residue in Z_q).
     cctx.domain = "C_S-Enc(S)";
-    if (!dao_consistency_prove(cctx, N_bn, E_S_raw, C_S, S_signed_bn,
-                               r_S, R_S, out.proof_S)) {
-        BN_free(N_bn);
-        BN_free(W_bn); BN_free(B_bn); BN_free(S_signed_bn); BN_free(S_paillier_bn);
-        BN_free(r_W); BN_free(r_S); BN_free(r_B);
+    dao_cl_pedersen_proof_no_range proof_s;
+    if (!dao_cl_consistency_prove_no_range(*key.cl, *key.pk, ct_S,
+                                            cl_S_res, r_S,
+                                            C_S, R_S, cctx, rng, proof_s))
         return false;
-    }
+    if (!proof_s.serialize(out.proof_S)) return false;
+
+    // B: full CL consistency proof.
     cctx.domain = "C_B-Enc(B)";
-    if (!dao_consistency_prove(cctx, N_bn, E_B_raw, C_B, B_bn,
-                               r_B, R_B, out.proof_B)) {
-        BN_free(N_bn);
-        BN_free(W_bn); BN_free(B_bn); BN_free(S_signed_bn); BN_free(S_paillier_bn);
-        BN_free(r_W); BN_free(r_S); BN_free(r_B);
-        return false;
-    }
+    dao_cl_pedersen_proof proof_b;
+    if (!dao_cl_consistency_prove(*key.cl, *key.pk, ct_B, B_mpz, r_B,
+                                   C_B, R_B, cctx, rng, proof_b)) return false;
+    if (!proof_b.serialize(out.proof_B)) return false;
 
     // Direction OR proof.
     dao_or_context octx;
@@ -382,19 +392,14 @@ bool build_dao_v2_vote(
     for (const auto& in : out.inputs)
         for (uint64_t o : in.key_offsets)
             octx.key_offsets.push_back(o);
-    octx.extra_binding = dao_extra_binding(E_W_raw, E_S_raw,
-                                           out.proof_W, out.proof_S);
+    octx.extra_binding = dao_cl_extra_binding(E_W_raw, E_S_raw,
+                                               out.proof_W, out.proof_S);
     octx.C_W = C_W;
     octx.C_S = C_S;
 
-    if (!dao_or_prove(octx, is_yes, R_S, R_W, out.direction_proof)) {
-        BN_free(N_bn);
-        BN_free(W_bn); BN_free(B_bn); BN_free(S_signed_bn); BN_free(S_paillier_bn);
-        BN_free(r_W); BN_free(r_S); BN_free(r_B);
+    if (!dao_or_prove(octx, is_yes, R_S, R_W, out.direction_proof))
         return false;
-    }
 
-    // Assembly.
     out.C_W = C_W;
     out.C_S = C_S;
     out.C_B = C_B;
@@ -402,13 +407,56 @@ bool build_dao_v2_vote(
     out.E_S = std::move(E_S_raw);
     out.E_B = std::move(E_B_raw);
     std::memcpy(out.transcript_hash.data, digest.data(), 32);
-
-    BN_free(N_bn);
-    BN_free(W_bn); BN_free(B_bn); BN_free(S_signed_bn); BN_free(S_paillier_bn);
-    BN_free(r_W); BN_free(r_S); BN_free(r_B);
     return true;
 }
 
+bool build_dao_v2_vote_tx(
+    const crypto::hash& proposal_id,
+    uint64_t proposal_submission_height,
+    uint64_t vote_height,
+    const crypto::hash& tally_key_id,
+    const std::vector<uint8_t>& cl_key_context,
+    uint8_t direction,
+    const std::vector<dao_v2_vote_output>& outputs,
+    transaction& tx_out)
+{
+    tx_out = transaction{};
+
+    if (outputs.empty()) return false;
+
+    std::vector<dao_v2_vote_source> sources;
+    sources.reserve(outputs.size());
+    for (const auto& o : outputs) {
+        dao_v2_vote_source src;
+        if (!prepare_dao_v2_vote_source(o, src))
+            return false;
+        sources.push_back(std::move(src));
+    }
+
+    vote_proof_v2 proof;
+    if (!build_dao_v2_vote(proposal_id, proposal_submission_height,
+                           vote_height, tally_key_id, cl_key_context,
+                           direction, sources, proof))
+        return false;
+
+    const std::string proof_blob =
+        cryptonote::t_serializable_object_to_blob(proof);
+    governance_payload gp;
+    gp.type = governance_object::vote_v2;
+    gp.data.assign(proof_blob.begin(), proof_blob.end());
+
+    tx_extra_governance_payload txgp;
+    txgp.payload = std::move(gp);
+    tx_extra_field ef = txgp;
+    const std::string extra_blob = t_serializable_object_to_blob(ef);
+
+    tx_out.version     = TX_VERSION_DAO_VOTE;
+    tx_out.unlock_time = 0;
+    tx_out.extra.assign(extra_blob.begin(), extra_blob.end());
+    tx_out.rct_signatures = rct::rctSig{};
+    tx_out.rct_signatures.type = rct::RCTTypeNull;
+    return true;
+}
 
 bool prepare_dao_v2_vote_source(const dao_v2_vote_output& in,
                                 dao_v2_vote_source& out)
@@ -444,53 +492,7 @@ bool prepare_dao_v2_vote_source(const dao_v2_vote_output& in,
     return true;
 }
 
-bool build_dao_v2_vote_tx(
-    const crypto::hash& proposal_id,
-    uint64_t proposal_submission_height,
-    uint64_t vote_height,
-    const crypto::hash& tally_key_id,
-    const std::vector<uint8_t>& paillier_modulus,
-    uint8_t direction,
-    const std::vector<dao_v2_vote_output>& outputs,
-    transaction& tx_out)
-{
-    tx_out = transaction{};
 
-    if (outputs.empty()) return false;
-
-    std::vector<dao_v2_vote_source> sources;
-    sources.reserve(outputs.size());
-    for (const auto& o : outputs) {
-        dao_v2_vote_source src;
-        if (!prepare_dao_v2_vote_source(o, src))
-            return false;
-        sources.push_back(std::move(src));
-    }
-
-    vote_proof_v2 proof;
-    if (!build_dao_v2_vote(proposal_id, proposal_submission_height,
-                           vote_height, tally_key_id, paillier_modulus,
-                           direction, sources, proof))
-        return false;
-
-    const std::string proof_blob =
-        cryptonote::t_serializable_object_to_blob(proof);
-    governance_payload gp;
-    gp.type = governance_object::vote_v2;
-    gp.data.assign(proof_blob.begin(), proof_blob.end());
-
-    tx_extra_governance_payload txgp;
-    txgp.payload = std::move(gp);
-    tx_extra_field ef = txgp;
-    const std::string extra_blob = t_serializable_object_to_blob(ef);
-
-    tx_out.version     = TX_VERSION_DAO_VOTE;
-    tx_out.unlock_time = 0;
-    tx_out.extra.assign(extra_blob.begin(), extra_blob.end());
-    tx_out.rct_signatures = rct::rctSig{};
-    tx_out.rct_signatures.type = rct::RCTTypeNull;
-    return true;
-}
 
 } // namespace dao
 } // namespace cryptonote

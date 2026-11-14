@@ -3,6 +3,15 @@
 
 #pragma once
 
+// Some system headers in this translation unit define a
+// setbit(a,i) macro that collides with the bicycl function of
+// the same name. Neutralize it here, before bicycl headers are
+// pulled in by any include below.
+#ifdef setbit
+#undef setbit
+#endif
+
+
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -46,6 +55,28 @@ bool dao_cl_ciphertext_to_wire(const BICYCL::CL_HSMqk::CipherText& ct,
 bool dao_cl_ciphertext_from_wire(const BICYCL::CL_HSMqk& cl,
                                  const std::vector<uint8_t>& in,
                                  BICYCL::CL_HSMqk::CipherText& out);
+
+// Negate a ciphertext homomorphically (multiply by -1).
+bool dao_cl_ciphertext_inverse(const BICYCL::CL_HSMqk& cl,
+                               const BICYCL::CL_HSMqk::PublicKey& pk,
+                               const BICYCL::CL_HSMqk::CipherText& ct,
+                               BICYCL::RandGen& rng,
+                               BICYCL::CL_HSMqk::CipherText& out);
+
+// Homomorphically add two ciphertexts.
+bool dao_cl_ciphertext_add(const BICYCL::CL_HSMqk& cl,
+                           const BICYCL::CL_HSMqk::PublicKey& pk,
+                           const BICYCL::CL_HSMqk::CipherText& a,
+                           const BICYCL::CL_HSMqk::CipherText& b,
+                           BICYCL::RandGen& rng,
+                           BICYCL::CL_HSMqk::CipherText& out);
+
+// True iff the given wire encodes the CL ciphertext Enc(0, r=1), i.e.
+// the neutral element for additive aggregation. Used to decide whether
+// a rollback reduced the aggregate to empty.
+bool dao_cl_ciphertext_is_zero_wire(const BICYCL::CL_HSMqk& cl,
+                                    const BICYCL::CL_HSMqk::PublicKey& pk,
+                                    const std::vector<uint8_t>& wire);
 
 } // namespace dao
 } // namespace cryptonote

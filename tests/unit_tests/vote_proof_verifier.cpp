@@ -533,14 +533,13 @@ TEST(vote_proof_verifier, valid_vote_passes_all_24_steps)
     constexpr uint64_t PROPOSAL_END = 60000;
     constexpr uint32_t TALLY_EPOCH  = 1;
 
-    PaillierPrivateKey psk;
-    ASSERT_TRUE(psk.generate_for_testing(1024));
-    PaillierPublicKey ppk = psk.public_key();
+    v2test::CLTestKey cl_key;
+    ASSERT_TRUE(v2test::make_cl_test_key(cl_key, 0xC1UL));
 
     crypto::hash proposal_id = v2test::hash_from_byte(0x33);
 
     v2test::ValidVote fx;
-    ASSERT_TRUE(v2test::build_valid_vote(fx, ppk,
+    ASSERT_TRUE(v2test::build_valid_vote(fx, cl_key,
         proposal_id, 0xAA,
         TALLY_EPOCH, VOTE_HEIGHT, PROPOSAL_SUB, PROPOSAL_END));
 
@@ -576,14 +575,13 @@ TEST(vote_proof_verifier, valid_vote_passes_all_24_steps)
 
 TEST(vote_proof_verifier, step17_wire_nullifier_must_match_dao_clsag_I)
 {
-    dao::PaillierPrivateKey psk;
-    ASSERT_TRUE(psk.generate_for_testing(1024));
-    PaillierPublicKey ppk = psk.public_key();
+    v2test::CLTestKey cl_key;
+    ASSERT_TRUE(v2test::make_cl_test_key(cl_key, 0xC1UL));
 
     crypto::hash proposal_id = v2test::hash_from_byte(0x33);
 
     v2test::ValidVote fx;
-    ASSERT_TRUE(v2test::build_valid_vote(fx, ppk, proposal_id, 0xAA,
+    ASSERT_TRUE(v2test::build_valid_vote(fx, cl_key, proposal_id, 0xAA,
         1, 51000, 50000, 60000));
 
     // Sanity: the derived nullifier is the CLSAG I.
@@ -612,17 +610,16 @@ TEST(vote_proof_verifier, step17_wire_nullifier_must_match_dao_clsag_I)
 
 TEST(vote_proof_verifier, nullifier_differs_across_proposals)
 {
-    dao::PaillierPrivateKey psk;
-    ASSERT_TRUE(psk.generate_for_testing(1024));
-    PaillierPublicKey ppk = psk.public_key();
+    v2test::CLTestKey cl_key;
+    ASSERT_TRUE(v2test::make_cl_test_key(cl_key, 0xC1UL));
 
     crypto::hash proposal_a = v2test::hash_from_byte(0x44);
     crypto::hash proposal_b = v2test::hash_from_byte(0x55);
 
     v2test::ValidVote fx_a, fx_b;
-    ASSERT_TRUE(v2test::build_valid_vote(fx_a, ppk, proposal_a, 0xAA,
+    ASSERT_TRUE(v2test::build_valid_vote(fx_a, cl_key, proposal_a, 0xAA,
         1, 51000, 50000, 60000));
-    ASSERT_TRUE(v2test::build_valid_vote(fx_b, ppk, proposal_b, 0xAA,
+    ASSERT_TRUE(v2test::build_valid_vote(fx_b, cl_key, proposal_b, 0xAA,
         1, 51000, 50000, 60000));
 
     // Same output, same variant: the only difference is the proposal.

@@ -18,6 +18,11 @@
 #include "dao_consistency.h"
 #include "dao_dkg.h"
 #include "dao_paillier.h"
+#include "dao_cl_ballot.h"
+#include "dao_cl_tally_wire.h"
+#include "bicycl/bicycl.hpp"
+#include "bicycl/bicycl/cl/CL_HSMqk.hpp"
+#include <random>
 #include "ringct/rctOps.h"
 #include <limits>
 #include <unordered_set>
@@ -162,32 +167,46 @@ bool VoteManager::rollback_block(const block& blk,
         if (std::memcmp(key_rec.key_id.data(),
                         proof.tally_key_id.data, 32) != 0)
             continue;
-        dao::PaillierPublicKey pk;
-        if (!pk.deserialize_modulus(key_rec.N))
+        if (key_rec.cl_modulus.empty())
+            continue;
+        dao::dao_cl_proposal_key cl_key;
+        if (!dao::dao_cl_load_proposal_key(key_rec.cl_modulus, cl_key))
             continue;
 
         // Reverse the aggregate contribution.
         dao_proposal_aggregate agg;
         if (bdb.get_dao_proposal_aggregate(proof.proposal_id, agg)) {
-            const std::vector<uint8_t>& E_W_in = proof.E_W;
-            const std::vector<uint8_t>& E_S_in = proof.E_S;
-            const std::vector<uint8_t>& E_B_in = proof.E_B;
-            std::vector<uint8_t> inv, tmp;
+            BICYCL::CL_HSMqk::CipherText in_W, in_S, in_B;
+            BICYCL::CL_HSMqk::CipherText agg_W, agg_S, agg_B;
+            if (!dao::dao_cl_ciphertext_from_wire(*cl_key.cl, proof.E_W, in_W)) continue;
+            if (!dao::dao_cl_ciphertext_from_wire(*cl_key.cl, proof.E_S, in_S)) continue;
+            if (!dao::dao_cl_ciphertext_from_wire(*cl_key.cl, proof.E_B, in_B)) continue;
+            BICYCL::RandGen agg_rng;
+            {
+                std::random_device rd;
+                agg_rng.set_seed(BICYCL::Mpz(static_cast<unsigned long>(rd())));
+            }
             bool ok = true;
+            auto rollback = [&](BICYCL::CL_HSMqk::CipherText& agg_ct,
+                                const BICYCL::CL_HSMqk::CipherText& in_ct,
+                                std::vector<uint8_t>& agg_wire) -> bool {
+                BICYCL::CL_HSMqk::CipherText inv, merged;
+                if (!dao::dao_cl_ciphertext_inverse(*cl_key.cl, *cl_key.pk, in_ct, agg_rng, inv)) return false;
+                if (!dao::dao_cl_ciphertext_add(*cl_key.cl, *cl_key.pk, agg_ct, inv, agg_rng, merged)) return false;
+                agg_wire.clear();
+                return dao::dao_cl_ciphertext_to_wire(merged, agg_wire);
+            };
             if (!agg.aggregate_E_W.empty()) {
-                ok = ok && pk.inverse(E_W_in, inv) &&
-                     pk.add(agg.aggregate_E_W, inv, tmp);
-                if (ok) agg.aggregate_E_W = tmp;
+                if (!dao::dao_cl_ciphertext_from_wire(*cl_key.cl, agg.aggregate_E_W, agg_W)) ok = false;
+                else ok = rollback(agg_W, in_W, agg.aggregate_E_W);
             }
             if (ok && !agg.aggregate_E_S.empty()) {
-                ok = ok && pk.inverse(E_S_in, inv) &&
-                     pk.add(agg.aggregate_E_S, inv, tmp);
-                if (ok) agg.aggregate_E_S = tmp;
+                if (!dao::dao_cl_ciphertext_from_wire(*cl_key.cl, agg.aggregate_E_S, agg_S)) ok = false;
+                else ok = rollback(agg_S, in_S, agg.aggregate_E_S);
             }
             if (ok && !agg.aggregate_E_B.empty()) {
-                ok = ok && pk.inverse(E_B_in, inv) &&
-                     pk.add(agg.aggregate_E_B, inv, tmp);
-                if (ok) agg.aggregate_E_B = tmp;
+                if (!dao::dao_cl_ciphertext_from_wire(*cl_key.cl, agg.aggregate_E_B, agg_B)) ok = false;
+                else ok = rollback(agg_B, in_B, agg.aggregate_E_B);
             }
             if (ok) {
                 // Spec section 25: commitment rollback uses point
@@ -213,23 +232,13 @@ bool VoteManager::rollback_block(const block& blk,
                 const bool cs_id = (agg.aggregate_C_S == id);
                 const bool cb_id = (agg.aggregate_C_B == id);
 
-                bool ew_id = true;
-                for (size_t k = 0; k + 1 < agg.aggregate_E_W.size(); ++k)
-                    if (agg.aggregate_E_W[k] != 0) { ew_id = false; break; }
-                if (!agg.aggregate_E_W.empty() &&
-                    agg.aggregate_E_W.back() != 1) ew_id = false;
-
-                bool es_id = true;
-                for (size_t k = 0; k + 1 < agg.aggregate_E_S.size(); ++k)
-                    if (agg.aggregate_E_S[k] != 0) { es_id = false; break; }
-                if (!agg.aggregate_E_S.empty() &&
-                    agg.aggregate_E_S.back() != 1) es_id = false;
-
-                bool eb_id = true;
-                for (size_t k = 0; k + 1 < agg.aggregate_E_B.size(); ++k)
-                    if (agg.aggregate_E_B[k] != 0) { eb_id = false; break; }
-                if (!agg.aggregate_E_B.empty() &&
-                    agg.aggregate_E_B.back() != 1) eb_id = false;
+                // CL ciphertext neutrality: Enc(0, r=1).
+                const bool ew_id = dao::dao_cl_ciphertext_is_zero_wire(
+                    *cl_key.cl, *cl_key.pk, agg.aggregate_E_W);
+                const bool es_id = dao::dao_cl_ciphertext_is_zero_wire(
+                    *cl_key.cl, *cl_key.pk, agg.aggregate_E_S);
+                const bool eb_id = dao::dao_cl_ciphertext_is_zero_wire(
+                    *cl_key.cl, *cl_key.pk, agg.aggregate_E_B);
 
                 if (cw_id && cs_id && cb_id && ew_id && es_id && eb_id) {
                     bdb.remove_dao_proposal_aggregate(proof.proposal_id);
@@ -628,8 +637,12 @@ bool VoteManager::apply_dao_vote(const vote_proof_v2& proof,
             return false;
     }
 
-    dao::PaillierPublicKey pk;
-    if (!pk.deserialize_modulus(key_rec.N))
+    if (key_rec.cl_modulus.empty())
+        return false;
+    dao::dao_cl_proposal_key cl_key;
+    if (!dao::dao_cl_load_proposal_key(key_rec.cl_modulus, cl_key))
+        return false;
+    if (!dao::dao_cl_check_ballot_modulus(*cl_key.cl))
         return false;
 
     dao_proposal_aggregate agg;
@@ -640,23 +653,40 @@ bool VoteManager::apply_dao_vote(const vote_proof_v2& proof,
         agg.aggregate_C_B = rct::identity();
     }
 
-    const std::vector<uint8_t>& E_W_in = proof.E_W;
-    const std::vector<uint8_t>& E_S_in = proof.E_S;
-    const std::vector<uint8_t>& E_B_in = proof.E_B;
+    BICYCL::CL_HSMqk::CipherText in_W, in_S, in_B;
+    if (!dao::dao_cl_ciphertext_from_wire(*cl_key.cl, proof.E_W, in_W)) return false;
+    if (!dao::dao_cl_ciphertext_from_wire(*cl_key.cl, proof.E_S, in_S)) return false;
+    if (!dao::dao_cl_ciphertext_from_wire(*cl_key.cl, proof.E_B, in_B)) return false;
 
-    if (have_agg && !agg.aggregate_E_W.empty() && !agg.aggregate_E_S.empty() &&
-        !agg.aggregate_E_B.empty()) {
-        std::vector<uint8_t> tmp;
-        if (!pk.add(agg.aggregate_E_W, E_W_in, tmp)) return false;
-        agg.aggregate_E_W = tmp;
-        if (!pk.add(agg.aggregate_E_S, E_S_in, tmp)) return false;
-        agg.aggregate_E_S = tmp;
-        if (!pk.add(agg.aggregate_E_B, E_B_in, tmp)) return false;
-        agg.aggregate_E_B = tmp;
+    BICYCL::RandGen agg_rng;
+    {
+        std::random_device rd;
+        agg_rng.set_seed(BICYCL::Mpz(static_cast<unsigned long>(rd())));
+    }
+
+    BICYCL::CL_HSMqk::CipherText agg_W, agg_S, agg_B;
+    const bool have_agg_ciphertexts = have_agg
+        && !agg.aggregate_E_W.empty()
+        && !agg.aggregate_E_S.empty()
+        && !agg.aggregate_E_B.empty();
+    if (have_agg_ciphertexts) {
+        if (!dao::dao_cl_ciphertext_from_wire(*cl_key.cl, agg.aggregate_E_W, agg_W)) return false;
+        if (!dao::dao_cl_ciphertext_from_wire(*cl_key.cl, agg.aggregate_E_S, agg_S)) return false;
+        if (!dao::dao_cl_ciphertext_from_wire(*cl_key.cl, agg.aggregate_E_B, agg_B)) return false;
+        BICYCL::CL_HSMqk::CipherText sum;
+        if (!dao::dao_cl_ciphertext_add(*cl_key.cl, *cl_key.pk, agg_W, in_W, agg_rng, sum)) return false;
+        agg.aggregate_E_W.clear();
+        if (!dao::dao_cl_ciphertext_to_wire(sum, agg.aggregate_E_W)) return false;
+        if (!dao::dao_cl_ciphertext_add(*cl_key.cl, *cl_key.pk, agg_S, in_S, agg_rng, sum)) return false;
+        agg.aggregate_E_S.clear();
+        if (!dao::dao_cl_ciphertext_to_wire(sum, agg.aggregate_E_S)) return false;
+        if (!dao::dao_cl_ciphertext_add(*cl_key.cl, *cl_key.pk, agg_B, in_B, agg_rng, sum)) return false;
+        agg.aggregate_E_B.clear();
+        if (!dao::dao_cl_ciphertext_to_wire(sum, agg.aggregate_E_B)) return false;
     } else {
-        agg.aggregate_E_W = E_W_in;
-        agg.aggregate_E_S = E_S_in;
-        agg.aggregate_E_B = E_B_in;
+        agg.aggregate_E_W = proof.E_W;
+        agg.aggregate_E_S = proof.E_S;
+        agg.aggregate_E_B = proof.E_B;
     }
 
     rct::key tmp_k;

@@ -14,7 +14,6 @@
 #include "serialization/containers.h"
 #include "serialization/crypto.h"
 
-#include "governance/dao_consistency.h"
 #include "governance/dao_vote_or_proof.h"
 
 namespace cryptonote {
@@ -46,7 +45,7 @@ struct vote_input_v2
 // V2 DAO vote wire format. Frozen by spec section 18.
 struct vote_proof_v2
 {
-    enum : uint8_t { VERSION = 3 };
+    enum : uint8_t { VERSION = 4 };
 
     uint8_t      version         = VERSION;
     crypto::hash proposal_id;
@@ -64,9 +63,15 @@ struct vote_proof_v2
     std::vector<uint8_t> E_S;
     std::vector<uint8_t> E_B;
 
-    dao::dao_consistency_proof proof_W;
-    dao::dao_consistency_proof proof_S;
-    dao::dao_consistency_proof proof_B;
+    // Consistency proofs binding each ciphertext to the corresponding
+    // Pedersen commitment. Opaque wire bytes; the concrete encoding is
+    // defined by the DAO's canonical scheme (Threshold-CL).
+    //
+    //   proof_W, proof_B: dao_cl_pedersen_proof::serialize output
+    //   proof_S:          dao_cl_pedersen_proof_no_range::serialize output
+    std::vector<uint8_t> proof_W;
+    std::vector<uint8_t> proof_S;
+    std::vector<uint8_t> proof_B;
 
     dao_vote_or_proof direction_proof;
 

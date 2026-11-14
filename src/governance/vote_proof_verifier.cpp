@@ -7,11 +7,17 @@
 #include <vector>
 
 #include "governance/dao_clsag.h"
-#include "governance/dao_consistency.h"
+#include "governance/dao_cl_ballot.h"
+#include "governance/dao_cl_consistency.h"
+#include "governance/dao_cl_tally_wire.h"
 #include "governance/dao_dkg.h"
 #include "governance/dao_paillier.h"
 #include "governance/dao_vote_or_proof.h"
 #include "ringct/rctOps.h"
+
+#include "bicycl/bicycl.hpp"
+#include "bicycl/bicycl/arith/gmp_extras.hpp"
+#include "bicycl/bicycl/cl/CL_HSMqk.hpp"
 
 namespace cryptonote {
 
@@ -263,36 +269,24 @@ verification_result VoteProofVerifier::verify(
     if (!rct::isInMainSubgroup(proof.C_B))
         return fail("step20: C_B is not a valid curve point");
 
-    // Step 21: E_W, E_S, E_B are canonical Paillier ciphertexts in Z*_{N^2}.
-    BIGNUM* N = BN_bin2bn(key_rec.N.data(),
-                          static_cast<int>(key_rec.N.size()), nullptr);
-    if (!N)
-        return fail("step21: cannot load N");
-    auto bail_N = [&](const char* why) {
-        BN_free(N);
-        return fail(why);
-    };
+    // Step 21: load CL proposal key from the on-chain record and check
+    // the mandatory modulus invariant.
+    if (key_rec.cl_modulus.empty())
+        return fail("step21: no CL key context in record");
+    dao::dao_cl_proposal_key cl_key;
+    if (!dao::dao_cl_load_proposal_key(key_rec.cl_modulus, cl_key))
+        return fail("step21: cannot load CL key context");
+    if (!dao::dao_cl_check_ballot_modulus(*cl_key.cl))
+        return fail("step21: CL modulus invariant violated");
 
-    if (proof.E_W.size() != dao::PAILLIER_CT_BYTES ||
-        proof.E_S.size() != dao::PAILLIER_CT_BYTES ||
-        proof.E_B.size() != dao::PAILLIER_CT_BYTES)
-        return bail_N("step21: ciphertext size");
-
-    auto valid_ct = [&](const std::vector<uint8_t>& v) -> bool {
-        BIGNUM* c = BN_bin2bn(v.data(), static_cast<int>(v.size()), nullptr);
-        if (!c) return false;
-        BN_CTX* ctx = BN_CTX_new();
-        BIGNUM* N2 = BN_new(); BN_sqr(N2, N, ctx);
-        bool ok = (BN_cmp(c, N2) < 0) && !BN_is_zero(c);
-        BIGNUM* g = BN_new();
-        BN_gcd(g, c, N2, ctx);
-        ok = ok && BN_is_one(g);
-        BN_free(g); BN_free(N2); BN_CTX_free(ctx); BN_free(c);
-        return ok;
-    };
-    if (!valid_ct(proof.E_W)) return bail_N("step21: E_W invalid");
-    if (!valid_ct(proof.E_S)) return bail_N("step21: E_S invalid");
-    if (!valid_ct(proof.E_B)) return bail_N("step21: E_B invalid");
+    // E_W, E_S, E_B must decode as canonical CL ciphertexts.
+    BICYCL::CL_HSMqk::CipherText ct_W, ct_S, ct_B;
+    if (!dao::dao_cl_ciphertext_from_wire(*cl_key.cl, proof.E_W, ct_W))
+        return fail("step21: E_W invalid CL ciphertext");
+    if (!dao::dao_cl_ciphertext_from_wire(*cl_key.cl, proof.E_S, ct_S))
+        return fail("step21: E_S invalid CL ciphertext");
+    if (!dao::dao_cl_ciphertext_from_wire(*cl_key.cl, proof.E_B, ct_B))
+        return fail("step21: E_B invalid CL ciphertext");
 
     // Build the canonical vote-input transcript.
     dao::dao_vote_transcript_input ti;
@@ -324,7 +318,7 @@ verification_result VoteProofVerifier::verify(
 
     std::vector<uint8_t> transcript_digest = dao::dao_vote_input_transcript(ti);
     if (transcript_digest.size() != 32)
-        return bail_N("step26: transcript could not be computed");
+        return fail("step26: transcript could not be computed");
 
     dao::dao_consistency_context cctx_w;
     cctx_w.domain                = "C_W-Enc(W)";
@@ -339,24 +333,36 @@ verification_result VoteProofVerifier::verify(
     dao::dao_consistency_context cctx_b = cctx_w;
     cctx_b.domain = "C_B-Enc(B)";
 
-    const std::vector<uint8_t>& E_W_vec = proof.E_W;
-    const std::vector<uint8_t>& E_S_vec = proof.E_S;
-    const std::vector<uint8_t>& E_B_vec = proof.E_B;
+    // Step 22: proof_W (full CL consistency proof).
+    {
+        dao::dao_cl_pedersen_proof pw;
+        if (!pw.deserialize(proof.proof_W))
+            return fail("step22: proof_W deserialize failed");
+        if (!dao::dao_cl_consistency_verify(*cl_key.cl, *cl_key.pk, ct_W,
+                                            proof.C_W, cctx_w, pw))
+            return fail("step22: consistency proof W failed");
+    }
 
-    // Step 22: proof_W.
-    if (!dao::dao_consistency_verify(cctx_w, N, E_W_vec, proof.C_W,
-                                     proof.proof_W))
-        return bail_N("step22: consistency proof W failed");
+    // Step 23: proof_S (DLogEq-only CL consistency proof).
+    {
+        dao::dao_cl_pedersen_proof_no_range ps;
+        if (!ps.deserialize(proof.proof_S))
+            return fail("step23: proof_S deserialize failed");
+        if (!dao::dao_cl_consistency_verify_no_range(*cl_key.cl, *cl_key.pk,
+                                                     ct_S, proof.C_S,
+                                                     cctx_s, ps))
+            return fail("step23: consistency proof S failed");
+    }
 
-    // Step 23: proof_S.
-    if (!dao::dao_consistency_verify(cctx_s, N, E_S_vec, proof.C_S,
-                                     proof.proof_S))
-        return bail_N("step23: consistency proof S failed");
-
-    // Step 24: proof_B.
-    if (!dao::dao_consistency_verify(cctx_b, N, E_B_vec, proof.C_B,
-                                     proof.proof_B))
-        return bail_N("step24: consistency proof B failed");
+    // Step 24: proof_B (full CL consistency proof).
+    {
+        dao::dao_cl_pedersen_proof pb;
+        if (!pb.deserialize(proof.proof_B))
+            return fail("step24: proof_B deserialize failed");
+        if (!dao::dao_cl_consistency_verify(*cl_key.cl, *cl_key.pk, ct_B,
+                                            proof.C_B, cctx_b, pb))
+            return fail("step24: consistency proof B failed");
+    }
 
     // Step 25: hidden-direction OR proof. The OR context binds the
     // vote-input transcript via extra_binding and does not depend on B.
@@ -374,23 +380,22 @@ verification_result VoteProofVerifier::verify(
     for (const auto& in : proof.inputs)
         for (uint64_t off : in.key_offsets)
             octx.key_offsets.push_back(off);
-    octx.extra_binding = dao::dao_extra_binding(E_W_vec, E_S_vec,
-                                                proof.proof_W, proof.proof_S);
+    octx.extra_binding = dao::dao_cl_extra_binding(proof.E_W, proof.E_S,
+                                                    proof.proof_W,
+                                                    proof.proof_S);
     octx.C_W = proof.C_W;
     octx.C_S = proof.C_S;
 
     if (!dao_or_verify(octx, proof.direction_proof))
-        return bail_N("step25: direction OR proof failed");
+        return fail("step25: direction OR proof failed");
 
     // Step 26: transcript hash equals proof.transcript_hash.
     {
         crypto::hash want{};
         std::memcpy(want.data, transcript_digest.data(), 32);
         if (!(want == proof.transcript_hash))
-            return bail_N("step26: transcript hash mismatch");
+            return fail("step26: transcript hash mismatch");
     }
-
-    BN_free(N);
 
     // Step 27: prior-chain DAO nullifier lookup.
     for (const auto& nf : proof.nullifiers) {

@@ -44,15 +44,15 @@ struct dao_v2_vote_source
 //
 // direction: 0 = YES, 1 = NO.
 //
-// paillier_modulus: 256-byte big-endian Paillier N of the stable key.
-//
-// Returns false if the input set is empty or malformed.
+// cl_key_context: canonical CL key context wire (cl_key_context::serialize).
+// Returns false if the input set is empty or malformed, or if the key
+// context is invalid or fails the ballot modulus invariant.
 bool build_dao_v2_vote(
     const crypto::hash& proposal_id,
     uint64_t proposal_submission_height,
     uint64_t vote_height,
     const crypto::hash& tally_key_id,
-    const std::vector<uint8_t>& paillier_modulus,
+    const std::vector<uint8_t>& cl_key_context,
     uint8_t direction,
     const std::vector<dao_v2_vote_source>& sources,
     vote_proof_v2& out);
@@ -101,7 +101,7 @@ bool build_dao_v2_vote_tx(
     uint64_t proposal_submission_height,
     uint64_t vote_height,
     const crypto::hash& tally_key_id,
-    const std::vector<uint8_t>& paillier_modulus,
+    const std::vector<uint8_t>& cl_key_context,
     uint8_t direction,
     const std::vector<dao_v2_vote_output>& outputs,
     transaction& tx_out);

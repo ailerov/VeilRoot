@@ -22,16 +22,29 @@ using namespace BICYCL;
 
 namespace {
 
+// cl_key_context_parse stores scalars as sign || magnitude.
+bool parse_sign_magnitude(const std::vector<uint8_t>& in, Mpz& out)
+{
+    if (in.empty()) return false;
+    if (in[0] > 1) return false;
+    if (in.size() == 1) {
+        if (in[0] != 0) return false;
+        out = Mpz();
+        return true;
+    }
+    if (in[1] == 0) return false;
+    out = Mpz(std::vector<uint8_t>(in.begin() + 1, in.end()));
+    if (in[0] == 1) out.neg();
+    return true;
+}
+
 bool parse_cl_modulus_qp(const std::vector<uint8_t>& q_be,
                          const std::vector<uint8_t>& p_signed,
                          Mpz& q_out, Mpz& p_out)
 {
     if (q_be.empty() || q_be[0] == 0) return false;
     q_out = Mpz(q_be);
-    std::size_t off = 0;
-    if (!cl_dkg_mpz_from_bytes_signed(p_signed, off, p_out, true)) return false;
-    if (off != p_signed.size()) return false;
-    return true;
+    return parse_sign_magnitude(p_signed, p_out);
 }
 
 bool parse_pk_qfi(const std::vector<uint8_t>& pk_wire, QFI& out)
@@ -106,12 +119,7 @@ bool dao_cl_load_proposal_key(const std::vector<uint8_t>& wire,
         out.pk = std::move(pk);
         out.q  = q_mpz;
         out.D  = Mpz();
-        {
-            std::size_t off = 0;
-            if (!cl_dkg_mpz_from_bytes_signed(ctx.D, off, out.D, true))
-                return false;
-            if (off != ctx.D.size()) return false;
-        }
+        if (!parse_sign_magnitude(ctx.D, out.D)) return false;
         return true;
     } catch (...) {
         return false;

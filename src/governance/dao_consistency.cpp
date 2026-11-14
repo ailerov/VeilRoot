@@ -291,9 +291,13 @@ void tx_push_bytes(std::vector<uint8_t>& v, const uint8_t* p, size_t n)
 
 bool tx_validate(const dao_vote_transcript_input& in)
 {
-    if (in.E_W.size() != 512) return false;
-    if (in.E_S.size() != 512) return false;
-    if (in.E_B.size() != 512) return false;
+    // Ciphertext fields are scheme-specific: 512-byte fixed for the
+    // Paillier encoding, variable-length QFI wire for CL. Bound both
+    // extremes and reject only empty.
+    constexpr size_t CT_MAX = 16384;
+    if (in.E_W.empty() || in.E_W.size() > CT_MAX) return false;
+    if (in.E_S.empty() || in.E_S.size() > CT_MAX) return false;
+    if (in.E_B.empty() || in.E_B.size() > CT_MAX) return false;
 
     const size_t n = in.key_offsets.size();
     if (in.absolute_indices.size() != n) return false;
@@ -361,9 +365,13 @@ std::vector<uint8_t> dao_vote_input_transcript(
     tx_push_bytes(out, in.C_W.bytes, 32);
     tx_push_bytes(out, in.C_S.bytes, 32);
     tx_push_bytes(out, in.C_B.bytes, 32);
-    tx_push_bytes(out, in.E_W.data(), 512);
-    tx_push_bytes(out, in.E_S.data(), 512);
-    tx_push_bytes(out, in.E_B.data(), 512);
+    auto push_vec_into = [&](const std::vector<uint8_t>& v) {
+        tx_push_u32(out, static_cast<uint32_t>(v.size()));
+        if (!v.empty()) tx_push_bytes(out, v.data(), v.size());
+    };
+    push_vec_into(in.E_W);
+    push_vec_into(in.E_S);
+    push_vec_into(in.E_B);
 
     unsigned char digest[32];
     SHA256(out.data(), out.size(), digest);

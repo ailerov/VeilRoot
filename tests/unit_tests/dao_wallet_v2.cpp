@@ -20,6 +20,10 @@
 #include "crypto/crypto.h"
 #include "governance/dao_dkg.h"
 #include "governance/dao_paillier.h"
+#include "v2_vote_builder.h"
+#include "governance/dao_cl_tally_wire.h"
+#include "bicycl/bicycl.hpp"
+#include "bicycl/bicycl/cl/CL_HSMqk.hpp"
 #include "governance/dao_wallet_v2.h"
 #include "governance/governance_payload.h"
 #include "governance/vote_proof_verifier.h"
@@ -182,18 +186,41 @@ bool decrypt_bn_equals_u128(const dao::PaillierPrivateKey& psk,
     BN_free(m);
     return ok;
 }
+bool decrypt_cl_equals_u128(const v2test::CLTestKey& cl_key,
+                            const std::vector<uint8_t>& ct_wire,
+                            boost::multiprecision::uint128_t expected)
+{
+    BICYCL::CL_HSMqk::CipherText ct;
+    if (!dao::dao_cl_ciphertext_from_wire(*cl_key.cl, ct_wire, ct))
+        return false;
+    try {
+        BICYCL::CL_HSMqk::ClearText pt =
+            cl_key.cl->decrypt(*cl_key.sk, ct);
+        BICYCL::Mpz m = pt;
+        // Convert expected to Mpz for comparison.
+        std::array<uint8_t, 16> buf{};
+        boost::multiprecision::uint128_t v = expected;
+        for (int i = 15; i >= 0; --i) {
+            buf[i] = (v & 0xff).convert_to<uint8_t>();
+            v >>= 8;
+        }
+        size_t start = 0;
+        while (start < 15 && buf[start] == 0) ++start;
+        BICYCL::Mpz exp_mpz(std::vector<uint8_t>(buf.begin() + start, buf.end()));
+        return m == exp_mpz;
+    } catch (...) {
+        return false;
+    }
+}
+
 
 } // namespace
 
 TEST(dao_wallet_v2, builds_valid_vote_one_input_yes)
 {
-    dao::PaillierPrivateKey psk;
-    ASSERT_TRUE(psk.generate_for_testing(1024));
-    PaillierPublicKey ppk = psk.public_key();
+    v2test::CLTestKey cl_key;
+    ASSERT_TRUE(v2test::make_cl_test_key(cl_key, 0xC1UL));
 
-    std::vector<uint8_t> modulus;
-    ASSERT_TRUE(ppk.serialize_modulus(modulus));
-    ASSERT_EQ(modulus.size(), 256u);
 
     crypto::hash proposal_id{};
     proposal_id.data[0] = 0x33;
@@ -213,7 +240,7 @@ TEST(dao_wallet_v2, builds_valid_vote_one_input_yes)
         /*submission=*/50000,
         /*vote_height=*/51000,
         tally_key_id,
-        modulus,
+        cl_key.context_wire,
         /*direction=*/0,
         sources,
         proof));
@@ -225,7 +252,7 @@ TEST(dao_wallet_v2, builds_valid_vote_one_input_yes)
     std::memcpy(db.proposal_tally_key_id.data, tally_key_id.data, 32);
     db.tally_key_record.key_id.assign(32, 0);
     std::memcpy(db.tally_key_record.key_id.data(), tally_key_id.data, 32);
-    db.tally_key_record.N = modulus;
+    db.tally_key_record.cl_modulus = cl_key.context_wire;
     for (size_t j = 0; j < s.P_j.size(); ++j)
         db.add_output(s.abs[j], s.P_j[j], s.C_j[j], s.heights[j]);
 
@@ -236,12 +263,9 @@ TEST(dao_wallet_v2, builds_valid_vote_one_input_yes)
 
 TEST(dao_wallet_v2, builds_valid_vote_two_inputs_no)
 {
-    dao::PaillierPrivateKey psk;
-    ASSERT_TRUE(psk.generate_for_testing(1024));
-    PaillierPublicKey ppk = psk.public_key();
+    v2test::CLTestKey cl_key;
+    ASSERT_TRUE(v2test::make_cl_test_key(cl_key, 0xC1UL));
 
-    std::vector<uint8_t> modulus;
-    ASSERT_TRUE(ppk.serialize_modulus(modulus));
 
     crypto::hash proposal_id{};
     proposal_id.data[0] = 0x44;
@@ -261,7 +285,7 @@ TEST(dao_wallet_v2, builds_valid_vote_two_inputs_no)
     vote_proof_v2 proof;
     ASSERT_TRUE(build_dao_v2_vote(
         proposal_id,
-        50000, 51000, tally_key_id, modulus,
+        50000, 51000, tally_key_id, cl_key.context_wire,
         /*direction=*/1, sources, proof));
 
     WalletV2TestDB db;
@@ -270,7 +294,7 @@ TEST(dao_wallet_v2, builds_valid_vote_two_inputs_no)
     std::memcpy(db.proposal_tally_key_id.data, tally_key_id.data, 32);
     db.tally_key_record.key_id.assign(32, 0);
     std::memcpy(db.tally_key_record.key_id.data(), tally_key_id.data, 32);
-    db.tally_key_record.N = modulus;
+    db.tally_key_record.cl_modulus = cl_key.context_wire;
     for (size_t j = 0; j < s_a.P_j.size(); ++j)
         db.add_output(s_a.abs[j], s_a.P_j[j], s_a.C_j[j], s_a.heights[j]);
     for (size_t j = 0; j < s_b.P_j.size(); ++j)
@@ -286,12 +310,9 @@ TEST(dao_wallet_v2, builds_valid_vote_two_inputs_no)
 
 TEST(dao_wallet_v2, yes_vote_tampered_to_no_cs_fails)
 {
-    dao::PaillierPrivateKey psk;
-    ASSERT_TRUE(psk.generate_for_testing(1024));
-    PaillierPublicKey ppk = psk.public_key();
+    v2test::CLTestKey cl_key;
+    ASSERT_TRUE(v2test::make_cl_test_key(cl_key, 0xC1UL));
 
-    std::vector<uint8_t> modulus;
-    ASSERT_TRUE(ppk.serialize_modulus(modulus));
 
     crypto::hash proposal_id{};  proposal_id.data[0] = 0x11;
     crypto::hash tally_key_id{}; tally_key_id.data[0] = 0x22;
@@ -304,7 +325,7 @@ TEST(dao_wallet_v2, yes_vote_tampered_to_no_cs_fails)
 
     vote_proof_v2 proof;
     ASSERT_TRUE(build_dao_v2_vote(proposal_id, 50000, 51000,
-        tally_key_id, modulus, /*yes*/0, sources, proof));
+        tally_key_id, cl_key.context_wire, /*yes*/0, sources, proof));
 
     // Replace C_S with the identity. That breaks the OR proof and the
     // consistency proof simultaneously; the verifier must reject.
@@ -316,7 +337,7 @@ TEST(dao_wallet_v2, yes_vote_tampered_to_no_cs_fails)
     std::memcpy(db.proposal_tally_key_id.data, tally_key_id.data, 32);
     db.tally_key_record.key_id.assign(32, 0);
     std::memcpy(db.tally_key_record.key_id.data(), tally_key_id.data, 32);
-    db.tally_key_record.N = modulus;
+    db.tally_key_record.cl_modulus = cl_key.context_wire;
     for (size_t j = 0; j < s.P_j.size(); ++j)
         db.add_output(s.abs[j], s.P_j[j], s.C_j[j], s.heights[j]);
 
@@ -327,12 +348,9 @@ TEST(dao_wallet_v2, yes_vote_tampered_to_no_cs_fails)
 
 TEST(dao_wallet_v2, no_vote_tampered_direction_fails)
 {
-    dao::PaillierPrivateKey psk;
-    ASSERT_TRUE(psk.generate_for_testing(1024));
-    PaillierPublicKey ppk = psk.public_key();
+    v2test::CLTestKey cl_key;
+    ASSERT_TRUE(v2test::make_cl_test_key(cl_key, 0xC1UL));
 
-    std::vector<uint8_t> modulus;
-    ASSERT_TRUE(ppk.serialize_modulus(modulus));
 
     crypto::hash proposal_id{};  proposal_id.data[0] = 0x66;
     crypto::hash tally_key_id{}; tally_key_id.data[0] = 0x77;
@@ -345,7 +363,7 @@ TEST(dao_wallet_v2, no_vote_tampered_direction_fails)
 
     vote_proof_v2 proof;
     ASSERT_TRUE(build_dao_v2_vote(proposal_id, 50000, 51000,
-        tally_key_id, modulus, /*no*/1, sources, proof));
+        tally_key_id, cl_key.context_wire, /*no*/1, sources, proof));
 
     // Flip a byte in the OR proof so the challenge no longer closes.
     proof.direction_proof.c_yes.bytes[0] ^= 0x01;
@@ -356,7 +374,7 @@ TEST(dao_wallet_v2, no_vote_tampered_direction_fails)
     std::memcpy(db.proposal_tally_key_id.data, tally_key_id.data, 32);
     db.tally_key_record.key_id.assign(32, 0);
     std::memcpy(db.tally_key_record.key_id.data(), tally_key_id.data, 32);
-    db.tally_key_record.N = modulus;
+    db.tally_key_record.cl_modulus = cl_key.context_wire;
     for (size_t j = 0; j < s.P_j.size(); ++j)
         db.add_output(s.abs[j], s.P_j[j], s.C_j[j], s.heights[j]);
 
@@ -377,11 +395,8 @@ TEST(dao_wallet_v2, no_vote_tampered_direction_fails)
 
 TEST(dao_wallet_v2, builds_vote_two_sources_total_weight_above_2p64)
 {
-    dao::PaillierPrivateKey psk;
-    ASSERT_TRUE(psk.generate_for_testing(1024));
-    PaillierPublicKey ppk = psk.public_key();
-    std::vector<uint8_t> modulus;
-    ASSERT_TRUE(ppk.serialize_modulus(modulus));
+    v2test::CLTestKey cl_key;
+    ASSERT_TRUE(v2test::make_cl_test_key(cl_key, 0xC1UL));
 
     crypto::hash proposal_id{};
     proposal_id.data[0] = 0x33;
@@ -401,24 +416,21 @@ TEST(dao_wallet_v2, builds_vote_two_sources_total_weight_above_2p64)
 
     vote_proof_v2 proof;
     ASSERT_TRUE(build_dao_v2_vote(proposal_id, 50000, 51000,
-                                  tally_key_id, modulus, /*direction=*/0,
+                                  tally_key_id, cl_key.context_wire, /*direction=*/0,
                                   sources, proof));
 
-    EXPECT_TRUE(decrypt_bn_equals_u128(
-        psk, proof.E_W,
+    EXPECT_TRUE(decrypt_cl_equals_u128(
+        cl_key, proof.E_W,
         boost::multiprecision::uint128_t("20000000000000000000")));   // 2e19
-    EXPECT_TRUE(decrypt_bn_equals_u128(
-        psk, proof.E_B,
+    EXPECT_TRUE(decrypt_cl_equals_u128(
+        cl_key, proof.E_B,
         boost::multiprecision::uint128_t("4000000000000000000")));    // 4e18
 }
 
 TEST(dao_wallet_v2, builds_vote_single_source_weight_above_2p64)
 {
-    dao::PaillierPrivateKey psk;
-    ASSERT_TRUE(psk.generate_for_testing(1024));
-    PaillierPublicKey ppk = psk.public_key();
-    std::vector<uint8_t> modulus;
-    ASSERT_TRUE(ppk.serialize_modulus(modulus));
+    v2test::CLTestKey cl_key;
+    ASSERT_TRUE(v2test::make_cl_test_key(cl_key, 0xC1UL));
 
     crypto::hash proposal_id{};
     proposal_id.data[0] = 0x33;
@@ -436,14 +448,14 @@ TEST(dao_wallet_v2, builds_vote_single_source_weight_above_2p64)
 
     vote_proof_v2 proof;
     ASSERT_TRUE(build_dao_v2_vote(proposal_id, 50000, 51000,
-                                  tally_key_id, modulus, /*direction=*/0,
+                                  tally_key_id, cl_key.context_wire, /*direction=*/0,
                                   sources, proof));
 
-    EXPECT_TRUE(decrypt_bn_equals_u128(
-        psk, proof.E_W,
+    EXPECT_TRUE(decrypt_cl_equals_u128(
+        cl_key, proof.E_W,
         boost::multiprecision::uint128_t("20000000000000000000")));   // 2e19
-    EXPECT_TRUE(decrypt_bn_equals_u128(
-        psk, proof.E_B,
+    EXPECT_TRUE(decrypt_cl_equals_u128(
+        cl_key, proof.E_B,
         boost::multiprecision::uint128_t("4000000000000000000")));    // 4e18
 }
 
@@ -452,11 +464,8 @@ TEST(dao_wallet_v2, builds_vote_straddles_2p64_boundary)
     // 2^64 = 18446744073709551616.
     // A_safe = 3689348814741910323 -> W = 5A = 18446744073709551615 = 2^64 - 1.
     // A_over = 3689348814741910324 -> W = 5A = 18446744073709551620 = 2^64 + 4.
-    dao::PaillierPrivateKey psk;
-    ASSERT_TRUE(psk.generate_for_testing(1024));
-    PaillierPublicKey ppk = psk.public_key();
-    std::vector<uint8_t> modulus;
-    ASSERT_TRUE(ppk.serialize_modulus(modulus));
+    v2test::CLTestKey cl_key;
+    ASSERT_TRUE(v2test::make_cl_test_key(cl_key, 0xC1UL));
 
     crypto::hash proposal_id{};
     proposal_id.data[0] = 0x33;
@@ -472,10 +481,10 @@ TEST(dao_wallet_v2, builds_vote_straddles_2p64_boundary)
         std::vector<dao_v2_vote_source> sources = { s.src };
         vote_proof_v2 proof;
         ASSERT_TRUE(build_dao_v2_vote(proposal_id, 50000, 51000,
-                                      tally_key_id, modulus, 0,
+                                      tally_key_id, cl_key.context_wire, 0,
                                       sources, proof));
-        EXPECT_TRUE(decrypt_bn_equals_u128(
-            psk, proof.E_W,
+        EXPECT_TRUE(decrypt_cl_equals_u128(
+            cl_key, proof.E_W,
             boost::multiprecision::uint128_t("18446744073709551615")));  // 2^64 - 1
     }
 
@@ -485,21 +494,18 @@ TEST(dao_wallet_v2, builds_vote_straddles_2p64_boundary)
         std::vector<dao_v2_vote_source> sources = { s.src };
         vote_proof_v2 proof;
         ASSERT_TRUE(build_dao_v2_vote(proposal_id, 50000, 51000,
-                                      tally_key_id, modulus, 0,
+                                      tally_key_id, cl_key.context_wire, 0,
                                       sources, proof));
-        EXPECT_TRUE(decrypt_bn_equals_u128(
-            psk, proof.E_W,
+        EXPECT_TRUE(decrypt_cl_equals_u128(
+            cl_key, proof.E_W,
             boost::multiprecision::uint128_t("18446744073709551620")));  // 2^64 + 4
     }
 }
 
 TEST(dao_wallet_v2, no_vote_signed_total_above_2p64_roundtrips)
 {
-    dao::PaillierPrivateKey psk;
-    ASSERT_TRUE(psk.generate_for_testing(1024));
-    PaillierPublicKey ppk = psk.public_key();
-    std::vector<uint8_t> modulus;
-    ASSERT_TRUE(ppk.serialize_modulus(modulus));
+    v2test::CLTestKey cl_key;
+    ASSERT_TRUE(v2test::make_cl_test_key(cl_key, 0xC1UL));
 
     crypto::hash proposal_id{};
     proposal_id.data[0] = 0x33;
@@ -517,32 +523,30 @@ TEST(dao_wallet_v2, no_vote_signed_total_above_2p64_roundtrips)
 
     vote_proof_v2 proof;
     ASSERT_TRUE(build_dao_v2_vote(proposal_id, 50000, 51000,
-                                  tally_key_id, modulus, /*direction=*/1,
+                                  tally_key_id, cl_key.context_wire, /*direction=*/1,
                                   sources, proof));
 
-    BIGNUM* m = BN_new();
-    ASSERT_NE(m, nullptr);
-    ASSERT_TRUE(psk.decrypt(proof.E_S, m));
+    BICYCL::CL_HSMqk::CipherText ct;
+    ASSERT_TRUE(dao::dao_cl_ciphertext_from_wire(*cl_key.cl, proof.E_S, ct));
+    BICYCL::CL_HSMqk::ClearText pt = cl_key.cl->decrypt(*cl_key.sk, ct);
+    BICYCL::Mpz m = pt;
 
-    std::array<uint8_t, 16> buf{};
-    boost::multiprecision::uint128_t wv =
-        boost::multiprecision::uint128_t("20000000000000000000");
+    // S = -W. Decoded residue must equal q - W.
+    // W = f * amount. Compute in 128 bits so the intermediate value
+    // does not overflow uint64.
+    boost::multiprecision::uint128_t w128 =
+        boost::multiprecision::uint128_t(amount) *
+        boost::multiprecision::uint128_t(5);
+    std::array<uint8_t, 16> wbuf{};
     for (int i = 15; i >= 0; --i) {
-        buf[i] = (wv & 0xff).convert_to<uint8_t>();
-        wv >>= 8;
+        wbuf[i] = (w128 & 0xff).convert_to<uint8_t>();
+        w128 >>= 8;
     }
-    BIGNUM* w_bn = BN_bin2bn(buf.data(), 16, nullptr);
-    ASSERT_NE(w_bn, nullptr);
-
-    BIGNUM* sum = BN_new();
-    BIGNUM* N_copy = BN_dup(psk.N());
-    BN_CTX* ctx = BN_CTX_new();
-    ASSERT_NE(sum, nullptr);
-    ASSERT_NE(N_copy, nullptr);
-    ASSERT_NE(ctx, nullptr);
-    ASSERT_TRUE(BN_mod_add(sum, m, w_bn, N_copy, ctx));
-    EXPECT_TRUE(BN_is_zero(sum));
-
-    BN_free(m); BN_free(w_bn); BN_free(sum);
-    BN_free(N_copy); BN_CTX_free(ctx);
+    size_t start = 0;
+    while (start < 15 && wbuf[start] == 0) ++start;
+    BICYCL::Mpz w_mpz(std::vector<uint8_t>(
+        wbuf.begin() + static_cast<std::ptrdiff_t>(start), wbuf.end()));
+    BICYCL::Mpz expected;
+    BICYCL::Mpz::sub(expected, cl_key.cl->q(), w_mpz);
+    EXPECT_EQ(m, expected);
 }

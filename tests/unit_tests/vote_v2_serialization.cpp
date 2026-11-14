@@ -63,10 +63,10 @@ static vote_proof_v2 make_serializable_v2(size_t n_inputs)
     return vp;
 }
 
-TEST(vote_proof_v2_serialization, version_field_is_three)
+TEST(vote_proof_v2_serialization, version_field_is_four)
 {
     vote_proof_v2 vp;
-    EXPECT_EQ(static_cast<uint8_t>(3), vp.version);
+    EXPECT_EQ(static_cast<uint8_t>(4), vp.version);
     EXPECT_EQ(vote_proof_v2::VERSION, vp.version);
 }
 

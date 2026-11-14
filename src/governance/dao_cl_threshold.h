@@ -3,6 +3,15 @@
 
 #pragma once
 
+// Some system headers in this translation unit define a
+// setbit(a,i) macro that collides with the bicycl function of
+// the same name. Neutralize it here, before bicycl headers are
+// pulled in by any include below.
+#ifdef setbit
+#undef setbit
+#endif
+
+
 #ifdef VEILROOT_ENABLE_CL
 
 #include <cstdint>

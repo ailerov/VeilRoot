@@ -104,19 +104,17 @@ protected:
         m_db->add_dao_tally_key_by_id(fx.key_rec.key_id, fx.key_rec);
     }
 
-    dao::PaillierPrivateKey m_psk;
-    std::unique_ptr<dao::PaillierPublicKey> m_ppk;
-    bool m_psk_ready = false;
+    v2test::CLTestKey m_cl_key;
+    bool m_cl_key_ready = false;
 
-    const dao::PaillierPublicKey& shared_pk()
+    const v2test::CLTestKey& shared_pk()
     {
-        if (!m_psk_ready) {
-            if (!m_psk.generate_for_testing(1024))
-                throw std::runtime_error("Paillier keygen failed");
-            m_ppk.reset(new dao::PaillierPublicKey(m_psk.public_key()));
-            m_psk_ready = true;
+        if (!m_cl_key_ready) {
+            if (!v2test::make_cl_test_key(m_cl_key, 0xC1UL))
+                throw std::runtime_error("CL keygen failed");
+            m_cl_key_ready = true;
         }
-        return *m_ppk;
+        return m_cl_key;
     }
 
     bool apply(const ValidVote& fx)

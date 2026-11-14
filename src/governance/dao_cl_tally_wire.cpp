@@ -73,6 +73,69 @@ bool dao_cl_ciphertext_from_wire(const BICYCL::CL_HSMqk& cl,
     return true;
 }
 
+// Both helpers use the deterministic forms (explicit randomness r = 0
+// or r = 1) so that re-applying the same operation on the same inputs
+// reproduces byte-identical ciphertexts. Rerandomizing add/inverse
+// breaks byte-level rollback equality, which the DAO consensus relies
+// on when reverting a vote contribution.
+// Both helpers use r = 0 so that no h^r / pk^r factor is introduced.
+// That makes add and inverse pure, deterministic class-group operations:
+//   inverse(ct) = (c1^-1, c2^-1)
+//   add(a,b)    = (a.c1*b.c1, a.c2*b.c2)
+// so that inverse+add restores the canonical (1, 1) identity when the
+// aggregate is emptied. r != 0 would multiply by h^r and pk^r and make
+// byte-for-byte rollback impossible.
+bool dao_cl_ciphertext_inverse(const BICYCL::CL_HSMqk& cl,
+                               const BICYCL::CL_HSMqk::PublicKey& pk,
+                               const BICYCL::CL_HSMqk::CipherText& ct,
+                               BICYCL::RandGen& rng,
+                               BICYCL::CL_HSMqk::CipherText& out)
+{
+    (void)rng;
+    try {
+        BICYCL::Mpz minus_one(-1L);
+        out = cl.scal_ciphertexts(pk, ct, minus_one, BICYCL::Mpz(0UL));
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool dao_cl_ciphertext_add(const BICYCL::CL_HSMqk& cl,
+                           const BICYCL::CL_HSMqk::PublicKey& pk,
+                           const BICYCL::CL_HSMqk::CipherText& a,
+                           const BICYCL::CL_HSMqk::CipherText& b,
+                           BICYCL::RandGen& rng,
+                           BICYCL::CL_HSMqk::CipherText& out)
+{
+    (void)rng;
+    try {
+        out = cl.add_ciphertexts(pk, a, b, BICYCL::Mpz(0UL));
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool dao_cl_ciphertext_is_zero_wire(const BICYCL::CL_HSMqk& cl,
+                                    const BICYCL::CL_HSMqk::PublicKey& pk,
+                                    const std::vector<uint8_t>& wire)
+{
+    (void)pk;
+    if (wire.empty()) return false;
+    try {
+        BICYCL::CL_HSMqk::CipherText parsed;
+        if (!dao_cl_ciphertext_from_wire(cl, wire, parsed)) return false;
+        // Canonical identity ciphertext: c1 == Cl_G().one(),
+        // c2 == Cl_Delta().one().
+        const BICYCL::QFI one_G     = cl.Cl_G().one();
+        const BICYCL::QFI one_Delta = cl.Cl_Delta().one();
+        return parsed.c1() == one_G && parsed.c2() == one_Delta;
+    } catch (...) {
+        return false;
+    }
+}
+
 } // namespace dao
 } // namespace cryptonote
 

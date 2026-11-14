@@ -43,6 +43,7 @@
 #include "governance/dao_tally.h"
 #include "governance/dao_supply.h"
 #include "governance/dao_paillier.h"
+#include "v2_vote_builder.h"
 #include "governance/dao_dkg_transport.h"
 #include "governance/dao_dkg.h"
 #include "governance/vote_proof_v2.h"
@@ -854,57 +855,40 @@ bool build_v2_vote_fixture(V2VoteFixture& fx, const std::string& tag)
 
     fx.miner_acc.generate();
 
-    // 3-party bootstrap DKG for a real key record.
-    std::vector<crypto::public_key> cps;
-    std::vector<crypto::secret_key> css;
-    for (int i = 0; i < 3; ++i) {
-        crypto::public_key pk; crypto::secret_key sk;
-        crypto::generate_keys(pk, sk);
-        cps.push_back(pk); css.push_back(sk);
-    }
-    {
-        std::vector<size_t> idx = {0,1,2};
-        std::sort(idx.begin(), idx.end(), [&](size_t x, size_t y){
-            return std::memcmp(cps[x].data, cps[y].data, 32) < 0; });
-        std::vector<crypto::public_key> p2;
-        std::vector<crypto::secret_key> s2;
-        for (auto i : idx) { p2.push_back(cps[i]); s2.push_back(css[i]); }
-        cps = std::move(p2); css = std::move(s2);
-    }
-    fx.node->core->set_node_key(css[0]);
+    // CL test key. No DKG needed: the fixture installs a ready CL key
+    // record directly so that vote verification finds the context.
+    v2test::CLTestKey cl_key;
+    if (!v2test::make_cl_test_key(cl_key, 0x5A5AUL)) return false;
 
-    dao_vss_group vss;
-    if (!dao_vss_group_generate(vss,
-            dao_dkg_required_vss_bits(60, 128, 32)))
-        return false;
-    dkg_inproc_network inet = dkg_make_inproc_network(3, nullptr);
-    std::vector<std::unique_ptr<dkg_transport>> pool;
-    for (auto& e : inet.endpoints) pool.push_back(std::move(e));
-    size_t next = 0;
-    dkg_transport_factory factory =
-        [&pool, &next](uint32_t) -> std::unique_ptr<dkg_transport> {
-            if (next >= pool.size()) return nullptr;
-            return std::move(pool[next++]);
-        };
-    dkg_config cfg;
-    cfg.committee_size = 3;
-    cfg.threshold      = dao_dkg_expected_threshold(3);
-    cfg.member_ids     = cps;
-    cfg.k              = 60;
-    cfg.target_N_bits  = 128;
-    cfg.security_bits  = 32;
-    cfg.qproof_rounds  = DAO_DKG_QPROOF_ROUNDS_TEST;
-    cfg.max_attempts   = 1;
-    cfg.test_seed      = 0x5645494C52544F33ULL;
-    cfg.local_party_id = 1;
-    dkg_result dkg_out;
-    if (!dkg_run_with_transport(cfg, factory, dkg_out)) return false;
-    if (!dkg_out.candidate_accepted) return false;
-    if (dkg_out.record.key_id.size() != 32) return false;
-    if (dkg_out.record.N.size() != 256) return false;
-    fx.key_rec = dkg_out.record;
-    bc_a.install_dao_tally_key_for_proposal_for_test(
-        dkg_out.record, dkg_out.local_secret_share);
+    // A node key is still required by the block-apply path.
+    crypto::public_key node_pk; crypto::secret_key node_sk;
+    crypto::generate_keys(node_pk, node_sk);
+    fx.node->core->set_node_key(node_sk);
+
+    {
+        dao::dao_tally_key_record rec{};
+        rec.version        = 1;
+        rec.committee_size = 3;
+        rec.threshold      = 2;
+        rec.t              = 1;
+        rec.committee_id_hash.assign(32, 0);
+        rec.committee_members.assign(3, std::vector<uint8_t>(32, 0));
+        // Placeholders: the legacy serializer still requires these
+        // sizes. They carry no meaning on the CL path.
+        rec.delta.assign(32, 0);
+        rec.N.assign(256, 0);
+        rec.G.assign(256, 0);
+        rec.theta.assign(256, 0);
+        rec.V.assign(512, 0);
+        rec.V_K_i.assign(3, std::vector<uint8_t>(512, 0));
+        rec.cl_modulus = cl_key.context_wire;
+        rec.activation_height = 1;
+        rec.dkg_transcript_hash.assign(32, 0);
+        rec.key_id.assign(32, 0);
+        std::memset(rec.key_id.data(), 0x5A, 32);
+        fx.key_rec = rec;
+        bc_a.install_dao_tally_key_for_proposal_for_test(rec, {});
+    }
 
     // Mine empty blocks so real coinbase outputs exist.
     for (int i = 0; i < 5; ++i) {
@@ -1042,7 +1026,7 @@ bool build_v2_vote_fixture(V2VoteFixture& fx, const std::string& tag)
     // uses. The fixture keeps the proof for later assertions.
     if (!dao::build_dao_v2_vote_tx(
             fx.prop_id, prop_submit, fx.vote_height, fx.tally_key_id,
-            fx.key_rec.N, /*direction=YES*/ 0,
+            cl_key.context_wire, /*direction=YES*/ 0,
             std::vector<dao::dao_v2_vote_output>{vo}, fx.vote_tx))
         return false;
 
@@ -1400,7 +1384,7 @@ TEST(DaoV2Replay, DuplicateV2VoteNullifierRejected)
     transaction tx2{};
     ASSERT_TRUE(dao::build_dao_v2_vote_tx(
         fx.prop_id, fx.prop_submit, fx.vote_height + 1,
-        fx.tally_key_id, fx.key_rec.N, /*direction=YES*/ 0,
+        fx.tally_key_id, fx.key_rec.cl_modulus, /*direction=YES*/ 0,
         std::vector<dao::dao_v2_vote_output>{fx.vote_output}, tx2));
 
     vote_proof_v2 proof2;
