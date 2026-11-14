@@ -595,6 +595,15 @@ struct dao_share_set_record
     std::vector<uint32_t>                 contributor_indices;
     std::vector<std::vector<uint8_t>>     contributor_vk;  // base set VK_i
 
+    // CL share-set material. Empty for Paillier records. When both
+    // are empty, the record is emitted as v2 (Paillier-compatible
+    // format). When populated, the record is emitted as v3, which
+    // carries no Paillier VK_i and no Paillier reshare evidence; the
+    // public verification state is the serialized CL Gamma map plus
+    // the sorted qualified participant ids.
+    std::vector<uint8_t>  cl_gammas_serialized;
+    std::vector<uint32_t> qualified_ids;
+
     bool serialize(std::vector<uint8_t>& out) const;
     bool deserialize(const std::vector<uint8_t>& in);
 };

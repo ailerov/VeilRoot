@@ -1629,10 +1629,39 @@ bool dao_share_set_record::serialize(std::vector<uint8_t>& out) const
     if (key_id.size() != 32) return false;
     if (committee_id_hash.size() != 32) return false;
     if (committee_members.size() == 0) return false;
-    if (committee_members.size() != VK_i.size()) return false;
     if (threshold == 0 || threshold > committee_members.size()) return false;
     for (const auto& m : committee_members)
         if (m.size() != 32) return false;
+
+    // CL share-set wire format v3. Emitted only when the record
+    // carries CL material; Paillier-only records stay on v2 so that
+    // existing on-disk state and historical decoding are unchanged.
+    const bool is_cl =
+        !cl_gammas_serialized.empty() || !qualified_ids.empty();
+    if (is_cl) {
+        if (cl_gammas_serialized.empty()) return false;
+        for (uint32_t q : qualified_ids)
+            if (q >= committee_members.size()) return false;
+        for (size_t i = 1; i < qualified_ids.size(); ++i)
+            if (qualified_ids[i] <= qualified_ids[i - 1]) return false;
+
+        out.clear();
+        push_u32(out, 3);
+        push_u64(out, share_set_id);
+        push_u64(out, height);
+        push_u32(out, threshold);
+        push_bytes(out, key_id);
+        push_bytes(out, committee_id_hash);
+        push_u32(out, static_cast<uint32_t>(committee_members.size()));
+        for (const auto& m : committee_members) push_bytes(out, m);
+        push_u64(out, base_share_set_id);
+        push_bytes(out, cl_gammas_serialized);
+        push_u32(out, static_cast<uint32_t>(qualified_ids.size()));
+        for (uint32_t q : qualified_ids) push_u32(out, q);
+        return true;
+    }
+
+    if (committee_members.size() != VK_i.size()) return false;
     for (const auto& vk : VK_i)
         if (vk.size() != PAILLIER_CT_BYTES) return false;
 
@@ -1663,8 +1692,48 @@ bool dao_share_set_record::deserialize(const std::vector<uint8_t>& in)
     size_t off = 0;
     uint32_t v = 0;
     if (!pull_u32(in, off, v)) return false;
-    if (v != 1 && v != 2) return false;
+    if (v != 1 && v != 2 && v != 3) return false;
     version = v;
+
+    if (v == 3) {
+        // v3 CL layout.
+        cl_gammas_serialized.clear();
+        qualified_ids.clear();
+        VK_i.clear();
+        contributions.clear();
+        contributor_indices.clear();
+        contributor_vk.clear();
+        if (!pull_u64(in, off, share_set_id)) return false;
+        if (!pull_u64(in, off, height)) return false;
+        if (!pull_u32(in, off, threshold)) return false;
+        if (!pull_bytes(in, off, key_id)) return false;
+        if (key_id.size() != 32) return false;
+        if (!pull_bytes(in, off, committee_id_hash)) return false;
+        if (committee_id_hash.size() != 32) return false;
+        uint32_t n = 0;
+        if (!pull_u32(in, off, n)) return false;
+        if (n == 0 || n > 64) return false;
+        committee_members.assign(n, {});
+        for (uint32_t i = 0; i < n; ++i) {
+            if (!pull_bytes(in, off, committee_members[i])) return false;
+            if (committee_members[i].size() != 32) return false;
+        }
+        if (!pull_u64(in, off, base_share_set_id)) return false;
+        if (!pull_bytes(in, off, cl_gammas_serialized)) return false;
+        if (cl_gammas_serialized.empty()) return false;
+        uint32_t nq = 0;
+        if (!pull_u32(in, off, nq)) return false;
+        if (nq == 0 || nq > 64) return false;
+        qualified_ids.assign(nq, 0);
+        for (uint32_t i = 0; i < nq; ++i) {
+            if (!pull_u32(in, off, qualified_ids[i])) return false;
+            if (qualified_ids[i] >= committee_members.size()) return false;
+            if (i > 0 && qualified_ids[i] <= qualified_ids[i - 1]) return false;
+        }
+        if (threshold == 0 || threshold > committee_members.size())
+            return false;
+        return off == in.size();
+    }
     if (!pull_u64(in, off, share_set_id)) return false;
     if (!pull_u64(in, off, height)) return false;
     if (!pull_u32(in, off, threshold)) return false;
