@@ -3,6 +3,8 @@
 
 #include "governance/dao_cl_consistency.h"
 
+#include <openssl/sha.h>
+
 #ifdef VEILROOT_ENABLE_CL
 
 #include <cstring>
@@ -561,6 +563,42 @@ bool dao_cl_consistency_prove(
 // Public: verify
 // ============================================================
 
+// Shared helper: build the W_MAX Mpz once.
+static Mpz weighted_max_mpz()
+{
+    unsigned __int128 wmax = DAO_WEIGHTED_MAX;
+    std::vector<uint8_t> be;
+    uint64_t lo = static_cast<uint64_t>(wmax);
+    uint64_t hi = static_cast<uint64_t>(wmax >> 64);
+    for (int i = 7; i >= 0; --i) {
+        uint8_t b = (hi >> (8*i)) & 0xff;
+        if (!be.empty() || b != 0) be.push_back(b);
+    }
+    for (int i = 7; i >= 0; --i) {
+        uint8_t b = (lo >> (8*i)) & 0xff;
+        if (!be.empty() || b != 0) be.push_back(b);
+    }
+    return mpz_from_bytes_be(be.data(), be.size());
+}
+
+bool dao_cl_consistency_check_modulus(const BICYCL::CL_HSMqk& CL)
+{
+    // Invariant 1: CL plaintext modulus equals the RingCT scalar order.
+    std::array<uint8_t, 32> be{};
+    const rct::key L = rct::curveOrder();
+    for (size_t i = 0; i < 32; ++i) be[i] = L.bytes[31 - i];
+    Mpz expect_q(std::vector<uint8_t>(be.begin(), be.end()));
+    if (CL.q() != expect_q) return false;
+
+    // Invariant 2: 2 * W_MAX < q so centred decoding is unambiguous.
+    Mpz wmax = weighted_max_mpz();
+    Mpz two_wmax;
+    Mpz::add(two_wmax, wmax, wmax);
+    if (!(two_wmax < CL.q())) return false;
+
+    return true;
+}
+
 bool dao_cl_consistency_verify(
     const CL_HSMqk& CL,
     const CL_HSMqk::PublicKey& pk,
@@ -569,6 +607,7 @@ bool dao_cl_consistency_verify(
     const dao_consistency_context& ctx,
     const dao_cl_pedersen_proof& proof)
 try {
+    if (!dao_cl_consistency_check_modulus(CL)) return false;
     // Group membership.
     if (pk.elt().discriminant() != CL.Cl_G().discriminant()) return false;
     if (CL.genus(pk.elt()) != CL_HSMqk::Genus({1, 1})) return false;
@@ -803,6 +842,245 @@ bool dao_cl_pedersen_proof::deserialize(const std::vector<uint8_t>& in)
     off += range_len;
     if (!range.deserialize(range_bytes)) return false;
     return off == in.size();
+}
+
+// ============================================================
+// DLogEq-only (no-range) consistency proof
+// ============================================================
+
+bool dao_cl_pedersen_proof_no_range::serialize(std::vector<uint8_t>& out) const
+{
+    out.clear();
+    qfi_to_bytes(out, A1);
+    qfi_to_bytes(out, A2);
+    out.insert(out.end(), A3.bytes, A3.bytes + 32);
+    out.insert(out.end(), e.begin(), e.end());
+    if (z_r.sgn() < 0) return false;
+    auto zr_be = mpz_to_bytes_be(z_r);
+    u32_be_append(out, static_cast<uint32_t>(zr_be.size()));
+    out.insert(out.end(), zr_be.begin(), zr_be.end());
+    out.insert(out.end(), z_W.bytes,   z_W.bytes   + 32);
+    out.insert(out.end(), z_rho.bytes, z_rho.bytes + 32);
+    return true;
+}
+
+bool dao_cl_pedersen_proof_no_range::deserialize(const std::vector<uint8_t>& in)
+{
+    size_t off = 0;
+    auto qfi_read = [&](QFI& out_qfi) -> bool {
+        Mpz a, b, c;
+        if (!mpz_from_bytes_signed(in, off, a, false)) return false;
+        if (!mpz_from_bytes_signed(in, off, b, true))  return false;
+        if (!mpz_from_bytes_signed(in, off, c, false)) return false;
+        try { out_qfi = QFI(a, b, c); } catch (...) { return false; }
+        return true;
+    };
+    if (!qfi_read(A1)) return false;
+    if (!qfi_read(A2)) return false;
+    if (off + 32 > in.size()) return false;
+    std::memcpy(A3.bytes, in.data() + off, 32); off += 32;
+    if (off + 32 > in.size()) return false;
+    std::memcpy(e.data(), in.data() + off, 32); off += 32;
+    uint32_t zr_len = 0;
+    if (!u32_be_read(in, off, zr_len)) return false;
+    if (off + zr_len > in.size()) return false;
+    if (zr_len > 0 && in[off] == 0) return false;
+    z_r = mpz_from_bytes_be(in.data() + off, zr_len);
+    off += zr_len;
+    if (off + 32 > in.size()) return false;
+    std::memcpy(z_W.bytes, in.data() + off, 32); off += 32;
+    if (off + 32 > in.size()) return false;
+    std::memcpy(z_rho.bytes, in.data() + off, 32); off += 32;
+    return off == in.size();
+}
+
+bool dao_cl_consistency_prove_no_range(
+    const CL_HSMqk& CL,
+    const CL_HSMqk::PublicKey& pk,
+    const CL_HSMqk::CipherText& ct,
+    const Mpz& plaintext,
+    const Mpz& r,
+    const rct::key& C,
+    const rct::key& rho,
+    const dao_consistency_context& ctx,
+    RandGen& randgen,
+    dao_cl_pedersen_proof_no_range& proof)
+{
+    // Plaintext must be the canonical residue in Z_q.
+    if (plaintext.sgn() < 0) return false;
+    if (!(plaintext < CL.M())) return false;
+
+    // Sample nonces.
+    Mpz R = CL.encrypt_randomness_bound();
+    Mpz bound_r;
+    Mpz::mulby2k(bound_r, R, 256u + CL.lambda_distance());
+    Mpz a_r = randgen.random_mpz(bound_r);
+    Mpz a_W = randgen.random_mpz(CL.M());
+    rct::key a_rho = rct::skGen();
+
+    // A1 = h^a_r, A2 = f^a_W · pk^a_r
+    CL_HSMqk::ClearText a_clear(CL, a_W);
+    CL_HSMqk::CipherText A_ct(CL, pk, a_clear, a_r);
+    proof.A1 = A_ct.c1();
+    proof.A2 = A_ct.c2();
+
+    // A3 = a_W·H + a_rho·G
+    rct::key a_W_scalar;
+    if (!mpz_to_rct_scalar(a_W, CL.M(), a_W_scalar)) return false;
+    {
+        rct::key aW_H, a_rho_G;
+        aW_H = rct::scalarmultH(a_W_scalar);
+        rct::scalarmultBase(a_rho_G, a_rho);
+        rct::addKeys(proof.A3, aW_H, a_rho_G);
+    }
+
+    // Challenge.
+    Mpz e_mpz;
+    std::array<uint8_t, 32> digest;
+    if (!hash_challenge(CL, pk, ct, proof.A1, proof.A2, C, proof.A3, ctx,
+                        e_mpz, digest)) return false;
+    proof.e = digest;
+
+    Mpz e_mod_q;
+    Mpz::mod(e_mod_q, e_mpz, CL.M());
+    rct::key e_mod_q_scalar;
+    if (!mpz_to_rct_scalar(e_mod_q, CL.M(), e_mod_q_scalar)) return false;
+
+    // z_r = a_r + e·r
+    Mpz z_r_tmp;
+    Mpz::mul(z_r_tmp, e_mpz, r);
+    Mpz::add(proof.z_r, a_r, z_r_tmp);
+
+    // z_W = (a_W + e·plaintext) mod q
+    {
+        rct::key W_scalar;
+        if (!mpz_to_rct_scalar(plaintext, CL.M(), W_scalar)) return false;
+        sc_muladd(proof.z_W.bytes, e_mod_q_scalar.bytes, W_scalar.bytes,
+                                    a_W_scalar.bytes);
+    }
+
+    // z_rho = a_rho + (e mod q)·rho mod q
+    sc_muladd(proof.z_rho.bytes, e_mod_q_scalar.bytes, rho.bytes,
+                                 a_rho.bytes);
+    return true;
+}
+
+bool dao_cl_consistency_verify_no_range(
+    const CL_HSMqk& CL,
+    const CL_HSMqk::PublicKey& pk,
+    const CL_HSMqk::CipherText& ct,
+    const rct::key& C,
+    const dao_consistency_context& ctx,
+    const dao_cl_pedersen_proof_no_range& proof)
+try {
+    if (!dao_cl_consistency_check_modulus(CL)) return false;
+
+    // Group membership.
+    if (pk.elt().discriminant() != CL.Cl_G().discriminant()) return false;
+    if (CL.genus(pk.elt()) != CL_HSMqk::Genus({1, 1})) return false;
+    if (ct.c1().discriminant() != CL.Cl_G().discriminant()) return false;
+    if (CL.genus(ct.c1()) != CL_HSMqk::Genus({1, 1})) return false;
+    if (ct.c2().discriminant() != CL.Cl_Delta().discriminant()) return false;
+    if (CL.genus(ct.c2()) != CL_HSMqk::Genus({1, 1})) return false;
+    if (proof.A1.discriminant() != CL.Cl_G().discriminant()) return false;
+    if (proof.A2.discriminant() != CL.Cl_Delta().discriminant()) return false;
+
+    // Response bound on z_r.
+    {
+        Mpz R = CL.encrypt_randomness_bound();
+        Mpz z_max;
+        Mpz Rc, Rd;
+        Mpz::mulby2k(Rc, R, 256u);
+        Mpz::mulby2k(Rd, Rc, CL.lambda_distance());
+        Mpz::add(z_max, Rd, Rc);
+        if (proof.z_r.sgn() < 0) return false;
+        if (proof.z_r > z_max) return false;
+    }
+
+    // Challenge.
+    Mpz e_mpz;
+    std::array<uint8_t, 32> digest;
+    if (!hash_challenge(CL, pk, ct, proof.A1, proof.A2, C, proof.A3, ctx,
+                        e_mpz, digest)) return false;
+    if (std::memcmp(digest.data(), proof.e.data(), 32) != 0) return false;
+
+    Mpz e_mod_q;
+    Mpz::mod(e_mod_q, e_mpz, CL.M());
+    rct::key e_mod_q_scalar;
+    if (!mpz_to_rct_scalar(e_mod_q, CL.M(), e_mod_q_scalar)) return false;
+
+    // CL equation 1: h^z_r == A1 · c1^e
+    {
+        QFI lhs, rhs_part, rhs;
+        CL.power_of_h(lhs, proof.z_r);
+        CL.Cl_G().nupow(rhs_part, ct.c1(), e_mpz);
+        CL.Cl_G().nucomp(rhs, proof.A1, rhs_part);
+        if (!(lhs == rhs)) return false;
+    }
+
+    // CL equation 2: pk^z_r · f^z_W == A2 · c2^e
+    {
+        QFI pk_zr;
+        pk.exponentiation(CL, pk_zr, proof.z_r);
+        if (CL.compact_variant())
+            CL.from_Cl_DeltaK_to_Cl_Delta(pk_zr);
+
+        Mpz z_W_mpz = rct_scalar_to_mpz(proof.z_W);
+        QFI f_zw = CL.power_of_f(z_W_mpz);
+
+        QFI lhs;
+        CL.Cl_Delta().nucomp(lhs, pk_zr, f_zw);
+
+        QFI rhs_part, rhs;
+        CL.Cl_Delta().nupow(rhs_part, ct.c2(), e_mpz);
+        CL.Cl_Delta().nucomp(rhs, proof.A2, rhs_part);
+
+        if (!(lhs == rhs)) return false;
+    }
+
+    // Curve equation: z_W·H + z_rho·G == A3 + e·C
+    {
+        rct::key zW_H, zrho_G, lhs;
+        zW_H   = rct::scalarmultH(proof.z_W);
+        rct::scalarmultBase(zrho_G, proof.z_rho);
+        rct::addKeys(lhs, zW_H, zrho_G);
+        rct::key eC, rhs;
+        rct::scalarmultKey(eC, C, e_mod_q_scalar);
+        rct::addKeys(rhs, proof.A3, eC);
+        if (!(lhs == rhs)) return false;
+    }
+
+    return true;
+}
+catch (...) {
+    return false;
+}
+
+std::vector<uint8_t> dao_cl_extra_binding(
+    const std::vector<uint8_t>& E_W,
+    const std::vector<uint8_t>& E_S,
+    const std::vector<uint8_t>& proof_W_bytes,
+    const std::vector<uint8_t>& proof_S_bytes)
+{
+    std::vector<uint8_t> buf;
+    const char* dom = "VeilRoot-DAO-CL-EXTRA-V1";
+    buf.insert(buf.end(), dom, dom + std::strlen(dom));
+
+    auto push_vec = [&](const std::vector<uint8_t>& v) {
+        buf.push_back(static_cast<uint8_t>((v.size() >> 24) & 0xff));
+        buf.push_back(static_cast<uint8_t>((v.size() >> 16) & 0xff));
+        buf.push_back(static_cast<uint8_t>((v.size() >>  8) & 0xff));
+        buf.push_back(static_cast<uint8_t>( v.size()        & 0xff));
+        buf.insert(buf.end(), v.begin(), v.end());
+    };
+    push_vec(E_W);
+    push_vec(E_S);
+    push_vec(proof_W_bytes);
+    push_vec(proof_S_bytes);
+
+    unsigned char digest[32];
+    SHA256(buf.data(), buf.size(), digest);
+    return std::vector<uint8_t>(digest, digest + 32);
 }
 
 } // namespace dao

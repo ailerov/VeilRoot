@@ -167,6 +167,7 @@ if(VEILROOT_ENABLE_CL)
   list(APPEND unit_tests_sources dao_dkg_activation_v3.cpp)
   list(APPEND unit_tests_sources dao_cl_tally_share.cpp)
   list(APPEND unit_tests_sources dao_tally_key_record_v1.cpp)
+  list(APPEND unit_tests_sources dao_cl_consistency_no_range.cpp)
   list(APPEND unit_tests_sources dao_cl_reshare.cpp)
 endif()
 

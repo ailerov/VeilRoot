@@ -39,6 +39,14 @@ bool dao_cl_partial_decryption_deserialize(
     BICYCL::QFI& proof_R1,
     BICYCL::QFI& proof_R2);
 
+// Canonical CL ciphertext wire: QFI(c1) || QFI(c2).
+bool dao_cl_ciphertext_to_wire(const BICYCL::CL_HSMqk::CipherText& ct,
+                               std::vector<uint8_t>& out);
+
+bool dao_cl_ciphertext_from_wire(const BICYCL::CL_HSMqk& cl,
+                                 const std::vector<uint8_t>& in,
+                                 BICYCL::CL_HSMqk::CipherText& out);
+
 } // namespace dao
 } // namespace cryptonote
 

@@ -45,6 +45,34 @@ bool dao_cl_partial_decryption_deserialize(
     return off == in.size();
 }
 
+bool dao_cl_ciphertext_to_wire(const BICYCL::CL_HSMqk::CipherText& ct,
+                               std::vector<uint8_t>& out)
+{
+    out.clear();
+    if (!cl_dkg_qfi_to_bytes(out, ct.c1())) return false;
+    if (!cl_dkg_qfi_to_bytes(out, ct.c2())) return false;
+    return true;
+}
+
+bool dao_cl_ciphertext_from_wire(const BICYCL::CL_HSMqk& cl,
+                                 const std::vector<uint8_t>& in,
+                                 BICYCL::CL_HSMqk::CipherText& out)
+{
+    std::size_t off = 0;
+    BICYCL::QFI c1, c2;
+    if (!cl_dkg_qfi_from_bytes(in, off, c1, cl.Cl_G().discriminant()))
+        return false;
+    if (!cl_dkg_qfi_from_bytes(in, off, c2, cl.Cl_Delta().discriminant()))
+        return false;
+    if (off != in.size()) return false;
+    try {
+        out = BICYCL::CL_HSMqk::CipherText(cl, c1, c2);
+    } catch (...) {
+        return false;
+    }
+    return true;
+}
+
 } // namespace dao
 } // namespace cryptonote
 
