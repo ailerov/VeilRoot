@@ -685,10 +685,20 @@ struct dao_dkg_key_attestation
 
 struct dao_dkg_key_activation
 {
-    uint32_t                    version          = 2;
+    // Version 3 carries the initial CL share set alongside the key
+    // record. Version 2 is the legacy Paillier-compatible form and
+    // omits the share set. New producers always emit v3.
+    uint32_t                    version          = 3;
     uint64_t                    selection_height = 0;
     crypto::hash                proposal_id{};
     dao_tally_key_record        record;
+
+    // v3 only. Carries the CL public verification state for the
+    // initial DKG committee so that validators can install the exact
+    // share set the DKG produced, without re-deriving Gamma values.
+    // Left default-constructed in v2.
+    dao_share_set_record        initial_share_set;
+
     std::vector<dao_dkg_key_attestation> attestations;
 
     bool serialize(std::vector<uint8_t>& out) const;
@@ -703,6 +713,17 @@ crypto::hash dao_dkg_activation_digest(
     const crypto::hash& genesis_block_hash,
     uint64_t selection_height,
     const dao_tally_key_record& record,
+    const crypto::hash& proposal_id);
+
+// v3 activation digest. Same construction as the v2 digest but
+// binds the initial CL share set in addition to the key record.
+// Producers that emit v3 activation payloads sign this digest;
+// validators that accept v3 use it for verification.
+crypto::hash dao_dkg_activation_digest_v3(
+    const crypto::hash& genesis_block_hash,
+    uint64_t selection_height,
+    const dao_tally_key_record& record,
+    const dao_share_set_record& initial_share_set,
     const crypto::hash& proposal_id);
 
 // Local share envelope. The share is stored together with the

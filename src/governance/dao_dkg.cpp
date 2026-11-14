@@ -1954,6 +1954,37 @@ crypto::hash dao_dkg_activation_digest(
     return h;
 }
 
+crypto::hash dao_dkg_activation_digest_v3(
+    const crypto::hash& genesis_block_hash,
+    uint64_t selection_height,
+    const dao_tally_key_record& record,
+    const dao_share_set_record& initial_share_set,
+    const crypto::hash& proposal_id)
+{
+    std::vector<uint8_t> body;
+    const char* dom = "VeilRoot-DAO-DKG-KEY-ACTIVATION-V3";
+    body.insert(body.end(), dom, dom + std::strlen(dom));
+    body.insert(body.end(), genesis_block_hash.data,
+                genesis_block_hash.data + sizeof(genesis_block_hash.data));
+    for (int i = 0; i < 8; ++i)
+        body.push_back((selection_height >> (8 * i)) & 0xff);
+    body.insert(body.end(), proposal_id.data, proposal_id.data + 32);
+
+    std::vector<uint8_t> rec_blob;
+    if (!record.serialize(rec_blob))
+        return crypto::null_hash;
+    body.insert(body.end(), rec_blob.begin(), rec_blob.end());
+
+    std::vector<uint8_t> ss_blob;
+    if (!initial_share_set.serialize(ss_blob))
+        return crypto::null_hash;
+    body.insert(body.end(), ss_blob.begin(), ss_blob.end());
+
+    crypto::hash h{};
+    crypto::cn_fast_hash(body.data(), body.size(), h);
+    return h;
+}
+
 // ====================================================================
 // dao_dkg_key_attestation
 // ====================================================================
@@ -1987,7 +2018,7 @@ bool dao_dkg_key_activation::serialize(std::vector<uint8_t>& out) const
 {
     out.clear();
 
-    if (version != 2) return false;
+    if (version != 2 && version != 3) return false;
     if (attestations.size() > 64) return false;
 
     // Validate attestation ordering before writing.
@@ -2007,6 +2038,12 @@ bool dao_dkg_key_activation::serialize(std::vector<uint8_t>& out) const
     out.insert(out.end(), proposal_id.data, proposal_id.data + 32);
     push_bytes(out, rec_blob);
 
+    if (version == 3) {
+        std::vector<uint8_t> ss_blob;
+        if (!initial_share_set.serialize(ss_blob)) return false;
+        push_bytes(out, ss_blob);
+    }
+
     push_u32(out, static_cast<uint32_t>(attestations.size()));
     for (const auto& a : attestations) {
         push_u32(out, a.member_index);
@@ -2020,8 +2057,9 @@ bool dao_dkg_key_activation::deserialize(const std::vector<uint8_t>& in)
     size_t off = 0;
     uint32_t v = 0;
     if (!pull_u32(in, off, v)) return false;
-    if (v != 2) return false;
+    if (v != 2 && v != 3) return false;
     version = v;
+    initial_share_set = dao_share_set_record{};
     if (!pull_u64(in, off, selection_height)) return false;
     if (off + 32 > in.size()) return false;
     std::memcpy(proposal_id.data, in.data() + off, 32);
@@ -2030,6 +2068,12 @@ bool dao_dkg_key_activation::deserialize(const std::vector<uint8_t>& in)
     std::vector<uint8_t> rec_blob;
     if (!pull_bytes(in, off, rec_blob)) return false;
     if (!record.deserialize(rec_blob)) return false;
+
+    if (v == 3) {
+        std::vector<uint8_t> ss_blob;
+        if (!pull_bytes(in, off, ss_blob)) return false;
+        if (!initial_share_set.deserialize(ss_blob)) return false;
+    }
 
     uint32_t n = 0;
     if (!pull_u32(in, off, n)) return false;
