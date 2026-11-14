@@ -3459,7 +3459,8 @@ struct COMMAND_RPC_PUBLISH_NOSTR_EVENT
     {
       uint32_t    version;
       std::string key_id;    // hex, 32 bytes
-      std::string modulus;   // hex, 256 bytes (Paillier N)
+      std::string modulus;   // hex, 256 bytes (legacy; empty for CL records)
+      std::string cl_key_context;  // hex, canonical CL key context wire
 
       BEGIN_KV_SERIALIZE_MAP()
         KV_SERIALIZE_PARENT(rpc_response_base)
