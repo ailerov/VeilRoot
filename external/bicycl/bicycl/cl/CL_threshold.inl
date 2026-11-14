@@ -1714,6 +1714,23 @@ namespace BICYCL
     Gamma_ = Gamma;
   }
 
+  inline
+  void CL_Threshold_Static::install_public_state(
+      const CL_HSMqk &CL_Hsmq,
+      const PublicKey &public_key,
+      const ParticipantsValueMap<QFI> &gammas,
+      const ParticipantsSet &qualified_players)
+  {
+    (void)CL_Hsmq;
+    for (unsigned int j : qualified_players)
+      if (gammas.find(j) == gammas.end())
+        throw std::invalid_argument(
+            "install_public_state: missing Gamma for qualified player");
+    pk_ = public_key;
+    Gamma_ = gammas;
+    QualifiedPlayersSet_ = qualified_players;
+  }
+
   inline bool CL_Threshold_Static::serialize_secret_share
       (std::vector<uint8_t> &out) const
   {

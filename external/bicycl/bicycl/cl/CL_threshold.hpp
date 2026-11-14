@@ -696,6 +696,16 @@ class CL_Threshold_Static
     void finalize_reshare (const CL_HSMqk & CL,
                            const PublicKey & expected_old_pk);
 
+    // Install only the public decryption state: public key, per-member
+    // Gamma values and the qualified player set. Used by verifiers that
+    // hold no secret share. The set and map must be mutually consistent:
+    // every qualified player id must have a Gamma entry.
+    void install_public_state(
+        const CL_HSMqk & CL_Hsmq,
+        const PublicKey & public_key,
+        const ParticipantsValueMap<QFI> & gammas,
+        const ParticipantsSet & qualified_players);
+
   private:
 
     /**

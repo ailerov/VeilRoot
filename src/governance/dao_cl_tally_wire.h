@@ -21,6 +21,7 @@
 #include "bicycl/bicycl/arith/gmp_extras.hpp"
 #include "bicycl/bicycl/arith/qfi.hpp"
 #include "bicycl/bicycl/proofs/CL_HSMqk_DlogEq_AoK.hpp"
+#include "bicycl/bicycl/cl/CL_threshold.hpp"
 
 namespace cryptonote {
 namespace dao {
@@ -77,6 +78,32 @@ bool dao_cl_ciphertext_add(const BICYCL::CL_HSMqk& cl,
 bool dao_cl_ciphertext_is_zero_wire(const BICYCL::CL_HSMqk& cl,
                                     const BICYCL::CL_HSMqk::PublicKey& pk,
                                     const std::vector<uint8_t>& wire);
+
+// Verify one CL partial decryption against the given committee member's
+// public verification value Gamma and the aggregate ciphertext.
+//   D:            key lifetime interpolation scale from cl_key_context
+//   gamma_i:      the member's Gamma from the active share set
+//   partial_wire: canonical output of dao_cl_partial_decryption_serialize
+//   ct:           the aggregate ciphertext this partial claims to open
+// Returns true if the DLogEq proof is valid.
+bool dao_cl_partial_decryption_verify(
+    const BICYCL::CL_HSMqk& cl,
+    const BICYCL::CL_HSMqk::CipherText& ct,
+    const BICYCL::Mpz& D,
+    const BICYCL::QFI& gamma_i,
+    const std::vector<uint8_t>& partial_wire);
+
+// Combine partial decryptions into the aggregate plaintext.
+bool dao_cl_partial_decryption_combine(
+    const BICYCL::CL_HSMqk& cl,
+    const BICYCL::CL_HSMqk::PublicKey& pk,
+    const BICYCL::CL_HSMqk::CipherText& ct,
+    const BICYCL::Mpz& D,
+    const std::vector<uint32_t>& member_ids,
+    const std::vector<std::vector<uint8_t>>& cl_partials,
+    const BICYCL::CL_Threshold_Static::ParticipantsValueMap<BICYCL::QFI>& gammas,
+    const BICYCL::CL_Threshold_Static::ParticipantsSet& qualified_ids,
+    BICYCL::Mpz& out_plaintext);
 
 } // namespace dao
 } // namespace cryptonote

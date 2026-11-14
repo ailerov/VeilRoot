@@ -7,6 +7,11 @@
 
 #include "governance/dao_cl_dkg_payload.h"
 
+#include "bicycl/bicycl/cl/CL_threshold.hpp"
+
+#include <algorithm>
+#include <random>
+
 namespace cryptonote {
 namespace dao {
 
@@ -131,6 +136,109 @@ bool dao_cl_ciphertext_is_zero_wire(const BICYCL::CL_HSMqk& cl,
         const BICYCL::QFI one_G     = cl.Cl_G().one();
         const BICYCL::QFI one_Delta = cl.Cl_Delta().one();
         return parsed.c1() == one_G && parsed.c2() == one_Delta;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool dao_cl_partial_decryption_verify(
+    const BICYCL::CL_HSMqk& cl,
+    const BICYCL::CL_HSMqk::CipherText& ct,
+    const BICYCL::Mpz& D,
+    const BICYCL::QFI& gamma_i,
+    const std::vector<uint8_t>& partial_wire)
+{
+    try {
+        BICYCL::QFI w, R1, R2;
+        BICYCL::Mpz u;
+        if (!dao_cl_partial_decryption_deserialize(
+                partial_wire, cl.Cl_G().discriminant(), w, u, R1, R2))
+            return false;
+
+        CLDlogEqAoKExposed proof(u, R1, R2);
+
+        BICYCL::Mpz delta2;
+        BICYCL::Mpz::mul(delta2, D, D);
+
+        BICYCL::QFI h_delta2;
+        cl.power_of_h(h_delta2, delta2);
+
+        BICYCL::QFI ct1_delta2;
+        cl.Cl_G().nupow(ct1_delta2, ct.c1(), delta2);
+
+        BICYCL::CL_Threshold_Static::PartialDecryption pd;
+        pd.w() = w;
+        pd.proof() = proof;
+        return pd.verify(cl, /*soundness_bytes=*/16,
+                         h_delta2, ct1_delta2, gamma_i);
+    } catch (...) {
+        return false;
+    }
+}
+
+bool dao_cl_partial_decryption_combine(
+    const BICYCL::CL_HSMqk& cl,
+    const BICYCL::CL_HSMqk::PublicKey& pk,
+    const BICYCL::CL_HSMqk::CipherText& ct,
+    const BICYCL::Mpz& D,
+    const std::vector<uint32_t>& member_ids,
+    const std::vector<std::vector<uint8_t>>& cl_partials,
+    const BICYCL::CL_Threshold_Static::ParticipantsValueMap<BICYCL::QFI>& gammas,
+    const BICYCL::CL_Threshold_Static::ParticipantsSet& qualified_ids,
+    BICYCL::Mpz& out_plaintext)
+{
+    if (member_ids.size() != cl_partials.size()) return false;
+    if (member_ids.empty()) return false;
+    if (member_ids.size() < 2) return false;
+
+    unsigned int n = 1;
+    for (uint32_t m : member_ids) n = std::max(n, m + 1u);
+    for (uint32_t q : qualified_ids) n = std::max(n, q + 1u);
+    if (n < 2) return false;
+    unsigned int t = static_cast<unsigned int>(member_ids.size() - 1u);
+    if (t >= n) t = n - 1u;
+
+    // Pick a valid player index for i_. It must not be in member_ids:
+    // BICYCL treats i_ as "self" and skips its verification check.
+    unsigned int i_dummy = 0;
+    while (i_dummy < n) {
+        bool clash = false;
+        for (uint32_t m : member_ids)
+            if (m == i_dummy) { clash = true; break; }
+        if (!clash) break;
+        ++i_dummy;
+    }
+    if (i_dummy >= n) return false;
+
+    try {
+        BICYCL::CL_Threshold_Static player(cl, n, t, i_dummy, 16);
+        player.install_public_state(cl, pk, gammas, qualified_ids);
+
+        for (size_t k = 0; k < member_ids.size(); ++k) {
+            BICYCL::QFI w, R1, R2;
+            BICYCL::Mpz u;
+            if (!dao_cl_partial_decryption_deserialize(
+                    cl_partials[k], cl.Cl_G().discriminant(),
+                    w, u, R1, R2))
+                return false;
+            BICYCL::CL_Threshold_Static::PartialDecryption pd;
+            pd.w() = w;
+            CLDlogEqAoKExposed proof(u, R1, R2);
+            pd.proof() = proof;
+            player.decrypt_add_partial_dec(member_ids[k], pd);
+        }
+
+        BICYCL::RandGen rng;
+        {
+            std::random_device rd;
+            rng.set_seed(BICYCL::Mpz(static_cast<unsigned long>(rd())));
+        }
+        if (!player.decrypt_verify_batch(cl, rng)) return false;
+
+        BICYCL::CL_HSMqk::ClearText m(cl, BICYCL::Mpz(0UL));
+        player.decrypt_combine(m, cl, ct);
+        out_plaintext = static_cast<BICYCL::Mpz>(m);
+        return true;
     } catch (...) {
         return false;
     }

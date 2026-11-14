@@ -642,9 +642,7 @@ struct dao_tally_key_record
     // defined by cl_key_context (dao_crypto_backend.h), including the
     // immutable interpolation scale D. Because key_id =
     // SHA256(serialized-record-with-key_id-zero), D is bound into
-    // key_id automatically. This field replaces the historical
-    // Paillier N/G/theta/V/V_K_i fields during the runtime swap;
-    // it is not optional.
+    // key_id automatically.
     std::vector<uint8_t> cl_modulus;
 
     uint64_t             activation_height = 0;
