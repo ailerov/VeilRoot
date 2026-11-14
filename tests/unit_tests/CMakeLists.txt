@@ -165,6 +165,7 @@ if(VEILROOT_ENABLE_CL)
   list(APPEND unit_tests_sources dao_cl_tally_wire.cpp)
   list(APPEND unit_tests_sources dao_share_set_v3.cpp)
   list(APPEND unit_tests_sources dao_dkg_activation_v3.cpp)
+  list(APPEND unit_tests_sources dao_cl_tally_share.cpp)
   list(APPEND unit_tests_sources dao_cl_reshare.cpp)
 endif()
 

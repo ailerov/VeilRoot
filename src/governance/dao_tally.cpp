@@ -253,6 +253,52 @@ bool dao_partial_set::deserialize(const std::vector<uint8_t>& in)
 }
 
 // ------------------------------------------------------------------
+// dao_partial_set :: CL form
+// ------------------------------------------------------------------
+
+bool dao_partial_set::serialize_cl(std::vector<uint8_t>& out) const
+{
+    out.clear();
+    if (member_indices.size() != cl_partials.size()) return false;
+    if (member_indices.size() > DAO_DKG_MAX_COMMITTEE_SIZE) return false;
+
+    out.push_back(CL_FORMAT_TAG);
+    push_u32(out, static_cast<uint32_t>(member_indices.size()));
+    for (size_t i = 0; i < member_indices.size(); ++i) {
+        if (cl_partials[i].empty()) return false;
+        if (cl_partials[i].size() > CL_PARTIAL_MAX_BYTES) return false;
+        push_u32(out, member_indices[i]);
+        push_vec(out, cl_partials[i]);
+    }
+    return true;
+}
+
+bool dao_partial_set::deserialize_cl(const std::vector<uint8_t>& in)
+{
+    member_indices.clear();
+    partials.clear();
+    proofs.clear();
+    cl_partials.clear();
+
+    if (in.empty()) return false;
+    size_t off = 0;
+    if (in[off++] != CL_FORMAT_TAG) return false;
+    uint32_t n = 0;
+    if (!pull_u32(in, off, n)) return false;
+    if (n > DAO_DKG_MAX_COMMITTEE_SIZE) return false;
+    for (uint32_t i = 0; i < n; ++i) {
+        uint32_t idx = 0;
+        std::vector<uint8_t> p;
+        if (!pull_u32(in, off, idx)) return false;
+        if (!pull_vec(in, off, p)) return false;
+        if (p.empty() || p.size() > CL_PARTIAL_MAX_BYTES) return false;
+        member_indices.push_back(idx);
+        cl_partials.push_back(std::move(p));
+    }
+    return off == in.size();
+}
+
+// ------------------------------------------------------------------
 // dao_tally_certificate
 // ------------------------------------------------------------------
 

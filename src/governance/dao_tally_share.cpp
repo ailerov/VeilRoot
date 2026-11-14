@@ -150,5 +150,68 @@ bool dao_v2_tally_share::deserialize(const std::vector<uint8_t>& in)
     return off == in.size();
 }
 
+bool dao_v2_tally_share::serialize_cl(std::vector<uint8_t>& out) const
+{
+    out.clear();
+    constexpr std::size_t CL_MAX = 16384;
+    if (cl_partial_W.empty() || cl_partial_W.size() > CL_MAX) return false;
+    if (cl_partial_S.empty() || cl_partial_S.size() > CL_MAX) return false;
+    if (cl_partial_B.empty() || cl_partial_B.size() > CL_MAX) return false;
+    if (tally_key_id.size() != 32) return false;
+
+    push_u8(out, WIRE_VERSION_CL);
+    out.insert(out.end(), proposal_id.data, proposal_id.data + 32);
+    push_u64(out, vote_end_height);
+    push_vec(out, tally_key_id);
+    out.insert(out.end(), reset_transcript_hash.data,
+               reset_transcript_hash.data + 32);
+    out.insert(out.end(), aggregate_ciphertext_hash.data,
+               aggregate_ciphertext_hash.data + 32);
+    push_u32(out, member_index);
+    push_vec(out, cl_partial_W);
+    push_vec(out, cl_partial_S);
+    push_vec(out, cl_partial_B);
+    return true;
+}
+
+bool dao_v2_tally_share::deserialize_cl(const std::vector<uint8_t>& in)
+{
+    constexpr std::size_t MAX_SHARE_BYTES = 96 * 1024;
+    if (in.size() > MAX_SHARE_BYTES) return false;
+
+    partial_W.clear();
+    partial_S.clear();
+    partial_B.clear();
+    proof_W = dao_partial_decryption_proof{};
+    proof_S = dao_partial_decryption_proof{};
+    proof_B = dao_partial_decryption_proof{};
+    cl_partial_W.clear();
+    cl_partial_S.clear();
+    cl_partial_B.clear();
+    tally_key_id.clear();
+
+    size_t off = 0;
+    if (!pull_u8(in, off, version)) return false;
+    if (version != WIRE_VERSION_CL) return false;
+    if (in.size() < off + 32) return false;
+    std::memcpy(proposal_id.data, in.data() + off, 32); off += 32;
+    if (!pull_u64(in, off, vote_end_height)) return false;
+    if (!pull_vec(in, off, tally_key_id)) return false;
+    if (tally_key_id.size() != 32) return false;
+    if (in.size() < off + 32) return false;
+    std::memcpy(reset_transcript_hash.data, in.data() + off, 32); off += 32;
+    if (in.size() < off + 32) return false;
+    std::memcpy(aggregate_ciphertext_hash.data, in.data() + off, 32); off += 32;
+    if (!pull_u32(in, off, member_index)) return false;
+    if (!pull_vec(in, off, cl_partial_W)) return false;
+    if (!pull_vec(in, off, cl_partial_S)) return false;
+    if (!pull_vec(in, off, cl_partial_B)) return false;
+    constexpr std::size_t CL_MAX = 16384;
+    if (cl_partial_W.empty() || cl_partial_W.size() > CL_MAX) return false;
+    if (cl_partial_S.empty() || cl_partial_S.size() > CL_MAX) return false;
+    if (cl_partial_B.empty() || cl_partial_B.size() > CL_MAX) return false;
+    return off == in.size();
+}
+
 } // namespace dao
 } // namespace cryptonote

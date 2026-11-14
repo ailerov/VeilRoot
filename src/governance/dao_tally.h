@@ -49,8 +49,27 @@ struct dao_partial_set
     std::vector<std::vector<uint8_t>>        partials;   // 512 bytes each
     std::vector<dao_partial_decryption_proof> proofs;
 
+    // CL partial decryptions. Each entry is the canonical output of
+    // dao_cl_partial_decryption_serialize(): QFI(w) || SCALAR(u) ||
+    // QFI(R1) || QFI(R2). Parallel to member_indices. Populated only
+    // on the CL path; the Paillier serialize()/deserialize() leave
+    // this empty.
+    std::vector<std::vector<uint8_t>>        cl_partials;
+
     bool serialize(std::vector<uint8_t>& out) const;
     bool deserialize(const std::vector<uint8_t>& in);
+
+    // CL wire form. Emits a discriminator tag so a CL-format set is
+    // never mistaken for the Paillier layout, and both formats can be
+    // distinguished by a reader that has not yet been upgraded.
+    //   u8 format_tag (0x02 = CL)
+    //   u32 count
+    //   { u32 member_index || u32 len || partial }  per entry
+    static constexpr inline uint8_t CL_FORMAT_TAG = 0x02;
+    static constexpr inline uint32_t CL_PARTIAL_MAX_BYTES = 16384;
+
+    bool serialize_cl(std::vector<uint8_t>& out) const;
+    bool deserialize_cl(const std::vector<uint8_t>& in);
 };
 
 struct dao_tally_certificate
