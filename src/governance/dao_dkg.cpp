@@ -1831,11 +1831,11 @@ bool dao_tally_key_record::serialize(std::vector<uint8_t>& out) const
     push_u64(out, activation_height);
     out.insert(out.end(), dkg_transcript_hash.begin(), dkg_transcript_hash.end());
     out.insert(out.end(), key_id.begin(), key_id.end());
-    return true;
 
-    // Optional trailing field: CL public parameters, if present.
-    // Old records simply omit it; readers must accept empty.
+    // Trailing field: CL public parameters. Empty is accepted for
+    // legacy records only.
     push_bytes(out, cl_modulus);
+    return true;
 }
 
 bool dao_tally_key_record::deserialize(const std::vector<uint8_t>& in)
@@ -1876,6 +1876,13 @@ bool dao_tally_key_record::deserialize(const std::vector<uint8_t>& in)
     if (!pull_fixed(32, dkg_transcript_hash)) return false;
     if (!pull_fixed(32, key_id)) return false;
 
+    // Trailing field: CL public parameters. Absent is accepted for
+    // legacy records only.
+    if (off < in.size()) {
+        if (!pull_bytes(in, off, cl_modulus)) return false;
+    } else {
+        cl_modulus.clear();
+    }
     if (off != in.size()) return false;
 
     version = v;
@@ -1883,14 +1890,6 @@ bool dao_tally_key_record::deserialize(const std::vector<uint8_t>& in)
     threshold = th;
     t = tt;
     return true;
-
-    // Optional trailing field: CL public parameters, if present.
-    // Backward-compatible: absent → empty.
-    if (off < in.size()) {
-        if (!pull_bytes(in, off, cl_modulus)) return false;
-    } else {
-        cl_modulus.clear();
-    }
 }
 
 // ====================================================================
