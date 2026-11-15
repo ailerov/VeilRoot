@@ -11760,22 +11760,46 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
       return false;
     }
 
-    // The dynamically selected validation committee is not required to
-    // overlap the original DKG shareholder set. dao_verify_tally_certificate
-    // is authoritative: it checks the DKG shareholder indices in the
-    // certificate, the partial-decryption proofs, the threshold, the
-    // aggregate and the recovered outcome. A validator does not need a
-    // secret share to verify those.
-    if (!dao::dao_verify_tally_certificate(
-            key_rec,
-            snap,
-            m_governance_params.voting_quorum_percent,
-            agg.aggregate_E_W,
-            agg.aggregate_E_S,
-            agg.aggregate_E_B,
-            cert)) {
-      MERROR("tally-result: cryptographic verification failed");
-      return false;
+    // CL and Paillier certificates take different verification paths.
+    // The CL path requires the currently active share set to supply
+    // the Gamma map and the qualified ids for the threshold
+    // combination. The Paillier path verifies against key_rec's
+    // own VK_i list.
+    if (!key_rec.cl_modulus.empty()) {
+      dao::dao_share_set_record share_set;
+      uint64_t ssid = latest_share_set_id_for_key_id(key_rec.key_id);
+      if (ssid == 0) {
+        MERROR("tally-result: no active share set for CL key");
+        return false;
+      }
+      if (!m_db->get_dao_share_set(ssid, share_set)) {
+        MERROR("tally-result: share set " << ssid << " missing");
+        return false;
+      }
+      if (!dao::dao_verify_tally_certificate_cl(
+              key_rec,
+              share_set,
+              snap,
+              m_governance_params.voting_quorum_percent,
+              agg.aggregate_E_W,
+              agg.aggregate_E_S,
+              agg.aggregate_E_B,
+              cert)) {
+        MERROR("tally-result: CL cryptographic verification failed");
+        return false;
+      }
+    } else {
+      if (!dao::dao_verify_tally_certificate(
+              key_rec,
+              snap,
+              m_governance_params.voting_quorum_percent,
+              agg.aggregate_E_W,
+              agg.aggregate_E_S,
+              agg.aggregate_E_B,
+              cert)) {
+        MERROR("tally-result: cryptographic verification failed");
+        return false;
+      }
     }
 
     return true;
