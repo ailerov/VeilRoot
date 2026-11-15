@@ -169,7 +169,7 @@ bool dao_cl_partial_decryption_verify(
         BICYCL::CL_Threshold_Static::PartialDecryption pd;
         pd.w() = w;
         pd.proof() = proof;
-        return pd.verify(cl, /*soundness_bytes=*/16,
+        return pd.verify(cl, /*soundness_bytes=*/32,
                          h_delta2, ct1_delta2, gamma_i);
     } catch (...) {
         return false;
