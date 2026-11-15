@@ -30,22 +30,10 @@
 #include "crypto/hash.h"
 #include "ringct/rctTypes.h"
 
+#include "governance/dao_consistency_context.h"
+
 namespace cryptonote {
 namespace dao {
-
-// Transcript context bound into the Fiat-Shamir challenge.
-struct dao_consistency_context
-{
-    // Domain separator, e.g. "C_W-Enc(W)" or "C_S-Enc(S)". Different
-    // domains make the two proofs independent even when other fields
-    // match.
-    std::string          domain;
-    uint8_t              version = 2;
-    crypto::hash         proposal_id;
-    uint64_t             vote_height = 0;
-    crypto::hash         tally_key_id{};
-    std::vector<uint8_t> vote_input_transcript;  // hashed inputs
-};
 
 struct dao_consistency_proof
 {
@@ -85,41 +73,6 @@ bool dao_consistency_verify(const dao_consistency_context& ctx,
                             const std::vector<uint8_t>& E,
                             const rct::key& C,
                             const dao_consistency_proof& proof);
-
-// Canonical vote-input transcript (spec §11). Built by the wallet and
-// reconstructed identically by the verifier from chain state. Its
-// 32-byte SHA-256 digest is bound by proof_W, proof_S, and the
-// top-level transcript_hash. The OR proof's extra_binding is a
-// separate object and does not call this function.
-struct dao_vote_transcript_input
-{
-    uint8_t              version = 2;
-    crypto::hash         proposal_id;
-    uint64_t             proposal_submission_height = 0;
-    uint64_t             vote_height                = 0;
-    crypto::hash         tally_key_id{};
-
-    std::vector<std::vector<uint64_t>> key_offsets;
-    std::vector<std::vector<uint64_t>> absolute_indices;
-    std::vector<std::vector<rct::key>> P;
-    std::vector<std::vector<rct::key>> C;
-    std::vector<std::vector<uint64_t>> output_heights;
-    std::vector<std::vector<uint8_t>>  age_factors;
-    std::vector<crypto::hash>          nullifiers;
-    std::vector<rct::key>              balance_commitments;  // B_i per input
-
-    rct::key             C_W;
-    rct::key             C_S;
-    rct::key             C_B;
-    std::vector<uint8_t> E_W;  // exactly 512 bytes
-    std::vector<uint8_t> E_S;  // exactly 512 bytes
-    std::vector<uint8_t> E_B;  // exactly 512 bytes
-};
-
-// Returns SHA-256(canonical_encoding). Exactly 32 bytes. Returns empty
-// on any structural violation.
-std::vector<uint8_t> dao_vote_input_transcript(
-    const dao_vote_transcript_input& in);
 
 // extra_binding for the OR proof. Includes the two ciphertexts and
 // their consistency proofs so that substituting either invalidates

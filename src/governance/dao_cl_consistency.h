@@ -24,7 +24,7 @@
 #include "bicycl/bicycl/cl/CL_HSMqk.hpp"
 
 #include "crypto/crypto.h"
-#include "governance/dao_consistency.h"
+#include "governance/dao_consistency_context.h"
 #include "ringct/rctTypes.h"
 
 namespace cryptonote {
