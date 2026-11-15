@@ -40,6 +40,15 @@ bool dao_cl_load_proposal_key(const std::vector<uint8_t>& cl_key_context_wire,
                               dao_cl_proposal_key& out,
                               uint64_t seclevel_bits = 128);
 
+// Derive a class group deterministically from a 32-byte seed. All
+// nodes that need to run the same DKG must call this with the same
+// seed and the same security level; the resulting CL_HSMqk has the
+// same q, k, and p on every node and therefore the same
+// discriminant. q is rct::curveOrder(); k is 1.
+std::shared_ptr<BICYCL::CL_HSMqk> dao_cl_make_hsmq_from_seed(
+    const std::vector<uint8_t>& seed,
+    uint64_t seclevel_bits = 128);
+
 // Encrypt m under pk with randomness r. Output is canonical ciphertext
 // wire: QFI(c1) || QFI(c2).
 bool dao_cl_encrypt_at_pk(const BICYCL::CL_HSMqk& cl,

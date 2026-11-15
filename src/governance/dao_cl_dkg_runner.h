@@ -78,6 +78,9 @@ public:
     bool start();
     void stop();
 
+    // Deliver an inbound envelope to the local runner. Thread-safe.
+    void on_message(const dkg_msg& m);
+
     // Blocks until the ceremony finishes or timeout_s elapses (0 means
     // wait indefinitely). Returns out.ok.
     bool wait(cl_dkg_result& out, uint32_t timeout_s = 0);

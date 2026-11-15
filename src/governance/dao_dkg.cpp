@@ -6832,7 +6832,7 @@ public:
         cv_.notify_all();
     }
 
-    void deliver(const dkg_msg& m)
+    void deliver(const dkg_msg& m) override
     {
         { std::lock_guard<std::mutex> lk(mu_); if (stopped_) return; queue_.push(m); }
         cv_.notify_one();

@@ -261,6 +261,12 @@ bool cl_dkg_p2p_runner::start()
     return true;
 }
 
+void cl_dkg_p2p_runner::on_message(const dkg_msg& m)
+{
+    if (!p_->transport) return;
+    p_->transport->deliver(m);
+}
+
 void cl_dkg_p2p_runner::stop()
 {
     {

@@ -8,6 +8,8 @@
 #include <array>
 #include <cstring>
 
+#include <openssl/sha.h>
+
 #include "governance/dao_cl_dkg_payload.h"
 #include "governance/dao_crypto_backend.h"
 
@@ -123,6 +125,45 @@ bool dao_cl_load_proposal_key(const std::vector<uint8_t>& wire,
         return true;
     } catch (...) {
         return false;
+    }
+}
+
+std::shared_ptr<BICYCL::CL_HSMqk> dao_cl_make_hsmq_from_seed(
+    const std::vector<uint8_t>& seed,
+    uint64_t seclevel_bits)
+{
+    if (seed.empty()) return nullptr;
+
+    // q = rct::curveOrder(), k = 1.
+    std::array<uint8_t, 32> be{};
+    const rct::key L = rct::curveOrder();
+    for (size_t i = 0; i < 32; ++i) be[i] = L.bytes[31 - i];
+    Mpz q(std::vector<uint8_t>(be.begin(), be.end()));
+
+    // Deterministically seed the RandGen. BICYCL derives p from
+    // randgen.random_prime(DeltaK_nbits); identical seed produces
+    // identical p across nodes.
+    RandGen rng;
+    {
+        // Mix a domain tag with the seed so that unrelated uses of the
+        // same seed do not collide.
+        std::vector<uint8_t> buf;
+        const char* dom = "VeilRoot-DAO-CL-CLASSGROUP-V1";
+        buf.insert(buf.end(), dom, dom + std::strlen(dom));
+        buf.insert(buf.end(), seed.begin(), seed.end());
+        uint8_t h[32];
+        SHA256(buf.data(), buf.size(), h);
+        Mpz seed_mpz(std::vector<uint8_t>(h, h + sizeof(h)));
+        rng.set_seed(seed_mpz);
+    }
+
+    try {
+        SecLevel sl(static_cast<int>(seclevel_bits));
+        return std::make_shared<CL_HSMqk>(
+            q, static_cast<size_t>(1), sl, rng,
+            CL_Params(static_cast<size_t>(seclevel_bits)));
+    } catch (...) {
+        return nullptr;
     }
 }
 

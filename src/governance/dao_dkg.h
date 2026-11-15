@@ -366,6 +366,12 @@ public:
     virtual bool send(const dkg_msg& m) = 0;
     virtual bool recv(dkg_msg& m) = 0;
     virtual bool try_recv(dkg_msg& m) = 0;
+
+    // Push an already-decoded message into the local inbox. Default
+    // no-op so that the in-process test transport needs no change;
+    // the P2P transport overrides it so the blockchain layer can
+    // route an inbound envelope into a running runner.
+    virtual void deliver(const dkg_msg& m) { (void)m; }
     // Transports that self-deliver broadcasts (e.g. dkg_p2p_transport_local,
     // which parks a copy of the sender's own broadcast for re-injection)
     // override this. Transports that do not (e.g. dkg_inproc_transport,
