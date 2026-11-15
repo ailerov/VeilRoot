@@ -314,6 +314,37 @@ bool dao_partial_set::deserialize_cl(const std::vector<uint8_t>& in)
 
 bool dao_tally_certificate::serialize(std::vector<uint8_t>& out) const
 {
+    // CL certs are emitted as v7 and their partial sets are CL form.
+    const bool is_cl =
+        !W.cl_partials.empty() || !S.cl_partials.empty() || !B.cl_partials.empty();
+    if (is_cl) {
+        out.clear();
+        push_u8(out, WIRE_VERSION_CL);
+        out.insert(out.end(), proposal_id.data, proposal_id.data + 32);
+        push_u64(out, vote_end_height);
+        push_vec(out, key_id);
+        out.insert(out.end(), aggregate_ciphertext_hash.data,
+                   aggregate_ciphertext_hash.data + 32);
+        std::vector<uint8_t> w, s, b;
+        if (!W.serialize_cl(w)) return false;
+        if (!S.serialize_cl(s)) return false;
+        if (!B.serialize_cl(b)) return false;
+        push_vec(out, w);
+        push_vec(out, s);
+        push_vec(out, b);
+        push_u128(out, W_total);
+        push_u8(out, s_negative ? 1 : 0);
+        push_u128(out, S_abs);
+        push_u128(out, B_total);
+        push_u128(out, YES_weight);
+        push_u128(out, NO_weight);
+        push_u128(out, quorum_threshold);
+        push_u8(out, quorum_met ? 1 : 0);
+        push_u8(out, majority_met ? 1 : 0);
+        push_u8(out, passed ? 1 : 0);
+        return true;
+    }
+
     out.clear();
     push_u8(out, WIRE_VERSION);
     out.insert(out.end(), proposal_id.data,
@@ -363,6 +394,40 @@ bool dao_tally_certificate::serialize(std::vector<uint8_t>& out) const
 bool dao_tally_certificate::deserialize(const std::vector<uint8_t>& in)
 {
     size_t off = 0;
+    if (in.size() < 1) return false;
+    if (in[0] == WIRE_VERSION_CL) {
+        // CL wire form.
+        off = 1;
+        if (off + 32 + 8 + 4 > in.size()) return false;
+        std::memcpy(proposal_id.data, in.data() + off, 32); off += 32;
+        if (!pull_u64(in, off, vote_end_height)) return false;
+        if (!pull_vec(in, off, key_id)) return false;
+        if (key_id.size() != 32) return false;
+        if (off + 32 > in.size()) return false;
+        std::memcpy(aggregate_ciphertext_hash.data,
+                    in.data() + off, 32); off += 32;
+        std::vector<uint8_t> w, s, b;
+        if (!pull_vec(in, off, w)) return false;
+        if (!pull_vec(in, off, s)) return false;
+        if (!pull_vec(in, off, b)) return false;
+        if (!W.deserialize_cl(w)) return false;
+        if (!S.deserialize_cl(s)) return false;
+        if (!B.deserialize_cl(b)) return false;
+        if (!pull_u128(in, off, W_total)) return false;
+        if (off + 1 > in.size()) return false;
+        s_negative = (in[off++] != 0);
+        if (!pull_u128(in, off, S_abs)) return false;
+        if (!pull_u128(in, off, B_total)) return false;
+        if (!pull_u128(in, off, YES_weight)) return false;
+        if (!pull_u128(in, off, NO_weight)) return false;
+        if (!pull_u128(in, off, quorum_threshold)) return false;
+        if (off + 3 > in.size()) return false;
+        quorum_met   = (in[off++] != 0);
+        majority_met = (in[off++] != 0);
+        passed       = (in[off++] != 0);
+        return off == in.size();
+    }
+
     if (in.size() < 1 + 32 + 8 + 32) return false;
     if (in[off++] != WIRE_VERSION) return false;
     std::memcpy(proposal_id.data, in.data() + off, 32); off += 32;

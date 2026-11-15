@@ -83,6 +83,8 @@ bool pull_proof(const std::vector<uint8_t>& v, size_t& off,
 
 bool dao_v2_tally_share::serialize(std::vector<uint8_t>& out) const
 {
+    if (version == WIRE_VERSION_CL) return serialize_cl(out);
+
     out.clear();
     if (version != WIRE_VERSION) return false;
     if (partial_W.size() != PAILLIER_CT_BYTES) return false;
@@ -114,6 +116,8 @@ bool dao_v2_tally_share::serialize(std::vector<uint8_t>& out) const
 
 bool dao_v2_tally_share::deserialize(const std::vector<uint8_t>& in)
 {
+    if (!in.empty() && in[0] == WIRE_VERSION_CL) return deserialize_cl(in);
+
     // Hard cap on the entire incoming P2P share before parsing. The
     // largest legitimate share carries three 512-byte partials and
     // three proofs of (32 + 1200) bytes each, plus fixed metadata.
