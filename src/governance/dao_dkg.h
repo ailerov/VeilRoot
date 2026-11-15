@@ -652,6 +652,12 @@ struct dao_tally_key_record
 
     bool serialize(std::vector<uint8_t>& out) const;
     bool deserialize(const std::vector<uint8_t>& in);
+
+    // CL-only wire format. Round-trips records that carry a non-empty
+    // cl_modulus and no Paillier fields. Reader accepts both.
+    static constexpr inline uint32_t CL_WIRE_VERSION = 2;
+    bool serialize_cl(std::vector<uint8_t>& out) const;
+    bool deserialize_cl(const std::vector<uint8_t>& in);
 };
 
 // ====================================================================

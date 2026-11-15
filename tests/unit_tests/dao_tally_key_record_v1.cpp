@@ -99,6 +99,87 @@ TEST(DaoTallyKeyRecordClModulus, cl_modulus_affects_key_id_digest)
     EXPECT_NE(w1, w2);
 }
 
+TEST(DaoTallyKeyRecordClModulus, cl_roundtrip)
+{
+    dao_tally_key_record r;
+    r.committee_size = 3;
+    r.threshold      = 2;
+    r.t              = 1;
+    r.committee_id_hash.assign(32, 0x22);
+    r.committee_members.assign(3, std::vector<uint8_t>(32, 0x33));
+    r.cl_modulus = std::vector<uint8_t>(48, 0xAA);
+    r.activation_height = 100;
+    r.dkg_transcript_hash.assign(32, 0x99);
+    r.key_id.assign(32, 0x55);
+
+    std::vector<uint8_t> wire;
+    ASSERT_TRUE(r.serialize_cl(wire));
+    ASSERT_GE(wire.size(), 4u);
+    EXPECT_EQ(wire[0], 2u);
+
+    dao_tally_key_record r2;
+    ASSERT_TRUE(r2.deserialize_cl(wire));
+    EXPECT_EQ(r2.version, 2u);
+    EXPECT_EQ(r2.committee_size, 3u);
+    EXPECT_EQ(r2.threshold, 2u);
+    EXPECT_EQ(r2.cl_modulus, r.cl_modulus);
+    EXPECT_EQ(r2.key_id, r.key_id);
+    EXPECT_EQ(r2.committee_members, r.committee_members);
+    EXPECT_TRUE(r2.N.empty());
+    EXPECT_TRUE(r2.V_K_i.empty());
+    EXPECT_TRUE(r2.vss_P.empty());
+}
+
+TEST(DaoTallyKeyRecordClModulus, cl_serialize_rejects_empty_modulus)
+{
+    dao_tally_key_record r;
+    r.committee_size = 3;
+    r.threshold      = 2;
+    r.t              = 1;
+    r.committee_id_hash.assign(32, 0x22);
+    r.committee_members.assign(3, std::vector<uint8_t>(32, 0x33));
+    r.dkg_transcript_hash.assign(32, 0x99);
+    r.key_id.assign(32, 0x55);
+    std::vector<uint8_t> wire;
+    EXPECT_FALSE(r.serialize_cl(wire));
+}
+
+TEST(DaoTallyKeyRecordClModulus, cl_rejects_wrong_wire_version)
+{
+    dao_tally_key_record r;
+    r.committee_size = 3;
+    r.threshold      = 2;
+    r.t              = 1;
+    r.committee_id_hash.assign(32, 0x22);
+    r.committee_members.assign(3, std::vector<uint8_t>(32, 0x33));
+    r.cl_modulus = std::vector<uint8_t>(48, 0xAA);
+    r.dkg_transcript_hash.assign(32, 0x99);
+    r.key_id.assign(32, 0x55);
+    std::vector<uint8_t> wire;
+    ASSERT_TRUE(r.serialize_cl(wire));
+    wire[0] = 1;
+    dao_tally_key_record r2;
+    EXPECT_FALSE(r2.deserialize_cl(wire));
+}
+
+TEST(DaoTallyKeyRecordClModulus, cl_rejects_trailing_bytes)
+{
+    dao_tally_key_record r;
+    r.committee_size = 3;
+    r.threshold      = 2;
+    r.t              = 1;
+    r.committee_id_hash.assign(32, 0x22);
+    r.committee_members.assign(3, std::vector<uint8_t>(32, 0x33));
+    r.cl_modulus = std::vector<uint8_t>(48, 0xAA);
+    r.dkg_transcript_hash.assign(32, 0x99);
+    r.key_id.assign(32, 0x55);
+    std::vector<uint8_t> wire;
+    ASSERT_TRUE(r.serialize_cl(wire));
+    wire.push_back(0);
+    dao_tally_key_record r2;
+    EXPECT_FALSE(r2.deserialize_cl(wire));
+}
+
 } // namespace
 } // namespace dao
 } // namespace cryptonote

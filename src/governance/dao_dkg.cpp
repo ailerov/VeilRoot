@@ -1838,6 +1838,87 @@ bool dao_tally_key_record::serialize(std::vector<uint8_t>& out) const
     return true;
 }
 
+bool dao_tally_key_record::serialize_cl(std::vector<uint8_t>& out) const
+{
+    if (cl_modulus.empty()) return false;
+    if (key_id.size() != 32) return false;
+    if (committee_id_hash.size() != 32) return false;
+    if (dkg_transcript_hash.size() != 32) return false;
+    if (committee_members.size() != committee_size) return false;
+    for (const auto& m : committee_members)
+        if (m.size() != 32) return false;
+    if (threshold == 0 || threshold > committee_size) return false;
+    if (cl_modulus.size() >= 65536u) return false;
+
+    out.clear();
+    push_u32(out, CL_WIRE_VERSION);
+    push_u32(out, committee_size);
+    push_u32(out, threshold);
+    push_u32(out, t);
+    out.insert(out.end(), committee_id_hash.begin(), committee_id_hash.end());
+    push_u32(out, static_cast<uint32_t>(committee_members.size()));
+    for (const auto& m : committee_members)
+        out.insert(out.end(), m.begin(), m.end());
+    push_bytes(out, cl_modulus);
+    push_u64(out, activation_height);
+    out.insert(out.end(), dkg_transcript_hash.begin(), dkg_transcript_hash.end());
+    out.insert(out.end(), key_id.begin(), key_id.end());
+    return true;
+}
+
+bool dao_tally_key_record::deserialize_cl(const std::vector<uint8_t>& in)
+{
+    // CL-only reader. The caller must be certain the record is CL
+    // (either by inspecting the first u32, or from context).
+    size_t off = 0;
+    uint32_t v = 0, cs = 0, th = 0, tt = 0, nc = 0;
+    if (!pull_u32(in, off, v)) return false;
+    if (v != CL_WIRE_VERSION) return false;
+    if (!pull_u32(in, off, cs)) return false;
+    if (cs == 0 || cs > 64) return false;
+    if (!pull_u32(in, off, th)) return false;
+    if (!pull_u32(in, off, tt)) return false;
+    if (off + 32 > in.size()) return false;
+    committee_id_hash.assign(in.begin() + off, in.begin() + off + 32);
+    off += 32;
+    if (!pull_u32(in, off, nc)) return false;
+    if (nc != cs) return false;
+    committee_members.assign(cs, {});
+    for (uint32_t i = 0; i < cs; ++i) {
+        if (off + 32 > in.size()) return false;
+        committee_members[i].assign(in.begin() + off,
+                                    in.begin() + off + 32);
+        off += 32;
+    }
+    if (!pull_bytes(in, off, cl_modulus)) return false;
+    if (cl_modulus.empty()) return false;
+    if (!pull_u64(in, off, activation_height)) return false;
+    if (off + 32 > in.size()) return false;
+    dkg_transcript_hash.assign(in.begin() + off, in.begin() + off + 32);
+    off += 32;
+    if (off + 32 > in.size()) return false;
+    key_id.assign(in.begin() + off, in.begin() + off + 32);
+    off += 32;
+    if (off != in.size()) return false;
+
+    version        = CL_WIRE_VERSION;
+    committee_size = cs;
+    threshold      = th;
+    t              = tt;
+    // Clear Paillier fields on a CL record.
+    delta.clear();
+    N.clear();
+    G.clear();
+    theta.clear();
+    V.clear();
+    V_K_i.clear();
+    vss_P.clear();
+    vss_P_prime.clear();
+    vss_g.clear();
+    vss_h.clear();
+    return true;
+}
+
 bool dao_tally_key_record::deserialize(const std::vector<uint8_t>& in)
 {
     size_t off = 0;
