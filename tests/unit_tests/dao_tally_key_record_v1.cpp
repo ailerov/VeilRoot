@@ -39,20 +39,27 @@ static dao_tally_key_record make_record(bool cl_modulus_populated)
     return r;
 }
 
-TEST(DaoTallyKeyRecordClModulus, roundtrip_with_cl_modulus)
+TEST(DaoTallyKeyRecordClModulus, cl_record_roundtrip_drops_paillier_fields)
 {
+    // A record that carries CL parameters is serialized in the CL-only
+    // form. Paillier placeholders are not preserved on the wire and
+    // come back empty on the reader side.
     auto r = make_record(true);
     std::vector<uint8_t> wire;
     ASSERT_TRUE(r.serialize(wire));
+    ASSERT_GE(wire.size(), 4u);
+    EXPECT_EQ(wire[0], 2u);   // CL wire version
 
     dao_tally_key_record r2;
     ASSERT_TRUE(r2.deserialize(wire));
+    EXPECT_EQ(r2.version, 2u);
     EXPECT_EQ(r2.cl_modulus, r.cl_modulus);
     EXPECT_EQ(r2.key_id, r.key_id);
     EXPECT_EQ(r2.committee_members, r.committee_members);
-    EXPECT_EQ(r2.N, r.N);
-    EXPECT_EQ(r2.V_K_i, r.V_K_i);
     EXPECT_EQ(r2.activation_height, r.activation_height);
+    EXPECT_TRUE(r2.N.empty());
+    EXPECT_TRUE(r2.V_K_i.empty());
+    EXPECT_TRUE(r2.delta.empty());
 }
 
 TEST(DaoTallyKeyRecordClModulus, roundtrip_empty_cl_modulus_legacy)
@@ -178,6 +185,30 @@ TEST(DaoTallyKeyRecordClModulus, cl_rejects_trailing_bytes)
     wire.push_back(0);
     dao_tally_key_record r2;
     EXPECT_FALSE(r2.deserialize_cl(wire));
+}
+
+TEST(DaoTallyKeyRecordClModulus, dispatches_to_cl_when_modulus_present)
+{
+    dao_tally_key_record r;
+    r.committee_size = 3;
+    r.threshold      = 2;
+    r.t              = 1;
+    r.committee_id_hash.assign(32, 0x22);
+    r.committee_members.assign(3, std::vector<uint8_t>(32, 0x33));
+    r.cl_modulus = std::vector<uint8_t>(48, 0xAA);
+    r.activation_height = 100;
+    r.dkg_transcript_hash.assign(32, 0x99);
+    r.key_id.assign(32, 0x55);
+
+    std::vector<uint8_t> wire;
+    ASSERT_TRUE(r.serialize(wire));
+    ASSERT_GE(wire.size(), 4u);
+    EXPECT_EQ(wire[0], 2u);   // CL_WIRE_VERSION
+
+    dao_tally_key_record r2;
+    ASSERT_TRUE(r2.deserialize(wire));
+    EXPECT_EQ(r2.version, 2u);
+    EXPECT_EQ(r2.cl_modulus, r.cl_modulus);
 }
 
 } // namespace

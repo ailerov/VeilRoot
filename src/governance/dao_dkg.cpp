@@ -1792,6 +1792,10 @@ bool dao_share_set_record::deserialize(const std::vector<uint8_t>& in)
 
 bool dao_tally_key_record::serialize(std::vector<uint8_t>& out) const
 {
+    // A record that carries CL parameters goes on the wire in the
+    // CL-only form; it must not carry Paillier placeholders.
+    if (!cl_modulus.empty()) return serialize_cl(out);
+
     // Strict canonical layout. Every field is length-prefixed or
     // fixed-width, in a single well-defined order.
     if (committee_id_hash.size() != 32) return false;
@@ -1921,6 +1925,14 @@ bool dao_tally_key_record::deserialize_cl(const std::vector<uint8_t>& in)
 
 bool dao_tally_key_record::deserialize(const std::vector<uint8_t>& in)
 {
+    if (in.size() >= 4) {
+        uint32_t peek = static_cast<uint32_t>(in[0])
+                      | (static_cast<uint32_t>(in[1]) << 8)
+                      | (static_cast<uint32_t>(in[2]) << 16)
+                      | (static_cast<uint32_t>(in[3]) << 24);
+        if (peek == CL_WIRE_VERSION) return deserialize_cl(in);
+    }
+
     size_t off = 0;
     uint32_t v = 0, cs = 0, th = 0, tt = 0;
     if (!pull_u32(in, off, v)) return false;
