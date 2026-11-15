@@ -243,7 +243,7 @@ TEST(DaoClTallyE2E, full_cycle_yes_vote_passes)
     std::memset(proposal_id.data, 0x5A, 32);
 
     dao_tally_certificate cert;
-    ASSERT_TRUE(dao_build_tally_certificate_cl(
+    ASSERT_TRUE(dao_build_tally_certificate(
         key_rec, share_set, proposal_id, /*vote_end_height=*/1000,
         E_W, E_S, E_B, W_set, S_set, B_set, cert));
 
@@ -258,7 +258,7 @@ TEST(DaoClTallyE2E, full_cycle_yes_vote_passes)
     snap.minted      = dao_u128(1000000);
     snap.circulating = dao_u128(500000);
 
-    ASSERT_TRUE(dao_verify_tally_certificate_cl(
+    ASSERT_TRUE(dao_verify_tally_certificate(
         key_rec, share_set, snap, /*quorum_percent=*/20,
         E_W, E_S, E_B, cert));
 

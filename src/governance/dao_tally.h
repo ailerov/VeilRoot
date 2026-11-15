@@ -179,63 +179,11 @@ bool dao_synthesize_bootstrap_share_set(
     dao_share_set_record& out,
     uint64_t share_set_id = 1);
 
-// Build a certificate from a set of partial decryptions. The member
-// indices must all be in 1..share_set.committee_members.size() and
-// must be distinct.
-// Each set must have at least key_rec.threshold entries. The proofs
-// must be valid; this function verifies them before accepting.
-//
-// Also computes the aggregate ciphertext hash and fills the plaintext
-// recovery fields. The governance evaluation fields are left zero; call
-// dao_verify_tally_certificate to recompute them.
-// Builds a tally certificate. When event_share_set is non-null and
-// carries reshare evidence (non-empty contributions), the cert is
-// emitted as v6 with that evidence and partials are bound to the
-// share set's VK_i. When null or evidence is empty, the builder
-// emits the v5-compatible form bound to key_rec.
+// Build a tally certificate. The key record must carry a CL key
+// context. The share set must be a CL share set (v3) with a Gamma map
+// and a qualified-id list, matching the key record's key_id. Partial
+// sets must be CL form (cl_partials populated).
 bool dao_build_tally_certificate(
-    const dao_tally_key_record& key_rec,
-    const crypto::hash& proposal_id,
-    uint64_t vote_end_height,
-    const std::vector<uint8_t>& E_W,
-    const std::vector<uint8_t>& E_S,
-    const std::vector<uint8_t>& E_B,
-    const dao_partial_set& W_set,
-    const dao_partial_set& S_set,
-    const dao_partial_set& B_set,
-    dao_tally_certificate& cert_out,
-    const dao_share_set_record* event_share_set = nullptr);
-
-// Fully verify a certificate against a key record and the historical
-// supply snapshot at the proposal's voting-end height.
-//
-// Checks, in order:
-//   1. proposal_id, vote_end_height, key_id match the inputs.
-//   2. aggregate_ciphertext_hash matches SHA-256 over E_W, E_S, E_B.
-//   3. Every partial set has >= key_rec.threshold entries.
-//   4. Every member index is in 1..committee_size and unique.
-//   5. Every partial-decryption proof verifies against key_rec.V,
-//      key_rec.V_K_i[member-1], and the corresponding ciphertext.
-//   6. Threshold recombination recovers W_total, S_total, B_total.
-//   7. Recovered totals match the plaintext fields in the certificate.
-//   8. Governance evaluation against the supply snapshot succeeds.
-//
-// Returns false on any failure. On success, cert_out's governance
-// evaluation fields are overwritten with the recomputed values.
-bool dao_verify_tally_certificate(
-    const dao_tally_key_record& key_rec,
-    const dao_supply_snapshot&  supply_at_vote_end,
-    uint32_t                    quorum_percent,
-    const std::vector<uint8_t>& E_W,
-    const std::vector<uint8_t>& E_S,
-    const std::vector<uint8_t>& E_B,
-    dao_tally_certificate&      cert);
-
-// CL-only tally certificate builder. The key record must carry a CL
-// key context. The share set must be a CL share set (v3) with a Gamma
-// map and a qualified-id list, matching the key record's key_id.
-// Partial sets must be CL form (cl_partials populated).
-bool dao_build_tally_certificate_cl(
     const dao_tally_key_record& key_rec,
     const dao_share_set_record& share_set,
     const crypto::hash& proposal_id,
@@ -248,9 +196,9 @@ bool dao_build_tally_certificate_cl(
     const dao_partial_set& B_set,
     dao_tally_certificate& cert_out);
 
-// CL-only tally certificate verifier. Mirrors the builder's checks and
+// Verify a tally certificate. Mirrors the builder's checks and
 // re-derives the recovered totals from the partial decryptions.
-bool dao_verify_tally_certificate_cl(
+bool dao_verify_tally_certificate(
     const dao_tally_key_record& key_rec,
     const dao_share_set_record& share_set,
     const dao_supply_snapshot&  supply_at_vote_end,

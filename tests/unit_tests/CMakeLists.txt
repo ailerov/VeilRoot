@@ -142,7 +142,6 @@ set(unit_tests_sources
   dao_wallet_v2.cpp
   dao_bootstrap_integration.cpp
   dao_v2_replay.cpp
-  dao_tally_e2e.cpp
   treasury_validation.cpp
   dao_reshare_algebra.cpp
   dao_reshare_proof.cpp

@@ -122,7 +122,6 @@ bool TallyManager::build_tally_result_transaction(
                                            agg.aggregate_E_S,
                                            agg.aggregate_E_B);
 
-    const bool cl_key = !key_rec.cl_modulus.empty();
     dao::dao_partial_set W_set, S_set, B_set;
     for (const auto& kv : shares) {
         if (W_set.member_indices.size() >= eff_threshold) break;
@@ -133,18 +132,9 @@ bool TallyManager::build_tally_result_transaction(
         W_set.member_indices.push_back(s.member_index);
         S_set.member_indices.push_back(s.member_index);
         B_set.member_indices.push_back(s.member_index);
-        if (cl_key) {
-            W_set.cl_partials.push_back(s.cl_partial_W);
-            S_set.cl_partials.push_back(s.cl_partial_S);
-            B_set.cl_partials.push_back(s.cl_partial_B);
-        } else {
-            W_set.partials.push_back(s.partial_W);
-            W_set.proofs.push_back(s.proof_W);
-            S_set.partials.push_back(s.partial_S);
-            S_set.proofs.push_back(s.proof_S);
-            B_set.partials.push_back(s.partial_B);
-            B_set.proofs.push_back(s.proof_B);
-        }
+        W_set.cl_partials.push_back(s.cl_partial_W);
+        S_set.cl_partials.push_back(s.cl_partial_S);
+        B_set.cl_partials.push_back(s.cl_partial_B);
     }
     if (W_set.member_indices.size() < eff_threshold)
         return false;
@@ -154,36 +144,20 @@ bool TallyManager::build_tally_result_transaction(
         return false;
 
     dao::dao_tally_certificate cert;
-    if (!key_rec.cl_modulus.empty()) {
-        // CL key: require the active share set, build and verify on
-        // the CL path. Partial sets are populated from the incoming
-        // shares below; the Paillier branch fills the older fields.
-        if (event_ss_ptr == nullptr) return false;
-        if (event_ss_ptr->cl_gammas_serialized.empty()) return false;
-    }
+    if (key_rec.cl_modulus.empty()) return false;
+    if (event_ss_ptr == nullptr) return false;
+    if (event_ss_ptr->cl_gammas_serialized.empty()) return false;
 
-    if (cl_key) {
-        if (!dao::dao_build_tally_certificate_cl(
-                key_rec, *event_ss_ptr, proposal_id, prop.voting_end_height,
-                agg.aggregate_E_W, agg.aggregate_E_S, agg.aggregate_E_B,
-                W_set, S_set, B_set, cert))
-            return false;
-        if (!dao::dao_verify_tally_certificate_cl(
-                key_rec, *event_ss_ptr, snap,
-                m_params.voting_quorum_percent,
-                agg.aggregate_E_W, agg.aggregate_E_S, agg.aggregate_E_B, cert))
-            return false;
-    } else {
-        if (!dao::dao_build_tally_certificate(
-                key_rec, proposal_id, prop.voting_end_height,
-                agg.aggregate_E_W, agg.aggregate_E_S, agg.aggregate_E_B,
-                W_set, S_set, B_set, cert, event_ss_ptr))
-            return false;
-        if (!dao::dao_verify_tally_certificate(
-                key_rec, snap, m_params.voting_quorum_percent,
-                agg.aggregate_E_W, agg.aggregate_E_S, agg.aggregate_E_B, cert))
-            return false;
-    }
+    if (!dao::dao_build_tally_certificate(
+            key_rec, *event_ss_ptr, proposal_id, prop.voting_end_height,
+            agg.aggregate_E_W, agg.aggregate_E_S, agg.aggregate_E_B,
+            W_set, S_set, B_set, cert))
+        return false;
+    if (!dao::dao_verify_tally_certificate(
+            key_rec, *event_ss_ptr, snap,
+            m_params.voting_quorum_percent,
+            agg.aggregate_E_W, agg.aggregate_E_S, agg.aggregate_E_B, cert))
+        return false;
 
     // Serialize the certificate and place it in a governance payload.
     std::vector<uint8_t> cert_blob;
@@ -225,10 +199,7 @@ bool TallyManager::produce_local_share(
 
     if (key_record_position < 1) return false;
     if (key_rec.key_id.size() != 32) return false;
-    if (key_rec.cl_modulus.empty()) {
-        if (key_rec.V_K_i.size() != key_rec.committee_members.size())
-            return false;
-    }
+    if (key_rec.cl_modulus.empty()) return false;
 
     // Resolve which share set (and thus which VK_i) this partial will
     // be bound to. When the caller passes a reshared event share set,
@@ -377,45 +348,8 @@ bool TallyManager::produce_local_share(
         return ok;
     }
 
-    PaillierPublicKey pk;
-    if (!pk.deserialize_modulus(key_rec.N)) { BN_free(sk); return false; }
-
-    share_out = dao::dao_v2_tally_share{};
-    share_out.version         = 1;
-    share_out.proposal_id     = proposal_id;
-    share_out.vote_end_height = prop.voting_end_height;
-    share_out.tally_key_id    = key_rec.key_id;
-    share_out.member_index    = key_record_position;
-    share_out.aggregate_ciphertext_hash =
-        dao::dao_aggregate_ciphertext_hash(agg.aggregate_E_W,
-                                           agg.aggregate_E_S,
-                                           agg.aggregate_E_B);
-
-    auto do_channel = [&](const std::vector<uint8_t>& c,
-                          std::vector<uint8_t>& partial_out,
-                          dao_partial_decryption_proof& proof_out) -> bool {
-        std::vector<uint8_t> ci;
-        if (!dao_threshold_partial_decrypt(pk, c, sk, ci)) return false;
-        BIGNUM* r = BN_new();
-        if (!dao_dkg_sample_r(pk, r)) { BN_free(r); return false; }
-        // proof_vk is the correct VK for whichever share set is active
-        // (reshared when event_share_set was provided).
-        const bool ok = dao_partial_decryption_prove(
-            pk, key_rec.V, proof_vk, key_record_position,
-            c, ci, sk, r, proof_out);
-        BN_free(r);
-        if (!ok) return false;
-        partial_out = std::move(ci);
-        return true;
-    };
-
-    const bool ok =
-        do_channel(agg.aggregate_E_W, share_out.partial_W, share_out.proof_W) &&
-        do_channel(agg.aggregate_E_S, share_out.partial_S, share_out.proof_S) &&
-        do_channel(agg.aggregate_E_B, share_out.partial_B, share_out.proof_B);
-
     BN_free(sk);
-    return ok;
+    return false;
 }
 
 } // namespace cryptonote

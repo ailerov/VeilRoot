@@ -11720,7 +11720,11 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
     // the Gamma map and the qualified ids for the threshold
     // combination. The Paillier path verifies against key_rec's
     // own VK_i list.
-    if (!key_rec.cl_modulus.empty()) {
+    if (key_rec.cl_modulus.empty()) {
+      MERROR("tally-result: key record carries no CL context");
+      return false;
+    }
+    {
       dao::dao_share_set_record share_set;
       uint64_t ssid = latest_share_set_id_for_key_id(key_rec.key_id);
       if (ssid == 0) {
@@ -11731,7 +11735,7 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
         MERROR("tally-result: share set " << ssid << " missing");
         return false;
       }
-      if (!dao::dao_verify_tally_certificate_cl(
+      if (!dao::dao_verify_tally_certificate(
               key_rec,
               share_set,
               snap,
@@ -11741,18 +11745,6 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
               agg.aggregate_E_B,
               cert)) {
         MERROR("tally-result: CL cryptographic verification failed");
-        return false;
-      }
-    } else {
-      if (!dao::dao_verify_tally_certificate(
-              key_rec,
-              snap,
-              m_governance_params.voting_quorum_percent,
-              agg.aggregate_E_W,
-              agg.aggregate_E_S,
-              agg.aggregate_E_B,
-              cert)) {
-        MERROR("tally-result: cryptographic verification failed");
         return false;
       }
     }
