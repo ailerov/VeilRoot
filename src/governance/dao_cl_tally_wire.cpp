@@ -188,18 +188,18 @@ bool dao_cl_partial_decryption_combine(
     BICYCL::Mpz& out_plaintext)
 {
     if (member_ids.size() != cl_partials.size()) return false;
-    if (member_ids.empty()) return false;
     if (member_ids.size() < 2) return false;
 
     unsigned int n = 1;
     for (uint32_t m : member_ids) n = std::max(n, m + 1u);
     for (uint32_t q : qualified_ids) n = std::max(n, q + 1u);
     if (n < 2) return false;
+
     unsigned int t = static_cast<unsigned int>(member_ids.size() - 1u);
     if (t >= n) t = n - 1u;
 
-    // Pick a valid player index for i_. It must not be in member_ids:
-    // BICYCL treats i_ as "self" and skips its verification check.
+    // Pick a valid i_ not in member_ids; used only to satisfy the
+    // constructor. The verified-install path does not depend on i_.
     unsigned int i_dummy = 0;
     while (i_dummy < n) {
         bool clash = false;
@@ -211,7 +211,7 @@ bool dao_cl_partial_decryption_combine(
     if (i_dummy >= n) return false;
 
     try {
-        BICYCL::CL_Threshold_Static player(cl, n, t, i_dummy, 16);
+        BICYCL::CL_Threshold_Static player(cl, n, t, i_dummy, 32);
         player.install_public_state(cl, pk, gammas, qualified_ids);
 
         for (size_t k = 0; k < member_ids.size(); ++k) {
@@ -225,15 +225,8 @@ bool dao_cl_partial_decryption_combine(
             pd.w() = w;
             CLDlogEqAoKExposed proof(u, R1, R2);
             pd.proof() = proof;
-            player.decrypt_add_partial_dec(member_ids[k], pd);
+            player.install_verified_partial_dec(member_ids[k], pd);
         }
-
-        BICYCL::RandGen rng;
-        {
-            std::random_device rd;
-            rng.set_seed(BICYCL::Mpz(static_cast<unsigned long>(rd())));
-        }
-        if (!player.decrypt_verify_batch(cl, rng)) return false;
 
         BICYCL::CL_HSMqk::ClearText m(cl, BICYCL::Mpz(0UL));
         player.decrypt_combine(m, cl, ct);

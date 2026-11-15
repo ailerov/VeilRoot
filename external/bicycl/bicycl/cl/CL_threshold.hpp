@@ -706,6 +706,15 @@ class CL_Threshold_Static
         const ParticipantsValueMap<QFI> & gammas,
         const ParticipantsSet & qualified_players);
 
+    // Install a partial decryption that the caller has already verified
+    // independently: appends to part_dec_ and adds the sender to the
+    // decryption players set. Required for consensus verifiers that
+    // verify proofs with their own routines but must use this object
+    // only for the Lagrange combination step.
+    void install_verified_partial_dec(
+        unsigned int j,
+        const PartialDecryption & part_dec);
+
   private:
 
     /**

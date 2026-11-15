@@ -3,6 +3,16 @@
 
 #include "governance/dao_tally.h"
 
+#ifdef VEILROOT_ENABLE_CL
+#include "governance/dao_cl_ballot.h"
+#include "governance/dao_cl_consistency.h"
+#include "governance/dao_cl_dkg_payload.h"
+#include "governance/dao_cl_tally_wire.h"
+#include "bicycl/bicycl.hpp"
+#include "bicycl/bicycl/cl/CL_HSMqk.hpp"
+#include "bicycl/bicycl/cl/CL_threshold.hpp"
+#endif
+
 #include <cstring>
 
 #include <openssl/sha.h>
@@ -955,6 +965,212 @@ bool dao_verify_tally_certificate(
     BN_free(mW); BN_free(mS); BN_free(mB); BN_free(theta);
     return true;
 }
+
+#ifdef VEILROOT_ENABLE_CL
+
+namespace {
+
+bool mpz_to_dao_u128(const BICYCL::Mpz& m, dao_u128& out)
+{
+    if (m.sgn() < 0) return false;
+    auto be = static_cast<std::vector<unsigned char>>(m);
+    if (be.size() > 16) return false;
+    out = 0;
+    for (unsigned char b : be) {
+        out <<= 8;
+        out |= b;
+    }
+    return true;
+}
+
+// Centre-decode a signed aggregate weight S in Z_q into (negative, |S|).
+bool decode_signed_cl(const BICYCL::Mpz& m, const BICYCL::Mpz& q,
+                      bool& negative, dao_u128& magnitude)
+{
+    BICYCL::Mpz centred;
+    if (!dao::dao_cl_decode_signed_plaintext(m, q, centred)) return false;
+    negative = centred.sgn() < 0;
+    BICYCL::Mpz abs_m;
+    BICYCL::Mpz::abs(abs_m, centred);
+    return mpz_to_dao_u128(abs_m, magnitude);
+}
+
+bool deserialize_gammas(const dao_share_set_record& share_set,
+                        const BICYCL::Mpz& expected_disc,
+                        BICYCL::CL_Threshold_Static::ParticipantsValueMap<BICYCL::QFI>& out)
+{
+    if (share_set.cl_gammas_serialized.empty()) return false;
+    return dao::cl_dkg_deserialize_gammas(
+        share_set.cl_gammas_serialized, expected_disc, out);
+}
+
+bool check_cl_partial_set(
+    const dao_partial_set& s,
+    const BICYCL::CL_HSMqk& cl,
+    const BICYCL::CL_HSMqk::CipherText& ct,
+    const BICYCL::Mpz& D,
+    const BICYCL::CL_Threshold_Static::ParticipantsValueMap<BICYCL::QFI>& gammas,
+    uint32_t threshold,
+    uint32_t n)
+{
+    if (s.member_indices.size() != s.cl_partials.size()) return false;
+    if (s.member_indices.size() < threshold) return false;
+    std::set<uint32_t> seen;
+    for (size_t i = 0; i < s.member_indices.size(); ++i) {
+        uint32_t m = s.member_indices[i];
+        if (m >= n) return false;
+        if (!seen.insert(m).second) return false;
+        auto it = gammas.find(m);
+        if (it == gammas.end()) return false;
+        if (!dao::dao_cl_partial_decryption_verify(
+                cl, ct, D, it->second, s.cl_partials[i]))
+            return false;
+    }
+    return true;
+}
+
+} // anonymous namespace
+
+bool dao_build_tally_certificate_cl(
+    const dao_tally_key_record& key_rec,
+    const dao_share_set_record& share_set,
+    const crypto::hash& proposal_id,
+    uint64_t vote_end_height,
+    const std::vector<uint8_t>& E_W,
+    const std::vector<uint8_t>& E_S,
+    const std::vector<uint8_t>& E_B,
+    const dao_partial_set& W_set,
+    const dao_partial_set& S_set,
+    const dao_partial_set& B_set,
+    dao_tally_certificate& cert_out)
+{
+    if (key_rec.cl_modulus.empty()) return false;
+    if (key_rec.key_id.size() != 32) return false;
+    if (share_set.key_id != key_rec.key_id) return false;
+    if (share_set.threshold == 0) return false;
+    if (share_set.committee_members.empty()) return false;
+    if (share_set.threshold > share_set.committee_members.size()) return false;
+
+    dao::dao_cl_proposal_key key;
+    if (!dao::dao_cl_load_proposal_key(key_rec.cl_modulus, key)) return false;
+    if (!dao::dao_cl_check_ballot_modulus(*key.cl)) return false;
+
+    BICYCL::CL_HSMqk::CipherText ct_W, ct_S, ct_B;
+    if (!dao::dao_cl_ciphertext_from_wire(*key.cl, E_W, ct_W)) return false;
+    if (!dao::dao_cl_ciphertext_from_wire(*key.cl, E_S, ct_S)) return false;
+    if (!dao::dao_cl_ciphertext_from_wire(*key.cl, E_B, ct_B)) return false;
+
+    BICYCL::CL_Threshold_Static::ParticipantsValueMap<BICYCL::QFI> gammas;
+    if (!deserialize_gammas(share_set, key.cl->Cl_G().discriminant(), gammas))
+        return false;
+
+    BICYCL::CL_Threshold_Static::ParticipantsSet qualified;
+    for (uint32_t q : share_set.qualified_ids) qualified.insert(q);
+
+    const uint32_t n = static_cast<uint32_t>(share_set.committee_members.size());
+    if (!check_cl_partial_set(W_set, *key.cl, ct_W, key.D, gammas,
+                              share_set.threshold, n)) return false;
+    if (!check_cl_partial_set(S_set, *key.cl, ct_S, key.D, gammas,
+                              share_set.threshold, n)) return false;
+    if (!check_cl_partial_set(B_set, *key.cl, ct_B, key.D, gammas,
+                              share_set.threshold, n)) return false;
+
+    BICYCL::Mpz mW, mS, mB;
+    if (!dao::dao_cl_partial_decryption_combine(
+            *key.cl, *key.pk, ct_W, key.D,
+            W_set.member_indices, W_set.cl_partials, gammas, qualified, mW))
+        return false;
+    if (!dao::dao_cl_partial_decryption_combine(
+            *key.cl, *key.pk, ct_S, key.D,
+            S_set.member_indices, S_set.cl_partials, gammas, qualified, mS))
+        return false;
+    if (!dao::dao_cl_partial_decryption_combine(
+            *key.cl, *key.pk, ct_B, key.D,
+            B_set.member_indices, B_set.cl_partials, gammas, qualified, mB))
+        return false;
+
+    cert_out = dao_tally_certificate{};
+    cert_out.proposal_id = proposal_id;
+    cert_out.vote_end_height = vote_end_height;
+    cert_out.key_id = key_rec.key_id;
+    cert_out.aggregate_ciphertext_hash =
+        dao_aggregate_ciphertext_hash(E_W, E_S, E_B);
+    cert_out.W = W_set;
+    cert_out.S = S_set;
+    cert_out.B = B_set;
+
+    if (!mpz_to_dao_u128(mW, cert_out.W_total)) return false;
+    if (!mpz_to_dao_u128(mB, cert_out.B_total)) return false;
+    if (!decode_signed_cl(mS, key.cl->q(),
+                          cert_out.s_negative, cert_out.S_abs)) return false;
+
+    return true;
+}
+
+bool dao_verify_tally_certificate_cl(
+    const dao_tally_key_record& key_rec,
+    const dao_share_set_record& share_set,
+    const dao_supply_snapshot&  supply_at_vote_end,
+    uint32_t                    quorum_percent,
+    const std::vector<uint8_t>& E_W,
+    const std::vector<uint8_t>& E_S,
+    const std::vector<uint8_t>& E_B,
+    dao_tally_certificate&      cert)
+{
+    if (key_rec.key_id.size() != 32) return false;
+    if (cert.key_id.size() != 32) return false;
+    if (std::memcmp(cert.key_id.data(), key_rec.key_id.data(), 32) != 0)
+        return false;
+    if (cert.vote_end_height != supply_at_vote_end.height) return false;
+
+    dao_tally_certificate recomputed;
+    if (!dao_build_tally_certificate_cl(
+            key_rec, share_set, cert.proposal_id, cert.vote_end_height,
+            E_W, E_S, E_B, cert.W, cert.S, cert.B, recomputed))
+        return false;
+
+    if (recomputed.W_total    != cert.W_total)    return false;
+    if (recomputed.s_negative != cert.s_negative) return false;
+    if (recomputed.S_abs      != cert.S_abs)      return false;
+    if (recomputed.B_total    != cert.B_total)    return false;
+    if (recomputed.aggregate_ciphertext_hash != cert.aggregate_ciphertext_hash)
+        return false;
+
+    const dao_u128 W_rec     = recomputed.W_total;
+    const dao_u128 S_abs_rec = recomputed.S_abs;
+    const dao_u128 B_rec     = recomputed.B_total;
+
+    if (B_rec > supply_at_vote_end.circulating) return false;
+
+    const dao_u128 W_MAX =
+        dao_u128(240000000ULL) * dao_u128(1000000000000ULL);
+    if (W_rec > W_MAX) return false;
+    if (S_abs_rec > W_rec) return false;
+    if (((W_rec + S_abs_rec) & 1) != 0) return false;
+
+    dao_u128 YES = cert.s_negative
+        ? (W_rec - S_abs_rec) / 2
+        : (W_rec + S_abs_rec) / 2;
+    dao_u128 NO  = W_rec - YES;
+
+    dao_u128 qthresh = 0;
+    bool qmet = false, mmet = false, passed = false;
+    if (!dao_evaluate_v2_tally(YES, NO, B_rec,
+                               supply_at_vote_end.circulating,
+                               quorum_percent,
+                               qthresh, qmet, mmet, passed))
+        return false;
+
+    cert.YES_weight       = YES;
+    cert.NO_weight        = NO;
+    cert.quorum_threshold = qthresh;
+    cert.quorum_met       = qmet;
+    cert.majority_met     = mmet;
+    cert.passed           = passed;
+    return true;
+}
+
+#endif // VEILROOT_ENABLE_CL
 
 } // namespace dao
 } // namespace cryptonote

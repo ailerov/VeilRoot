@@ -1731,6 +1731,18 @@ namespace BICYCL
     QualifiedPlayersSet_ = qualified_players;
   }
 
+  inline
+  void CL_Threshold_Static::install_verified_partial_dec(
+      unsigned int j,
+      const PartialDecryption &part_dec)
+  {
+    if (j >= n_)
+      throw std::invalid_argument(
+          "install_verified_partial_dec: player id out of range");
+    part_dec_.emplace(j, part_dec);
+    DecryptionPlayersSet_.insert(j);
+  }
+
   inline bool CL_Threshold_Static::serialize_secret_share
       (std::vector<uint8_t> &out) const
   {
