@@ -178,3 +178,7 @@ target_link_libraries(daemon_rpc_server
 target_include_directories(daemon_rpc_server PUBLIC ${ZMQ_INCLUDE_PATH})
 target_include_directories(obj_daemon_rpc_server PUBLIC ${ZMQ_INCLUDE_PATH})
 target_link_libraries(obj_rpc PRIVATE secp256k1)
+if(VEILROOT_ENABLE_CL)
+  target_compile_definitions(obj_rpc PRIVATE VEILROOT_ENABLE_CL=1)
+  target_link_libraries(obj_rpc PRIVATE bicycl gmp::gmp)
+endif()

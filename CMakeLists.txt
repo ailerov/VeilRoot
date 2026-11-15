@@ -578,6 +578,13 @@ option(VEILROOT_ENABLE_CL
     OFF)
 if(VEILROOT_ENABLE_CL)
     find_package(gmp REQUIRED)
+    # Bicycl headers are included by blockchain.h and other consensus
+    # consumers of the CL DKG runner, not only by obj_governance.
+    include_directories(SYSTEM "${CMAKE_CURRENT_SOURCE_DIR}/external/bicycl")
+    # The CL implementation is the DAO when enabled. blockchain.h
+    # includes the CL DKG runner, so every translation unit that pulls
+    # blockchain.h must see the same configure.
+    add_definitions(-DVEILROOT_ENABLE_CL=1)
     message(STATUS "VEILROOT_ENABLE_CL=ON -- CL backend will be built")
 endif()
 message(STATUS "Using OpenSSL include dir at ${OPENSSL_INCLUDE_DIR}")

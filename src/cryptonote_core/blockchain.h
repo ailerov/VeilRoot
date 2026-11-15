@@ -72,6 +72,7 @@
 #include "governance/domain_policy.h"
 #include "governance/dao_tally_share.h"
 #include "governance/dao_dkg.h"
+#include "governance/dao_cl_dkg_runner.h"
 #include "governance/dao_reshare_pipeline.h"
 #include <array>
 #include <deque>
@@ -1474,6 +1475,14 @@ namespace cryptonote
   void install_dao_tally_key_for_proposal_for_test(
       const dao::dao_tally_key_record& record,
       const std::vector<uint8_t>& local_share_bytes);
+
+  // Test-only: install a CL key record + its initial share set + this
+  // node's local secret share as one atomic operation. Mirrors the
+  // block-apply path for a CL activation without the ceremony.
+  void install_cl_tally_key_for_proposal_for_test(
+      const dao::dao_tally_key_record& record,
+      const dao::dao_share_set_record& share_set,
+      const std::vector<uint8_t>& local_share_bytes);
 #endif
 
   // Authoritative state transition for a validated tally-result tx.
@@ -1540,7 +1549,7 @@ namespace cryptonote
 
   void evict_stale_dao_v2_ready_peers_for_test();
 
-  std::map<std::string, std::unique_ptr<dao::dkg_p2p_runner>>&
+  std::map<std::string, std::shared_ptr<dao::cl_dkg_p2p_runner>>&
     m_dao_v2_dkg_runners_for_test() { return m_dao_v2_dkg_runners; }
   std::mutex& m_dao_v2_dkg_runners_for_test_mutex()
     { return m_dao_v2_dkg_runners_mutex; }
@@ -1597,7 +1606,7 @@ namespace cryptonote
   bool get_dao_v2_dkg_runner_state_for_test(
       const crypto::hash& proposal_id,
       dkg_runner_state_for_test& state_out,
-      dao::dkg_result& result_out) const;
+      dao::cl_dkg_result& result_out) const;
   bool has_dao_v2_reshare_runner_for_test() const {
     std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
     return m_dao_v2_reshare_runner != nullptr;
@@ -1627,17 +1636,11 @@ namespace cryptonote
   // Extracted worker. Performs the committee check, derives local
   // party id, builds cfg and callbacks, spawns the runner, and stores
   // it. `start_dao_v2_dkg` is a thin forwarder.
-  bool start_dao_v2_dkg_for_committee(
-      const std::string& ceremony_id,
-      const std::vector<crypto::public_key>& committee,
-      const dao::dao_vss_group& vss,
-      uint32_t target_N_bits,
-      uint32_t qproof_rounds);
 
   // Called from the DKG watcher thread when a ceremony finishes.
   // Enqueues the result; the DB write happens on the blockchain owner
   // thread via process_pending_dao_v2_dkg_results().
-  void queue_dao_v2_dkg_result(const std::string& ceremony_id, dao::dkg_result result);
+  void queue_dao_v2_dkg_result(const std::string& ceremony_id, dao::cl_dkg_result result);
 
   // Owner-thread persistence. Consumes the pending queue and writes
   // each result under the caller's write transaction.
@@ -1931,7 +1934,7 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
         m_dao_v2_tally_broadcast;
     // END_VNS_DAO_V2_TALLY_SHARE
     // BEGIN_VNS_DAO_V2_DKG
-    std::map<std::string, std::unique_ptr<dao::dkg_p2p_runner>>
+    std::map<std::string, std::shared_ptr<dao::cl_dkg_p2p_runner>>
         m_dao_v2_dkg_runners;
     mutable std::mutex m_dao_v2_dkg_runners_mutex;
     // Inbound DKG envelopes that arrived before the matching runner
@@ -1964,7 +1967,7 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     struct pending_dao_v2_dkg_result
     {
         std::string ceremony_id;
-        dao::dkg_result result;
+        dao::cl_dkg_result result;
     };
     mutable std::mutex m_dao_v2_dkg_result_mutex;
     std::deque<pending_dao_v2_dkg_result>
@@ -1978,6 +1981,12 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     // the single ceremony this node participated in.
     std::map<std::string, dao::dao_tally_key_record>
         m_dao_v2_local_records;
+    // CL initial share set produced by the same CL DKG ceremony.
+    // Stored alongside the key record so the activation transaction
+    // can carry and install both atomically. Empty for bootstrap
+    // Paillier ceremonies (deleted on Paillier retirement).
+    std::map<std::string, dao::dao_share_set_record>
+        m_dao_v2_local_share_sets;
     std::map<std::string, uint64_t>
         m_dao_v2_local_selection_height;
     std::map<std::string,

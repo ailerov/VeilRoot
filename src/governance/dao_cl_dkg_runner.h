@@ -54,6 +54,7 @@ struct cl_dkg_config
 struct cl_dkg_result
 {
     bool ok = false;
+    uint64_t selection_height = 0;
     cl_key_context ctx;
 
     // This node's secret share, encoded by serialize_secret_share() on
@@ -106,6 +107,8 @@ class cl_dkg_p2p_runner
 public:
     cl_dkg_p2p_runner(const cl_dkg_config& cfg,
                       std::unique_ptr<dkg_transport> transport);
+    cl_dkg_p2p_runner(const cl_dkg_config& cfg,
+                      std::shared_ptr<dkg_transport> transport);
     ~cl_dkg_p2p_runner();
 
     cl_dkg_p2p_runner(const cl_dkg_p2p_runner&) = delete;

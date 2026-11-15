@@ -28,7 +28,7 @@ using namespace BICYCL;
 struct cl_dkg_p2p_runner::impl
 {
     cl_dkg_config cfg;
-    std::unique_ptr<dkg_transport> transport;
+    std::shared_ptr<dkg_transport> transport;
     std::unique_ptr<CLCommitteeParty> party;
     RandGen randgen;
 
@@ -301,6 +301,18 @@ void cl_dkg_p2p_transport::shutdown()
 
 cl_dkg_p2p_runner::cl_dkg_p2p_runner(
     const cl_dkg_config& cfg, std::unique_ptr<dkg_transport> transport)
+    : p_(std::make_unique<impl>())
+{
+    p_->cfg = cfg;
+    p_->transport = std::shared_ptr<dkg_transport>(std::move(transport));
+    p_->seed_randgen();
+    p_->party = std::make_unique<CLCommitteeParty>(
+        cfg.cl, cfg.committee_size, cfg.threshold_internal,
+        cfg.local_party_id - 1, cfg.soundness_bytes);
+}
+
+cl_dkg_p2p_runner::cl_dkg_p2p_runner(
+    const cl_dkg_config& cfg, std::shared_ptr<dkg_transport> transport)
     : p_(std::make_unique<impl>())
 {
     p_->cfg = cfg;
