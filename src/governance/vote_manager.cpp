@@ -20,8 +20,10 @@
 #include "dao_paillier.h"
 #include "dao_cl_ballot.h"
 #include "dao_cl_tally_wire.h"
+#ifdef VEILROOT_ENABLE_CL
 #include "bicycl/bicycl.hpp"
 #include "bicycl/bicycl/cl/CL_HSMqk.hpp"
+#endif
 #include <random>
 #include "ringct/rctOps.h"
 #include <limits>
@@ -146,6 +148,7 @@ bool VoteManager::rollback_block(const block& blk,
             continue;
         }
 
+#ifdef VEILROOT_ENABLE_CL
         if (kind != vote_kind::v2)
             continue;
 
@@ -254,6 +257,7 @@ bool VoteManager::rollback_block(const block& blk,
             bdb.remove_vote_nullifier(proof.proposal_id, nf);
 
         MINFO("Rolled back V2 vote for proposal " << proof.proposal_id);
+#endif
     }
     return true;
 }
@@ -627,6 +631,7 @@ vote_result VoteManager::process_v2_vote(
 bool VoteManager::apply_dao_vote(const vote_proof_v2& proof,
                                  const crypto::hash& tx_hash)
 {
+#ifdef VEILROOT_ENABLE_CL
     BlockchainDB& bdb = m_db.get_underlying_db();
 
     dao::dao_tally_key_record key_rec;
@@ -710,6 +715,11 @@ bool VoteManager::apply_dao_vote(const vote_proof_v2& proof,
         bdb.add_vote_nullifier(proof.proposal_id, nf);
 
     return true;
+#else
+    (void)proof;
+    (void)tx_hash;
+    return false;
+#endif
 }
 
 } // namespace cryptonote

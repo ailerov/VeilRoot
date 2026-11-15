@@ -80,6 +80,12 @@
 #include "governance/dao_dkg.h"
 #include "governance/dao_cl_ballot.h"
 #include "governance/dao_crypto_backend.h"
+#ifdef VEILROOT_ENABLE_CL
+#include "governance/dao_cl_ballot.h"
+#include "governance/dao_cl_reshare_runner.h"
+#include "governance/dao_cl_dkg_payload.h"
+#include "bicycl/bicycl/cl/CL_threshold.hpp"
+#endif
 #include "governance/dao_dkg_transport.h"
 #include <openssl/sha.h>
 #include <openssl/evp.h>
@@ -749,6 +755,7 @@ bool Blockchain::store_blockchain()
 //------------------------------------------------------------------
 void Blockchain::stop_dao_v2_dkg_workers() noexcept
 {
+#ifdef VEILROOT_ENABLE_CL
   // Mark shutdown under the runners mutex so any in-flight start
   // observes it before taking its own lock.
   {
@@ -764,6 +771,10 @@ void Blockchain::stop_dao_v2_dkg_workers() noexcept
   m_dao_v2_dkg_runners.clear();
   m_dao_v2_dkg_vss.clear();
   m_dao_v2_dkg_send = nullptr;
+#else
+  std::lock_guard<std::mutex> lk(m_dao_v2_dkg_runners_mutex);
+  m_dao_v2_dkg_shutdown.store(true);
+#endif
 }
 
 #ifdef VEILROOT_DAO_DKG_TESTING
@@ -9415,6 +9426,67 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       }
     }
 
+#ifdef VEILROOT_ENABLE_CL
+    if (m.hdr.type == dao::dkg_msg_type::cl_dkg_envelope) {
+      dao::cl_dkg_payload clp;
+      if (dao::cl_dkg_payload::deserialize(m.bytes_a, clp)) {
+        if (clp.subtype == dao::cl_dkg_subtype::reshare_complete)
+          return;
+        if (clp.subtype == dao::cl_dkg_subtype::reshare_prestate ||
+            clp.subtype == dao::cl_dkg_subtype::reshare_contribution ||
+            clp.subtype == dao::cl_dkg_subtype::reshare_private_share) {
+          if (clp.body.size() < 32) return;
+          crypto::hash sid{};
+          std::memcpy(sid.data, clp.body.data(), 32);
+          if (m.hdr.proposal_id == crypto::null_hash) return;
+          proposal_record pr;
+          if (!m_db->get_proposal_record(m.hdr.proposal_id, pr)) return;
+          if (pr.tally_key_id == crypto::null_hash) return;
+          std::vector<uint8_t> kid(pr.tally_key_id.data,
+                                   pr.tally_key_id.data + 32);
+          dao::dao_tally_key_record kr;
+          try {
+            if (!m_db->get_dao_tally_key_by_id(kid, kr)) return;
+          } catch (...) { return; }
+          if (kr.key_id.size() != 32) return;
+          uint64_t cur_id = latest_share_set_id_for_key_id(kr.key_id);
+          if (cur_id == 0) return;
+          dao::dao_share_set_record css;
+          if (!m_db->get_dao_share_set(cur_id, css)) return;
+
+          uint32_t pos0 = UINT32_MAX;
+          for (size_t i = 0; i < css.committee_members.size(); ++i) {
+            if (css.committee_members[i].size() != 32) continue;
+            if (std::memcmp(css.committee_members[i].data(),
+                            member.data, 32) == 0) {
+              pos0 = static_cast<uint32_t>(i);
+              break;
+            }
+          }
+          if (pos0 == UINT32_MAX) return;
+          if (m.hdr.sender_id != pos0 + 1) return;
+          if (std::find(css.qualified_ids.begin(),
+                        css.qualified_ids.end(), pos0)
+              == css.qualified_ids.end()) return;
+
+          const std::string pkey =
+              epee::string_tools::pod_to_hex(sid);
+          std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
+          if (m_dao_v2_reshare_runner &&
+              m_dao_v2_reshare_runner->session_id() == sid) {
+            m_dao_v2_reshare_runner->on_message(m);
+            return;
+          }
+          auto& q = m_dao_v2_pending_reshare_msgs[pkey];
+          if (q.size() >= k_dao_v2_pending_reshare_msgs_cap)
+            q.pop_front();
+          q.emplace_back(member, m);
+          return;
+        }
+      }
+    }
+#endif
+
     // BEGIN_VNS_DAO_V2_KEY_READY_ROUTE
     // Attestation exchange happens after the DKG ceremony has
     // completed; the runner may already be gone. Route by message
@@ -9432,24 +9504,10 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     }
     // END_VNS_DAO_V2_NODE_READY_ROUTE
 
-    // BEGIN_VNS_DAO_V2_RESHARE_ROUTE
-    // Reshare messages are carried inside a DKG envelope so that the
-    // existing P2P transport routes them without a new wire type.
-    // The inner payload in bytes_a is a serialized dao_reshare_msg.
-    if (m.hdr.type == dao::dkg_msg_type::share_set_deal ||
-        m.hdr.type == dao::dkg_msg_type::share_set_complete ||
-        m.hdr.type == dao::dkg_msg_type::share_set_committee_ready ||
-        m.hdr.type == dao::dkg_msg_type::share_set_deal_ack ||
-        m.hdr.type == dao::dkg_msg_type::share_set_finalize) {
-      std::string inner(m.bytes_a.begin(), m.bytes_a.end());
-      handle_dao_v2_reshare_msg(member, inner);
-      return;
-    }
-    // END_VNS_DAO_V2_RESHARE_ROUTE
-
     // Route the message to the runner for the ceremony it belongs to.
     // Bootstrap (null proposal_id) routes to BOOTSTRAP_CEREMONY_ID
     // (the empty string); a per-proposal ceremony routes by
+#ifdef VEILROOT_ENABLE_CL
     // hex(proposal_id). The proposal_id is stamped on every message
     // header by the party at construction.
     const std::string route_ceremony_id =
@@ -9485,6 +9543,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     // its config; broadcasts reach every committee member.
 
     runner_ref->on_message(m);
+#endif
   }
 
   // BEGIN_VNS_DAO_V2_KEY_READY_IMPL
@@ -10184,6 +10243,7 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 // Root participant subset R is the top T_root bootstrap shareholders
 // by the same canonical ranking used to select the tally committee.
 // Deterministic across nodes.
+#ifdef VEILROOT_ENABLE_CL
     void Blockchain::queue_dao_v2_dkg_result(const std::string& ceremony_id,
                                           dao::cl_dkg_result result)
   {
@@ -10191,9 +10251,13 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     m_pending_dao_v2_dkg_results.push_back(
         pending_dao_v2_dkg_result{ceremony_id, std::move(result)});
   }
+#endif
 
   bool Blockchain::process_pending_dao_v2_dkg_results()
   {
+#ifndef VEILROOT_ENABLE_CL
+    return true;
+#else
     std::deque<pending_dao_v2_dkg_result> pending;
     {
       std::lock_guard<std::mutex> lock(m_dao_v2_dkg_result_mutex);
@@ -10354,7 +10418,9 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
         (void)try_submit_pending_dao_v2_key_activation(id);
     }
     return true;
+  #endif
   }
+#ifdef VEILROOT_ENABLE_CL
 dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
       const crypto::hash& proposal_id)
   {
@@ -10532,6 +10598,14 @@ dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
           << proposal_id << " committee=" << shareholders.size());
     return dao::dao_dkg_start_status::started;
   }
+#else
+dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
+      const crypto::hash& proposal_id)
+  {
+    (void)proposal_id;
+    return dao::dao_dkg_start_status::runner_start_failed;
+  }
+#endif
 
 
 // END_VNS_DAO_V2_DKG
@@ -10694,11 +10768,13 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
     // Recursive critical_section: callers already holding it are fine.
     CRITICAL_REGION_LOCAL(m_blockchain_lock);
 
+#ifdef VEILROOT_ENABLE_CL
     // Only one reshare runner at a time. If busy, defer to next tick.
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
       if (m_dao_v2_reshare_runner) return;
     }
+#endif
 
     // Load this proposal's key by id.
     proposal_record rec;
@@ -10959,307 +11035,308 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
     }
     if (our_contrib_pos == 0 && our_new_pos == 0) return;
 
-    // Fixed interpolation subset S: first `threshold` positions in
-    // contributor_indices. Every selected contributor MUST use this
-    // exact subset for mu_i, or combinations are invalid.
-    std::vector<uint32_t> S;
-    if (contributor_indices.size() < cur_ss.threshold) return;
-    for (size_t i = 0; i < cur_ss.threshold; ++i)
-      S.push_back(contributor_indices[i]);
+#ifdef VEILROOT_ENABLE_CL
+    dao::dao_cl_proposal_key pkc;
+    if (!dao::dao_cl_load_proposal_key(key_rec.cl_modulus, pkc)) return;
+    if (pkc.pk == nullptr) return;
 
-    // Distinguish three roles:
-    //   (1) selected old-share contributor (our_contrib_pos in S)
-    //   (2) new committee member receiving shares (our_new_pos != 0)
-    //   (3) neither
-    // A node outside S can still be a new committee recipient and
-    // must not return early: it needs to receive deals and derive its
-    // new share via the recipient-only path (local_party_index==0).
-    const bool local_is_selected_contributor =
-        our_contrib_pos != 0 &&
-        std::find(S.begin(), S.end(), our_contrib_pos) != S.end();
-    if (!local_is_selected_contributor && our_new_pos == 0) return;
+    std::vector<uint32_t> qualified_ids = cur_ss.qualified_ids;
+    if (qualified_ids.empty()) return;
 
-    // Load s_i, mu_i only for selected contributors.
-    std::unique_ptr<BIGNUM, void(*)(BIGNUM*)> s_i(nullptr, BN_free);
-    std::unique_ptr<BIGNUM, void(*)(BIGNUM*)> mu_i(nullptr, BN_free);
-    if (local_is_selected_contributor) {
-      std::vector<uint8_t> packed;
-      if (!m_db->get_dao_local_share(cur_id, our_contrib_pos, packed))
-        return;
-      std::vector<uint8_t> raw;
-      if (!dao::dao_unpack_local_share(packed, key_rec.key_id, raw))
-        return;
-      BIGNUM* s = nullptr;
-      if (!dao_load_local_share_value_(raw, &s)) return;
-      s_i.reset(s);
-
-      BIGNUM* mu = BN_new();
-      if (!mu) return;
-      if (!dao::dao_dkg_lagrange_mu(S, our_contrib_pos, mu)) {
-        BN_free(mu);
-        return;
+    const size_t need_old = cur_ss.threshold;
+    if (need_old < 2) return;
+    std::vector<uint32_t> sel_old;
+    for (uint32_t qid : qualified_ids) {
+      if (qid >= cur_ss.committee_members.size()) return;
+      if (!need_reshare) {
+        if (cur_ss.committee_members[qid].size() != 32) return;
+        crypto::public_key qpk{};
+        std::memcpy(qpk.data,
+                    cur_ss.committee_members[qid].data(), 32);
+        if (ready_now.count(qpk) == 0) continue;
       }
-      mu_i.reset(mu);
+      sel_old.push_back(qid);
+      if (sel_old.size() >= need_old) break;
     }
-
-    BIGNUM* delta = BN_new();
-    if (!delta) return;
-    BN_dec2bn(&delta, "20922789888000");
-
-    // The reshare coefficient proofs must be made in the VSS group
-    // that the base DKG used. The certificate verifier reconstructs
-    // that group from key_rec.vss_*, so proofs in any other group are
-    // unverifiable.
-    if (key_rec.vss_P.empty() || key_rec.vss_P_prime.empty() ||
-        key_rec.vss_g.empty() || key_rec.vss_h.empty()) {
-      BN_free(delta);
-      return;
-    }
-    auto vss = std::make_unique<dao::dao_vss_group>();
-    vss->P       = BN_bin2bn(key_rec.vss_P.data(),
-                             static_cast<int>(key_rec.vss_P.size()),
-                             nullptr);
-    vss->P_prime = BN_bin2bn(key_rec.vss_P_prime.data(),
-                             static_cast<int>(key_rec.vss_P_prime.size()),
-                             nullptr);
-    vss->g       = BN_bin2bn(key_rec.vss_g.data(),
-                             static_cast<int>(key_rec.vss_g.size()),
-                             nullptr);
-    vss->h       = BN_bin2bn(key_rec.vss_h.data(),
-                             static_cast<int>(key_rec.vss_h.size()),
-                             nullptr);
-    if (!vss->valid()) {
-      BN_free(delta);
+    if (sel_old.size() < need_old) {
+      MWARNING("CL reshare " << proposal_id
+               << ": only " << sel_old.size()
+               << " reachable qualified contributors, need "
+               << need_old);
       return;
     }
 
-    auto pk_holder = std::make_unique<dao::PaillierPublicKey>();
-    if (!pk_holder->deserialize_modulus(key_rec.N)) {
-      BN_free(delta);
-      return;
-    }
-
-    dao::dao_reshare_runner::config cfg;
-    cfg.pk = pk_holder.get();
-    cfg.grp = vss.get();
-    cfg.V_bytes = key_rec.V;
-    cfg.delta = delta;
-    cfg.t_new = new_threshold - 1;
-    cfg.new_indices = new_indices;
-    cfg.new_members = new_members;
-    // Configure the runner's contributor set from S (the fixed
-    // interpolation subset), not from the full candidate list. This
-    // makes the runner's accepted sender list, the contributions used
-    // in combine, and the per-contributor VK_i evidence all describe
-    // the same subset. Original old-share-set indices are preserved.
-    cfg.contributor_indices.clear();
-    cfg.contributor_members.clear();
-    cfg.contributor_vk.clear();
-    for (uint32_t idx : S) {
-      size_t k = contributor_indices.size();
-      for (size_t j = 0; j < contributor_indices.size(); ++j) {
-        if (contributor_indices[j] == idx) { k = j; break; }
-      }
-      if (k == contributor_indices.size()) {
-        BN_free(delta);
-        return;
-      }
-      if (idx < 1 || idx > cur_ss.VK_i.size()) {
-        BN_free(delta);
-        return;
-      }
-      cfg.contributor_indices.push_back(idx);
-      cfg.contributor_members.push_back(contributors[k]);
-      cfg.contributor_vk.push_back(cur_ss.VK_i[idx - 1]);
-    }
-    cfg.old_share_set_id = cur_id;
-    cfg.new_share_set_id = cur_id + 1;
-    cfg.height = vote_end_height;
-    // cfg.threshold is used for (a) the received-contribution count
-    // gate, (b) the interpolation threshold in combine_one, and
-    // (c) the resulting share set's threshold. All three must be the
-    // NEW committee's threshold, not the base set's. For 3->4 they
-    // coincide; for 5->7 they do not, and using cur_ss.threshold
-    // would ship a reshare set whose declared threshold is weaker
-    // than it should be.
-    cfg.threshold = new_threshold;
-    cfg.key_id = key_rec.key_id;
-    cfg.local_party_index =
-        local_is_selected_contributor ? our_contrib_pos : 0;
-    cfg.local_new_index = our_new_pos;
-    cfg.local_s_i = s_i.get();
-    cfg.local_mu_i = mu_i.get();
-    cfg.local_pub = self_pk;
-    cfg.local_priv = m_node_privkey;
-    cfg.proposal_id = proposal_id;
-    cfg.contributor_threshold = cur_ss.threshold;
-
-    cfg.link_ctx_base.genesis_block_hash =
-        m_db->get_block_hash_from_height(0);
-    cfg.link_ctx_base.stable_key_record_hash.assign(32, 0);
-    cfg.link_ctx_base.share_set_id = cur_id;
-    cfg.link_ctx_base.contributor_pubkey.assign(32, 0);
-    std::memcpy(cfg.link_ctx_base.contributor_pubkey.data(),
-                self_pk.data, 32);
-    cfg.link_ctx_base.original_index = our_contrib_pos;
-    cfg.link_ctx_base.N = key_rec.N;
-    cfg.link_ctx_base.V = key_rec.V;
-    cfg.link_ctx_base.C_i0.assign(dao::PAILLIER_CT_BYTES, 0);
+    bool is_old_contributor = false;
+    uint32_t old_local_id_0based = 0;
     if (our_contrib_pos != 0) {
-      // VK_i must come from the share set being reshared FROM (cur_ss),
-      // indexed by the contributor's position in that share set's
-      // committee_members (our_contrib_pos). key_rec.V_K_i is the base
-      // committee's VK_i, indexed by base position — the two indices
-      // diverge for re-reshare and would bind the link proof to the
-      // wrong party's VK_i.
-      if (our_contrib_pos > cur_ss.VK_i.size()) {
-        BN_free(delta);
-        return;
+      const uint32_t our_idx0 = our_contrib_pos - 1;
+      if (std::find(sel_old.begin(), sel_old.end(), our_idx0)
+          != sel_old.end()) {
+        is_old_contributor = true;
+        old_local_id_0based = our_idx0;
       }
-      for (size_t i = 0; i < cur_ss.threshold; ++i)
-        cfg.link_ctx_base.contributor_subset.push_back(
-            contributor_indices[i]);
-      cfg.link_ctx_base.VK_i = cur_ss.VK_i[our_contrib_pos - 1];
-      std::vector<uint8_t> db(32, 0);
-      BN_bn2binpad(delta, db.data(), 32);
-      cfg.link_ctx_base.Delta = std::move(db);
+    }
+    const bool is_new_member = our_new_pos != 0;
+    if (!is_old_contributor && !is_new_member) return;
+
+    std::vector<uint8_t> D_signed;
+    if (!dao::cl_dkg_mpz_to_bytes_signed(D_signed, pkc.D)) return;
+    std::vector<uint8_t> old_pk_qfi;
+    if (!dao::cl_dkg_qfi_to_bytes(old_pk_qfi, pkc.pk->elt())) return;
+
+    std::vector<uint8_t> new_committee_id_hash(32, 0);
+    {
+      std::vector<uint8_t> buf;
+      const char* dom = "VeilRoot-DAO-DKG-COMMITTEE-V1";
+      buf.insert(buf.end(), dom, dom + std::strlen(dom));
+      for (const auto& m : new_members)
+        buf.insert(buf.end(), m.data, m.data + 32);
+      SHA256(buf.data(), buf.size(), new_committee_id_hash.data());
     }
 
-    dao::dao_reshare_p2p_callbacks cb;
-    cb.broadcast = [this](const std::string& pl) {
-      if (!m_dao_v2_dkg_send) return;
-      dao::dkg_msg env;
-      env.hdr.type = dao::dkg_msg_type::share_set_deal;
-      env.bytes_a.assign(pl.begin(), pl.end());
-      std::vector<uint8_t> wire;
-      if (!env.serialize(wire)) return;
-      std::string out(wire.begin(), wire.end());
-      (void)m_dao_v2_dkg_send(out);
-    };
-    cb.send_to = [this](const crypto::public_key&, const std::string& pl) {
-      if (!m_dao_v2_dkg_send) return false;
-      dao::dkg_msg env;
-      env.hdr.type = dao::dkg_msg_type::share_set_deal;
-      env.bytes_a.assign(pl.begin(), pl.end());
-      std::vector<uint8_t> wire;
-      if (!env.serialize(wire)) return false;
-      std::string out(wire.begin(), wire.end());
-      return m_dao_v2_dkg_send(out);
-    };
+    crypto::hash session_id =
+        dao::dao_cl_reshare_compute_session_id(
+            proposal_id, cur_id,
+            cur_ss.committee_id_hash,
+            new_committee_id_hash,
+            sel_old);
+    bool sid_nonzero = false;
+    for (int i = 0; i < 32; ++i)
+      if (session_id.data[i]) { sid_nonzero = true; break; }
+    if (!sid_nonzero) return;
 
-    auto runner = std::make_unique<dao::dao_reshare_runner>(cfg, cb);
+    std::vector<uint8_t> old_share_bytes;
+    if (is_old_contributor) {
+      std::vector<uint8_t> packed;
+      if (!m_db->get_dao_local_share(
+              cur_id, old_local_id_0based + 1, packed)) return;
+      if (!dao::dao_unpack_local_share(
+              packed, key_rec.key_id, old_share_bytes)) return;
+      if (old_share_bytes.empty()) return;
+    }
+
+    dao::cl_reshare_config ccfg;
+    ccfg.cl                    = pkc.cl;
+    ccfg.D_signed              = std::move(D_signed);
+    ccfg.old_n                 = static_cast<uint32_t>(
+                                     cur_ss.committee_members.size());
+    ccfg.old_t_internal        = cur_ss.threshold - 1;
+    ccfg.old_contributors      = sel_old;
+    ccfg.new_n                 = static_cast<uint32_t>(
+                                     new_members.size());
+    ccfg.new_t_internal        = new_threshold - 1;
+    ccfg.is_old_contributor    = is_old_contributor;
+    ccfg.old_local_id          = old_local_id_0based;
+    ccfg.is_new_member         = is_new_member;
+    ccfg.new_local_id          = our_new_pos - 1;
+    ccfg.old_pk_qfi            = old_pk_qfi;
+    ccfg.old_gammas_serialized = cur_ss.cl_gammas_serialized;
+    ccfg.old_share_bytes       = std::move(old_share_bytes);
+    ccfg.phase_timeout_seconds = 180;
+    ccfg.proposal_id           = proposal_id;
+    ccfg.session_id            = session_id;
+    ccfg.old_share_set_id      = cur_id;
+    ccfg.old_committee_id_hash = cur_ss.committee_id_hash;
+    ccfg.new_committee_id_hash = new_committee_id_hash;
+    ccfg.old_qualified_ids     = std::move(qualified_ids);
+
+    std::vector<crypto::public_key> transport_recipients;
+    for (const auto& nm : new_members) {
+      crypto::public_key pk{};
+      std::memcpy(pk.data, nm.data, 32);
+      transport_recipients.push_back(pk);
+    }
+    const crypto::public_key sender_pk = self_pk;
+    auto transport = std::make_unique<dao::cl_dkg_p2p_transport>(
+        transport_recipients,
+        [this, sender_pk](const crypto::public_key& recipient,
+                          const std::string& payload) -> bool {
+          if (!m_dao_v2_dkg_send) return false;
+          std::string encrypted;
+          if (!dao::encrypt_dkg_private_payload(
+                  payload, sender_pk, recipient, encrypted))
+            return false;
+          return m_dao_v2_dkg_send(encrypted);
+        },
+        [this](const std::string& payload) {
+          if (m_dao_v2_dkg_send) (void)m_dao_v2_dkg_send(payload);
+        });
+
+    auto runner = std::make_unique<dao::cl_reshare_p2p_runner>(
+        ccfg, std::move(transport));
     if (!runner->start()) {
-      BN_free(delta);
-      MWARNING("reshare: runner start failed for proposal "
+      MWARNING("CL reshare: runner start failed for proposal "
                << proposal_id);
       return;
     }
 
-    std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
-    m_dao_v2_reshare_runner = std::move(runner);
-    m_dao_v2_reshare_vss = std::move(vss);
-    m_dao_v2_reshare_pk = std::move(pk_holder);
-    m_dao_v2_reshare_delta.reset(delta);
-    m_dao_v2_reshare_s_i = std::move(s_i);
-    m_dao_v2_reshare_mu_i = std::move(mu_i);
+    dao_v2_reshare_commit_ctx commit_ctx;
+    commit_ctx.proposal_id           = proposal_id;
+    commit_ctx.key_id                = key_rec.key_id;
+    commit_ctx.old_share_set_id      = cur_id;
+    commit_ctx.new_share_set_id      = cur_id + 1;
+    commit_ctx.height                = vote_end_height;
+    commit_ctx.new_threshold         = new_threshold;
+    commit_ctx.new_committee_id_hash = new_committee_id_hash;
+    commit_ctx.old_pk_qfi            = ccfg.old_pk_qfi;
+    commit_ctx.is_new_member         = is_new_member;
+    commit_ctx.new_local_id          = ccfg.new_local_id;
+    commit_ctx.new_members.resize(new_members.size());
+    for (size_t i = 0; i < new_members.size(); ++i)
+      commit_ctx.new_members[i].assign(
+          new_members[i].data, new_members[i].data + 32);
+
+    const std::string pend_key =
+        epee::string_tools::pod_to_hex(session_id);
+
+    {
+      std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
+      m_dao_v2_reshare_runner = std::move(runner);
+      m_dao_v2_reshare_commit = std::move(commit_ctx);
+      auto pit = m_dao_v2_pending_reshare_msgs.find(pend_key);
+      if (pit != m_dao_v2_pending_reshare_msgs.end()) {
+        for (auto& entry : pit->second) {
+          if (m_dao_v2_reshare_runner)
+            m_dao_v2_reshare_runner->on_message(entry.second);
+        }
+        m_dao_v2_pending_reshare_msgs.erase(pit);
+      }
+    }
 
     m_dao_v2_reshare_started_block[proposal_id] = current_block;
-    MINFO("reshare: started for proposal " << proposal_id
+    MINFO("CL reshare: started for proposal " << proposal_id
           << " old_set=" << cur_id
           << " new_n=" << new_members.size()
-          << " old_n=" << contributors.size());
+          << " old_n=" << sel_old.size());
+#endif
   }
 
   bool Blockchain::maybe_commit_dao_v2_reshare()
   {
+#ifdef VEILROOT_ENABLE_CL
     std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
     if (!m_dao_v2_reshare_runner) return true;
     if (!m_dao_v2_reshare_runner->finished()) return true;
 
-    dao::dao_share_set_record new_ss;
-    if (!m_dao_v2_reshare_runner->wait(new_ss, 1)) {
-      // Record not ready; preserve runner for retry next tick.
+    dao::cl_reshare_result rres;
+    if (!m_dao_v2_reshare_runner->wait(rres, 1)) return false;
+    if (!rres.ok) {
+      MWARNING("CL reshare: runner reported failure");
+      m_dao_v2_reshare_runner.reset();
+      m_dao_v2_reshare_commit = dao_v2_reshare_commit_ctx{};
+      return false;
+    }
+    if (rres.pk_qfi != m_dao_v2_reshare_commit.old_pk_qfi) {
+      MWARNING("CL reshare: pk_qfi continuity check failed");
+      m_dao_v2_reshare_runner.reset();
+      m_dao_v2_reshare_commit = dao_v2_reshare_commit_ctx{};
       return false;
     }
 
-    // Open own write txn. core::on_idle does not own one; this is
-    // the same pattern other chain-state writers use.
-    bool started = false;
+    dao::dao_tally_key_record key_rec;
     try {
-      m_db->block_wtxn_start();
-      started = true;
-    } catch (const std::exception& e) {
-      MWARNING("DAO V2 reshare commit: failed to start wtxn: " << e.what());
+      if (!m_db->get_dao_tally_key_by_id(
+              m_dao_v2_reshare_commit.key_id, key_rec)) {
+        MWARNING("CL reshare: key record lookup failed");
+        return false;
+      }
+    } catch (...) { return false; }
+
+    if (m_dao_v2_reshare_commit.is_new_member) {
+      if (!rres.has_local_new_share ||
+          rres.new_share_bytes.empty()) {
+        MWARNING("CL reshare: new member has no local new share");
+        return false;
+      }
+      dao::dao_cl_proposal_key pkc;
+      if (!dao::dao_cl_load_proposal_key(key_rec.cl_modulus, pkc))
+        return false;
+      BICYCL::CL_Threshold_Static::ParticipantsValueMap<BICYCL::QFI>
+          gammas;
+      if (!dao::cl_dkg_deserialize_gammas(
+              rres.new_gammas_serialized,
+              pkc.cl->Cl_G().discriminant(), gammas))
+        return false;
+      BICYCL::CL_Threshold_Static::ParticipantsSet qualified;
+      for (uint32_t q : rres.qualified_ids) qualified.insert(q);
+      BICYCL::Mpz share_mpz;
+      size_t off = 0;
+      if (!dao::cl_dkg_mpz_from_bytes_signed(
+              rres.new_share_bytes, off, share_mpz, true))
+        return false;
+      if (off != rres.new_share_bytes.size()) return false;
+      BICYCL::CL_Threshold_Static verify_party(
+          *pkc.cl,
+          m_dao_v2_reshare_commit.new_members.size(),
+          (m_dao_v2_reshare_commit.new_threshold > 0)
+              ? m_dao_v2_reshare_commit.new_threshold - 1 : 0,
+          m_dao_v2_reshare_commit.new_local_id,
+          32, pkc.D);
+      if (!verify_party.restore_decryption_state(
+              *pkc.cl, *pkc.pk, gammas, qualified, share_mpz)) {
+        MWARNING("CL reshare: local share failed Gamma verification");
+        return false;
+      }
+    }
+
+    dao::dao_share_set_record new_ss;
+    new_ss.version              = 3;
+    new_ss.share_set_id         = m_dao_v2_reshare_commit.new_share_set_id;
+    new_ss.height               = m_dao_v2_reshare_commit.height;
+    new_ss.threshold            = m_dao_v2_reshare_commit.new_threshold;
+    new_ss.key_id               = m_dao_v2_reshare_commit.key_id;
+    new_ss.committee_id_hash    = m_dao_v2_reshare_commit.new_committee_id_hash;
+    new_ss.committee_members    = m_dao_v2_reshare_commit.new_members;
+    new_ss.base_share_set_id    = m_dao_v2_reshare_commit.old_share_set_id;
+    new_ss.cl_gammas_serialized = rres.new_gammas_serialized;
+    new_ss.qualified_ids        = rres.qualified_ids;
+
+    bool started = false;
+    try { m_db->block_wtxn_start(); started = true; }
+    catch (const std::exception& e) {
+      MWARNING("CL reshare commit: wtxn start failed: " << e.what());
     }
     if (!started) return false;
 
     bool write_ok = false;
     try {
       m_db->add_dao_share_set(new_ss.share_set_id, new_ss);
-
-      // Persist this node's own local share if it is a new member.
-      std::vector<uint8_t> local_share;
-      if (m_dao_v2_reshare_runner->get_local_share(local_share) &&
-          new_ss.key_id.size() == 32) {
-        crypto::public_key self_pk{};
-        if (crypto::secret_key_to_public_key(m_node_privkey, self_pk)) {
-          for (size_t i = 0; i < new_ss.committee_members.size(); ++i) {
-            if (new_ss.committee_members[i].size() != 32) continue;
-            if (std::memcmp(new_ss.committee_members[i].data(),
-                            self_pk.data, 32) != 0) continue;
-            std::vector<uint8_t> packed =
-                dao::dao_pack_local_share(new_ss.key_id, local_share);
-            if (!packed.empty())
-              m_db->add_dao_local_share(
-                  static_cast<uint32_t>(new_ss.share_set_id),
-                  static_cast<uint32_t>(i + 1),
-                  packed);
-            break;
-          }
+      if (m_dao_v2_reshare_commit.is_new_member &&
+          rres.has_local_new_share) {
+        std::vector<uint8_t> packed =
+            dao::dao_pack_local_share(
+                new_ss.key_id, rres.new_share_bytes);
+        if (!packed.empty()) {
+          m_db->add_dao_local_share(
+              static_cast<uint32_t>(new_ss.share_set_id),
+              m_dao_v2_reshare_commit.new_local_id + 1,
+              packed);
         }
       }
       write_ok = true;
     } catch (const std::exception& e) {
-      MWARNING("DAO V2 reshare commit: write failed: " << e.what());
+      MWARNING("CL reshare commit: write failed: " << e.what());
     }
-
     if (!write_ok) {
       try { m_db->block_wtxn_abort(); } catch (...) {}
-      // Runner and result preserved for retry next tick.
       return false;
     }
-
-    try {
-      m_db->block_wtxn_stop();
-    } catch (const std::exception& e) {
-      MWARNING("DAO V2 reshare commit: commit failed: " << e.what());
+    try { m_db->block_wtxn_stop(); }
+    catch (const std::exception& e) {
+      MWARNING("CL reshare commit: stop failed: " << e.what());
       try { m_db->block_wtxn_abort(); } catch (...) {}
       return false;
     }
 
-    // Commit succeeded. Only now release runner resources.
-    MINFO("DAO V2 reshare: committed share set " << new_ss.share_set_id);
+    MINFO("CL reshare: committed share set " << new_ss.share_set_id);
     m_dao_v2_reshare_runner.reset();
-    m_dao_v2_reshare_vss.reset();
-    m_dao_v2_reshare_pk.reset();
-    m_dao_v2_reshare_delta.reset();
-    m_dao_v2_reshare_s_i.reset();
-    m_dao_v2_reshare_mu_i.reset();
+    m_dao_v2_reshare_commit = dao_v2_reshare_commit_ctx{};
     return true;
+#else
+    return true;
+#endif
   }
 
-  void Blockchain::handle_dao_v2_reshare_msg(
-      const crypto::public_key& from, const std::string& payload)
-  {
-    dao::dao_reshare_msg m;
-    {
-      std::vector<uint8_t> b(payload.begin(), payload.end());
-      if (!m.deserialize(b)) return;
-    }
-    std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
-    if (!m_dao_v2_reshare_runner) return;
-    m_dao_v2_reshare_runner->on_message(from, m);
-  }
 
   void Blockchain::handle_dao_v2_tally_share(const crypto::public_key& member,
                                              const std::string& payload)
@@ -11438,12 +11515,14 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
         if (rec.status != PROPOSAL_STATUS_ACTIVE) return true;
         if (rec.voting_end_height + 1 > height) return true;
 
+#ifdef VEILROOT_ENABLE_CL
         // If a reshare for this proposal is still running, defer
         // production. On next block we retry.
         {
           std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
           if (m_dao_v2_reshare_runner) return true;
         }
+#endif
 
         // If the ready roster at voting-end differs from the
         // acceptance-time committee, start a reshare. The existing
@@ -11454,6 +11533,7 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
         maybe_start_dao_v2_reshare_for_proposal(pid,
                                                  rec.voting_end_height);
 
+#ifdef VEILROOT_ENABLE_CL
         // If the trigger just started a reshare, defer production to
         // a future block. Producing now would prove against base
         // VK_i and be rejected by every validator that expects
@@ -11462,6 +11542,7 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
           std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
           if (m_dao_v2_reshare_runner) return true;
         }
+#endif
 
         // The proposal must have its per-proposal key installed by
         // chain-level dkg_key_activation before shares can be produced.

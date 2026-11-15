@@ -22,9 +22,11 @@
 #include "governance/dao_cl_ballot.h"
 #include "governance/dao_cl_dkg_payload.h"
 #include "governance/dao_cl_tally_wire.h"
+#ifdef VEILROOT_ENABLE_CL
 #include "bicycl/bicycl.hpp"
 #include "bicycl/bicycl/cl/CL_HSMqk.hpp"
 #include "bicycl/bicycl/cl/CL_threshold.hpp"
+#endif
 #include <memory>
 #include <random>
 #include "misc_log_ex.h"
@@ -243,6 +245,7 @@ bool TallyManager::produce_local_share(
         return false;
     }
 
+#ifdef VEILROOT_ENABLE_CL
     if (!key_rec.cl_modulus.empty()) {
         // CL produce path. Uses the active share set's Gamma map to
         // restore the local decryption state, then produces one
@@ -347,6 +350,7 @@ bool TallyManager::produce_local_share(
         BN_free(sk);
         return ok;
     }
+#endif
 
     BN_free(sk);
     return false;

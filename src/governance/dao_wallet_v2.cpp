@@ -28,15 +28,18 @@
 #include "serialization/string.h"
 #include "cryptonote_config.h"
 
+#ifdef VEILROOT_ENABLE_CL
 #include "bicycl/bicycl.hpp"
 #include "bicycl/bicycl/arith/gmp_extras.hpp"
 #include "bicycl/bicycl/cl/CL_HSMqk.hpp"
+#endif
 
 namespace cryptonote {
 namespace dao {
 
 namespace {
 
+#ifdef VEILROOT_ENABLE_CL
 BICYCL::Mpz dao_u128_to_mpz(const dao_u128& v)
 {
     std::array<uint8_t, 16> bytes{};
@@ -50,6 +53,7 @@ BICYCL::Mpz dao_u128_to_mpz(const dao_u128& v)
     return BICYCL::Mpz(std::vector<uint8_t>(
         bytes.begin() + static_cast<std::ptrdiff_t>(start), bytes.end()));
 }
+#endif
 
 uint8_t age_factor_from_height(uint64_t vote_height, uint64_t output_height)
 {
@@ -103,6 +107,7 @@ bool build_dao_v2_vote(
     const std::vector<dao_v2_vote_source>& sources,
     vote_proof_v2& out)
 {
+#ifdef VEILROOT_ENABLE_CL
     out = vote_proof_v2{};
 
     if (direction > 1) return false;
@@ -408,6 +413,17 @@ bool build_dao_v2_vote(
     out.E_B = std::move(E_B_raw);
     std::memcpy(out.transcript_hash.data, digest.data(), 32);
     return true;
+#else
+    (void)proposal_id;
+    (void)proposal_submission_height;
+    (void)vote_height;
+    (void)tally_key_id;
+    (void)cl_key_context;
+    (void)direction;
+    (void)sources;
+    (void)out;
+    return false;
+#endif
 }
 
 bool build_dao_v2_vote_tx(

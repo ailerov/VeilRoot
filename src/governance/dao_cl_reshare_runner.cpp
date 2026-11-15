@@ -564,6 +564,11 @@ bool cl_reshare_p2p_runner::start()
     return true;
 }
 
+crypto::hash cl_reshare_p2p_runner::session_id() const
+{
+    return p_->cfg.session_id;
+}
+
 void cl_reshare_p2p_runner::on_message(const dkg_msg& m)
 {
     if (!p_->transport) return;

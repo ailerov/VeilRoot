@@ -130,6 +130,9 @@ public:
     bool running()  const;
     bool finished() const;
 
+    // Session identity this runner is bound to.
+    crypto::hash session_id() const;
+
     // Deliver an inbound dkg_msg to the runner. Mirrors the CL DKG
     // runner's interface: validates the outer envelope and forwards to
     // the underlying transport, which queues it for the worker. The

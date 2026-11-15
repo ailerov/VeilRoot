@@ -74,6 +74,7 @@
 #include "governance/dao_dkg.h"
 #include "governance/dao_cl_dkg_runner.h"
 #include "governance/dao_reshare_pipeline.h"
+#include "governance/dao_cl_reshare_runner.h"
 #include <array>
 #include <deque>
 #include <mutex>
@@ -1549,10 +1550,12 @@ namespace cryptonote
 
   void evict_stale_dao_v2_ready_peers_for_test();
 
+#ifdef VEILROOT_ENABLE_CL
   std::map<std::string, std::shared_ptr<dao::cl_dkg_p2p_runner>>&
     m_dao_v2_dkg_runners_for_test() { return m_dao_v2_dkg_runners; }
   std::mutex& m_dao_v2_dkg_runners_for_test_mutex()
     { return m_dao_v2_dkg_runners_mutex; }
+#endif
 #endif
   // Lifecycle hook called from the daemon idle loop. Drains any
   // results queued by the DKG watcher threads onto this owner thread.
@@ -1603,10 +1606,13 @@ namespace cryptonote
     finished_ok,
     finished_fail,
   };
+#ifdef VEILROOT_ENABLE_CL
   bool get_dao_v2_dkg_runner_state_for_test(
       const crypto::hash& proposal_id,
       dkg_runner_state_for_test& state_out,
       dao::cl_dkg_result& result_out) const;
+#endif
+#ifdef VEILROOT_ENABLE_CL
   bool has_dao_v2_reshare_runner_for_test() const {
     std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
     return m_dao_v2_reshare_runner != nullptr;
@@ -1617,12 +1623,7 @@ namespace cryptonote
     return m_dao_v2_reshare_runner->contribution_count_for_test();
   }
 #endif
-
-  // Reshare P2P handler. Routes a reshare message to the running
-  // runner, if any. Called from handle_dao_v2_dkg_msg when the wire
-  // payload is a reshare message rather than a DKG message.
-  void handle_dao_v2_reshare_msg(const crypto::public_key& from,
-                                 const std::string& payload);
+#endif
 
   // Producer side. Called once from the bootstrap path. Spawns the
   // runner for the current committee. Fails if a runner is already
@@ -1640,7 +1641,9 @@ namespace cryptonote
   // Called from the DKG watcher thread when a ceremony finishes.
   // Enqueues the result; the DB write happens on the blockchain owner
   // thread via process_pending_dao_v2_dkg_results().
+#ifdef VEILROOT_ENABLE_CL
   void queue_dao_v2_dkg_result(const std::string& ceremony_id, dao::cl_dkg_result result);
+#endif
 
   // Owner-thread persistence. Consumes the pending queue and writes
   // each result under the caller's write transaction.
@@ -1934,8 +1937,10 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
         m_dao_v2_tally_broadcast;
     // END_VNS_DAO_V2_TALLY_SHARE
     // BEGIN_VNS_DAO_V2_DKG
+#ifdef VEILROOT_ENABLE_CL
     std::map<std::string, std::shared_ptr<dao::cl_dkg_p2p_runner>>
         m_dao_v2_dkg_runners;
+#endif
     mutable std::mutex m_dao_v2_dkg_runners_mutex;
     // Inbound DKG envelopes that arrived before the matching runner
     // for their ceremony existed. Keyed by ceremony_id: bootstrap
@@ -1964,6 +1969,7 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
 
     // Results queued by the DKG watcher thread, drained by the
     // blockchain owner thread.
+#ifdef VEILROOT_ENABLE_CL
     struct pending_dao_v2_dkg_result
     {
         std::string ceremony_id;
@@ -1972,6 +1978,7 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     mutable std::mutex m_dao_v2_dkg_result_mutex;
     std::deque<pending_dao_v2_dkg_result>
         m_pending_dao_v2_dkg_results;
+#endif
 
     // BEGIN_VNS_DAO_V2_KEY_READY
     // Post-DKG attestation exchange. Each participating node signs
@@ -2003,25 +2010,33 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     uint32_t m_dao_v2_test_dkg_phase_timeout_seconds = 0;
 #endif
     // BEGIN_VNS_DAO_V2_RESHARE
-    // Single reshare runner. Only one reshare runs at a time. The
-    // runner holds raw pointers into the backing storage below, so
-    // that storage must outlive it and is cleared together with it.
-    std::unique_ptr<dao::dao_reshare_runner>
+#ifdef VEILROOT_ENABLE_CL
+    struct dao_v2_reshare_commit_ctx
+    {
+        crypto::hash                      proposal_id;
+        std::vector<uint8_t>              key_id;
+        uint64_t                          old_share_set_id = 0;
+        uint64_t                          new_share_set_id = 0;
+        uint64_t                          height = 0;
+        std::vector<std::vector<uint8_t>> new_members;
+        uint32_t                          new_threshold = 0;
+        std::vector<uint8_t>              new_committee_id_hash;
+        std::vector<uint8_t>              old_pk_qfi;
+        bool                              is_new_member = false;
+        uint32_t                          new_local_id = 0;
+    };
+    std::unique_ptr<dao::cl_reshare_p2p_runner>
         m_dao_v2_reshare_runner;
-    std::unique_ptr<dao::dao_vss_group>
-        m_dao_v2_reshare_vss;
-    std::unique_ptr<dao::PaillierPublicKey>
-        m_dao_v2_reshare_pk;
-    std::unique_ptr<BIGNUM, void(*)(BIGNUM*)>
-        m_dao_v2_reshare_delta{nullptr, BN_free};
-    std::unique_ptr<BIGNUM, void(*)(BIGNUM*)>
-        m_dao_v2_reshare_s_i{nullptr, BN_free};
-    std::unique_ptr<BIGNUM, void(*)(BIGNUM*)>
-        m_dao_v2_reshare_mu_i{nullptr, BN_free};
+    dao_v2_reshare_commit_ctx
+        m_dao_v2_reshare_commit;
     mutable std::mutex m_dao_v2_reshare_mutex;
-
-    // Per-proposal reshare/tally timing in blocks.
     std::map<crypto::hash, uint64_t> m_dao_v2_reshare_started_block;
+
+    static constexpr size_t k_dao_v2_pending_reshare_msgs_cap = 512;
+    std::map<std::string,
+             std::deque<std::pair<crypto::public_key, dao::dkg_msg>>>
+        m_dao_v2_pending_reshare_msgs;
+#endif
     // END_VNS_DAO_V2_RESHARE
     // END_VNS_DAO_V2_DKG
     // END_VNS_DECRYPTION_STATE

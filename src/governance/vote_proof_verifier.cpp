@@ -15,9 +15,11 @@
 #include "governance/dao_vote_or_proof.h"
 #include "ringct/rctOps.h"
 
+#ifdef VEILROOT_ENABLE_CL
 #include "bicycl/bicycl.hpp"
 #include "bicycl/bicycl/arith/gmp_extras.hpp"
 #include "bicycl/bicycl/cl/CL_HSMqk.hpp"
+#endif
 
 namespace cryptonote {
 
@@ -36,6 +38,7 @@ verification_result VoteProofVerifier::verify(
     uint64_t block_height,
     const std::unordered_set<crypto::hash>& block_nullifiers)
 {
+#ifdef VEILROOT_ENABLE_CL
     // Step 1: strict deserialize is the caller's responsibility; here we
     // enforce the cross-field invariant.
     if (proof.nullifiers.size() != proof.inputs.size())
@@ -412,6 +415,13 @@ verification_result VoteProofVerifier::verify(
     // Steps 1-24 complete. Step 25 (atomic state mutation) is performed
     // by the block-processing caller after this returns success.
     return {true, ""};
+#else
+    (void)proof;
+    (void)db;
+    (void)block_height;
+    (void)block_nullifiers;
+    return fail("CL backend disabled");
+#endif
 }
 
 } // namespace cryptonote
