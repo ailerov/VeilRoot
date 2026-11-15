@@ -12,8 +12,12 @@
 #endif
 
 
+#include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <mutex>
+#include <queue>
 #include <vector>
 
 #include "governance/dao_crypto_backend.h"
@@ -63,6 +67,38 @@ struct cl_dkg_result
 
     // Qualified player identifiers (0-based internal ids), sorted.
     std::vector<uint32_t> qualified_ids;
+};
+
+// Simple dkg_transport adapter for the CL runner in production. Uses
+// the same envelope layout as dkg_p2p_transport_local: broadcasts go
+// out unchanged, recipient-targeted messages are sent through the
+// caller-supplied send_to callback (which is expected to encrypt them).
+// Inbound messages are delivered by Blockchain::handle_dao_v2_dkg_msg
+// via deliver().
+class cl_dkg_p2p_transport final : public dkg_transport
+{
+public:
+    cl_dkg_p2p_transport(
+        std::vector<crypto::public_key> members,
+        std::function<bool(const crypto::public_key&,
+                           const std::string&)> send_to,
+        std::function<void(const std::string&)> broadcast);
+
+    bool send(const dkg_msg& m) override;
+    bool recv(dkg_msg& m) override;
+    bool try_recv(dkg_msg& m) override;
+    void deliver(const dkg_msg& m) override;
+    void shutdown() override;
+
+private:
+    std::vector<crypto::public_key> members_;
+    std::function<bool(const crypto::public_key&,
+                       const std::string&)> send_to_;
+    std::function<void(const std::string&)>    broadcast_;
+    std::mutex               mu_;
+    std::condition_variable  cv_;
+    std::queue<dkg_msg>      queue_;
+    bool                     stopped_ = false;
 };
 
 class cl_dkg_p2p_runner

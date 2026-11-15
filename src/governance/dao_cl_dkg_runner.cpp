@@ -233,6 +233,72 @@ struct cl_dkg_p2p_runner::impl
     }
 };
 
+// ====================================================================
+// cl_dkg_p2p_transport
+// ====================================================================
+
+cl_dkg_p2p_transport::cl_dkg_p2p_transport(
+    std::vector<crypto::public_key> members,
+    std::function<bool(const crypto::public_key&, const std::string&)> send_to,
+    std::function<void(const std::string&)> broadcast)
+    : members_(std::move(members))
+    , send_to_(std::move(send_to))
+    , broadcast_(std::move(broadcast)) {}
+
+bool cl_dkg_p2p_transport::send(const dkg_msg& m)
+{
+    std::vector<uint8_t> buf;
+    if (!m.serialize(buf)) return false;
+    std::string payload(buf.begin(), buf.end());
+
+    if (m.hdr.recipient_id == 0) {
+        if (broadcast_) broadcast_(payload);
+        return true;
+    }
+    const uint32_t idx = m.hdr.recipient_id;
+    if (idx < 1 || idx > members_.size()) return false;
+    if (!send_to_) return false;
+    return send_to_(members_[idx - 1], payload);
+}
+
+bool cl_dkg_p2p_transport::recv(dkg_msg& m)
+{
+    std::unique_lock<std::mutex> lk(mu_);
+    cv_.wait(lk, [&] { return stopped_ || !queue_.empty(); });
+    if (queue_.empty()) return false;
+    m = std::move(queue_.front());
+    queue_.pop();
+    return true;
+}
+
+bool cl_dkg_p2p_transport::try_recv(dkg_msg& m)
+{
+    std::lock_guard<std::mutex> lk(mu_);
+    if (queue_.empty()) return false;
+    m = std::move(queue_.front());
+    queue_.pop();
+    return true;
+}
+
+void cl_dkg_p2p_transport::deliver(const dkg_msg& m)
+{
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (stopped_) return;
+        queue_.push(m);
+    }
+    cv_.notify_one();
+}
+
+void cl_dkg_p2p_transport::shutdown()
+{
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        stopped_ = true;
+    }
+    cv_.notify_all();
+}
+
 cl_dkg_p2p_runner::cl_dkg_p2p_runner(
     const cl_dkg_config& cfg, std::unique_ptr<dkg_transport> transport)
     : p_(std::make_unique<impl>())
