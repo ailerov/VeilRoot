@@ -58,17 +58,51 @@ struct cl_reshare_config
     // Required only when is_old_contributor is true.
     std::vector<uint8_t> old_share_bytes;
 
+    // Reshare session binding. All nodes in one reshare attempt must
+    // agree on this value; every CL reshare payload carries it and
+    // messages from other sessions are silently dropped. Derived by
+    // dao_cl_reshare_compute_session_id() from the fields below.
+    crypto::hash session_id{};
+
+    // Old-generation identifiers used both in the session derivation
+    // and in the resulting share-set record.
+    uint64_t             old_share_set_id = 0;
+    std::vector<uint8_t> old_committee_id_hash;  // 32 bytes
+    std::vector<uint8_t> new_committee_id_hash;  // 32 bytes
+
+    // Qualified CL ids of the OLD committee, sorted, 0-based. Must be a
+    // subset of the old Gamma map's keys. The runner restores against
+    // this set, not all_old. The selected old_contributors must be a
+    // subset.
+    std::vector<uint32_t> old_qualified_ids;
+
     uint32_t     soundness_bytes      = 32;
     uint32_t     phase_timeout_seconds = 180;
     uint64_t     test_seed            = 0;
     crypto::hash proposal_id{};
 };
 
+// Compute the reshare session id from the fields that identify one
+// reshare attempt. Domain-separated, deterministic, identical on every
+// node. Empty on malformed inputs.
+crypto::hash dao_cl_reshare_compute_session_id(
+    const crypto::hash& proposal_id,
+    uint64_t old_share_set_id,
+    const std::vector<uint8_t>& old_committee_id_hash,
+    const std::vector<uint8_t>& new_committee_id_hash,
+    const std::vector<uint32_t>& sorted_old_contributors);
+
 struct cl_reshare_result
 {
     bool ok = false;
 
+    // True when this node is a member of the NEW committee and has a
+    // new local share to persist. False for old-only contributors:
+    // they can complete successfully without producing a new share.
+    bool has_local_new_share = false;
+
     // This node's new share, wire form of serialize_secret_share().
+    // Populated only when has_local_new_share is true.
     std::vector<uint8_t> new_share_bytes;
 
     // New aggregate verification values.
@@ -95,6 +129,17 @@ public:
 
     bool running()  const;
     bool finished() const;
+
+    // Deliver an inbound dkg_msg to the runner. Mirrors the CL DKG
+    // runner's interface: validates the outer envelope and forwards to
+    // the underlying transport, which queues it for the worker. The
+    // caller (Blockchain ingress) is responsible for authenticated
+    // sender-identity checks.
+    void on_message(const dkg_msg& m);
+
+    // Count of unique accepted public dealer contributions. For
+    // reshare-runner test coverage; not used in production.
+    size_t contribution_count_for_test() const;
 
 private:
     struct impl;

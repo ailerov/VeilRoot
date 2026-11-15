@@ -352,13 +352,15 @@ bool cl_dkg_deserialize_gammas(
     return off == in.size();
 }
 
-bool cl_dkg_encode_reshare_prestate(uint32_t dealer_id,
+bool cl_dkg_encode_reshare_prestate(const crypto::hash& session_id,
+                                    uint32_t dealer_id,
                                     const BICYCL::Mpz& q_i,
                                     const BICYCL::Mpz& r_i,
                                     const BICYCL::Mpz& L_i,
                                     cl_dkg_payload& out)
 {
     std::vector<uint8_t> body;
+    body.insert(body.end(), session_id.data, session_id.data + 32);
     u32_be_append(body, dealer_id);
     if (!mpz_to_bytes_signed(body, q_i)) return false;
     if (!mpz_to_bytes_signed(body, r_i)) return false;
@@ -369,6 +371,7 @@ bool cl_dkg_encode_reshare_prestate(uint32_t dealer_id,
 }
 
 bool cl_dkg_decode_reshare_prestate(const cl_dkg_payload& in,
+                                    crypto::hash& session_id_out,
                                     uint32_t& dealer_id,
                                     BICYCL::Mpz& q_i,
                                     BICYCL::Mpz& r_i,
@@ -376,6 +379,9 @@ bool cl_dkg_decode_reshare_prestate(const cl_dkg_payload& in,
 {
     if (in.subtype != cl_dkg_subtype::reshare_prestate) return false;
     std::size_t off = 0;
+    if (off + 32 > in.body.size()) return false;
+    std::memcpy(session_id_out.data, in.body.data() + off, 32);
+    off += 32;
     if (!u32_be_read(in.body, off, dealer_id)) return false;
     if (!mpz_from_bytes_signed(in.body, off, q_i, true)) return false;
     if (!mpz_from_bytes_signed(in.body, off, r_i, true)) return false;
@@ -384,9 +390,12 @@ bool cl_dkg_decode_reshare_prestate(const cl_dkg_payload& in,
 }
 
 bool cl_dkg_encode_reshare_contribution(
-    const cl_reshare_contribution_wire& in, cl_dkg_payload& out)
+    const crypto::hash& session_id,
+    const cl_reshare_contribution_wire& in,
+    cl_dkg_payload& out)
 {
     std::vector<uint8_t> body;
+    body.insert(body.end(), session_id.data, session_id.data + 32);
     u32_be_append(body, in.dealer_id);
     if (!mpz_to_bytes_signed(body, in.c_i)) return false;
     if (!mpz_to_bytes_signed(body, in.q_i)) return false;
@@ -410,10 +419,14 @@ bool cl_dkg_decode_reshare_contribution(
     const cl_dkg_payload& in,
     const BICYCL::Mpz& expected_disc,
     std::size_t max_commitments,
+    crypto::hash& session_id_out,
     cl_reshare_contribution_wire& out)
 {
     if (in.subtype != cl_dkg_subtype::reshare_contribution) return false;
     std::size_t off = 0;
+    if (off + 32 > in.body.size()) return false;
+    std::memcpy(session_id_out.data, in.body.data() + off, 32);
+    off += 32;
     if (!u32_be_read(in.body, off, out.dealer_id)) return false;
     if (!mpz_from_bytes_signed(in.body, off, out.c_i, true)) return false;
     if (!mpz_from_bytes_signed(in.body, off, out.q_i, true)) return false;
@@ -437,10 +450,12 @@ bool cl_dkg_decode_reshare_contribution(
     return off == in.body.size();
 }
 
-bool cl_dkg_encode_reshare_private_share(const BICYCL::Mpz& share,
+bool cl_dkg_encode_reshare_private_share(const crypto::hash& session_id,
+                                         const BICYCL::Mpz& share,
                                          cl_dkg_payload& out)
 {
     std::vector<uint8_t> body;
+    body.insert(body.end(), session_id.data, session_id.data + 32);
     if (!mpz_to_bytes_signed(body, share)) return false;
     out.subtype = cl_dkg_subtype::reshare_private_share;
     out.body = std::move(body);
@@ -448,10 +463,14 @@ bool cl_dkg_encode_reshare_private_share(const BICYCL::Mpz& share,
 }
 
 bool cl_dkg_decode_reshare_private_share(const cl_dkg_payload& in,
+                                         crypto::hash& session_id_out,
                                          BICYCL::Mpz& out)
 {
     if (in.subtype != cl_dkg_subtype::reshare_private_share) return false;
     std::size_t off = 0;
+    if (off + 32 > in.body.size()) return false;
+    std::memcpy(session_id_out.data, in.body.data() + off, 32);
+    off += 32;
     if (!mpz_from_bytes_signed(in.body, off, out, true)) return false;
     return off == in.body.size();
 }

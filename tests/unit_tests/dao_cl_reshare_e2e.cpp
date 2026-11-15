@@ -104,6 +104,16 @@ TEST(dao_cl_reshare_e2e, three_to_three_preserves_pk_and_decrypts_pre_reshare_ct
         cfg.old_gammas_serialized = dkg_results[0].gammas_serialized;
         if (i < 2)
             cfg.old_share_bytes = dkg_results[i].local_secret_share;
+        cfg.old_share_set_id     = 1;
+        cfg.old_committee_id_hash.assign(32, 0xA1);
+        cfg.new_committee_id_hash.assign(32, 0xB2);
+        cfg.old_qualified_ids    = dkg_results[0].qualified_ids;
+        cfg.session_id           = dao_cl_reshare_compute_session_id(
+            /*proposal_id=*/crypto::hash{},
+            /*old_share_set_id=*/1,
+            cfg.old_committee_id_hash,
+            cfg.new_committee_id_hash,
+            /*sorted_old_contributors=*/{0u, 1u});
         cfg.soundness_bytes      = 32;
         cfg.phase_timeout_seconds = 180;
         cfg.test_seed            = 5000 + i;

@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
+#include "crypto/hash.h"
 
 #ifdef VEILROOT_ENABLE_CL
 
@@ -130,28 +131,35 @@ struct cl_reshare_contribution_wire
     BICYCL::QFI              link_R2;
 };
 
-bool cl_dkg_encode_reshare_prestate(uint32_t dealer_id,
+bool cl_dkg_encode_reshare_prestate(const crypto::hash& session_id,
+                                    uint32_t dealer_id,
                                     const BICYCL::Mpz& q_i,
                                     const BICYCL::Mpz& r_i,
                                     const BICYCL::Mpz& L_i,
                                     cl_dkg_payload& out);
 bool cl_dkg_decode_reshare_prestate(const cl_dkg_payload& in,
+                                    crypto::hash& session_id_out,
                                     uint32_t& dealer_id,
                                     BICYCL::Mpz& q_i,
                                     BICYCL::Mpz& r_i,
                                     BICYCL::Mpz& L_i);
 
 bool cl_dkg_encode_reshare_contribution(
-    const cl_reshare_contribution_wire& in, cl_dkg_payload& out);
+    const crypto::hash& session_id,
+    const cl_reshare_contribution_wire& in,
+    cl_dkg_payload& out);
 bool cl_dkg_decode_reshare_contribution(
     const cl_dkg_payload& in,
     const BICYCL::Mpz& expected_disc,
     std::size_t max_commitments,
+    crypto::hash& session_id_out,
     cl_reshare_contribution_wire& out);
 
-bool cl_dkg_encode_reshare_private_share(const BICYCL::Mpz& share,
+bool cl_dkg_encode_reshare_private_share(const crypto::hash& session_id,
+                                         const BICYCL::Mpz& share,
                                          cl_dkg_payload& out);
 bool cl_dkg_decode_reshare_private_share(const cl_dkg_payload& in,
+                                         crypto::hash& session_id_out,
                                          BICYCL::Mpz& out);
 
 bool cl_dkg_encode_reshare_complete(cl_dkg_payload& out);

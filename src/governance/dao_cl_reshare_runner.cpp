@@ -19,6 +19,10 @@
 #include <set>
 #include <thread>
 
+#include <algorithm>
+#include <atomic>
+#include <openssl/sha.h>
+
 namespace cryptonote {
 namespace dao {
 
@@ -70,6 +74,11 @@ struct cl_reshare_p2p_runner::impl
     bool shutdown  = false;
     cl_reshare_result result;
     std::thread worker;
+
+    // Count of unique public-dealer contributions accepted. Updated
+    // from the worker thread, read from contribution_count_for_test()
+    // on the caller thread: atomic.
+    std::atomic<size_t> accepted_public_count{0};
 
     uint32_t old_local_1based() const { return cfg.old_local_id + 1; }
     uint32_t new_local_1based() const { return cfg.new_local_id + 1; }
@@ -159,11 +168,78 @@ struct cl_reshare_p2p_runner::impl
             *cfg.cl, cfg.old_n, cfg.old_t_internal, cfg.old_local_id,
             cfg.soundness_bytes, D);
         Mpz share = mpz_from_signed_wire(cfg.old_share_bytes);
-        CL_Threshold_Static::ParticipantsSet all_old;
-        for (uint32_t k = 0; k < cfg.old_n; ++k) all_old.insert(k);
+        // Restore against the CL-qualified set, not all old committee
+        // indices. A node's Gamma value may be absent for old members
+        // that were not qualified in the DKG.
+        CL_Threshold_Static::ParticipantsSet qualified;
+        for (uint32_t q : cfg.old_qualified_ids) qualified.insert(q);
         if (!old_party->restore_decryption_state(
-                *cfg.cl, old_pk, old_gammas, all_old, share))
+                *cfg.cl, old_pk, old_gammas, qualified, share))
             return false;
+        return true;
+    }
+
+    // Structural preflight executed once in start(). Returns false on
+    // any malformed or inconsistent config. Does not touch crypto
+    // state; the protocol-decode checks in run() remain authoritative.
+    bool validate_config()
+    {
+        if (!cfg.cl) return false;
+        if (cfg.old_n == 0 || cfg.old_t_internal >= cfg.old_n) return false;
+        if (cfg.new_n == 0 || cfg.new_t_internal >= cfg.new_n) return false;
+        if (cfg.old_contributors.empty()) return false;
+        if (cfg.old_contributors.size() <
+                static_cast<size_t>(cfg.old_t_internal) + 1)
+            return false;
+        for (size_t i = 0; i < cfg.old_contributors.size(); ++i) {
+            uint32_t v = cfg.old_contributors[i];
+            if (v >= cfg.old_n) return false;
+            if (i > 0 && v <= cfg.old_contributors[i - 1]) return false;
+        }
+        if (cfg.old_qualified_ids.empty()) return false;
+        for (size_t i = 0; i < cfg.old_qualified_ids.size(); ++i) {
+            uint32_t v = cfg.old_qualified_ids[i];
+            if (v >= cfg.old_n) return false;
+            if (i > 0 && v <= cfg.old_qualified_ids[i - 1]) return false;
+        }
+        for (uint32_t c : cfg.old_contributors) {
+            if (std::find(cfg.old_qualified_ids.begin(),
+                           cfg.old_qualified_ids.end(), c)
+                == cfg.old_qualified_ids.end())
+                return false;
+        }
+        if (cfg.D_signed.empty()) return false;
+        if (cfg.old_pk_qfi.empty()) return false;
+        if (cfg.old_gammas_serialized.empty()) return false;
+        if (cfg.old_share_set_id == 0) return false;
+        if (cfg.old_committee_id_hash.size() != 32) return false;
+        if (cfg.new_committee_id_hash.size() != 32) return false;
+        bool sid_nonzero = false;
+        for (int i = 0; i < 32; ++i) if (cfg.session_id.data[i]) {
+            sid_nonzero = true; break;
+        }
+        if (!sid_nonzero) return false;
+        if (!cfg.is_old_contributor && !cfg.is_new_member) return false;
+        if (cfg.is_old_contributor) {
+            if (cfg.old_local_id >= cfg.old_n) return false;
+            if (cfg.old_share_bytes.empty()) return false;
+            if (std::find(cfg.old_contributors.begin(),
+                           cfg.old_contributors.end(),
+                           cfg.old_local_id)
+                == cfg.old_contributors.end())
+                return false;
+        }
+        if (cfg.is_new_member) {
+            if (cfg.new_local_id >= cfg.new_n) return false;
+        }
+        // Qualified ids must exactly match the old Gamma map keys.
+        CL_Threshold_Static::ParticipantsValueMap<QFI> gammas;
+        if (!cl_dkg_deserialize_gammas(cfg.old_gammas_serialized,
+                cfg.cl->Cl_G().discriminant(), gammas))
+            return false;
+        if (gammas.size() != cfg.old_qualified_ids.size()) return false;
+        for (uint32_t q : cfg.old_qualified_ids)
+            if (gammas.count(q) == 0) return false;
         return true;
     }
 
@@ -189,35 +265,48 @@ struct cl_reshare_p2p_runner::impl
 
         switch (p.subtype) {
         case cl_dkg_subtype::reshare_prestate: {
+            crypto::hash got_sid{};
             uint32_t dealer_id = 0;
             CL_Threshold_Static::ResharePreState pre;
             if (!cl_dkg_decode_reshare_prestate(
-                    p, dealer_id, pre.q_i, pre.r_i, pre.L_i))
+                    p, got_sid, dealer_id, pre.q_i, pre.r_i, pre.L_i))
                 return false;
+            if (got_sid != cfg.session_id) return true;   // stale: drop
+            if (dealer_id != m.hdr.sender_id - 1) return true;
             if (old_set.count(dealer_id) == 0) return true;
             prestates[dealer_id] = std::move(pre);
             return true;
         }
         case cl_dkg_subtype::reshare_contribution: {
+            crypto::hash got_sid{};
             cl_reshare_contribution_wire w;
             if (!cl_dkg_decode_reshare_contribution(
                     p, cfg.cl->Cl_G().discriminant(),
-                    cfg.new_t_internal + 1u, w))
+                    cfg.new_t_internal + 1u, got_sid, w))
                 return false;
+            if (got_sid != cfg.session_id) return true;   // stale: drop
+            if (w.dealer_id != m.hdr.sender_id - 1) return true;
             if (old_set.count(w.dealer_id) == 0) return true;
-            public_contribs[w.dealer_id] = std::move(w);
+            if (public_contribs.emplace(w.dealer_id, std::move(w)).second)
+                accepted_public_count.fetch_add(1);
             return true;
         }
         case cl_dkg_subtype::reshare_private_share: {
             if (m.hdr.sender_id == 0) return true;
+            if (m.hdr.recipient_id != new_local_1based()) return true;
             uint32_t dealer_id = m.hdr.sender_id - 1;
             if (old_set.count(dealer_id) == 0) return true;
+            crypto::hash got_sid{};
             Mpz share;
-            if (!cl_dkg_decode_reshare_private_share(p, share)) return false;
+            if (!cl_dkg_decode_reshare_private_share(p, got_sid, share))
+                return false;
+            if (got_sid != cfg.session_id) return true;   // stale: drop
             private_shares[dealer_id] = std::move(share);
             return true;
         }
         case cl_dkg_subtype::reshare_complete:
+            // Not implemented by this protocol; no completion set is
+            // maintained. Silently ignore.
             return true;
         default:
             return true;
@@ -226,7 +315,7 @@ struct cl_reshare_p2p_runner::impl
 
     bool all_prestates_received() const
     {
-        if (cfg.old_contributors.empty()) return true;
+        if (cfg.old_contributors.empty()) return false;
         if (prestates.size() < cfg.old_contributors.size()) return false;
         for (uint32_t d : cfg.old_contributors)
             if (prestates.count(d) == 0) return false;
@@ -265,21 +354,47 @@ struct cl_reshare_p2p_runner::impl
         }
     }
 
-    void fill_result()
+    bool fill_result()
     {
-        // Serialize new share + gammas + pk + qualified set.
-        if (!new_party->serialize_secret_share(result.new_share_bytes)) return;
+        result.has_local_new_share = false;
+        result.pk_qfi = cfg.old_pk_qfi;   // carry through unconditionally
+        if (!cfg.is_new_member) {
+            // Old-only contributor: no new local state to produce. The
+            // protocol itself has succeeded (prestates + contributions
+            // accepted); the new committee members finalize.
+            return true;
+        }
+        if (!new_party) return false;
+
+        result.new_share_bytes.clear();
+        if (!new_party->serialize_secret_share(result.new_share_bytes))
+            return false;
+        if (result.new_share_bytes.empty()) return false;
+
+        result.new_gammas_serialized.clear();
         if (!cl_dkg_serialize_gammas(new_party->Gammas(),
                                      result.new_gammas_serialized))
-            return;
+            return false;
+        if (result.new_gammas_serialized.empty()) return false;
+
         result.qualified_ids.clear();
         for (unsigned int id : new_party->QualifiedPlayerSet())
             result.qualified_ids.push_back(id);
         std::sort(result.qualified_ids.begin(), result.qualified_ids.end());
+        if (result.qualified_ids.empty()) return false;
+        for (size_t i = 1; i < result.qualified_ids.size(); ++i)
+            if (result.qualified_ids[i] <= result.qualified_ids[i - 1])
+                return false;
+        for (uint32_t q : result.qualified_ids)
+            if (q >= cfg.new_n) return false;
+
         result.pk_qfi.clear();
-        if (!cl_dkg_qfi_to_bytes(result.pk_qfi,
-                                 new_party->pk().elt()))
-            return;
+        if (!cl_dkg_qfi_to_bytes(result.pk_qfi, new_party->pk().elt()))
+            return false;
+        if (result.pk_qfi != cfg.old_pk_qfi) return false;
+
+        result.has_local_new_share = true;
+        return true;
     }
 
     void run()
@@ -299,7 +414,8 @@ struct cl_reshare_p2p_runner::impl
 
             cl_dkg_payload out;
             if (!cl_dkg_encode_reshare_prestate(
-                    cfg.old_local_id, pre.q_i, pre.r_i, pre.L_i, out))
+                    cfg.session_id, cfg.old_local_id,
+                    pre.q_i, pre.r_i, pre.L_i, out))
             { mark_finished(false); return; }
             if (!send_broadcast(out)) { mark_finished(false); return; }
         }
@@ -356,14 +472,15 @@ struct cl_reshare_p2p_runner::impl
             w.link_R2     = c.old_share_link_proof->R2();
 
             cl_dkg_payload pub;
-            if (!cl_dkg_encode_reshare_contribution(w, pub))
+            if (!cl_dkg_encode_reshare_contribution(cfg.session_id, w, pub))
             { mark_finished(false); return; }
             if (!send_broadcast(pub)) { mark_finished(false); return; }
 
             for (uint32_t peer = 0; peer < cfg.new_n; ++peer) {
                 if (cfg.is_new_member && peer == cfg.new_local_id) continue;
                 cl_dkg_payload ps;
-                if (!cl_dkg_encode_reshare_private_share(c.shares[peer], ps))
+                if (!cl_dkg_encode_reshare_private_share(
+                        cfg.session_id, c.shares[peer], ps))
                 { mark_finished(false); return; }
                 if (!send_unicast(peer + 1, ps))
                 { mark_finished(false); return; }
@@ -409,10 +526,9 @@ struct cl_reshare_p2p_runner::impl
             try {
                 new_party->finalize_reshare(*cfg.cl, old_pk);
             } catch (...) { mark_finished(false); return; }
-
-            fill_result();
         }
 
+        if (!fill_result()) { mark_finished(false); return; }
         mark_finished(true);
     }
 
@@ -439,12 +555,31 @@ bool cl_reshare_p2p_runner::start()
     if (p_->running)  return true;
     if (p_->finished) return false;
     if (!p_->transport) return false;
+    if (!p_->validate_config()) return false;
     p_->running = true;
     p_->worker = std::thread([this] {
         try { p_->run(); }
         catch (...) { p_->mark_finished(false); }
     });
     return true;
+}
+
+void cl_reshare_p2p_runner::on_message(const dkg_msg& m)
+{
+    if (!p_->transport) return;
+    if (m.hdr.type != dkg_msg_type::cl_dkg_envelope) return;
+    if (m.hdr.version != 2) return;
+    if (m.hdr.proposal_id != p_->cfg.proposal_id) return;
+    if (m.hdr.sender_id == 0) return;
+    if (m.hdr.sender_id > p_->cfg.old_n) return;
+    if (m.hdr.recipient_id != 0 &&
+        m.hdr.recipient_id != p_->cfg.new_local_id + 1) return;
+    p_->transport->deliver(m);
+}
+
+size_t cl_reshare_p2p_runner::contribution_count_for_test() const
+{
+    return p_->accepted_public_count.load();
 }
 
 void cl_reshare_p2p_runner::stop()
@@ -475,6 +610,40 @@ bool cl_reshare_p2p_runner::wait(cl_reshare_result& out, uint32_t timeout_s)
 
 bool cl_reshare_p2p_runner::running()  const { return p_->running; }
 bool cl_reshare_p2p_runner::finished() const { return p_->finished; }
+
+
+crypto::hash dao_cl_reshare_compute_session_id(
+    const crypto::hash& proposal_id,
+    uint64_t old_share_set_id,
+    const std::vector<uint8_t>& old_committee_id_hash,
+    const std::vector<uint8_t>& new_committee_id_hash,
+    const std::vector<uint32_t>& sorted_old_contributors)
+{
+    crypto::hash h{};
+    if (old_committee_id_hash.size() != 32) return h;
+    if (new_committee_id_hash.size() != 32) return h;
+    std::vector<uint8_t> buf;
+    static const char dom[] = "VeilRoot-DAO-CL-RESHARE-SESSION-V1";
+    buf.insert(buf.end(), dom, dom + sizeof(dom) - 1);
+    buf.push_back(1);   // version
+    buf.insert(buf.end(), proposal_id.data, proposal_id.data + 32);
+    for (int i = 7; i >= 0; --i)
+        buf.push_back(uint8_t((old_share_set_id >> (8 * i)) & 0xff));
+    buf.insert(buf.end(), old_committee_id_hash.begin(),
+                old_committee_id_hash.end());
+    buf.insert(buf.end(), new_committee_id_hash.begin(),
+                new_committee_id_hash.end());
+    uint32_t n = static_cast<uint32_t>(sorted_old_contributors.size());
+    for (int i = 3; i >= 0; --i)
+        buf.push_back(uint8_t((n >> (8 * i)) & 0xff));
+    for (uint32_t v : sorted_old_contributors)
+        for (int i = 3; i >= 0; --i)
+            buf.push_back(uint8_t((v >> (8 * i)) & 0xff));
+    unsigned char digest[32];
+    SHA256(buf.data(), buf.size(), digest);
+    std::memcpy(h.data, digest, 32);
+    return h;
+}
 
 } // namespace dao
 } // namespace cryptonote
