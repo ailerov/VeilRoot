@@ -185,18 +185,29 @@ crypto::hash dao_aggregate_ciphertext_hash(
     const std::vector<uint8_t>& E_S,
     const std::vector<uint8_t>& E_B)
 {
+    // Scheme-agnostic, canonical, length-framed hash of the ordered
+    // (E_W, E_S, E_B) byte strings. Length framing prevents
+    // concatenation-ambiguity collisions across variable-length CL
+    // ciphertext wires. Empty per-channel input is invalid and
+    // returns the all-zero sentinel.
     crypto::hash h{};
-    if (E_W.size() != PAILLIER_CT_BYTES) return h;
-    if (E_S.size() != PAILLIER_CT_BYTES) return h;
-    if (E_B.size() != PAILLIER_CT_BYTES) return h;
+    if (E_W.empty() || E_S.empty() || E_B.empty()) return h;
 
     std::vector<uint8_t> buf;
-    const char* dom = "VeilRoot-DAO-TALLY-CIPHERTEXTS-V1";
+    const char* dom = "VeilRoot-DAO-TALLY-CIPHERTEXTS-V2";
     buf.insert(buf.end(), dom, dom + std::strlen(dom));
-    buf.push_back(1);
-    buf.insert(buf.end(), E_W.begin(), E_W.end());
-    buf.insert(buf.end(), E_S.begin(), E_S.end());
-    buf.insert(buf.end(), E_B.begin(), E_B.end());
+    buf.push_back(2);  // version
+    auto push_len = [&](const std::vector<uint8_t>& v) {
+        const uint32_t n = static_cast<uint32_t>(v.size());
+        buf.push_back(uint8_t((n >> 24) & 0xff));
+        buf.push_back(uint8_t((n >> 16) & 0xff));
+        buf.push_back(uint8_t((n >>  8) & 0xff));
+        buf.push_back(uint8_t( n        & 0xff));
+        buf.insert(buf.end(), v.begin(), v.end());
+    };
+    push_len(E_W);
+    push_len(E_S);
+    push_len(E_B);
     SHA256(buf.data(), buf.size(),
            reinterpret_cast<unsigned char*>(h.data));
     return h;

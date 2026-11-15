@@ -125,6 +125,7 @@ set(unit_tests_sources
   dao_crypto_backend.cpp
   dao_threshold.cpp
   dao_tally.cpp
+  dao_tally_ciphertext_hash.cpp
   dao_tally_share.cpp
   dao_dkg.cpp
   dao_mpc_test.cpp
