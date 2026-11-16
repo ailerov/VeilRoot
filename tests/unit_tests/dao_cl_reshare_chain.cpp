@@ -17,6 +17,9 @@
 #include "cryptonote_basic/cryptonote_basic.h"
 #include "cryptonote_basic/miner.h"
 #include "cryptonote_core/cryptonote_core.h"
+#include "governance/dao_cl_ballot.h"
+#include "governance/dao_cl_dkg_payload.h"
+#include "governance/dao_cl_reshare_runner.h"
 #include "governance/dao_dkg.h"
 #include "governance/dao_tally.h"
 
@@ -274,6 +277,94 @@ TEST_F(DaoClReshareChain, failed_runner_is_cleared_and_retry_succeeds)
     bc().maybe_start_dao_v2_reshare_for_proposal(m_prop_id, 3);
     EXPECT_TRUE(bc().has_dao_v2_reshare_runner_for_test());
     bc().stop_dao_v2_reshare_runner_for_test();
+}
+
+TEST_F(DaoClReshareChain, commit_fails_closed_on_local_share_pack_failure)
+{
+    // A new committee member must persist its new local share, or
+    // the reshare has not completed. dao_pack_local_share returning
+    // empty (or the DB write failing) must abort the whole commit
+    // transaction, including the share-set write.
+    //
+    // The test installs a runner whose ok result carries the
+    // current share set's gamma map and the fixture's local
+    // share, then forces pack failure. Commit must return false
+    // and leave no new share set in the database.
+    v2test::CLBootstrapFixture fx;
+    ASSERT_TRUE(v2test::make_cl_bootstrap_3party(fx, 0x5555));
+    install_self_committee(fx);  // self = party 0
+
+    dao::dao_cl_proposal_key pkc;
+    ASSERT_TRUE(dao::dao_cl_load_proposal_key(fx.record.cl_modulus, pkc));
+    ASSERT_NE(pkc.pk, nullptr);
+
+    std::vector<uint8_t> old_pk_qfi;
+    ASSERT_TRUE(dao::cl_dkg_qfi_to_bytes(old_pk_qfi, pkc.pk->elt()));
+
+    std::vector<uint8_t> D_signed;
+    ASSERT_TRUE(dao::cl_dkg_mpz_to_bytes_signed(D_signed, pkc.D));
+
+    Blockchain::dao_v2_reshare_commit_ctx ctx;
+    ctx.proposal_id           = m_prop_id;
+    ctx.key_id                = fx.record.key_id;
+    ctx.old_share_set_id      = fx.share_set.share_set_id;
+    ctx.new_share_set_id      = fx.share_set.share_set_id + 1;
+    ctx.height                = 1;
+    ctx.new_threshold         = fx.share_set.threshold;
+    ctx.new_committee_id_hash = fx.share_set.committee_id_hash;
+    ctx.old_pk_qfi            = old_pk_qfi;
+    ctx.is_new_member         = true;
+    ctx.new_local_id          = 0;
+    ctx.new_members           = fx.record.committee_members;
+
+    dao::cl_reshare_config cfg;
+    cfg.cl                    = pkc.cl;
+    cfg.D_signed              = D_signed;
+    cfg.old_n                 = 3;
+    cfg.old_t_internal        = 1;
+    cfg.old_contributors      = {0, 1, 2};
+    cfg.new_n                 = 3;
+    cfg.new_t_internal        = 1;
+    cfg.is_old_contributor    = true;
+    cfg.old_local_id          = 0;
+    cfg.is_new_member         = true;
+    cfg.new_local_id          = 0;
+    cfg.old_pk_qfi            = old_pk_qfi;
+    cfg.old_gammas_serialized = fx.share_set.cl_gammas_serialized;
+    cfg.old_share_bytes       = fx.local_shares[0];
+    cfg.old_share_set_id      = fx.share_set.share_set_id;
+    cfg.old_committee_id_hash = fx.share_set.committee_id_hash;
+    cfg.new_committee_id_hash = fx.share_set.committee_id_hash;
+    cfg.old_qualified_ids     = fx.share_set.qualified_ids;
+    cfg.proposal_id           = m_prop_id;
+    cfg.session_id            = dao::dao_cl_reshare_compute_session_id(
+        m_prop_id, fx.share_set.share_set_id,
+        fx.share_set.committee_id_hash, fx.share_set.committee_id_hash,
+        {0u, 1u, 2u});
+
+    auto net = dao::dkg_make_inproc_network(3);
+    auto runner = std::make_unique<dao::cl_reshare_p2p_runner>(
+        cfg, std::move(net.endpoints[0]));
+
+    dao::cl_reshare_result fake;
+    fake.ok                      = true;
+    fake.pk_qfi                  = old_pk_qfi;
+    fake.has_local_new_share     = true;
+    fake.new_share_bytes         = fx.local_shares[0];
+    fake.new_gammas_serialized   = fx.share_set.cl_gammas_serialized;
+    fake.qualified_ids           = fx.share_set.qualified_ids;
+
+    bc().install_dao_v2_reshare_state_for_test(std::move(runner), ctx);
+    ASSERT_TRUE(bc().force_dao_v2_reshare_runner_success_for_test(fake));
+    bc().force_dao_v2_local_share_pack_fail_for_test(true);
+
+    EXPECT_FALSE(bc().commit_dao_v2_reshare_for_test());
+    EXPECT_FALSE(bc().has_dao_v2_reshare_runner_for_test());
+
+    dao::dao_share_set_record ss;
+    EXPECT_FALSE(db().get_dao_share_set(ctx.new_share_set_id, ss));
+
+    bc().force_dao_v2_local_share_pack_fail_for_test(false);
 }
 
 #endif // VEILROOT_ENABLE_CL

@@ -11324,17 +11324,26 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
     bool write_ok = false;
     try {
       m_db->add_dao_share_set(new_ss.share_set_id, new_ss);
-      if (m_dao_v2_reshare_commit.is_new_member &&
-          rres.has_local_new_share) {
-        std::vector<uint8_t> packed =
-            dao::dao_pack_local_share(
-                new_ss.key_id, rres.new_share_bytes);
-        if (!packed.empty()) {
-          m_db->add_dao_local_share(
-              static_cast<uint32_t>(new_ss.share_set_id),
-              m_dao_v2_reshare_commit.new_local_id + 1,
-              packed);
+      if (m_dao_v2_reshare_commit.is_new_member) {
+        // Fail closed. A new committee member must persist its new
+        // local share or the reshare has not completed: the node
+        // has no share for the new set and cannot later participate
+        // in tally decryption. An empty pack result or a write
+        // failure aborts the whole transaction (including the
+        // share-set write above).
+        std::vector<uint8_t> packed;
+        if (!m_dao_v2_local_share_pack_fail_for_test) {
+          packed = dao::dao_pack_local_share(
+              new_ss.key_id, rres.new_share_bytes);
         }
+        if (packed.empty()) {
+          throw std::runtime_error(
+              "CL reshare: dao_pack_local_share returned empty");
+        }
+        m_db->add_dao_local_share(
+            static_cast<uint32_t>(new_ss.share_set_id),
+            m_dao_v2_reshare_commit.new_local_id + 1,
+            packed);
       }
       write_ok = true;
     } catch (const std::exception& e) {

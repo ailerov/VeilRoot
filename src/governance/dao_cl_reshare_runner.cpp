@@ -623,6 +623,15 @@ void cl_reshare_p2p_runner::finish_failed_for_test()
     p_->cv.notify_all();
 }
 
+void cl_reshare_p2p_runner::finish_ok_for_test(const cl_reshare_result& r)
+{
+    std::lock_guard<std::mutex> lk(p_->mu);
+    p_->result = r;
+    p_->finished = true;
+    p_->running = false;
+    p_->cv.notify_all();
+}
+
 bool cl_reshare_p2p_runner::running()  const { return p_->running; }
 bool cl_reshare_p2p_runner::finished() const { return p_->finished; }
 

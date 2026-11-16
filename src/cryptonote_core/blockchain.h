@@ -1612,6 +1612,7 @@ namespace cryptonote
       dao::cl_dkg_result& result_out) const;
 #endif
 #ifdef VEILROOT_ENABLE_CL
+  struct dao_v2_reshare_commit_ctx;  // defined below; fwd for test accessors
   bool has_dao_v2_reshare_runner_for_test() const {
     std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
     return m_dao_v2_reshare_runner != nullptr;
@@ -1640,6 +1641,23 @@ namespace cryptonote
     if (!m_dao_v2_reshare_runner) return false;
     m_dao_v2_reshare_runner->finish_failed_for_test();
     return true;
+  }
+  bool force_dao_v2_reshare_runner_success_for_test(
+      const dao::cl_reshare_result& result) {
+    std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
+    if (!m_dao_v2_reshare_runner) return false;
+    m_dao_v2_reshare_runner->finish_ok_for_test(result);
+    return true;
+  }
+  void install_dao_v2_reshare_state_for_test(
+      std::unique_ptr<dao::cl_reshare_p2p_runner> runner,
+      const dao_v2_reshare_commit_ctx& ctx) {
+    std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
+    m_dao_v2_reshare_runner = std::move(runner);
+    m_dao_v2_reshare_commit = ctx;
+  }
+  void force_dao_v2_local_share_pack_fail_for_test(bool v) {
+    m_dao_v2_local_share_pack_fail_for_test = v;
   }
 #endif
 #endif
@@ -2016,6 +2034,7 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
 #endif
     // BEGIN_VNS_DAO_V2_RESHARE
 #ifdef VEILROOT_ENABLE_CL
+  public:
     struct dao_v2_reshare_commit_ctx
     {
         crypto::hash                      proposal_id;
@@ -2036,6 +2055,7 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
         m_dao_v2_reshare_commit;
     mutable std::mutex m_dao_v2_reshare_mutex;
     std::map<crypto::hash, uint64_t> m_dao_v2_reshare_started_block;
+    bool m_dao_v2_local_share_pack_fail_for_test = false;
 
     static constexpr size_t k_dao_v2_pending_reshare_msgs_cap = 512;
     std::map<std::string,

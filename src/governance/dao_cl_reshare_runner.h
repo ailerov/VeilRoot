@@ -136,6 +136,12 @@ public:
     // worker that is about to call mark_finished() on its own.
     void finish_failed_for_test();
 
+    // Test-only. Simulates a worker that has finished with the
+    // given result (including ok=true). Safe when the worker is
+    // idle (e.g. blocked waiting for peer messages). Caller must
+    // not be racing a worker that is about to call mark_finished().
+    void finish_ok_for_test(const cl_reshare_result& r);
+
     bool running()  const;
     bool finished() const;
 
