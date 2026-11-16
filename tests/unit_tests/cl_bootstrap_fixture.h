@@ -27,7 +27,10 @@ namespace v2test {
 struct CLBootstrapFixture {
     cryptonote::dao::dao_tally_key_record   record;
     cryptonote::dao::dao_share_set_record   share_set;
-    std::vector<uint8_t>                    local_share;
+    std::vector<uint8_t>                    local_share;   // party 0 (compat)
+    std::vector<std::vector<uint8_t>>       local_shares;  // one per party
+    std::vector<crypto::public_key> committee_pubs;
+    std::vector<crypto::secret_key> committee_sks;
 };
 
 inline std::vector<uint8_t> sign_magnitude(const BICYCL::Mpz& v)
@@ -53,6 +56,11 @@ inline bool make_cl_bootstrap_3party(CLBootstrapFixture& out, uint64_t seed)
     auto cl = cl_dkg_make_hsmq(128, rng);
     if (!cl) return false;
 
+    std::vector<crypto::public_key> committee_pubs(3);
+    std::vector<crypto::secret_key> committee_sks(3);
+    for (int i = 0; i < 3; ++i)
+        crypto::generate_keys(committee_pubs[i], committee_sks[i]);
+
     auto net = dkg_make_inproc_network(3);
     std::vector<std::unique_ptr<cl_dkg_p2p_runner>> runners;
     for (uint32_t i = 0; i < 3; ++i) {
@@ -60,7 +68,7 @@ inline bool make_cl_bootstrap_3party(CLBootstrapFixture& out, uint64_t seed)
         cfg.cl = cl;
         cfg.committee_size = 3;
         cfg.threshold_internal = 1;
-        cfg.member_ids.resize(3);
+        cfg.member_ids = committee_pubs;
         cfg.local_party_id = i + 1;
         cfg.soundness_bytes = 32;
         cfg.test_seed = seed + i + 1;
@@ -99,8 +107,11 @@ inline bool make_cl_bootstrap_3party(CLBootstrapFixture& out, uint64_t seed)
     std::vector<uint8_t> ctx_wire;
     if (!dao_cl_key_context_serialize(ctx, ctx_wire)) return false;
 
-    // Committee members (identity irrelevant to crypto; zeroed).
-    std::vector<std::vector<uint8_t>> members(3, std::vector<uint8_t>(32, 0));
+    // Committee member bytes.
+    std::vector<std::vector<uint8_t>> members(3);
+    for (int i = 0; i < 3; ++i)
+        members[i].assign(committee_pubs[i].data,
+                          committee_pubs[i].data + 32);
 
     // Build the key record.
     out.record = dao_tally_key_record{};
@@ -142,6 +153,11 @@ inline bool make_cl_bootstrap_3party(CLBootstrapFixture& out, uint64_t seed)
     out.share_set.qualified_ids = results[0].qualified_ids;
 
     out.local_share = results[0].local_secret_share;
+    out.local_shares.resize(3);
+    for (int i = 0; i < 3; ++i)
+        out.local_shares[i] = results[i].local_secret_share;
+    out.committee_pubs = committee_pubs;
+    out.committee_sks  = committee_sks;
     return true;
 }
 

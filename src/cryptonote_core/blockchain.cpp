@@ -10786,6 +10786,12 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
     if (!m_db->get_dao_tally_key_by_id(kid, key_rec)) return;
     if (key_rec.key_id.size() != 32) return;
     if (key_rec.committee_members.empty()) return;
+    // Defence in depth. After the CL-only cleanup no record with
+    // an empty cl_modulus can be created through the public API
+    // (serialize rejects it, chain validation rejects it), so this
+    // branch is unreachable from chain state. It guards against
+    // storage-layer corruption or a restored pre-cleanup backup.
+    if (key_rec.cl_modulus.empty()) return;
 
     // Decide whether a reshare is needed.
     //   - no reshare yet: first reshare to ready roster

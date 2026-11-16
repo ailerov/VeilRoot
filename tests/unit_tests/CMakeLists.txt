@@ -158,7 +158,8 @@ if(VEILROOT_ENABLE_CL)
   list(APPEND unit_tests_sources dao_cl_dkg_e2e.cpp)
   list(APPEND unit_tests_sources dao_cl_reshare_e2e.cpp
   dao_cl_reshare_negative.cpp
-  dao_cl_reshare_ingress.cpp)
+  dao_cl_reshare_ingress.cpp
+  dao_cl_reshare_chain.cpp)
   list(APPEND unit_tests_sources dao_cl_tally_wire.cpp)
   list(APPEND unit_tests_sources dao_share_set_v3.cpp)
   list(APPEND unit_tests_sources dao_dkg_activation_v3.cpp)
