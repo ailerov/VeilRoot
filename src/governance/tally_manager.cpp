@@ -202,27 +202,13 @@ bool TallyManager::produce_local_share(
     if (key_record_position < 1) return false;
     if (key_rec.key_id.size() != 32) return false;
     if (key_rec.cl_modulus.empty()) return false;
+    if (event_share_set == nullptr) return false;
 
-    // Resolve which share set (and thus which VK_i) this partial will
-    // be bound to. When the caller passes a reshared event share set,
-    // use it directly: position is in that set, VK_i is that set's.
-    uint64_t share_set_id = 0;
-    std::vector<uint8_t> proof_vk;
-    if (event_share_set != nullptr) {
-        share_set_id = event_share_set->share_set_id;
-        if (key_record_position < 1 ||
-            key_record_position > event_share_set->VK_i.size())
-            return false;
-        proof_vk = event_share_set->VK_i[key_record_position - 1];
-    } else {
-        share_set_id = static_cast<uint64_t>(
-            dao::share_set_id_for_key_id(key_rec.key_id));
-        if (key_record_position < 1 ||
-            key_record_position > key_rec.V_K_i.size())
-            return false;
-        proof_vk = key_rec.V_K_i[key_record_position - 1];
-    }
+    const uint64_t share_set_id = event_share_set->share_set_id;
     if (share_set_id == 0) return false;
+    if (key_record_position > event_share_set->committee_members.size())
+        return false;
+
     std::vector<uint8_t> packed_blob;
     if (!m_db.get_dao_local_share(
             static_cast<uint32_t>(share_set_id),
@@ -233,127 +219,108 @@ bool TallyManager::produce_local_share(
         MERROR("V2 tally: local share does not match key_id");
         return false;
     }
-    BIGNUM* sk = bn_from_signed_share(sk_blob);
-    if (!sk) return false;
+    if (sk_blob.empty()) return false;
 
     dao_proposal_aggregate agg;
     if (!m_db.get_dao_proposal_aggregate(proposal_id, agg) ||
         agg.aggregate_E_W.empty() || agg.aggregate_E_S.empty() ||
         agg.aggregate_E_B.empty())
-    {
-        BN_free(sk);
         return false;
-    }
 
 #ifdef VEILROOT_ENABLE_CL
-    if (!key_rec.cl_modulus.empty()) {
-        // CL produce path. Uses the active share set's Gamma map to
-        // restore the local decryption state, then produces one
-        // partial per channel on the aggregate ciphertext.
-        if (event_share_set == nullptr) { BN_free(sk); return false; }
-        dao::dao_cl_proposal_key cl_key;
-        if (!dao::dao_cl_load_proposal_key(key_rec.cl_modulus, cl_key))
-        { BN_free(sk); return false; }
-        if (!dao::dao_cl_check_ballot_modulus(*cl_key.cl))
-        { BN_free(sk); return false; }
+    dao::dao_cl_proposal_key cl_key;
+    if (!dao::dao_cl_load_proposal_key(key_rec.cl_modulus, cl_key))
+        return false;
+    if (!dao::dao_cl_check_ballot_modulus(*cl_key.cl)) return false;
 
-        BICYCL::CL_Threshold_Static::ParticipantsValueMap<BICYCL::QFI>
-            gammas;
-        if (!dao::cl_dkg_deserialize_gammas(
-                event_share_set->cl_gammas_serialized,
-                cl_key.cl->Cl_G().discriminant(), gammas))
-        { BN_free(sk); return false; }
-        BICYCL::CL_Threshold_Static::ParticipantsSet qualified;
-        for (uint32_t q : event_share_set->qualified_ids) qualified.insert(q);
+    BICYCL::CL_Threshold_Static::ParticipantsValueMap<BICYCL::QFI>
+        gammas;
+    if (!dao::cl_dkg_deserialize_gammas(
+            event_share_set->cl_gammas_serialized,
+            cl_key.cl->Cl_G().discriminant(), gammas))
+        return false;
+    BICYCL::CL_Threshold_Static::ParticipantsSet qualified;
+    for (uint32_t q : event_share_set->qualified_ids) qualified.insert(q);
 
-        std::unique_ptr<BICYCL::CL_Threshold_Static> player;
-        try {
-            player = std::make_unique<BICYCL::CL_Threshold_Static>(
-                *cl_key.cl,
-                static_cast<unsigned int>(event_share_set->committee_members.size()),
-                static_cast<unsigned int>(event_share_set->threshold - 1),
-                static_cast<unsigned int>(key_record_position - 1),
-                32);
-        } catch (...) { BN_free(sk); return false; }
+    std::unique_ptr<BICYCL::CL_Threshold_Static> player;
+    try {
+        player = std::make_unique<BICYCL::CL_Threshold_Static>(
+            *cl_key.cl,
+            static_cast<unsigned int>(event_share_set->committee_members.size()),
+            static_cast<unsigned int>(event_share_set->threshold - 1),
+            static_cast<unsigned int>(key_record_position - 1),
+            32);
+    } catch (...) { return false; }
 
-        BICYCL::Mpz share_mpz;
-        {
-            // sk_blob holds sign||magnitude.
-            if (sk_blob.empty()) { BN_free(sk); return false; }
-            const bool neg = sk_blob[0] != 0;
-            BICYCL::Mpz mag;
-            if (sk_blob.size() > 1)
-                mag = BICYCL::Mpz(std::vector<uint8_t>(
-                    sk_blob.begin() + 1, sk_blob.end()));
-            share_mpz = mag;
-            if (neg) share_mpz.neg();
-        }
-        if (!player->restore_decryption_state(
-                *cl_key.cl, *cl_key.pk, gammas, qualified, share_mpz))
-        { BN_free(sk); return false; }
+    // sk_blob is the serialized CL secret share in the canonical
+    // sign || u32 len || magnitude form.
+    BICYCL::Mpz share_mpz;
+    size_t sk_off = 0;
+    if (!dao::cl_dkg_mpz_from_bytes_signed(sk_blob, sk_off, share_mpz, true))
+        return false;
+    if (sk_off != sk_blob.size()) return false;
 
-        BICYCL::CL_HSMqk::CipherText ct_W, ct_S, ct_B;
-        if (!dao::dao_cl_ciphertext_from_wire(*cl_key.cl,
-                                              agg.aggregate_E_W, ct_W))
-        { BN_free(sk); return false; }
-        if (!dao::dao_cl_ciphertext_from_wire(*cl_key.cl,
-                                              agg.aggregate_E_S, ct_S))
-        { BN_free(sk); return false; }
-        if (!dao::dao_cl_ciphertext_from_wire(*cl_key.cl,
-                                              agg.aggregate_E_B, ct_B))
-        { BN_free(sk); return false; }
+    if (!player->restore_decryption_state(
+            *cl_key.cl, *cl_key.pk, gammas, qualified, share_mpz))
+        return false;
 
-        BICYCL::RandGen rng;
-        {
-            std::random_device rd;
-            rng.set_seed(BICYCL::Mpz(static_cast<unsigned long>(rd())));
-        }
+    BICYCL::CL_HSMqk::CipherText ct_W, ct_S, ct_B;
+    if (!dao::dao_cl_ciphertext_from_wire(*cl_key.cl,
+                                          agg.aggregate_E_W, ct_W))
+        return false;
+    if (!dao::dao_cl_ciphertext_from_wire(*cl_key.cl,
+                                          agg.aggregate_E_S, ct_S))
+        return false;
+    if (!dao::dao_cl_ciphertext_from_wire(*cl_key.cl,
+                                          agg.aggregate_E_B, ct_B))
+        return false;
 
-        share_out = dao::dao_v2_tally_share{};
-        share_out.version         = dao::dao_v2_tally_share::WIRE_VERSION_CL;
-        share_out.proposal_id     = proposal_id;
-        share_out.vote_end_height = prop.voting_end_height;
-        share_out.tally_key_id    = key_rec.key_id;
-        share_out.member_index    = key_record_position;
-        share_out.aggregate_ciphertext_hash =
-            dao::dao_aggregate_ciphertext_hash(agg.aggregate_E_W,
-                                               agg.aggregate_E_S,
-                                               agg.aggregate_E_B);
-
-        auto emit = [&](const BICYCL::CL_HSMqk::CipherText& ct,
-                        std::vector<uint8_t>& out_wire) -> bool {
-            try {
-                player->decrypt_partial(*cl_key.cl, rng, ct);
-                const auto& pd = player->part_dec();
-                const BICYCL::Mpz& u = pd.proof().u();
-                const BICYCL::QFI& R1 = pd.proof().R1();
-                const BICYCL::QFI& R2 = pd.proof().R2();
-                out_wire.clear();
-                const BICYCL::QFI& w = pd.w();
-                std::vector<uint8_t> w_wire, u_wire, r1_wire, r2_wire;
-                if (!dao::cl_dkg_qfi_to_bytes(w_wire, w)) return false;
-                if (!dao::cl_dkg_mpz_to_bytes_signed(u_wire, u)) return false;
-                if (!dao::cl_dkg_qfi_to_bytes(r1_wire, R1)) return false;
-                if (!dao::cl_dkg_qfi_to_bytes(r2_wire, R2)) return false;
-                out_wire = w_wire;
-                out_wire.insert(out_wire.end(), u_wire.begin(), u_wire.end());
-                out_wire.insert(out_wire.end(), r1_wire.begin(), r1_wire.end());
-                out_wire.insert(out_wire.end(), r2_wire.begin(), r2_wire.end());
-                return true;
-            } catch (...) { return false; }
-        };
-
-        const bool ok =
-            emit(ct_W, share_out.cl_partial_W) &&
-            emit(ct_S, share_out.cl_partial_S) &&
-            emit(ct_B, share_out.cl_partial_B);
-        BN_free(sk);
-        return ok;
+    BICYCL::RandGen rng;
+    {
+        std::random_device rd;
+        rng.set_seed(BICYCL::Mpz(static_cast<unsigned long>(rd())));
     }
-#endif
 
-    BN_free(sk);
+    share_out = dao::dao_v2_tally_share{};
+    share_out.version         = dao::dao_v2_tally_share::WIRE_VERSION_CL;
+    share_out.proposal_id     = proposal_id;
+    share_out.vote_end_height = prop.voting_end_height;
+    share_out.tally_key_id    = key_rec.key_id;
+    share_out.member_index    = key_record_position;
+    share_out.aggregate_ciphertext_hash =
+        dao::dao_aggregate_ciphertext_hash(agg.aggregate_E_W,
+                                           agg.aggregate_E_S,
+                                           agg.aggregate_E_B);
+
+    auto emit = [&](const BICYCL::CL_HSMqk::CipherText& ct,
+                    std::vector<uint8_t>& out_wire) -> bool {
+        try {
+            player->decrypt_partial(*cl_key.cl, rng, ct);
+            const auto& pd = player->part_dec();
+            const BICYCL::Mpz& u = pd.proof().u();
+            const BICYCL::QFI& R1 = pd.proof().R1();
+            const BICYCL::QFI& R2 = pd.proof().R2();
+            out_wire.clear();
+            const BICYCL::QFI& w = pd.w();
+            std::vector<uint8_t> w_wire, u_wire, r1_wire, r2_wire;
+            if (!dao::cl_dkg_qfi_to_bytes(w_wire, w)) return false;
+            if (!dao::cl_dkg_mpz_to_bytes_signed(u_wire, u)) return false;
+            if (!dao::cl_dkg_qfi_to_bytes(r1_wire, R1)) return false;
+            if (!dao::cl_dkg_qfi_to_bytes(r2_wire, R2)) return false;
+            out_wire = w_wire;
+            out_wire.insert(out_wire.end(), u_wire.begin(), u_wire.end());
+            out_wire.insert(out_wire.end(), r1_wire.begin(), r1_wire.end());
+            out_wire.insert(out_wire.end(), r2_wire.begin(), r2_wire.end());
+            return true;
+        } catch (...) { return false; }
+    };
+
+    return emit(ct_W, share_out.cl_partial_W) &&
+           emit(ct_S, share_out.cl_partial_S) &&
+           emit(ct_B, share_out.cl_partial_B);
+#else
     return false;
+#endif
 }
 
 } // namespace cryptonote

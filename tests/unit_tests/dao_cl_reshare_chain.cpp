@@ -24,6 +24,9 @@
 #include "governance/dao_tally.h"
 #include "governance/dao_tally_share.h"
 
+#include "bicycl/bicycl.hpp"
+#include "bicycl/bicycl/cl/CL_HSMqk.hpp"
+
 #include <cstring>
 #include <memory>
 #include <string>
@@ -433,6 +436,56 @@ TEST_F(DaoClReshareChain, tally_ingress_accepts_cl_v3_rejects_v2)
     bc().handle_dao_v2_tally_share(fx.committee_pubs[1],
         std::string(wire2.begin(), wire2.end()));
     EXPECT_EQ(bc().get_dao_v2_tally_shares_size_for_test(m_prop_id), 1u);
+}
+
+TEST_F(DaoClReshareChain, maybe_produce_dao_v2_share_cl_bootstrap)
+{
+    v2test::CLBootstrapFixture fx;
+    ASSERT_TRUE(v2test::make_cl_bootstrap_3party(fx, 0xAAAA));
+    install_self_committee(fx);
+    add_proposal(fx.record.key_id, /*vote_end=*/3);
+
+    dao::dao_cl_proposal_key pkc;
+    ASSERT_TRUE(dao::dao_cl_load_proposal_key(fx.record.cl_modulus, pkc));
+    ASSERT_NE(pkc.pk, nullptr);
+
+    BICYCL::RandGen rng;
+    rng.set_seed(BICYCL::Mpz(11111UL));
+    BICYCL::Mpz W_m(100UL), S_m(100UL), B_m(200UL);
+    BICYCL::Mpz r_W = dao::dao_cl_sample_randomness(*pkc.cl, rng);
+    BICYCL::Mpz r_S = dao::dao_cl_sample_randomness(*pkc.cl, rng);
+    BICYCL::Mpz r_B = dao::dao_cl_sample_randomness(*pkc.cl, rng);
+    std::vector<uint8_t> E_W, E_S, E_B;
+    ASSERT_TRUE(dao::dao_cl_encrypt_at_pk(*pkc.cl, *pkc.pk, W_m, r_W, E_W));
+    ASSERT_TRUE(dao::dao_cl_encrypt_at_pk(*pkc.cl, *pkc.pk, S_m, r_S, E_S));
+    ASSERT_TRUE(dao::dao_cl_encrypt_at_pk(*pkc.cl, *pkc.pk, B_m, r_B, E_B));
+
+    dao_proposal_aggregate agg;
+    agg.aggregate_E_W = E_W;
+    agg.aggregate_E_S = E_S;
+    agg.aggregate_E_B = E_B;
+    db().block_wtxn_start();
+    db().add_dao_proposal_aggregate(m_prop_id, agg);
+    db().block_wtxn_stop();
+
+    std::vector<dao::dao_v2_tally_share> captured;
+    bc().set_dao_v2_tally_broadcast(
+        [&captured](const dao::dao_v2_tally_share& s) {
+            captured.push_back(s);
+        });
+
+    bc().maybe_produce_dao_v2_share(/*height=*/4);
+
+    ASSERT_EQ(captured.size(), 1u);
+    EXPECT_EQ(captured[0].version,
+              dao::dao_v2_tally_share::WIRE_VERSION_CL);
+    EXPECT_EQ(captured[0].member_index, 1u);
+    EXPECT_EQ(captured[0].proposal_id, m_prop_id);
+    EXPECT_FALSE(captured[0].cl_partial_W.empty());
+    EXPECT_FALSE(captured[0].cl_partial_S.empty());
+    EXPECT_FALSE(captured[0].cl_partial_B.empty());
+    EXPECT_TRUE(captured[0].partial_W.empty());
+    EXPECT_TRUE(captured[0].proof_W.E.empty());
 }
 
 #endif // VEILROOT_ENABLE_CL

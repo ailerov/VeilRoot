@@ -11544,53 +11544,32 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
         return;
     }
 
-    // Proposals whose voting window closed at height - 1. For each:
-    //   1. read the bootstrap key record;
-    //   2. deterministically select the temporary tally committee
-    //      from the proposal's DKG committee, filtered by current
-    //      eligibility and ranked at voting_end_height;
-    //   3. persist the tally session (idempotent);
-    //   4. if this node is in the committee, produce and broadcast
-    //      its partial decryptions using its already-held DKG share
-    //      for this proposal's key.
+    // For each proposal whose voting window just closed, produce a
+    // partial decryption of the aggregate under the proposal's CL
+    // key if this node is a committee member of the currently active
+    // share set.
     m_db->for_all_proposal_records(
       [&](const crypto::hash& pid, const proposal_record& rec) -> bool {
         if (rec.status != PROPOSAL_STATUS_ACTIVE) return true;
         if (rec.voting_end_height + 1 > height) return true;
 
 #ifdef VEILROOT_ENABLE_CL
-        // If a reshare for this proposal is still running, defer
-        // production. On next block we retry.
         {
           std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
           if (m_dao_v2_reshare_runner) return true;
         }
 #endif
 
-        // If the ready roster at voting-end differs from the
-        // acceptance-time committee, start a reshare. The existing
-        // produce-path below still uses key_rec.V_K_i until the
-        // certificate evidence path is wired. If a reshare is already
-        // active, this returns immediately and no produce occurs;
-        // the proposal stays untallied until the consumer lands.
         maybe_start_dao_v2_reshare_for_proposal(pid,
                                                  rec.voting_end_height);
 
 #ifdef VEILROOT_ENABLE_CL
-        // If the trigger just started a reshare, defer production to
-        // a future block. Producing now would prove against base
-        // VK_i and be rejected by every validator that expects
-        // reshared VK_i.
         {
           std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
           if (m_dao_v2_reshare_runner) return true;
         }
 #endif
 
-        // The proposal must have its per-proposal key installed by
-        // chain-level dkg_key_activation before shares can be produced.
-        // Proposals without an activated key are skipped; there is no
-        // fallback key.
         if (rec.tally_key_id == crypto::null_hash) return true;
 
         dao::dao_tally_key_record key_rec;
@@ -11600,76 +11579,30 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
           if (!m_db->get_dao_tally_key_by_id(kid, key_rec)) return true;
         } catch (...) { return true; }
 
-        // Use the same committee selector as the consensus
-        // validator. Both paths must compute the identical member set
-        // and the identical global indices, or a certificate built
-        // here will be refused by every other node.
-        const auto selected_members =
-            select_dao_v2_tally_committee(key_rec, rec.voting_end_height);
-
-        dao::dao_tally_committee committee;
-        committee.members = selected_members;
-        committee.global_indices.reserve(selected_members.size());
-        for (const auto& pk : selected_members) {
-          uint32_t gidx = 0;
-          for (size_t i = 0;
-               i < key_rec.committee_members.size(); ++i) {
-            const auto& km = key_rec.committee_members[i];
-            if (km.size() != sizeof(pk.data)) continue;
-            if (std::memcmp(km.data(), pk.data, sizeof(pk.data)) == 0) {
-              gidx = static_cast<uint32_t>(i) + 1;
-              break;
-            }
-          }
-          committee.global_indices.push_back(gidx);
-        }
-
-        // The threshold that governs whether decryption is possible is
-        // the BOOTSTRAP DKG threshold. The committee is a temporary
-        // subset of the bootstrap shareholder set; the sharing
-        // polynomial does not change. If the committee is smaller than
-        // the bootstrap threshold, the tally cannot proceed.
-        const uint32_t threshold = key_rec.threshold;
-        if (threshold == 0) return true;
-
-        // Tally uses the stable bootstrap DKG shares. The temporary
-        // committee selects who participates; the verifier checks
-        // partials against key_rec.V_K_i. No per-event reshare is
-        // required, and this node must be a bootstrap shareholder.
         if (key_rec.key_id.size() != 32) return true;
-        if (key_rec.threshold == 0) return true;
-        if (key_rec.V_K_i.size() != key_rec.committee_members.size())
-          return true;
+        if (key_rec.cl_modulus.empty()) return true;
 
-        // The whitepaper requires threshold cryptography; a committee
-        // smaller than the stable threshold cannot decrypt. Do not
-        // lower the threshold — skip.
-        if (committee.members.size() < key_rec.threshold) {
-          MINFO("V2 tally: selected committee ("
-                << committee.members.size() << ") < stable threshold ("
-                << key_rec.threshold << "); proposal " << pid
-                << " remains untallied");
-          return true;
-        }
-
-        // Pick the active share set for this proposal: reshared when
-        // a reshare has landed under a newer id with evidence, base
-        // otherwise. Position and VK_i come from whichever set is
-        // active.
+        // The Gamma map and qualified ids required to produce a CL
+        // partial live on the share set, not on the key record.
         dao::dao_share_set_record active_ss;
-        bool use_event = false;
         {
           uint64_t base_id = dao::share_set_id_for_key_id(key_rec.key_id);
+          if (base_id == 0) return true;
           uint64_t latest_id = latest_share_set_id_for_key_id(key_rec.key_id);
-          if (latest_id != 0 && latest_id != base_id &&
-              m_db->get_dao_share_set(latest_id, active_ss) &&
-              dao::dao_share_set_is_reshared(active_ss)) {
-            use_event = true;
+          uint64_t want_id = base_id;
+          if (latest_id != 0 && latest_id != base_id) {
+            dao::dao_share_set_record candidate;
+            if (m_db->get_dao_share_set(latest_id, candidate) &&
+                dao::dao_share_set_is_reshared(candidate)) {
+              want_id = latest_id;
+            }
           }
+          if (!m_db->get_dao_share_set(want_id, active_ss)) return true;
         }
-        const auto& committee_members =
-            use_event ? active_ss.committee_members
-                      : key_rec.committee_members;
+        const auto& committee_members = active_ss.committee_members;
+        const uint32_t effective_threshold = active_ss.threshold;
+        if (effective_threshold == 0) return true;
+        if (committee_members.size() < effective_threshold) return true;
 
         uint32_t key_record_position = 0;
         for (size_t i = 0; i < committee_members.size(); ++i) {
@@ -11683,14 +11616,10 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
         }
         if (key_record_position == 0) return true;
 
-        uint32_t effective_threshold =
-            use_event ? active_ss.threshold : key_rec.threshold;
-        if (committee_members.size() < effective_threshold) return true;
-
         cryptonote::TallyManager tm(*m_db, m_governance_params);
         dao::dao_v2_tally_share share;
-        if (!tm.produce_local_share(pid, key_rec, key_record_position, share,
-                                     use_event ? &active_ss : nullptr))
+        if (!tm.produce_local_share(pid, key_rec, key_record_position,
+                                     share, &active_ss))
           return true;
 
         MINFO("V2 tally: producing share for proposal " << pid
@@ -11698,8 +11627,7 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
         m_dao_v2_tally_broadcast(share);
         return true;
       });
-  }
-  // ------------------------------------------------------------------
+  }  // ------------------------------------------------------------------
   // DAO V2 tally-result transaction
   //
   // The tally certificate produced by the committee is carried in an
