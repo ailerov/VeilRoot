@@ -760,21 +760,12 @@ bool dao_unpack_local_share(
 // Party and driver
 // ====================================================================
 
-class dkg_party;
 
 // Derive per-party p_i and q_i contribution bit widths required to
 // reconstruct a target_N_bits modulus at zero after Lagrange
 // interpolation over committee_size members. Returns (0,0) when
 // the combination is not feasible.
-void dao_dkg_contribution_bits(uint32_t committee_size,
-                               uint32_t target_N_bits,
-                               uint32_t& p_bits_out,
-                               uint32_t& q_bits_out);
 
-std::unique_ptr<dkg_party> dkg_party_create(uint32_t party_id,
-                                            const crypto::hash& proposal_id,
-                                            uint32_t committee_size,
-                                            uint32_t threshold);
 
 struct dkg_result
 {
@@ -907,7 +898,6 @@ uint32_t dao_dkg_party_index_for(
 // ====================================================================
 
 #ifdef VEILROOT_DAO_DKG_TESTING
-bool dkg_party_test_get_lambda_share(const dkg_party& p, BIGNUM* out);
 #endif
 
 // ====================================================================
