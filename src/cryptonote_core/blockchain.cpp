@@ -11447,6 +11447,7 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
   }
 
 
+#ifdef VEILROOT_DAO_DKG_TESTING
   size_t Blockchain::get_dao_v2_tally_shares_size_for_test(
       const crypto::hash& proposal_id) const
   {
@@ -11454,6 +11455,7 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
     if (it == m_dao_v2_tally_shares.end()) return 0;
     return it->second.size();
   }
+#endif
 
   void Blockchain::handle_dao_v2_tally_share(const crypto::public_key& member,
                                              const std::string& payload)

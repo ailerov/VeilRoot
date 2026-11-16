@@ -24,11 +24,6 @@ set(governance_sources
     dao_tally_share.cpp
     tally_manager.cpp
     dao_dkg.cpp
-    dao_mpc.cpp
-    dao_mpc_crt.cpp
-    dao_mpc_abb.cpp
-    dao_mpc_rot.cpp
-    dao_sieve_runner.cpp
     dao_wallet_v2.cpp
     dao_dkg_transport.cpp
     dao_consistency_context.cpp

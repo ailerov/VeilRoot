@@ -829,71 +829,7 @@ enum class dao_dkg_start_status {
     runner_start_failed,
 };
 
-struct dkg_config
-{
-    // Default committee is the maximum (16). Callers that run a
-    // different size must set committee_size AND threshold to
-    // dao_dkg_expected_threshold(committee_size).
-    uint32_t committee_size = DAO_DKG_MAX_COMMITTEE_SIZE;
-    uint32_t threshold      = DAO_DKG_THRESHOLD;
-
-    // Ordered committee member public keys. Must contain exactly
-    // committee_size distinct entries. The canonical committee_id_hash
-    // is SHA256(domain || ordered member keys). A real committee is
-    // never identified merely by indexes 1..n.
-    std::vector<crypto::public_key> member_ids;
-
-    // Which proposal this ceremony is for. crypto::null_hash for the
-    // bootstrap ceremony. Threaded through every message header so a
-    // receiver can route by proposal rather than by BOOTSTRAP.
-    crypto::hash proposal_id{};
-
-    uint32_t k              = 60;
-    uint32_t p_contribution_bits = 0;   // width of p_i (0 = derive)
-    uint32_t q_contribution_bits = 0;   // width of q_i (0 = derive)
-    uint32_t target_N_bits  = 128;
-
-    uint32_t security_bits  = 32;   // K = 2^security_bits
-    uint32_t qproof_rounds  = DAO_DKG_QPROOF_ROUNDS_TEST;
-
-    uint32_t max_attempts   = 2000;
-
-    uint64_t test_seed      = 0;
-
-    // Per-phase wall-clock budget in the distributed runner. On
-    // expiry the runner aborts and wait() returns false. 120 s is
-    // adequate for the 512-bit test group; production FFDHE-2048
-    // ceremonies calibrate this value.
-    uint32_t phase_timeout_seconds = 120;
-
-    // Identity of the party running this DKG instance on the current
-    // node, 1..committee_size. Zero means "no local identity", in
-    // which case the driver does not export any secret share.
-    // Production nodes set this to their own committee index and
-    // persist the returned share locally (see
-    // dkg_result::local_secret_share).
-    uint32_t local_party_id = 0;
-
-#ifdef VEILROOT_DAO_DKG_TESTING
-    // Test-only fixed contributions for arbitrary committee sizes.
-    // When both vectors have committee_size entries (decimal strings),
-    // the runner uses them in place of the built-in 3-party and 16-
-    // party constants. The caller is responsible for choosing values
-    // whose sums are prime, so that the biprimality check succeeds on
-    // the first attempt.
-    std::vector<std::string> test_p_i_dec;
-    std::vector<std::string> test_q_i_dec;
-#endif
-};
-
-using dkg_transport_factory =
-    std::function<std::unique_ptr<dkg_transport>(uint32_t party_id)>;
-
-bool dkg_run(const dkg_config& cfg, dkg_result& out);
-
-bool dkg_run_with_transport(const dkg_config& cfg,
-                            const dkg_transport_factory& factory,
-                            dkg_result& out);
+;
 
 // ====================================================================
 // In-process transport (dao_dkg_transport.h defines dkg_inproc_network)
@@ -923,15 +859,7 @@ dkg_inproc_network dkg_make_inproc_network(uint32_t n,
 // Requires cfg.local_party_id in [1, cfg.committee_size].
 // ====================================================================
 
-struct dkg_p2p_callbacks
-{
-    // Targeted unicast to one committee member, addressed by public
-    // key. Returns false if no connection to that peer is available.
-    std::function<bool(const crypto::public_key&, const std::string&)> send_to;
-
-    // Unreliable broadcast to all currently-connected peers.
-    std::function<void(const std::string&)>                            broadcast;
-};
+;
 
 // End-to-end encryption for targeted DKG messages.
 // The outer P2P transport may broadcast the ciphertext to every peer;
@@ -954,51 +882,12 @@ bool get_dkg_private_payload_recipient(
     const std::string& envelope,
     crypto::public_key& recipient);
 
-class dkg_p2p_runner
-{
-public:
-    dkg_p2p_runner(const dkg_config& cfg,
-                   const dao_vss_group& vss,
-                   const dkg_p2p_callbacks& cb);
-    ~dkg_p2p_runner();
-
-    dkg_p2p_runner(const dkg_p2p_runner&) = delete;
-    dkg_p2p_runner& operator=(const dkg_p2p_runner&) = delete;
-
-    // Start the worker thread. Idempotent.
-    bool start();
-
-    // Stop the worker and wait. Idempotent.
-    void stop();
-
-    // Deliver one inbound dkg_msg. Safe from any thread.
-    void on_message(const dkg_msg& m);
-
-    // Block until the ceremony finishes. timeout_s == 0 means no
-    // timeout. Returns out.ok on success. If timeout_s is nonzero and
-    // the ceremony has not finished within that window, returns false
-    // and the runner is left in a stopped state.
-    bool wait(dkg_result& out, uint32_t timeout_s = 0);
-
-    bool running()  const;
-    bool finished() const;
-    uint32_t local_party_id() const;
-    const dkg_config* config() const;
-
-private:
-    struct impl;
-    std::unique_ptr<impl> p_;
-};
+;
 
 // Convenience blocking entry point. Equivalent to:
 //   dkg_p2p_runner r(cfg, vss, cb);
 //   r.start();
 //   bool ok = r.wait(out);
-bool dkg_run_distributed(const dkg_config& cfg,
-                         const dao_vss_group& vss,
-                         const dkg_p2p_callbacks& cb,
-                         dkg_result& out);
-
 // Committee-index derivation for a given node identity.
 //
 // A node's persistent identity is its public key (loaded from LMDB by

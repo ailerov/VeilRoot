@@ -455,53 +455,7 @@ TEST_F(DaoBootstrapIntegration, AnnounceIsThrottled)
 
 namespace {
 
-struct act_network
-{
-    std::mutex mu;
-    std::map<crypto::public_key, dkg_p2p_runner*> by_pk;
-    std::map<uint32_t, dkg_p2p_runner*>          by_id;
-
-    void reg(uint32_t id, const crypto::public_key& pk, dkg_p2p_runner* r)
-    {
-        std::lock_guard<std::mutex> lk(mu);
-        by_id.emplace(id, r);
-        by_pk.emplace(pk, r);
-    }
-
-    dkg_p2p_callbacks cb()
-    {
-        dkg_p2p_callbacks c;
-        c.send_to = [this](const crypto::public_key& to,
-                           const std::string& payload) -> bool {
-            dkg_p2p_runner* t = nullptr;
-            {
-                std::lock_guard<std::mutex> lk(mu);
-                auto it = by_pk.find(to);
-                if (it == by_pk.end()) return false;
-                t = it->second;
-            }
-            dkg_msg m;
-            std::vector<uint8_t> buf(payload.begin(), payload.end());
-            if (!m.deserialize(buf)) return false;
-            t->on_message(m);
-            return true;
-        };
-        c.broadcast = [this](const std::string& payload) {
-            dkg_msg m;
-            std::vector<uint8_t> buf(payload.begin(), payload.end());
-            if (!m.deserialize(buf)) return;
-            std::vector<dkg_p2p_runner*> targets;
-            {
-                std::lock_guard<std::mutex> lk(mu);
-                for (auto it = by_id.begin(); it != by_id.end(); ++it)
-                    if (it->first != m.hdr.sender_id)
-                        targets.push_back(it->second);
-            }
-            for (auto* t : targets) t->on_message(m);
-        };
-        return c;
-    }
-};
+;
 
 } // namespace
 
