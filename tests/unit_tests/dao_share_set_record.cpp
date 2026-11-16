@@ -48,7 +48,12 @@ TEST(DaoShareSetRecord, RoundTrip)
     dao_share_set_record back;
     ASSERT_TRUE(back.deserialize(blob));
 
-    EXPECT_EQ(back.version, r.version);
+    // serialize() always emits the v2 wire format; v1 is a
+    // deserialize-only compatibility format accepted for on-disk
+    // state written before v2 evidence was added. A v1 input with
+    // no evidence therefore round-trips as a v2 record with empty
+    // evidence fields.
+    EXPECT_EQ(back.version, 2u);
     EXPECT_EQ(back.share_set_id, r.share_set_id);
     EXPECT_EQ(back.height, r.height);
     EXPECT_EQ(back.threshold, r.threshold);
