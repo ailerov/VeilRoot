@@ -125,7 +125,16 @@ public:
 
     bool start();
     void stop();
+    // Blocks until the runner has finished (or timeout). Returns true
+    // on retrieval, false on timeout. Inspect out.ok for protocol
+    // success.
     bool wait(cl_reshare_result& out, uint32_t timeout_s = 0);
+
+    // Test-only. Simulates a worker that has finished with ok=false.
+    // Safe when the worker is idle (e.g. blocked waiting for peer
+    // messages that will never arrive). Caller must not be racing a
+    // worker that is about to call mark_finished() on its own.
+    void finish_failed_for_test();
 
     bool running()  const;
     bool finished() const;

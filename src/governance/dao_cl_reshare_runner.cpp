@@ -610,7 +610,17 @@ bool cl_reshare_p2p_runner::wait(cl_reshare_result& out, uint32_t timeout_s)
         }
     }
     out = p_->result;
-    return out.ok;
+    return true;
+}
+
+void cl_reshare_p2p_runner::finish_failed_for_test()
+{
+    std::lock_guard<std::mutex> lk(p_->mu);
+    p_->result = cl_reshare_result{};
+    p_->result.ok = false;
+    p_->finished = true;
+    p_->running = false;
+    p_->cv.notify_all();
 }
 
 bool cl_reshare_p2p_runner::running()  const { return p_->running; }

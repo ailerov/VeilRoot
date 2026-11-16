@@ -368,7 +368,7 @@ bool cl_dkg_p2p_runner::wait(cl_dkg_result& out, uint32_t timeout_s)
         }
     }
     out = p_->result;
-    return out.ok;
+    return true;
 }
 
 bool cl_dkg_p2p_runner::running()  const { return p_->running; }

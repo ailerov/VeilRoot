@@ -216,4 +216,64 @@ TEST_F(DaoClReshareChain, starts_runner_valid)
     bc().stop_dao_v2_reshare_runner_for_test();
 }
 
+TEST_F(DaoClReshareChain, commit_preserves_runner_when_not_finished)
+{
+    v2test::CLBootstrapFixture fx;
+    ASSERT_TRUE(v2test::make_cl_bootstrap_3party(fx, 0x7777));
+    install_self_committee(fx);
+    add_proposal(fx.record.key_id, /*vote_end=*/3);
+    mine_to_height(3);
+
+    crypto::hash can_hash_at_1 = bc().get_block_id_by_height(1);
+    ASSERT_NE(can_hash_at_1, crypto::null_hash);
+    for (int i = 0; i < 3; ++i)
+        add_ready(fx.committee_pubs[i], 1, can_hash_at_1);
+    crypto::public_key d_pub; crypto::secret_key d_sk;
+    crypto::generate_keys(d_pub, d_sk);
+    add_ready(d_pub, 1, can_hash_at_1);
+
+    bc().set_dao_v2_dkg_send([](const std::string&) -> bool { return true; });
+    bc().maybe_start_dao_v2_reshare_for_proposal(m_prop_id, 3);
+    ASSERT_TRUE(bc().has_dao_v2_reshare_runner_for_test());
+
+    // Runner has not finished (no peer messages delivered). Commit
+    // must not clear it, and must not block indefinitely.
+    bc().commit_dao_v2_reshare_for_test();
+    EXPECT_TRUE(bc().has_dao_v2_reshare_runner_for_test());
+    bc().stop_dao_v2_reshare_runner_for_test();
+}
+
+TEST_F(DaoClReshareChain, failed_runner_is_cleared_and_retry_succeeds)
+{
+    v2test::CLBootstrapFixture fx;
+    ASSERT_TRUE(v2test::make_cl_bootstrap_3party(fx, 0x6666));
+    install_self_committee(fx);
+    add_proposal(fx.record.key_id, /*vote_end=*/3);
+    mine_to_height(3);
+
+    crypto::hash can_hash_at_1 = bc().get_block_id_by_height(1);
+    ASSERT_NE(can_hash_at_1, crypto::null_hash);
+    for (int i = 0; i < 3; ++i)
+        add_ready(fx.committee_pubs[i], 1, can_hash_at_1);
+    crypto::public_key d_pub; crypto::secret_key d_sk;
+    crypto::generate_keys(d_pub, d_sk);
+    add_ready(d_pub, 1, can_hash_at_1);
+
+    bc().set_dao_v2_dkg_send([](const std::string&) -> bool { return true; });
+    bc().maybe_start_dao_v2_reshare_for_proposal(m_prop_id, 3);
+    ASSERT_TRUE(bc().has_dao_v2_reshare_runner_for_test());
+
+    // Force the runner to finish with ok=false. Pre-fix, wait()
+    // returned false in this state, so the caller's rres.ok cleanup
+    // branch was unreachable, and the runner stayed installed.
+    ASSERT_TRUE(bc().force_dao_v2_reshare_runner_failure_for_test());
+    bc().commit_dao_v2_reshare_for_test();
+    EXPECT_FALSE(bc().has_dao_v2_reshare_runner_for_test());
+
+    // Retry must be possible: scheduler is not blocked.
+    bc().maybe_start_dao_v2_reshare_for_proposal(m_prop_id, 3);
+    EXPECT_TRUE(bc().has_dao_v2_reshare_runner_for_test());
+    bc().stop_dao_v2_reshare_runner_for_test();
+}
+
 #endif // VEILROOT_ENABLE_CL

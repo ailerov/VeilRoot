@@ -1632,6 +1632,15 @@ namespace cryptonote
     m_dao_v2_reshare_runner.reset();
     m_dao_v2_reshare_commit = dao_v2_reshare_commit_ctx{};
   }
+  bool commit_dao_v2_reshare_for_test() {
+    return maybe_commit_dao_v2_reshare();
+  }
+  bool force_dao_v2_reshare_runner_failure_for_test() {
+    std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
+    if (!m_dao_v2_reshare_runner) return false;
+    m_dao_v2_reshare_runner->finish_failed_for_test();
+    return true;
+  }
 #endif
 #endif
 

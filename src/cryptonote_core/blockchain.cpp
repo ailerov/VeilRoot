@@ -11225,16 +11225,22 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
 
     dao::cl_reshare_result rres;
     if (!m_dao_v2_reshare_runner->wait(rres, 1)) return false;
-    if (!rres.ok) {
-      MWARNING("CL reshare: runner reported failure");
+
+    // Clear the runner on any failure after a completed wait, so
+    // the scheduler is not permanently blocked by a failed attempt.
+    auto clear_runner = [this]() {
       m_dao_v2_reshare_runner.reset();
       m_dao_v2_reshare_commit = dao_v2_reshare_commit_ctx{};
+    };
+
+    if (!rres.ok) {
+      MWARNING("CL reshare: runner reported failure");
+      clear_runner();
       return false;
     }
     if (rres.pk_qfi != m_dao_v2_reshare_commit.old_pk_qfi) {
       MWARNING("CL reshare: pk_qfi continuity check failed");
-      m_dao_v2_reshare_runner.reset();
-      m_dao_v2_reshare_commit = dao_v2_reshare_commit_ctx{};
+      clear_runner();
       return false;
     }
 
@@ -11243,33 +11249,44 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
       if (!m_db->get_dao_tally_key_by_id(
               m_dao_v2_reshare_commit.key_id, key_rec)) {
         MWARNING("CL reshare: key record lookup failed");
+        clear_runner();
         return false;
       }
-    } catch (...) { return false; }
+    } catch (...) { clear_runner(); return false; }
 
     if (m_dao_v2_reshare_commit.is_new_member) {
       if (!rres.has_local_new_share ||
           rres.new_share_bytes.empty()) {
         MWARNING("CL reshare: new member has no local new share");
+        clear_runner();
         return false;
       }
       dao::dao_cl_proposal_key pkc;
-      if (!dao::dao_cl_load_proposal_key(key_rec.cl_modulus, pkc))
+      if (!dao::dao_cl_load_proposal_key(key_rec.cl_modulus, pkc)) {
+        clear_runner();
         return false;
+      }
       BICYCL::CL_Threshold_Static::ParticipantsValueMap<BICYCL::QFI>
           gammas;
       if (!dao::cl_dkg_deserialize_gammas(
               rres.new_gammas_serialized,
-              pkc.cl->Cl_G().discriminant(), gammas))
+              pkc.cl->Cl_G().discriminant(), gammas)) {
+        clear_runner();
         return false;
+      }
       BICYCL::CL_Threshold_Static::ParticipantsSet qualified;
       for (uint32_t q : rres.qualified_ids) qualified.insert(q);
       BICYCL::Mpz share_mpz;
       size_t off = 0;
       if (!dao::cl_dkg_mpz_from_bytes_signed(
-              rres.new_share_bytes, off, share_mpz, true))
+              rres.new_share_bytes, off, share_mpz, true)) {
+        clear_runner();
         return false;
-      if (off != rres.new_share_bytes.size()) return false;
+      }
+      if (off != rres.new_share_bytes.size()) {
+        clear_runner();
+        return false;
+      }
       BICYCL::CL_Threshold_Static verify_party(
           *pkc.cl,
           m_dao_v2_reshare_commit.new_members.size(),
@@ -11280,6 +11297,7 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
       if (!verify_party.restore_decryption_state(
               *pkc.cl, *pkc.pk, gammas, qualified, share_mpz)) {
         MWARNING("CL reshare: local share failed Gamma verification");
+        clear_runner();
         return false;
       }
     }
@@ -11301,7 +11319,7 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
     catch (const std::exception& e) {
       MWARNING("CL reshare commit: wtxn start failed: " << e.what());
     }
-    if (!started) return false;
+    if (!started) { clear_runner(); return false; }
 
     bool write_ok = false;
     try {
@@ -11324,18 +11342,19 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
     }
     if (!write_ok) {
       try { m_db->block_wtxn_abort(); } catch (...) {}
+      clear_runner();
       return false;
     }
     try { m_db->block_wtxn_stop(); }
     catch (const std::exception& e) {
       MWARNING("CL reshare commit: stop failed: " << e.what());
       try { m_db->block_wtxn_abort(); } catch (...) {}
+      clear_runner();
       return false;
     }
 
     MINFO("CL reshare: committed share set " << new_ss.share_set_id);
-    m_dao_v2_reshare_runner.reset();
-    m_dao_v2_reshare_commit = dao_v2_reshare_commit_ctx{};
+    clear_runner();
     return true;
 #else
     return true;

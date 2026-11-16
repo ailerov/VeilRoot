@@ -121,7 +121,8 @@ public:
     void on_message(const dkg_msg& m);
 
     // Blocks until the ceremony finishes or timeout_s elapses (0 means
-    // wait indefinitely). Returns out.ok.
+    // wait indefinitely). Returns true on retrieval, false on timeout.
+    // Inspect out.ok for protocol success.
     bool wait(cl_dkg_result& out, uint32_t timeout_s = 0);
 
     bool running()  const;
