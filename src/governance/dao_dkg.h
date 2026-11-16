@@ -315,32 +315,7 @@ struct dao_theta_open_proof
 // Sort key: candidate_id, phase, round, sender_id, recipient_id,
 //           message_type, sequence, canonical_serialized_bytes.
 
-class dkg_transcript
-{
-public:
-    dkg_transcript() = default;
-
-    void append(const dkg_msg& m);
-    void hash(std::vector<uint8_t>& out) const;
-
-private:
-    struct entry
-    {
-        uint32_t             candidate_id = 0;
-        uint32_t             phase        = 0;
-        uint32_t             round        = 0;
-        uint32_t             sender_id    = 0;
-        uint32_t             recipient_id = 0;
-        uint8_t              type         = 0;
-        uint64_t             sequence     = 0;
-        // True when `canonical` holds the 32-byte transcript leaf hash
-        // representing a private (targeted) message rather than the
-        // full serialized message bytes.
-        bool                 private_leaf = false;
-        std::vector<uint8_t> canonical;
-    };
-    std::vector<entry> entries_;
-};
+;
 
 // ====================================================================
 // Transport

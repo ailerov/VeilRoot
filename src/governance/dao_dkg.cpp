@@ -2223,48 +2223,6 @@ inline void transcript_push_u64(std::vector<uint8_t>& b, uint64_t v)
     for (int i = 0; i < 8; ++i) b.push_back((v >> (8*i)) & 0xff);
 }
 
-bool transcript_leaf_digest(const dkg_msg& original,
-                            std::array<uint8_t, 32>& out)
-{
-    std::vector<uint8_t> canonical;
-    if (!original.serialize(canonical)) return false;
-
-    std::vector<uint8_t> input;
-    const char* dom = DAO_DKG_TRANSCRIPT_LEAF_DOMAIN;
-    input.insert(input.end(), dom, dom + std::strlen(dom));
-    input.push_back(0);
-    input.insert(input.end(), canonical.begin(), canonical.end());
-
-    SHA256(input.data(), input.size(), out.data());
-    return true;
-}
-
-bool make_transcript_leaf(const dkg_msg& original, dkg_msg& leaf)
-{
-    if (original.hdr.recipient_id == 0) return false;
-    if (original.hdr.type == dkg_msg_type::transcript_leaf) return false;
-
-    std::array<uint8_t, 32> digest{};
-    if (!transcript_leaf_digest(original, digest)) return false;
-
-    leaf = dkg_msg{};
-    leaf.hdr.version = original.hdr.version;
-    leaf.hdr.candidate_id = original.hdr.candidate_id;
-    std::memcpy(leaf.hdr.committee_id_hash,
-                original.hdr.committee_id_hash,
-                sizeof(leaf.hdr.committee_id_hash));
-    leaf.hdr.proposal_id = original.hdr.proposal_id;
-    leaf.hdr.sender_id = original.hdr.sender_id;
-    leaf.hdr.recipient_id = 0;
-    leaf.hdr.phase = original.hdr.phase;
-    leaf.hdr.round = original.hdr.round;
-    leaf.hdr.sequence = original.hdr.sequence;
-    leaf.hdr.type = dkg_msg_type::transcript_leaf;
-    leaf.tag32 = original.hdr.recipient_id;
-    leaf.bytes_a.assign(digest.begin(), digest.end());
-    leaf.bytes_c = { static_cast<uint8_t>(original.hdr.type) };
-    return true;
-}
 
 } // namespace
 
@@ -2828,126 +2786,12 @@ bool dao_theta_open_verify(
     return ok;
 }
 
-void dkg_transcript::append(const dkg_msg& m)
-{
-    entry e;
-
-    if (m.hdr.type == dkg_msg_type::transcript_leaf) {
-        if (m.hdr.recipient_id != 0) return;
-        if (m.hdr.sender_id == 0) return;
-        if (m.tag32 == 0) return;
-        if (m.bytes_a.size() != 32) return;
-        if (m.bytes_c.size() != 1) return;
-
-        e.candidate_id = m.hdr.candidate_id;
-        e.phase        = m.hdr.phase;
-        e.round        = m.hdr.round;
-        e.sender_id    = m.hdr.sender_id;
-        e.recipient_id = m.tag32;
-        e.type         = m.bytes_c[0];
-        e.sequence     = m.hdr.sequence;
-        e.private_leaf = true;
-        e.canonical    = m.bytes_a;
-        entries_.push_back(std::move(e));
-        return;
-    }
-
-    e.candidate_id = m.hdr.candidate_id;
-    e.phase        = m.hdr.phase;
-    e.round        = m.hdr.round;
-    e.sender_id    = m.hdr.sender_id;
-    e.recipient_id = m.hdr.recipient_id;
-    e.type         = static_cast<uint8_t>(m.hdr.type);
-    e.sequence     = m.hdr.sequence;
-
-    if (m.hdr.recipient_id != 0) {
-        std::array<uint8_t, 32> digest{};
-        if (!transcript_leaf_digest(m, digest)) return;
-        e.private_leaf = true;
-        e.canonical.assign(digest.begin(), digest.end());
-    } else {
-        e.private_leaf = false;
-        if (!m.serialize(e.canonical)) return;
-    }
-
-    entries_.push_back(std::move(e));
-}
-
-void dkg_transcript::hash(std::vector<uint8_t>& out) const
-{
-    std::vector<entry> sorted = entries_;
-
-    std::sort(sorted.begin(), sorted.end(),
-        [](const entry& a, const entry& b) {
-            if (a.candidate_id != b.candidate_id) return a.candidate_id < b.candidate_id;
-            if (a.phase        != b.phase)        return a.phase        < b.phase;
-            if (a.round        != b.round)        return a.round        < b.round;
-            if (a.sender_id    != b.sender_id)    return a.sender_id    < b.sender_id;
-            if (a.recipient_id != b.recipient_id) return a.recipient_id < b.recipient_id;
-            if (a.type         != b.type)         return a.type         < b.type;
-            if (a.sequence     != b.sequence)     return a.sequence     < b.sequence;
-            if (a.private_leaf != b.private_leaf) return a.private_leaf < b.private_leaf;
-            return a.canonical < b.canonical;
-        });
-
-    sorted.erase(
-        std::unique(sorted.begin(), sorted.end(),
-            [](const entry& a, const entry& b) {
-                return a.candidate_id == b.candidate_id &&
-                       a.phase        == b.phase        &&
-                       a.round        == b.round        &&
-                       a.sender_id    == b.sender_id    &&
-                       a.recipient_id == b.recipient_id &&
-                       a.type         == b.type         &&
-                       a.sequence     == b.sequence     &&
-                       a.private_leaf == b.private_leaf &&
-                       a.canonical    == b.canonical;
-            }),
-        sorted.end());
-
-    std::vector<uint8_t> buf;
-    const char* dom = "VeilRoot-DAO-DKG-TRANSCRIPT-V2";
-    buf.insert(buf.end(), dom, dom + std::strlen(dom));
-    buf.push_back(0);
-
-    for (const auto& e : sorted) {
-        transcript_push_u32(buf, e.candidate_id);
-        transcript_push_u32(buf, e.phase);
-        transcript_push_u32(buf, e.round);
-        transcript_push_u32(buf, e.sender_id);
-        transcript_push_u32(buf, e.recipient_id);
-        buf.push_back(e.type);
-        transcript_push_u64(buf, e.sequence);
-        buf.push_back(e.private_leaf ? 1 : 0);
-        transcript_push_u32(buf, static_cast<uint32_t>(e.canonical.size()));
-        buf.insert(buf.end(), e.canonical.begin(), e.canonical.end());
-    }
-
-    out.assign(32, 0);
-    SHA256(buf.data(), buf.size(), out.data());
-}
 
 namespace {
 
 // Drain every transport until no more messages are pending. Every
 // drained message is recorded in the canonical transcript.
-void drain_all(const std::vector<std::unique_ptr<dkg_transport>>& transports,
-               std::vector<dkg_msg>& collected,
-               dkg_transcript& transcript)
-{
-    bool any = false;
-    do {
-        any = false;
-        for (const auto& t : transports) {
-            dkg_msg m;
-            while (t->try_recv(m)) {
-                collected.push_back(m);
-                transcript.append(m);
-                any = true;
-            }
-        }
-    } while (any);
-}
+
 
 // Route collected messages to all parties whose id matches the
 // recipient (or to all if recipient is 0).
