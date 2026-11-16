@@ -162,8 +162,16 @@ bool cl_dkg_decode_reshare_private_share(const cl_dkg_payload& in,
                                          crypto::hash& session_id_out,
                                          BICYCL::Mpz& out);
 
-bool cl_dkg_encode_reshare_complete(cl_dkg_payload& out);
-bool cl_dkg_decode_reshare_complete(const cl_dkg_payload& in);
+bool cl_dkg_encode_reshare_complete(
+    const crypto::hash& session_id,
+    const std::vector<uint8_t>& gammas_wire,
+    const std::vector<uint32_t>& qualified_ids,
+    cl_dkg_payload& out);
+bool cl_dkg_decode_reshare_complete(
+    const cl_dkg_payload& in,
+    crypto::hash& session_id,
+    std::vector<uint8_t>& gammas_wire,
+    std::vector<uint32_t>& qualified_ids);
 
 // DERIVE q FROM Ed25519 SUBGROUP ORDER (matches CL encryption backend).
 // CONSTRUCTS AN HSMqk INSTANCE WITH q = CURVE ORDER, k = 1, AND THE

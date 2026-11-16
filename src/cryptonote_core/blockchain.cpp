@@ -9429,8 +9429,27 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     if (m.hdr.type == dao::dkg_msg_type::cl_dkg_envelope) {
       dao::cl_dkg_payload clp;
       if (dao::cl_dkg_payload::deserialize(m.bytes_a, clp)) {
-        if (clp.subtype == dao::cl_dkg_subtype::reshare_complete)
+        if (clp.subtype == dao::cl_dkg_subtype::reshare_complete) {
+          if (clp.body.size() < 32) return;
+          crypto::hash sid{};
+          std::memcpy(sid.data, clp.body.data(), 32);
+          std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
+          if (!m_dao_v2_reshare_runner) return;
+          if (m_dao_v2_reshare_runner->session_id() != sid) return;
+          const auto& new_pks =
+              m_dao_v2_reshare_runner->new_member_pks();
+          uint32_t pos0 = UINT32_MAX;
+          for (size_t i = 0; i < new_pks.size(); ++i) {
+            if (std::memcmp(new_pks[i].data, member.data, 32) == 0) {
+              pos0 = static_cast<uint32_t>(i);
+              break;
+            }
+          }
+          if (pos0 == UINT32_MAX) return;
+          if (m.hdr.sender_id != pos0 + 1) return;
+          m_dao_v2_reshare_runner->on_message(m);
           return;
+        }
         if (clp.subtype == dao::cl_dkg_subtype::reshare_prestate ||
             clp.subtype == dao::cl_dkg_subtype::reshare_contribution ||
             clp.subtype == dao::cl_dkg_subtype::reshare_private_share) {
@@ -11151,6 +11170,7 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
       std::memcpy(pk.data, nm.data, 32);
       transport_recipients.push_back(pk);
     }
+    ccfg.new_member_pks = transport_recipients;
     const crypto::public_key sender_pk = self_pk;
     auto transport = std::make_unique<dao::cl_dkg_p2p_transport>(
         transport_recipients,

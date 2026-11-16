@@ -322,8 +322,10 @@ TEST_F(DaoClReshareIngress, short_body_dropped)
 TEST_F(DaoClReshareIngress, complete_subtype_dropped)
 {
     crypto::hash sid{}; sid.data[0] = 0x88;
+    std::vector<uint8_t> gammas(64, 0x11);
+    std::vector<uint32_t> qual = {0, 1};
     cl_dkg_payload p;
-    ASSERT_TRUE(cl_dkg_encode_reshare_complete(p));
+    ASSERT_TRUE(cl_dkg_encode_reshare_complete(sid, gammas, qual, p));
     dkg_msg env;
     env.hdr.version      = 2;
     env.hdr.proposal_id  = m_prop_id;

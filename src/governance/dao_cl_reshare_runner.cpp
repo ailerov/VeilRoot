@@ -67,6 +67,14 @@ struct cl_reshare_p2p_runner::impl
     std::map<uint32_t, cl_reshare_contribution_wire> public_contribs;
     std::map<uint32_t, Mpz> private_shares;
 
+    // reshare_complete broadcasts from new members, keyed by the
+    // sender's new-committee index (0-based). An old-only
+    // contributor accepts the new Gamma map + qualified ids once
+    // new_threshold senders agree on the same payload.
+    std::map<uint32_t,
+             std::pair<std::vector<uint8_t>, std::vector<uint32_t>>>
+        complete_msgs;
+
     std::mutex mu;
     std::condition_variable cv;
     bool running   = false;
@@ -99,6 +107,18 @@ struct cl_reshare_p2p_runner::impl
         m.hdr.version = 2;
         m.hdr.proposal_id = cfg.proposal_id;
         m.hdr.sender_id = old_local_1based();  // old-committee numbering
+        m.hdr.recipient_id = 0;
+        m.hdr.type = dkg_msg_type::cl_dkg_envelope;
+        if (!p.serialize(m.bytes_a)) return false;
+        return transport->send(m);
+    }
+
+    bool send_broadcast_as_new(const cl_dkg_payload& p)
+    {
+        dkg_msg m;
+        m.hdr.version = 2;
+        m.hdr.proposal_id = cfg.proposal_id;
+        m.hdr.sender_id = new_local_1based();
         m.hdr.recipient_id = 0;
         m.hdr.type = dkg_msg_type::cl_dkg_envelope;
         if (!p.serialize(m.bytes_a)) return false;
@@ -304,10 +324,26 @@ struct cl_reshare_p2p_runner::impl
             private_shares[dealer_id] = std::move(share);
             return true;
         }
-        case cl_dkg_subtype::reshare_complete:
-            // Not implemented by this protocol; no completion set is
-            // maintained. Silently ignore.
+        case cl_dkg_subtype::reshare_complete: {
+            crypto::hash got_sid{};
+            std::vector<uint8_t> gammas_wire;
+            std::vector<uint32_t> qualified_ids;
+            if (!cl_dkg_decode_reshare_complete(
+                    p, got_sid, gammas_wire, qualified_ids))
+                return false;
+            if (got_sid != cfg.session_id) return true;   // stale: drop
+            if (m.hdr.sender_id == 0) return true;
+            if (m.hdr.sender_id > cfg.new_n) return true;
+            if (gammas_wire.empty() || qualified_ids.empty()) return true;
+            for (size_t i = 0; i < qualified_ids.size(); ++i) {
+                if (qualified_ids[i] >= cfg.new_n) return true;
+                if (i > 0 && qualified_ids[i] <= qualified_ids[i - 1])
+                    return true;
+            }
+            complete_msgs[m.hdr.sender_id - 1] =
+                {std::move(gammas_wire), std::move(qualified_ids)};
             return true;
+        }
         default:
             return true;
         }
@@ -354,15 +390,37 @@ struct cl_reshare_p2p_runner::impl
         }
     }
 
+    size_t complete_threshold_count() const
+    {
+        std::map<std::pair<std::vector<uint8_t>, std::vector<uint32_t>>,
+                 size_t> tally;
+        for (const auto& kv : complete_msgs) tally[kv.second]++;
+        size_t best = 0;
+        for (const auto& kv : tally) if (kv.second > best) best = kv.second;
+        return best;
+    }
+
     bool fill_result()
     {
         result.has_local_new_share = false;
         result.pk_qfi = cfg.old_pk_qfi;   // carry through unconditionally
         if (!cfg.is_new_member) {
-            // Old-only contributor: no new local state to produce. The
-            // protocol itself has succeeded (prestates + contributions
-            // accepted); the new committee members finalize.
-            return true;
+            // Old-only contributor: no new local private share, but
+            // the public Gamma map and qualified ids are required
+            // for future validation. They are published by the new
+            // committee via reshare_complete broadcasts and accepted
+            // here once new_threshold senders agree.
+            std::map<std::pair<std::vector<uint8_t>, std::vector<uint32_t>>,
+                     size_t> tally;
+            for (const auto& kv : complete_msgs) tally[kv.second]++;
+            const uint32_t new_threshold = cfg.new_t_internal + 1;
+            for (const auto& kv : tally) {
+                if (kv.second < new_threshold) continue;
+                result.new_gammas_serialized = kv.first.first;
+                result.qualified_ids = kv.first.second;
+                return true;
+            }
+            return false;
         }
         if (!new_party) return false;
 
@@ -526,6 +584,38 @@ struct cl_reshare_p2p_runner::impl
             try {
                 new_party->finalize_reshare(*cfg.cl, old_pk);
             } catch (...) { mark_finished(false); return; }
+
+            // Publish the new Gamma map + qualified ids for the
+            // old-only contributors who cannot derive them locally.
+            std::vector<uint8_t> gammas_wire;
+            if (!cl_dkg_serialize_gammas(new_party->Gammas(), gammas_wire))
+            { mark_finished(false); return; }
+            std::vector<uint32_t> qual;
+            for (unsigned int id : new_party->QualifiedPlayerSet())
+                qual.push_back(id);
+            std::sort(qual.begin(), qual.end());
+            cl_dkg_payload pub;
+            if (!cl_dkg_encode_reshare_complete(
+                    cfg.session_id, gammas_wire, qual, pub))
+            { mark_finished(false); return; }
+            if (!send_broadcast_as_new(pub))
+            { mark_finished(false); return; }
+        }
+
+        if (cfg.is_old_contributor && !cfg.is_new_member) {
+            // Wait for new_threshold new members to agree on the new
+            // public Gamma map.
+            const uint32_t new_threshold = cfg.new_t_internal + 1;
+            while (complete_threshold_count() < new_threshold) {
+                if (should_stop())       { mark_finished(false); return; }
+                if (now_reached(deadline)){ mark_finished(false); return; }
+                dkg_msg m;
+                if (transport->try_recv(m)) {
+                    if (!process_inbound(m)) { mark_finished(false); return; }
+                } else {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                }
+            }
         }
 
         if (!fill_result()) { mark_finished(false); return; }
@@ -569,6 +659,12 @@ crypto::hash cl_reshare_p2p_runner::session_id() const
     return p_->cfg.session_id;
 }
 
+const std::vector<crypto::public_key>&
+cl_reshare_p2p_runner::new_member_pks() const
+{
+    return p_->cfg.new_member_pks;
+}
+
 void cl_reshare_p2p_runner::on_message(const dkg_msg& m)
 {
     if (!p_->transport) return;
@@ -576,7 +672,8 @@ void cl_reshare_p2p_runner::on_message(const dkg_msg& m)
     if (m.hdr.version != 2) return;
     if (m.hdr.proposal_id != p_->cfg.proposal_id) return;
     if (m.hdr.sender_id == 0) return;
-    if (m.hdr.sender_id > p_->cfg.old_n) return;
+    const uint32_t max_allowed = std::max(p_->cfg.old_n, p_->cfg.new_n);
+    if (m.hdr.sender_id > max_allowed) return;
     if (m.hdr.recipient_id != 0 &&
         m.hdr.recipient_id != p_->cfg.new_local_id + 1) return;
     p_->transport->deliver(m);

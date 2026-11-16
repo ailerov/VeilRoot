@@ -475,16 +475,68 @@ bool cl_dkg_decode_reshare_private_share(const cl_dkg_payload& in,
     return off == in.body.size();
 }
 
-bool cl_dkg_encode_reshare_complete(cl_dkg_payload& out)
+bool cl_dkg_encode_reshare_complete(
+    const crypto::hash& session_id,
+    const std::vector<uint8_t>& gammas_wire,
+    const std::vector<uint32_t>& qualified_ids,
+    cl_dkg_payload& out)
 {
+    if (gammas_wire.empty()) return false;
+    if (qualified_ids.empty()) return false;
     out.subtype = cl_dkg_subtype::reshare_complete;
     out.body.clear();
+    out.body.insert(out.body.end(), session_id.data,
+                    session_id.data + 32);
+    uint32_t glen = static_cast<uint32_t>(gammas_wire.size());
+    for (int i = 3; i >= 0; --i)
+        out.body.push_back(static_cast<uint8_t>((glen >> (8*i)) & 0xff));
+    out.body.insert(out.body.end(), gammas_wire.begin(),
+                    gammas_wire.end());
+    uint32_t qn = static_cast<uint32_t>(qualified_ids.size());
+    for (int i = 3; i >= 0; --i)
+        out.body.push_back(static_cast<uint8_t>((qn >> (8*i)) & 0xff));
+    for (uint32_t q : qualified_ids)
+        for (int i = 3; i >= 0; --i)
+            out.body.push_back(static_cast<uint8_t>((q >> (8*i)) & 0xff));
     return true;
 }
 
-bool cl_dkg_decode_reshare_complete(const cl_dkg_payload& in)
+bool cl_dkg_decode_reshare_complete(
+    const cl_dkg_payload& in,
+    crypto::hash& session_id,
+    std::vector<uint8_t>& gammas_wire,
+    std::vector<uint32_t>& qualified_ids)
 {
-    return in.subtype == cl_dkg_subtype::reshare_complete && in.body.empty();
+    if (in.subtype != cl_dkg_subtype::reshare_complete) return false;
+    if (in.body.size() < 32 + 4) return false;
+    std::memcpy(session_id.data, in.body.data(), 32);
+    size_t off = 32;
+    uint32_t glen = (static_cast<uint32_t>(in.body[off]) << 24)
+                  | (static_cast<uint32_t>(in.body[off+1]) << 16)
+                  | (static_cast<uint32_t>(in.body[off+2]) << 8)
+                  |  static_cast<uint32_t>(in.body[off+3]);
+    off += 4;
+    if (glen == 0) return false;
+    if (off + glen + 4 > in.body.size()) return false;
+    gammas_wire.assign(in.body.begin() + off,
+                       in.body.begin() + off + glen);
+    off += glen;
+    uint32_t qn = (static_cast<uint32_t>(in.body[off]) << 24)
+                | (static_cast<uint32_t>(in.body[off+1]) << 16)
+                | (static_cast<uint32_t>(in.body[off+2]) << 8)
+                |  static_cast<uint32_t>(in.body[off+3]);
+    off += 4;
+    if (qn == 0) return false;
+    if (off + qn * 4 != in.body.size()) return false;
+    qualified_ids.resize(qn);
+    for (uint32_t i = 0; i < qn; ++i) {
+        qualified_ids[i] = (static_cast<uint32_t>(in.body[off]) << 24)
+                         | (static_cast<uint32_t>(in.body[off+1]) << 16)
+                         | (static_cast<uint32_t>(in.body[off+2]) << 8)
+                         |  static_cast<uint32_t>(in.body[off+3]);
+        off += 4;
+    }
+    return true;
 }
 
 } // namespace dao

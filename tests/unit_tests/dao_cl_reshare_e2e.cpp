@@ -172,4 +172,109 @@ TEST(dao_cl_reshare_e2e, three_to_three_preserves_pk_and_decrypts_pre_reshare_ct
 
 } // namespace
 
+
+TEST(dao_cl_reshare_e2e, old_only_contributor_gets_gammas_via_completion)
+{
+    // Old committee size 3, new committee size 2 taken from the
+    // strict subset {0, 1}. Party 2 is an old-only contributor: it
+    // is a reshare dealer but is not in the new committee and holds
+    // no new local share. It must still receive the new Gamma map
+    // and qualified ids via reshare_complete broadcasts from the
+    // new committee.
+    BICYCL::RandGen rng;
+    rng.set_seed(BICYCL::Mpz(20260216UL));
+    auto cl = cl_dkg_make_hsmq(128, rng);
+    ASSERT_TRUE(cl);
+
+    auto net = dkg_make_inproc_network(3);
+    std::vector<std::unique_ptr<cl_dkg_p2p_runner>> dkg_runners;
+    for (uint32_t i = 0; i < 3; ++i) {
+        cl_dkg_config cfg;
+        cfg.cl = cl;
+        cfg.committee_size = 3;
+        cfg.threshold_internal = 2;
+        cfg.member_ids.resize(3);
+        cfg.local_party_id = i + 1;
+        cfg.soundness_bytes = 32;
+        cfg.test_seed = 7500 + i;
+        cfg.phase_timeout_seconds = 180;
+        dkg_runners.push_back(std::make_unique<cl_dkg_p2p_runner>(
+            cfg, std::move(net.endpoints[i])));
+    }
+    for (auto& r : dkg_runners) ASSERT_TRUE(r->start());
+    std::vector<cl_dkg_result> dkg_results(3);
+    for (size_t i = 0; i < 3; ++i) {
+        ASSERT_TRUE(dkg_runners[i]->wait(dkg_results[i], 300));
+        ASSERT_TRUE(dkg_results[i].ok);
+    }
+    for (auto& r : dkg_runners) r->stop();
+    dkg_runners.clear();
+
+    std::vector<crypto::public_key> new_pks(2);
+    std::vector<crypto::secret_key> new_sks(2);
+    for (int i = 0; i < 2; ++i)
+        crypto::generate_keys(new_pks[i], new_sks[i]);
+
+    auto net2 = dkg_make_inproc_network(3);
+    std::vector<std::unique_ptr<cl_reshare_p2p_runner>> runners;
+    for (uint32_t i = 0; i < 3; ++i) {
+        cl_reshare_config cfg;
+        cfg.cl                    = cl;
+        cfg.D_signed              = dkg_results[0].ctx.D;
+        cfg.old_n                 = 3;
+        cfg.old_t_internal        = 2;
+        cfg.old_contributors      = {0u, 1u, 2u};
+        cfg.new_n                 = 2;
+        cfg.new_t_internal        = 1;
+        cfg.is_old_contributor    = true;
+        cfg.old_local_id          = i;
+        cfg.is_new_member         = (i < 2);
+        cfg.new_local_id          = (i < 2) ? i : 0;
+        cfg.old_pk_qfi            = dkg_results[0].ctx.pk_qfi;
+        cfg.old_gammas_serialized = dkg_results[0].gammas_serialized;
+        cfg.old_share_bytes       = dkg_results[i].local_secret_share;
+        cfg.old_share_set_id      = 1;
+        cfg.old_committee_id_hash.assign(32, 0xA1);
+        cfg.new_committee_id_hash.assign(32, 0xB2);
+        cfg.old_qualified_ids     = dkg_results[0].qualified_ids;
+        cfg.new_member_pks        = new_pks;
+        cfg.session_id            = dao_cl_reshare_compute_session_id(
+            /*proposal_id=*/crypto::hash{},
+            /*old_share_set_id=*/1,
+            cfg.old_committee_id_hash,
+            cfg.new_committee_id_hash,
+            /*sorted_old_contributors=*/{0u, 1u, 2u});
+        cfg.soundness_bytes       = 32;
+        cfg.phase_timeout_seconds = 180;
+        cfg.test_seed             = 6000 + i;
+        runners.push_back(std::make_unique<cl_reshare_p2p_runner>(
+            cfg, std::move(net2.endpoints[i])));
+    }
+    for (auto& r : runners) ASSERT_TRUE(r->start());
+
+    std::vector<cl_reshare_result> results(3);
+    for (size_t i = 0; i < 3; ++i) {
+        ASSERT_TRUE(runners[i]->wait(results[i], 300))
+            << "party " << i << " timeout";
+        ASSERT_TRUE(results[i].ok)
+            << "party " << i << " failed";
+    }
+    for (auto& r : runners) r->stop();
+    runners.clear();
+
+    // New members have their own new local share; old-only does not.
+    EXPECT_TRUE(results[0].has_local_new_share);
+    EXPECT_TRUE(results[1].has_local_new_share);
+    EXPECT_FALSE(results[2].has_local_new_share);
+
+    // All three end with identical public share-set metadata.
+    EXPECT_FALSE(results[0].new_gammas_serialized.empty());
+    EXPECT_EQ(results[0].new_gammas_serialized,
+              results[1].new_gammas_serialized);
+    EXPECT_EQ(results[0].new_gammas_serialized,
+              results[2].new_gammas_serialized);
+    EXPECT_EQ(results[0].qualified_ids, results[1].qualified_ids);
+    EXPECT_EQ(results[0].qualified_ids, results[2].qualified_ids);
+}
+
 #endif // VEILROOT_ENABLE_CL

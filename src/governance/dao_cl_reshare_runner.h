@@ -76,6 +76,11 @@ struct cl_reshare_config
     // subset.
     std::vector<uint32_t> old_qualified_ids;
 
+    // Public keys of the new committee, in new-committee order.
+    // The ingress uses this list to authenticate reshare_complete
+    // messages from new members.
+    std::vector<crypto::public_key> new_member_pks;
+
     uint32_t     soundness_bytes      = 32;
     uint32_t     phase_timeout_seconds = 180;
     uint64_t     test_seed            = 0;
@@ -147,6 +152,7 @@ public:
 
     // Session identity this runner is bound to.
     crypto::hash session_id() const;
+    const std::vector<crypto::public_key>& new_member_pks() const;
 
     // Deliver an inbound dkg_msg to the runner. Mirrors the CL DKG
     // runner's interface: validates the outer envelope and forwards to
