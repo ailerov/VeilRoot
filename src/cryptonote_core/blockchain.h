@@ -1461,6 +1461,8 @@ namespace cryptonote
   // can verify that reconciliation reads only chain state. Never
   // called from production code.
   void clear_dao_v2_tally_shares_for_test();
+  size_t get_dao_v2_tally_shares_size_for_test(
+      const crypto::hash& proposal_id) const;
 
   // Test-only: install a DKG public key record and its bootstrap
   // share set directly, bypassing the activation transaction. Used by

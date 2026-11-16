@@ -22,6 +22,7 @@
 #include "governance/dao_cl_reshare_runner.h"
 #include "governance/dao_dkg.h"
 #include "governance/dao_tally.h"
+#include "governance/dao_tally_share.h"
 
 #include <cstring>
 #include <memory>
@@ -266,9 +267,10 @@ TEST_F(DaoClReshareChain, failed_runner_is_cleared_and_retry_succeeds)
     bc().maybe_start_dao_v2_reshare_for_proposal(m_prop_id, 3);
     ASSERT_TRUE(bc().has_dao_v2_reshare_runner_for_test());
 
-    // Force the runner to finish with ok=false. Pre-fix, wait()
-    // returned false in this state, so the caller's rres.ok cleanup
-    // branch was unreachable, and the runner stayed installed.
+    // Force the runner to finish with ok=false. On the resulting
+    // commit, the runner is cleared (so the scheduler is not
+    // blocked by a dead runner) and a fresh runner must then be
+    // installable for the same proposal.
     ASSERT_TRUE(bc().force_dao_v2_reshare_runner_failure_for_test());
     bc().commit_dao_v2_reshare_for_test();
     EXPECT_FALSE(bc().has_dao_v2_reshare_runner_for_test());
@@ -365,6 +367,72 @@ TEST_F(DaoClReshareChain, commit_fails_closed_on_local_share_pack_failure)
     EXPECT_FALSE(db().get_dao_share_set(ctx.new_share_set_id, ss));
 
     bc().force_dao_v2_local_share_pack_fail_for_test(false);
+}
+
+TEST_F(DaoClReshareChain, tally_ingress_accepts_cl_v3_rejects_v2)
+{
+    v2test::CLBootstrapFixture fx;
+    ASSERT_TRUE(v2test::make_cl_bootstrap_3party(fx, 0x8888));
+    install_self_committee(fx);  // self is party 0
+    add_proposal(fx.record.key_id, /*vote_end=*/3);
+
+    // Aggregate ciphertexts are unparsed at the ingress; any bytes
+    // work as long as their hash matches what the shares claim.
+    dao_proposal_aggregate agg;
+    agg.aggregate_E_W.assign(64, 0xAA);
+    agg.aggregate_E_S.assign(64, 0xBB);
+    agg.aggregate_E_B.assign(64, 0xCC);
+    db().block_wtxn_start();
+    db().add_dao_proposal_aggregate(m_prop_id, agg);
+    db().block_wtxn_stop();
+
+    const crypto::hash agg_hash = dao::dao_aggregate_ciphertext_hash(
+        agg.aggregate_E_W, agg.aggregate_E_S, agg.aggregate_E_B);
+
+    // --- v3 (CL) share from party 0: must be accepted ---
+    dao::dao_v2_tally_share s3;
+    s3.version                  = dao::dao_v2_tally_share::WIRE_VERSION_CL;
+    s3.proposal_id              = m_prop_id;
+    s3.vote_end_height          = 3;
+    s3.tally_key_id             = fx.record.key_id;
+    s3.aggregate_ciphertext_hash = agg_hash;
+    s3.member_index             = 1;
+    s3.cl_partial_W.assign(64, 0x01);
+    s3.cl_partial_S.assign(64, 0x02);
+    s3.cl_partial_B.assign(64, 0x03);
+    std::vector<uint8_t> wire3;
+    ASSERT_TRUE(s3.serialize(wire3));
+    ASSERT_EQ(wire3[0], dao::dao_v2_tally_share::WIRE_VERSION_CL);
+
+    EXPECT_EQ(bc().get_dao_v2_tally_shares_size_for_test(m_prop_id), 0u);
+    bc().handle_dao_v2_tally_share(fx.committee_pubs[0],
+        std::string(wire3.begin(), wire3.end()));
+    EXPECT_EQ(bc().get_dao_v2_tally_shares_size_for_test(m_prop_id), 1u);
+
+    // --- v2 (Paillier) share from party 1: must be rejected ---
+    dao::dao_v2_tally_share s2;
+    s2.version                  = dao::dao_v2_tally_share::WIRE_VERSION;
+    s2.proposal_id              = m_prop_id;
+    s2.vote_end_height          = 3;
+    s2.tally_key_id             = fx.record.key_id;
+    s2.aggregate_ciphertext_hash = agg_hash;
+    s2.member_index             = 2;
+    s2.partial_W.assign(PAILLIER_CT_BYTES, 0x10);
+    s2.partial_S.assign(PAILLIER_CT_BYTES, 0x11);
+    s2.partial_B.assign(PAILLIER_CT_BYTES, 0x12);
+    s2.proof_W.E.assign(32, 0x20);
+    s2.proof_W.Z.assign(DAO_DKG_PARTIAL_PROOF_Z_BYTES, 0x21);
+    s2.proof_S.E.assign(32, 0x22);
+    s2.proof_S.Z.assign(DAO_DKG_PARTIAL_PROOF_Z_BYTES, 0x23);
+    s2.proof_B.E.assign(32, 0x24);
+    s2.proof_B.Z.assign(DAO_DKG_PARTIAL_PROOF_Z_BYTES, 0x25);
+    std::vector<uint8_t> wire2;
+    ASSERT_TRUE(s2.serialize(wire2));
+    ASSERT_EQ(wire2[0], dao::dao_v2_tally_share::WIRE_VERSION);
+
+    bc().handle_dao_v2_tally_share(fx.committee_pubs[1],
+        std::string(wire2.begin(), wire2.end()));
+    EXPECT_EQ(bc().get_dao_v2_tally_shares_size_for_test(m_prop_id), 1u);
 }
 
 #endif // VEILROOT_ENABLE_CL

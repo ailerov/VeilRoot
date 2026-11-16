@@ -11371,6 +11371,14 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
   }
 
 
+  size_t Blockchain::get_dao_v2_tally_shares_size_for_test(
+      const crypto::hash& proposal_id) const
+  {
+    auto it = m_dao_v2_tally_shares.find(proposal_id);
+    if (it == m_dao_v2_tally_shares.end()) return 0;
+    return it->second.size();
+  }
+
   void Blockchain::handle_dao_v2_tally_share(const crypto::public_key& member,
                                              const std::string& payload)
   {
@@ -11383,7 +11391,9 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
       }
     }
 
-    if (share.version != 1) {
+    // The DAO V2 tally share wire is CL-only. Accept only the CL
+    // wire version; reject retired Paillier formats.
+    if (share.version != dao::dao_v2_tally_share::WIRE_VERSION_CL) {
       MWARNING("V2 tally share: wrong version " << (int)share.version);
       return;
     }
