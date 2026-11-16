@@ -83,11 +83,6 @@ TEST(dao_cl_threshold, serialize_public_params_roundtrip)
     ASSERT_TRUE(committee.serialize_public_params(params));
     EXPECT_GT(params.size(), 0u);
 
-    // Fresh backend from serialized params.
-    auto backend = make_paillier_backend(params);
-    // Should be nullptr - this is CL params not Paillier.
-    EXPECT_EQ(backend, nullptr);
-
     auto cl_backend = make_cl_backend(128);
     (void)cl_backend;  // single-party constructor works
     auto fresh = make_cl_backend(128);

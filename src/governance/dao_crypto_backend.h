@@ -88,16 +88,6 @@ public:
 #endif
 };
 
-// Factory: uninitialised Paillier backend. Caller loads the modulus via
-// deserialize_modulus() before any encrypt / add / etc.
-std::unique_ptr<DaoEncryptionBackend> make_paillier_backend();
-
-// Factory: Paillier backend with modulus pre-loaded. Returns nullptr if
-// the modulus does not deserialize (wrong length or structurally
-// invalid).
-std::unique_ptr<DaoEncryptionBackend>
-    make_paillier_backend(const std::vector<uint8_t>& modulus);
-
 // Canonical CL key context. Carries every immutable public parameter
 // of a proposal's CL encryption key, including the key-lifetime
 // interpolation scale D. Bound into the on-chain key_id via the
