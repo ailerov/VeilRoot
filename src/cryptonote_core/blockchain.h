@@ -73,7 +73,6 @@
 #include "governance/dao_tally_share.h"
 #include "governance/dao_dkg.h"
 #include "governance/dao_cl_dkg_runner.h"
-#include "governance/dao_reshare_pipeline.h"
 #include "governance/dao_cl_reshare_runner.h"
 #include <array>
 #include <deque>
@@ -1625,15 +1624,6 @@ namespace cryptonote
 #endif
 #endif
 
-  // Producer side. Called once from the bootstrap path. Spawns the
-  // runner for the current committee. Fails if a runner is already
-  // running.
-  bool start_dao_v2_dkg(const std::string& ceremony_id,
-                        const std::vector<crypto::public_key>& committee,
-                        const dao::dao_vss_group& vss,
-                        uint32_t target_N_bits,
-                        uint32_t qproof_rounds);
-
   // Extracted worker. Performs the committee check, derives local
   // party id, builds cfg and callbacks, spawns the runner, and stores
   // it. `start_dao_v2_dkg` is a thin forwarder.
@@ -1952,11 +1942,6 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     std::map<std::string,
              std::deque<std::pair<crypto::public_key, std::string>>>
         m_dao_v2_pending_dkg_msgs;
-    // VSS groups are owned here for the lifetime of the runner. The
-    // runner holds a raw pointer to the group, so the group must
-    // outlive it.
-    std::map<std::string, std::unique_ptr<dao::dao_vss_group>>
-        m_dao_v2_dkg_vss;
     std::map<std::string, std::thread>
         m_dao_v2_dkg_watchers;
     std::function<bool(const std::string&)>

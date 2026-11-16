@@ -18,8 +18,6 @@
 #include <openssl/sha.h>
 
 #include "governance/dao_threshold.h"
-#include "governance/dao_reshare_vss.h"
-#include "governance/dao_reshare_pipeline.h"
 #include "misc_log_ex.h"
 
 namespace cryptonote {

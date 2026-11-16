@@ -769,7 +769,6 @@ void Blockchain::stop_dao_v2_dkg_workers() noexcept
     if (kv.second.joinable()) { try { kv.second.join(); } catch (...) {} }
   m_dao_v2_dkg_watchers.clear();
   m_dao_v2_dkg_runners.clear();
-  m_dao_v2_dkg_vss.clear();
   m_dao_v2_dkg_send = nullptr;
 #else
   std::lock_guard<std::mutex> lk(m_dao_v2_dkg_runners_mutex);
