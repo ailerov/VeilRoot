@@ -1621,6 +1621,12 @@ namespace cryptonote
     if (!m_dao_v2_reshare_runner) return 0;
     return m_dao_v2_reshare_runner->contribution_count_for_test();
   }
+  size_t get_dao_v2_pending_reshare_msgs_size_for_test() const {
+    std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
+    size_t n = 0;
+    for (const auto& kv : m_dao_v2_pending_reshare_msgs) n += kv.second.size();
+    return n;
+  }
 #endif
 #endif
 
