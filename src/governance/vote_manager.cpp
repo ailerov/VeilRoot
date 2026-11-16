@@ -15,7 +15,6 @@
 #include "cryptonote_basic/cryptonote_format_utils.h"
 #include "voting_weight.h"
 #include "vote_proof_verifier.h"
-#include "dao_consistency.h"
 #include "dao_dkg.h"
 #include "dao_paillier.h"
 #include "dao_cl_ballot.h"

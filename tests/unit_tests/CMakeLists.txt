@@ -120,7 +120,6 @@ set(unit_tests_sources
   dao_clsag.cpp
   dao_weight.cpp
   dao_vote_or_proof.cpp
-  dao_consistency.cpp
   dao_paillier.cpp
   dao_crypto_backend.cpp
   dao_threshold.cpp
