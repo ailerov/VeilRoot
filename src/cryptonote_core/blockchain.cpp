@@ -9495,10 +9495,62 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
             m_dao_v2_reshare_runner->on_message(m);
             return;
           }
+          // If this is a new session and we are at the session cap,
+          // evict the sparsest existing session (bias: a hostile
+          // peer's freshly-created spurious session usually holds a
+          // single message, while an honest session accumulates many
+          // quickly).
+          if (m_dao_v2_pending_reshare_msgs.find(pkey) ==
+                  m_dao_v2_pending_reshare_msgs.end() &&
+              m_dao_v2_pending_reshare_msgs.size() >=
+                  m_dao_v2_pending_reshare_sessions_cap) {
+            auto victim = m_dao_v2_pending_reshare_msgs.begin();
+            for (auto it = m_dao_v2_pending_reshare_msgs.begin();
+                 it != m_dao_v2_pending_reshare_msgs.end(); ++it) {
+              if (it->second.size() < victim->second.size()) victim = it;
+            }
+            m_dao_v2_pending_reshare_msgs.erase(victim);
+          }
+
           auto& q = m_dao_v2_pending_reshare_msgs[pkey];
           if (q.size() >= k_dao_v2_pending_reshare_msgs_cap)
             q.pop_front();
           q.emplace_back(member, m);
+
+          // Enforce global message and byte caps by evicting oldest
+          // messages from the session with the most messages (bias:
+          // drains the noisiest session first, preserves honest
+          // sessions that hold only the messages they need).
+          for (;;) {
+            size_t total_msgs = 0;
+            size_t total_bytes = 0;
+            for (const auto& kv : m_dao_v2_pending_reshare_msgs) {
+              total_msgs += kv.second.size();
+              for (const auto& e : kv.second)
+                total_bytes += e.second.bytes_a.size();
+            }
+            if (total_msgs <= m_dao_v2_pending_reshare_total_msgs_cap &&
+                total_bytes <= m_dao_v2_pending_reshare_total_bytes_cap)
+              break;
+            auto biggest = m_dao_v2_pending_reshare_msgs.end();
+            size_t bs = 0;
+            for (auto it = m_dao_v2_pending_reshare_msgs.begin();
+                 it != m_dao_v2_pending_reshare_msgs.end(); ++it) {
+              if (it->second.size() > bs) {
+                bs = it->second.size();
+                biggest = it;
+              }
+            }
+            if (biggest == m_dao_v2_pending_reshare_msgs.end()) break;
+            biggest->second.pop_front();
+            if (biggest->second.empty())
+              m_dao_v2_pending_reshare_msgs.erase(biggest);
+          }
+
+          m_dao_v2_pending_reshare_bytes = 0;
+          for (const auto& kv : m_dao_v2_pending_reshare_msgs)
+            for (const auto& e : kv.second)
+              m_dao_v2_pending_reshare_bytes += e.second.bytes_a.size();
           return;
         }
       }
@@ -11225,6 +11277,10 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
             m_dao_v2_reshare_runner->on_message(entry.second);
         }
         m_dao_v2_pending_reshare_msgs.erase(pit);
+        m_dao_v2_pending_reshare_bytes = 0;
+        for (const auto& kv : m_dao_v2_pending_reshare_msgs)
+          for (const auto& e : kv.second)
+            m_dao_v2_pending_reshare_bytes += e.second.bytes_a.size();
       }
     }
 

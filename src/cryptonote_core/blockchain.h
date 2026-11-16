@@ -1630,6 +1630,21 @@ namespace cryptonote
     for (const auto& kv : m_dao_v2_pending_reshare_msgs) n += kv.second.size();
     return n;
   }
+  size_t get_dao_v2_pending_reshare_sessions_size_for_test() const {
+    std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
+    return m_dao_v2_pending_reshare_msgs.size();
+  }
+  size_t get_dao_v2_pending_reshare_bytes_for_test() const {
+    std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
+    return m_dao_v2_pending_reshare_bytes;
+  }
+  void set_dao_v2_pending_reshare_caps_for_test(
+      size_t sessions_cap, size_t msgs_cap, size_t bytes_cap) {
+    std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
+    m_dao_v2_pending_reshare_sessions_cap = sessions_cap;
+    m_dao_v2_pending_reshare_total_msgs_cap = msgs_cap;
+    m_dao_v2_pending_reshare_total_bytes_cap = bytes_cap;
+  }
   void stop_dao_v2_reshare_runner_for_test() {
     std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
     m_dao_v2_reshare_runner.reset();
@@ -2060,6 +2075,15 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     bool m_dao_v2_local_share_pack_fail_for_test = false;
 
     static constexpr size_t k_dao_v2_pending_reshare_msgs_cap = 512;
+
+    // Runtime-overridable bounds on early-message buffering. Defaults
+    // are the production bounds; tests override via
+    // set_dao_v2_pending_reshare_caps_for_test().
+    size_t m_dao_v2_pending_reshare_sessions_cap = 16;
+    size_t m_dao_v2_pending_reshare_total_msgs_cap = 2048;
+    size_t m_dao_v2_pending_reshare_total_bytes_cap = 8u * 1024u * 1024u;
+    size_t m_dao_v2_pending_reshare_bytes = 0;
+
     std::map<std::string,
              std::deque<std::pair<crypto::public_key, dao::dkg_msg>>>
         m_dao_v2_pending_reshare_msgs;

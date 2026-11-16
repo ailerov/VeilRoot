@@ -339,4 +339,54 @@ TEST_F(DaoClReshareIngress, complete_subtype_dropped)
     EXPECT_EQ(bc().get_dao_v2_pending_reshare_msgs_size_for_test(), 0u);
 }
 
+
+TEST_F(DaoClReshareIngress, pending_sessions_capped_at_limit)
+{
+    bc().set_dao_v2_pending_reshare_caps_for_test(
+        /*sessions_cap=*/4, /*msgs_cap=*/100, /*bytes_cap=*/1024);
+
+    for (uint32_t i = 0; i < 10; ++i) {
+        crypto::hash sid{};
+        std::memcpy(sid.data, &i, 4);
+        auto env = craft_prestate_sender_override(
+            sid, /*dealer_id=*/0u, /*hdr_sender_id=*/1u);
+        bc().handle_dao_v2_dkg_msg(m_node_pub, env);
+    }
+
+    EXPECT_LE(bc().get_dao_v2_pending_reshare_sessions_size_for_test(), 4u);
+    EXPECT_GE(bc().get_dao_v2_pending_reshare_sessions_size_for_test(), 1u);
+}
+
+TEST_F(DaoClReshareIngress, pending_total_msgs_capped)
+{
+    bc().set_dao_v2_pending_reshare_caps_for_test(
+        /*sessions_cap=*/100, /*msgs_cap=*/10, /*bytes_cap=*/1u << 20);
+
+    for (uint32_t i = 0; i < 50; ++i) {
+        crypto::hash sid{};
+        std::memcpy(sid.data, &i, 4);
+        auto env = craft_prestate_sender_override(
+            sid, /*dealer_id=*/0u, /*hdr_sender_id=*/1u);
+        bc().handle_dao_v2_dkg_msg(m_node_pub, env);
+    }
+
+    EXPECT_LE(bc().get_dao_v2_pending_reshare_msgs_size_for_test(), 10u);
+}
+
+TEST_F(DaoClReshareIngress, pending_total_bytes_capped)
+{
+    bc().set_dao_v2_pending_reshare_caps_for_test(
+        /*sessions_cap=*/100, /*msgs_cap=*/1000, /*bytes_cap=*/200);
+
+    for (uint32_t i = 0; i < 50; ++i) {
+        crypto::hash sid{};
+        std::memcpy(sid.data, &i, 4);
+        auto env = craft_prestate_sender_override(
+            sid, /*dealer_id=*/0u, /*hdr_sender_id=*/1u);
+        bc().handle_dao_v2_dkg_msg(m_node_pub, env);
+    }
+
+    EXPECT_LE(bc().get_dao_v2_pending_reshare_bytes_for_test(), 200u);
+}
+
 #endif // VEILROOT_ENABLE_CL
