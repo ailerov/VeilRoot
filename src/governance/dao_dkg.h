@@ -603,6 +603,19 @@ struct dao_share_set_record
     bool deserialize(const std::vector<uint8_t>& in);
 };
 
+// True when `ss` is the result of a reshare, not a bootstrap DKG set.
+// Discriminator: base_share_set_id, set only by the reshare commit path
+// (bootstrap is 0). Also requires version 3 (CL) and a non-empty Gamma
+// map, so Paillier v1/v2 records never satisfy it. Does NOT consult the
+// Paillier `contributions` field, which CL v3 records intentionally
+// leave empty. Use this for every "reshare landed" state decision.
+inline bool dao_share_set_is_reshared(const dao_share_set_record& ss)
+{
+    return ss.version == 3
+        && ss.base_share_set_id != 0
+        && !ss.cl_gammas_serialized.empty();
+}
+
 struct dao_tally_key_record
 {
     uint32_t             version        = 1;

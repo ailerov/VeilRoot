@@ -10823,7 +10823,7 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
       // every validator.
       dao::dao_share_set_record latest_ss;
       if (!m_db->get_dao_share_set(latest_id, latest_ss)) return;
-      if (latest_ss.contributions.empty()) {
+      if (!dao::dao_share_set_is_reshared(latest_ss)) {
         // Share set present but not reshared (base DKG install). Treat
         // as no reshape yet.
         need_reshare = true;
@@ -11644,7 +11644,7 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
           uint64_t latest_id = latest_share_set_id_for_key_id(key_rec.key_id);
           if (latest_id != 0 && latest_id != base_id &&
               m_db->get_dao_share_set(latest_id, active_ss) &&
-              !active_ss.contributions.empty()) {
+              dao::dao_share_set_is_reshared(active_ss)) {
             use_event = true;
           }
         }

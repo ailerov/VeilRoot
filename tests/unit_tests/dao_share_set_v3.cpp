@@ -116,6 +116,37 @@ TEST(DaoShareSetRecordV3, cl_v3_rejects_trailing_bytes)
     EXPECT_FALSE(r2.deserialize(wire));
 }
 
+TEST(DaoShareSetRecordV3, is_reshared_false_for_base)
+{
+    auto r = make_cl_v3();
+    r.base_share_set_id = 0;
+    EXPECT_FALSE(dao_share_set_is_reshared(r));
+}
+
+TEST(DaoShareSetRecordV3, is_reshared_true_for_reshare)
+{
+    auto r = make_cl_v3();
+    r.base_share_set_id = 12345;
+    EXPECT_TRUE(dao_share_set_is_reshared(r));
+}
+
+TEST(DaoShareSetRecordV3, is_reshared_false_for_v1)
+{
+    dao_share_set_record r;
+    r.version = 1;
+    r.base_share_set_id = 12345;
+    r.cl_gammas_serialized = {0x01};
+    EXPECT_FALSE(dao_share_set_is_reshared(r));
+}
+
+TEST(DaoShareSetRecordV3, is_reshared_false_when_gammas_missing)
+{
+    auto r = make_cl_v3();
+    r.base_share_set_id = 12345;
+    r.cl_gammas_serialized.clear();
+    EXPECT_FALSE(dao_share_set_is_reshared(r));
+}
+
 } // namespace
 } // namespace dao
 } // namespace cryptonote

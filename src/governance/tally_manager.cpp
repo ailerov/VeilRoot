@@ -105,7 +105,7 @@ bool TallyManager::build_tally_result_transaction(
 
     // Effective threshold for the "enough shares?" gate.
     uint32_t eff_threshold = key_rec.threshold;
-    if (event_ss_ptr && !event_ss_ptr->contributions.empty())
+    if (event_ss_ptr && dao::dao_share_set_is_reshared(*event_ss_ptr))
         eff_threshold = event_ss_ptr->threshold;
 
     if (threshold < eff_threshold) return false;
