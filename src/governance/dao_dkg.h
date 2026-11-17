@@ -211,28 +211,6 @@ constexpr const char* DAO_DKG_COMMITTEE_DOMAIN = "VeilRoot-DAO-DKG-COMMITTEE-V1"
 constexpr uint32_t DAO_RANGE_VALUE_TAG_BETA = 1;
 constexpr uint32_t DAO_RANGE_VALUE_TAG_R    = 2;
 
-struct dao_bit_or_proof
-{
-    std::vector<uint8_t> A_0;
-    std::vector<uint8_t> A_1;
-    std::vector<uint8_t> c_0;
-    std::vector<uint8_t> c_1;
-    std::vector<uint8_t> z_0;
-    std::vector<uint8_t> z_1;
-};
-
-struct dao_range_proof
-{
-    uint32_t bits = 0;
-    std::vector<std::vector<uint8_t>> bit_commitments;   // B_j
-    std::vector<dao_bit_or_proof>     bit_proofs;        // one per bit
-    std::vector<uint8_t>              link_a;            // A
-    std::vector<uint8_t>              link_z;            // z
-
-    bool serialize(std::vector<uint8_t>& out) const;
-    bool deserialize(const std::vector<uint8_t>& in);
-};
-
 // Prove that C_x = g^x * h^rho_x commits to x in [0, 2^bits).
 //
 // `value_tag` distinguishes beta from R in the Fiat-Shamir transcript.
@@ -276,28 +254,6 @@ struct dkg_msg
 // ====================================================================
 // Gap 3 — Theta(i) correctness proofs
 // ====================================================================
-
-struct dao_theta_mul_proof
-{
-    std::vector<uint8_t> T1;    // group element mod P
-    std::vector<uint8_t> T2;    // group element mod P
-    std::vector<uint8_t> z_b;   // scalar mod P'
-    std::vector<uint8_t> z_rho; // scalar mod P'
-    std::vector<uint8_t> z_k;   // scalar mod P'
-
-    bool serialize(std::vector<uint8_t>& out) const;
-    bool deserialize(const std::vector<uint8_t>& in);
-};
-
-struct dao_theta_open_proof
-{
-    std::vector<uint8_t> T;       // group element mod P
-    std::vector<uint8_t> z_theta; // scalar mod P'
-    std::vector<uint8_t> z_r;     // scalar mod P'
-
-    bool serialize(std::vector<uint8_t>& out) const;
-    bool deserialize(const std::vector<uint8_t>& in);
-};
 
 
 // ====================================================================
@@ -367,95 +323,19 @@ struct dao_vss_group
 
 bool dao_vss_group_generate(dao_vss_group& out, unsigned int bits = 2048);
 
-struct dao_vss_commitments
-{
-    std::vector<std::vector<uint8_t>> C;
-};
-
 // If `constant_blinding_out` is non-null, the caller receives the
 // constant coefficient of the blinding polynomial (b[0]). This is the
 // blinding of commitments_out.C[0] and is needed to prove range
 // knowledge over the committed secret. Caller owns the result.
-bool dao_vss_deal(const dao_vss_group& grp,
-                  const BIGNUM* secret,
-                  uint32_t n,
-                  uint32_t degree,
-                  dao_vss_commitments& commitments_out,
-                  std::vector<BIGNUM*>& shares_out,
-                  std::vector<BIGNUM*>& blindings_out,
-                  BIGNUM** constant_blinding_out = nullptr);
-
-bool dao_vss_verify_share(const dao_vss_group& grp,
-                          const dao_vss_commitments& commitments,
-                          uint32_t n,
-                          uint32_t i,
-                          const BIGNUM* share,
-                          const BIGNUM* blinding);
-
 
 // ====================================================================
 // Gap 3 - Theta(i) correctness proofs
 // ====================================================================
 
-bool dao_theta_mul_prove(
-    const dao_vss_group& grp,
-    uint32_t candidate_id,
-    uint32_t party_id,
-    const BIGNUM* N,
-    const BIGNUM* C_phi_i,
-    const BIGNUM* C_beta_i,
-    const BIGNUM* beta_i,
-    const BIGNUM* r_beta_i,
-    const BIGNUM* k,
-    const BIGNUM* C_prod,
-    dao_theta_mul_proof& proof);
-
-bool dao_theta_mul_verify(
-    const dao_vss_group& grp,
-    uint32_t candidate_id,
-    uint32_t party_id,
-    const BIGNUM* N,
-    const BIGNUM* C_phi_i,
-    const BIGNUM* C_beta_i,
-    const BIGNUM* C_prod,
-    const dao_theta_mul_proof& proof);
-
-bool dao_theta_open_prove(
-    const dao_vss_group& grp,
-    uint32_t candidate_id,
-    uint32_t party_id,
-    const BIGNUM* C_theta_i,
-    const BIGNUM* theta_i,
-    const BIGNUM* r_theta_i,
-    dao_theta_open_proof& proof);
-
-bool dao_theta_open_verify(
-    const dao_vss_group& grp,
-    uint32_t candidate_id,
-    uint32_t party_id,
-    const BIGNUM* C_theta_i,
-    const BIGNUM* theta_i,
-    const dao_theta_open_proof& proof);
-
 
 // ====================================================================
 // Gap 1 — beta/R range proof declarations
 // ====================================================================
-
-bool dao_range_prove(const dao_vss_group& grp,
-                     uint32_t party_id,
-                     uint32_t value_tag,
-                     const BIGNUM* x,
-                     const BIGNUM* rho_x,
-                     const BIGNUM* C_x,
-                     uint32_t bits,
-                     dao_range_proof& proof_out);
-
-bool dao_range_verify(const dao_vss_group& grp,
-                      uint32_t party_id,
-                      uint32_t value_tag,
-                      const BIGNUM* C_x,
-                      const dao_range_proof& proof);
 
 // ====================================================================
 // Verification keys (§5, Appendix B) and partial decryption (App C)
@@ -888,43 +768,6 @@ uint32_t dao_dkg_party_index_for(
 //
 // Both are proofs of equality of discrete logs across two groups.
 // ====================================================================
-
-struct dao_Q_proof_repetition
-{
-    std::vector<uint8_t> A;   // P' byte size, big-endian
-    std::vector<uint8_t> B;   // N byte size, big-endian
-    uint8_t              c = 0;
-    std::vector<uint8_t> zx;
-    std::vector<uint8_t> zy;
-};
-
-struct dao_Q_proof
-{
-    uint32_t member_index = 0;
-    std::vector<dao_Q_proof_repetition> reps;
-};
-
-bool dao_Q_prove(const dao_vss_group& grp,
-                 const BIGNUM* N,
-                 const BIGNUM* g4,        // g^4 mod P'
-                 const BIGNUM* h,
-                 const BIGNUM* g_bar,     // mod N
-                 const BIGNUM* C0,        // (g^4)^x * h^y mod P'
-                 const BIGNUM* Q,         // g_bar^x mod N
-                 const BIGNUM* x,
-                 const BIGNUM* y,
-                 uint32_t member_index,
-                 uint32_t rounds,
-                 dao_Q_proof& proof_out);
-
-bool dao_Q_verify(const dao_vss_group& grp,
-                  const BIGNUM* N,
-                  const BIGNUM* g4,
-                  const BIGNUM* h,
-                  const BIGNUM* g_bar,
-                  const BIGNUM* C0,
-                  const BIGNUM* Q,
-                  const dao_Q_proof& proof);
 
 } // namespace dao
 } // namespace cryptonote
