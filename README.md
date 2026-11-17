@@ -246,6 +246,25 @@ a native Linux host.
   generated at `contrib/depends/x86_64-w64-mingw32/share/toolchain.cmake`.
   If it is missing, rerun step 2.
 
+- **Windows build produces a Linux binary (`bin/vnsd` with no `.exe` extension):**  
+  `CMakeCache.txt` already exists and contains host compilers, so the toolchain
+  file no longer overrides them. CMake caches compiler selection, and once
+  it is populated with the host `cc`/`c++`, reconfiguring with the toolchain
+  has no effect. The build returns 0 and links a Linux ELF `vnsd` while stale
+  `.exe` files from prior builds sit unchanged. Verify with
+  `file build/x86_64-w64-mingw32/release/bin/vnsd.exe`; a real Windows
+  binary says `PE32+ executable ... for MS Windows`. To recover, remove the
+  cached configuration and reconfigure with the toolchain:
+
+  ```bash
+  rm -f  build/x86_64-w64-mingw32/release/CMakeCache.txt
+  rm -rf build/x86_64-w64-mingw32/release/CMakeFiles
+  cmake -S . -B build/x86_64-w64-mingw32/release \
+      -DCMAKE_TOOLCHAIN_FILE=../../../contrib/depends/x86_64-w64-mingw32/share/toolchain.cmake \
+      -DVEILROOT_ENABLE_CL=OFF \
+      -DBUILD_TESTS=OFF
+  ```
+
 - **Out of memory during linking:** Increase swap space or reduce parallel
   jobs (e.g., `make -j2`).
 
