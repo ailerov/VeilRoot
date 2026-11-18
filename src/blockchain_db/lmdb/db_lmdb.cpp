@@ -3698,14 +3698,31 @@ void BlockchainLMDB::add_dao_share_set(uint64_t share_set_id,
   if (!record.serialize(blob))
     throw0(DB_ERROR("Failed to serialize dao_share_set_record"));
 
+    // Write-once: a share-set id is bound to exactly one canonical
+  // serialization. Tally certificates reference share sets by id, so
+  // an id must never be rebound to a different record. Idempotent
+  // success on identical bytes lets replay and reorg re-add the same
+  // record safely.
   lmdb_cursor_guard cur(m_write_txn->m_txn, m_dao_share_sets);
   unsigned char kbuf[8];
   share_set_encode_key(share_set_id, kbuf);
   MDB_val k = { sizeof(kbuf), kbuf };
   MDB_val v = { blob.size(), blob.empty() ? nullptr : (void*)blob.data() };
-  int result = mdb_cursor_put(cur.get(), &k, &v, MDB_NODUPDATA);
+  int result = mdb_cursor_put(cur.get(), &k, &v, MDB_NOOVERWRITE);
   if (result == MDB_KEYEXIST)
-    result = mdb_cursor_put(cur.get(), &k, &v, MDB_CURRENT);
+  {
+    MDB_val existing;
+    int get_rc = mdb_cursor_get(cur.get(), &k, &existing, MDB_SET);
+    if (get_rc)
+      throw0(DB_ERROR(lmdb_error(
+          "Failed to read existing dao share set: ", get_rc).c_str()));
+    if (existing.mv_size != blob.size() ||
+        (blob.size() != 0 &&
+         std::memcmp(existing.mv_data, blob.data(), blob.size()) != 0))
+      throw0(DB_ERROR(
+          "dao share set id already bound to a different record"));
+    return;  // idempotent success
+  }
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to add dao share set: ", result).c_str()));
 }

@@ -165,6 +165,17 @@ protected:
         ss.qualified_ids        = qualified;
         m_share_set_id          = ss.share_set_id;
 
+        // Share-set storage is write-once. Remove any existing record so
+        // that a test-scoped re-install (e.g. changing qualified_ids)
+        // resets consensus state without violating the invariant.
+        try {
+            db().block_wtxn_start();
+            db().remove_dao_share_set(ss.share_set_id);
+            db().block_wtxn_stop();
+        } catch (...) {
+            try { db().block_wtxn_abort(); } catch (...) {}
+        }
+
         bc().install_cl_tally_key_for_proposal_for_test(rec, ss, {});
 
         proposal_record pr;
@@ -251,7 +262,7 @@ TEST_F(DaoClReshareIngress, rejects_sender_not_qualified)
 {
     // Reinstall with qualified = {0, 2} (skip index 1). Peer is
     // m_sibling_pub[0] at committee index 1 -> not qualified -> drop.
-    // Second install overwrites via LMDB keys.
+    // install_bootstrap resets any existing share-set record first.
     install_bootstrap(/*qualified=*/{0u, 2u});
 
     crypto::hash sid{}; sid.data[0] = 0x33;

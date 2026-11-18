@@ -527,6 +527,71 @@ TYPED_TEST(BlockchainDBTest, OpenAndClose)
   ASSERT_NO_THROW(this->m_db->close());
 }
 
+TYPED_TEST(BlockchainDBTest, DaoShareSetWriteOnce)
+{
+  boost::filesystem::path tempPath =
+      boost::filesystem::temp_directory_path() /
+      boost::filesystem::unique_path();
+  std::string dirPath = tempPath.string();
+  this->set_prefix(dirPath);
+  ASSERT_NO_THROW(this->m_db->open(dirPath));
+  this->get_filenames();
+
+  auto make_record = [](uint8_t gammas_fill) {
+    dao::dao_share_set_record r;
+    r.version = 3;
+    r.share_set_id = 7;
+    r.height = 500;
+    r.threshold = 2;
+    r.key_id.assign(32, 0x11);
+    r.committee_id_hash.assign(32, 0x22);
+    for (int i = 0; i < 3; ++i)
+      r.committee_members.push_back(std::vector<uint8_t>(32, 0x30 + i));
+    r.cl_gammas_serialized.assign(64, gammas_fill);
+    r.qualified_ids = {0u, 1u, 2u};
+    return r;
+  };
+
+  // (1) New id: insert succeeds.
+  const auto rec = make_record(0xAA);
+  {
+    db_wtxn_guard guard(this->m_db);
+    ASSERT_NO_THROW(this->m_db->add_dao_share_set(7, rec));
+  }
+  {
+    dao::dao_share_set_record got;
+    ASSERT_TRUE(this->m_db->get_dao_share_set(7, got));
+    EXPECT_EQ(got.cl_gammas_serialized, rec.cl_gammas_serialized);
+  }
+
+  // (2) Same id, byte-identical record: idempotent success.
+  {
+    db_wtxn_guard guard(this->m_db);
+    ASSERT_NO_THROW(this->m_db->add_dao_share_set(7, rec));
+  }
+  {
+    dao::dao_share_set_record got;
+    ASSERT_TRUE(this->m_db->get_dao_share_set(7, got));
+    EXPECT_EQ(got.cl_gammas_serialized, rec.cl_gammas_serialized);
+  }
+
+  // (3) Same id, different record (different Gamma map): rejected,
+  //     and stored record is untouched.
+  auto tampered = make_record(0xBB);
+  {
+    db_wtxn_guard guard(this->m_db);
+    EXPECT_ANY_THROW(this->m_db->add_dao_share_set(7, tampered));
+  }
+  {
+    dao::dao_share_set_record got;
+    ASSERT_TRUE(this->m_db->get_dao_share_set(7, got));
+    EXPECT_EQ(got.cl_gammas_serialized, rec.cl_gammas_serialized);
+    EXPECT_NE(got.cl_gammas_serialized, tampered.cl_gammas_serialized);
+  }
+
+  ASSERT_NO_THROW(this->m_db->close());
+}
+
 TYPED_TEST(BlockchainDBTest, DaoShareSetRoundTrip)
 {
   boost::filesystem::path tempPath = boost::filesystem::temp_directory_path() / boost::filesystem::unique_path();
