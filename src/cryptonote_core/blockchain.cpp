@@ -10331,9 +10331,6 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
   bool Blockchain::process_pending_dao_v2_dkg_results()
   {
-#ifndef VEILROOT_ENABLE_CL
-    return true;
-#else
     std::deque<pending_dao_v2_dkg_result> pending;
     {
       std::lock_guard<std::mutex> lock(m_dao_v2_dkg_result_mutex);
@@ -10494,7 +10491,6 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
         (void)try_submit_pending_dao_v2_key_activation(id);
     }
     return true;
-  #endif
   }
 #ifdef VEILROOT_ENABLE_CL
 dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(

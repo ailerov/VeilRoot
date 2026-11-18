@@ -139,16 +139,5 @@ bool dao_cl_modulus_wire_valid(const std::vector<uint8_t>& in)
     return dao_cl_key_context_parse(in, tmp);
 }
 
-
-#ifndef VEILROOT_ENABLE_CL
-// Stub: CL backend was not compiled. Return nullptr so callers get a
-// clean failure instead of a link error.
-std::unique_ptr<DaoEncryptionBackend>
-make_cl_backend(size_t /*seclevel_bits*/)
-{
-    return nullptr;
-}
-#endif
-
 } // namespace dao
 } // namespace cryptonote

@@ -585,23 +585,6 @@ bool dao_verify_tally_certificate(
 }
 
 #endif // VEILROOT_ENABLE_CL
-#ifndef VEILROOT_ENABLE_CL
-bool dao_build_tally_certificate(
-    const dao_tally_key_record&, const dao_share_set_record&,
-    const crypto::hash&, uint64_t,
-    const std::vector<uint8_t>&, const std::vector<uint8_t>&,
-    const std::vector<uint8_t>&,
-    const dao_partial_set&, const dao_partial_set&, const dao_partial_set&,
-    dao_tally_certificate&)
-{ return false; }
-bool dao_verify_tally_certificate(
-    const dao_tally_key_record&, const dao_share_set_record&,
-    const dao_supply_snapshot&, uint32_t,
-    const std::vector<uint8_t>&, const std::vector<uint8_t>&,
-    const std::vector<uint8_t>&,
-    dao_tally_certificate&)
-{ return false; }
-#endif
 
 } // namespace dao
 } // namespace cryptonote
