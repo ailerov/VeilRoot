@@ -49,7 +49,7 @@ monero_add_library(wallet
   ${wallet_private_headers})
 target_link_libraries(obj_wallet PRIVATE secp256k1)
 # DAO V2 vote construction needs the governance crypto (CLSAG, OR proof,
-# consistency proofs, Paillier). obj_governance is an OBJECT library so
+# consistency proofs, CL). obj_governance is an OBJECT library so
 # its objects must be pulled into the wallet library explicitly.
 target_sources(obj_wallet PRIVATE $<TARGET_OBJECTS:obj_governance>)
 if(VEILROOT_ENABLE_CL)

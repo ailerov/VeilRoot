@@ -24,11 +24,10 @@ namespace cryptonote {
 namespace dao {
 
 // Backend-neutral interface for the DAO vote-tally homomorphic
-// encryption scheme. One implementation per scheme:
-//   - PaillierEncryptionBackend (dao_crypto_backend.cpp)
-//   - CLEncryptionBackend      (dao_crypto_backend_cl.cpp)
+// encryption scheme. The operational backend is CL
+// (dao_crypto_backend_cl.cpp).
 //
-// The public surface covers what the current Paillier callers in
+// The public surface covers what the current DAO callers in
 // dao_wallet_v2.cpp, dao_tally.cpp, dao_tally_share.cpp,
 // dao_threshold.cpp, dao_consistency.cpp, vote_proof_verifier.cpp,
 // dao_dkg.cpp currently touch.

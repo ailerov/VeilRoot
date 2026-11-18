@@ -3,7 +3,7 @@
 //
 // Scheme-neutral DAO consistency transcript context and vote-input
 // transcript. Split out of dao_consistency.h so CL code does not
-// depend on the Paillier equality-proof implementation.
+// depend on other equality-proof implementations.
 
 #pragma once
 

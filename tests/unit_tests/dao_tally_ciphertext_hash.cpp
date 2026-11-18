@@ -3,7 +3,7 @@
 //
 // Canonicality and length-framing tests for
 // dao_aggregate_ciphertext_hash. The pre-4.10 implementation rejected
-// any input that was not exactly PAILLIER_CT_BYTES (512) and returned
+// any input that was not exactly 512 bytes and returned
 // the all-zero sentinel, which silently zeroed the hash for every
 // variable-length CL ciphertext wire. These tests lock in the
 // scheme-agnostic replacement.

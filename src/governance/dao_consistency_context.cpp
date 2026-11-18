@@ -29,9 +29,8 @@ void tx_push_bytes(std::vector<uint8_t>& v, const uint8_t* p, size_t n)
 
 bool tx_validate(const dao_vote_transcript_input& in)
 {
-    // Ciphertext fields are scheme-specific: 512-byte fixed for the
-    // Paillier encoding, variable-length QFI wire for CL. Bound both
-    // extremes and reject only empty.
+    // Ciphertext fields are variable-length QFI wire. Bound the upper
+    // limit and reject only empty.
     constexpr size_t CT_MAX = 16384;
     if (in.E_W.empty() || in.E_W.size() > CT_MAX) return false;
     if (in.E_S.empty() || in.E_S.size() > CT_MAX) return false;

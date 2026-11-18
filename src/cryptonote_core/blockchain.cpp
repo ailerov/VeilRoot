@@ -10714,7 +10714,7 @@ dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
   // Local share formats written to LMDB by two different code paths:
   //   (a) DKG initial share: raw magnitude, arbitrary width (81 bytes
   //       in test mode; ~768 bytes in production for a 6144-bit
-  //       Paillier modulus). Written by the DKG result path.
+  //       class-group modulus). Written by the DKG result path.
   //   (b) Reshare output: [sign(1) || magnitude(2320)] = 2321 bytes,
   //       produced by dao_reshare_serialize_signed, whose width is
   //       DAO_RESHARE_SIGNED_BYTES = 1268 + 1053 = 2321.
@@ -11845,11 +11845,9 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
       return false;
     }
 
-    // CL and Paillier certificates take different verification paths.
-    // The CL path requires the currently active share set to supply
-    // the Gamma map and the qualified ids for the threshold
-    // combination. The Paillier path verifies against key_rec's
-    // own VK_i list.
+    // Certificate verification requires the currently active share
+    // set to supply the Gamma map and the qualified ids for the
+    // threshold combination.
     if (key_rec.cl_modulus.empty()) {
       MERROR("tally-result: key record carries no CL context");
       return false;

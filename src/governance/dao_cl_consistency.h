@@ -130,8 +130,8 @@ bool dao_cl_consistency_check_modulus(const BICYCL::CL_HSMqk& CL);
 
 // Direction OR proof extra binding for the CL path. Binds the two
 // ciphertext wires and the two serialized proofs so that substituting
-// either invalidates the OR challenge. Domain-separated from the
-// Paillier binding.
+// either invalidates the OR challenge. Domain-separated from other
+// consistency-proof bindings.
 std::vector<uint8_t> dao_cl_extra_binding(
     const std::vector<uint8_t>& E_W,
     const std::vector<uint8_t>& E_S,

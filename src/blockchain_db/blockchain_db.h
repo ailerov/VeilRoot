@@ -295,9 +295,9 @@ struct dao_vote_record_v2
 
 struct dao_proposal_aggregate
 {
-    std::vector<uint8_t> aggregate_E_W;   // Paillier ct, 512 bytes
-    std::vector<uint8_t> aggregate_E_S;   // Paillier ct, 512 bytes
-    std::vector<uint8_t> aggregate_E_B;   // Paillier ct, 512 bytes
+    std::vector<uint8_t> aggregate_E_W;   // CL ct, variable-length QFI wire
+    std::vector<uint8_t> aggregate_E_S;   // CL ct, variable-length QFI wire
+    std::vector<uint8_t> aggregate_E_B;   // CL ct, variable-length QFI wire
     rct::key             aggregate_C_W;
     rct::key             aggregate_C_S;
     rct::key             aggregate_C_B;
@@ -2177,7 +2177,7 @@ public:
     // The single active
     // pointer is a separate singleton in tally_state.
     //
-    // A "tally key" record names the stable Paillier public key
+    // A "tally key" record names the stable CL public key
     // and its BOOTSTRAP SHAREHOLDER SET. It does not name the
     // temporary tally committee; that committee is derived from
     // canonical state at a proposal's voting end and stored in a
@@ -2258,7 +2258,7 @@ public:
         const std::vector<uint8_t>& key_id) = 0;
 
     // Persist a share-set record. Keyed by monotone share_set_id.
-    // share_set_id is NOT a public-key identifier: the stable Paillier key
+    // share_set_id is NOT a public-key identifier: the stable CL key
     // does not change when the share set changes.
     virtual void add_dao_share_set(uint64_t share_set_id,
                                    const dao::dao_share_set_record& record) = 0;

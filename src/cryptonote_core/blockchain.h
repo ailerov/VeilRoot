@@ -2031,8 +2031,8 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
         m_dao_v2_local_records;
     // CL initial share set produced by the same CL DKG ceremony.
     // Stored alongside the key record so the activation transaction
-    // can carry and install both atomically. Empty for bootstrap
-    // Paillier ceremonies (deleted on Paillier retirement).
+    // can carry and install both atomically. Empty until the
+    // activation transaction installs the CL share set.
     std::map<std::string, dao::dao_share_set_record>
         m_dao_v2_local_share_sets;
     std::map<std::string, uint64_t>

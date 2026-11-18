@@ -18,11 +18,6 @@
 
 namespace cryptonote {
 
-// Fixed 512-byte Paillier ciphertext. Serialized raw (no length prefix).
-} // namespace cryptonote
-
-namespace cryptonote {
-
 // One ring input of a DAO V2 vote. The typed weighted CLSAG lives
 // inside the input. weight_commitment is V_i = Q_i + rho_i*G.
 struct vote_input_v2

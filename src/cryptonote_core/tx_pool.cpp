@@ -359,8 +359,9 @@ namespace cryptonote
     }
 
     // BEGIN_VNS_MEMPOOL_V2_VOTE_EXTRA_LIMIT
-    // A V2 vote carries a vote_proof_v2: three 512-byte Paillier
-    // ciphertexts, three consistency proofs, one hidden-direction OR
+    // A V2 vote carries a vote_proof_v2: three CL ciphertexts
+    // (variable-length QFI wire), three consistency proofs, one
+    // hidden-direction OR
     // proof, and at least one pair of CLSAGs. The ceiling is 128 KiB
     // and it applies even to txs reprocessed from a block, because
     // this is a consensus rule, not only a mempool policy.

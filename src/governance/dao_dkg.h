@@ -97,9 +97,8 @@ constexpr uint64_t DAO_DKG_TEST_SEED_3 = 0x5645494C52544F33ULL;  // 3-party
 #endif
 
 // Production cryptographic parameters for the DKG ceremony.
-// These values are frozen by the V2 implementation spec (N = 2048,
-// Paillier ciphertext 512 bytes). Test builds use a reduced modulus
-// so the ceremony runs at unit-test scale.
+// These values are frozen by the V2 implementation spec. Test builds
+// use reduced parameters so the ceremony runs at unit-test scale.
 constexpr uint32_t DAO_DKG_K_BITS_PROD        = 60;
 constexpr uint32_t DAO_DKG_TARGET_N_BITS_PROD = 2048;
 constexpr uint32_t DAO_DKG_SECURITY_BITS_PROD = 32;
@@ -350,13 +349,10 @@ struct dao_partial_decryption
 // where r is bounded by N, E is a 32-byte challenge, Delta = 16!, and
 // s is the share being proven. For a bootstrap share s is ~2048 bits,
 // so Z fits in 512 bytes. For a reshared share (scaled by 2^8281) s is
-// ~8389 bits, so Z is ~8700 bits and does not fit in 512 bytes.
-// 1200 bytes is the fixed width for the response. It is not the same
-// as PAILLIER_CT_BYTES, which stays at 512 for actual ciphertexts.
+// ~8389 bits, so Z is ~8700 bits and does not fit in a single
+// class-group element. 1200 bytes is the fixed width for the
+// response.
 constexpr uint32_t DAO_DKG_PARTIAL_PROOF_Z_BYTES = 1200;
-
-constexpr uint32_t PAILLIER_CT_BYTES      = 512;
-constexpr uint32_t PAILLIER_MODULUS_BYTES = 256;
 
 struct dao_partial_decryption_proof
 {
@@ -368,7 +364,7 @@ struct dao_partial_decryption_proof
 // ====================================================================
 // Public tally-key record
 //
-// This record describes one per-proposal Paillier public key and the
+// This record describes one per-proposal CL public key and the
 // DKG committee that generated it. The tally committee is a subset of
 // this committee, selected at voting_end_height from the same
 // node_ready roster; its members hold shares of the same key.
@@ -420,10 +416,8 @@ struct dao_share_set_record
 
 // True when `ss` is the result of a reshare, not a bootstrap DKG set.
 // Discriminator: base_share_set_id, set only by the reshare commit path
-// (bootstrap is 0). Also requires version 3 (CL) and a non-empty Gamma
-// map, so Paillier v1/v2 records never satisfy it. Does NOT consult the
-// Paillier `contributions` field, which CL v3 records intentionally
-// leave empty. Use this for every "reshare landed" state decision.
+// (bootstrap is 0). Also requires version 3 and a non-empty Gamma map.
+// Use this for every "reshare landed" state decision.
 inline bool dao_share_set_is_reshared(const dao_share_set_record& ss)
 {
     return ss.version == 3
@@ -496,7 +490,7 @@ struct dao_tally_key_record
 // ====================================================================
 // DKG key-activation consensus object
 //
-// The public Paillier key record produced by the bootstrap DKG is
+// The public CL key record produced by the bootstrap DKG is
 // published to the chain as a dedicated zero-input, zero-output
 // governance transaction. The transaction carries threshold
 // attestations: at least `record.threshold` distinct bootstrap
@@ -523,8 +517,8 @@ struct dao_dkg_key_attestation
 struct dao_dkg_key_activation
 {
     // Version 3 carries the initial CL share set alongside the key
-    // record. Version 2 is the legacy Paillier-compatible form and
-    // omits the share set. New producers always emit v3.
+    // record. Version 2 omits the share set and is accepted only for
+    // reading pre-activation records. New producers always emit v3.
     uint32_t                    version          = 3;
     uint64_t                    selection_height = 0;
     crypto::hash                proposal_id{};
