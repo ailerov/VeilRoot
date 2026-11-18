@@ -19,7 +19,6 @@
 #include "blockchain_db/testdb.h"
 #include "crypto/crypto.h"
 #include "governance/dao_dkg.h"
-#include "governance/dao_paillier.h"
 #include "v2_vote_builder.h"
 #include "governance/dao_cl_tally_wire.h"
 #include "bicycl/bicycl.hpp"
@@ -165,27 +164,6 @@ synthetic_source make_source(uint64_t base_abs, uint64_t amount,
     return out;
 }
 
-bool decrypt_bn_equals_u128(const dao::PaillierPrivateKey& psk,
-                            const std::vector<uint8_t>& ct,
-                            boost::multiprecision::uint128_t expected)
-{
-    BIGNUM* m = BN_new();
-    if (!m) return false;
-    bool ok = psk.decrypt(ct, m);
-    if (ok) {
-        std::array<uint8_t, 16> buf{};
-        boost::multiprecision::uint128_t v = expected;
-        for (int i = 15; i >= 0; --i) {
-            buf[i] = (v & 0xff).convert_to<uint8_t>();
-            v >>= 8;
-        }
-        BIGNUM* e = BN_bin2bn(buf.data(), 16, nullptr);
-        ok = e && (BN_cmp(m, e) == 0);
-        BN_free(e);
-    }
-    BN_free(m);
-    return ok;
-}
 bool decrypt_cl_equals_u128(const v2test::CLTestKey& cl_key,
                             const std::vector<uint8_t>& ct_wire,
                             boost::multiprecision::uint128_t expected)

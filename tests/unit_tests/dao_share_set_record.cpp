@@ -4,7 +4,6 @@
 #include "gtest/gtest.h"
 
 #include "governance/dao_dkg.h"
-#include "governance/dao_paillier.h"
 #include "crypto/crypto.h"
 
 #include <openssl/bn.h>

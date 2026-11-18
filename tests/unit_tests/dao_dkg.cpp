@@ -17,8 +17,6 @@
 #include <openssl/bn.h>
 
 #include "governance/dao_dkg.h"
-#include "governance/dao_paillier.h"
-#include "governance/dao_threshold.h"
 
 using namespace cryptonote;
 using namespace cryptonote::dao;

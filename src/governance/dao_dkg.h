@@ -49,9 +49,9 @@
 //     Ra in [0, K*p_max],  Rb in [0, K^2*p_max^2]
 //     p_max = n * 3 * 2^(k-1)
 //     accept iff gcd(gamma, r) == 1
-//   Partial decryption (dao_threshold.h):
+//   Partial decryption:
 //     c_i = c^(2 * Delta * f(i)) mod N^2
-//   Final normalization (dao_threshold.h):
+//   Final normalization:
 //     M = L(C) * (-4 * Delta^2 * theta')^(-1) mod N
 
 #pragma once
@@ -66,14 +66,12 @@
 
 #include "crypto/crypto.h"
 
-#include "governance/dao_paillier.h"
-#include "governance/dao_threshold.h"
 
 namespace cryptonote {
 namespace dao {
 
 // Committee parameters DAO_DKG_COMMITTEE_SIZE, DAO_DKG_SHARING_DEGREE,
-// DAO_DKG_THRESHOLD are declared in dao_threshold.h, which is included
+// DAO_DKG_THRESHOLD are declared below in this header
 // above. Do not redeclare them here.
 
 // Small public odd primes for the §4.1 trial-division test.
@@ -357,40 +355,15 @@ struct dao_partial_decryption
 // as PAILLIER_CT_BYTES, which stays at 512 for actual ciphertexts.
 constexpr uint32_t DAO_DKG_PARTIAL_PROOF_Z_BYTES = 1200;
 
+constexpr uint32_t PAILLIER_CT_BYTES      = 512;
+constexpr uint32_t PAILLIER_MODULUS_BYTES = 256;
+
 struct dao_partial_decryption_proof
 {
     uint32_t             member_index = 0;
     std::vector<uint8_t> E;
     std::vector<uint8_t> Z;
 };
-
-bool dao_choose_verification_base(const PaillierPublicKey& pk,
-                                  std::vector<uint8_t>& V_K_out);
-
-bool dao_derive_verification_key(const PaillierPublicKey& pk,
-                                 const std::vector<uint8_t>& V_K,
-                                 const BIGNUM* share,
-                                 std::vector<uint8_t>& V_K_i_out);
-
-bool dao_dkg_sample_r(const PaillierPublicKey& pk, BIGNUM* r_out);
-
-bool dao_partial_decryption_prove(const PaillierPublicKey& pk,
-                                  const std::vector<uint8_t>& V_K,
-                                  const std::vector<uint8_t>& V_K_i,
-                                  uint32_t member_index,
-                                  const std::vector<uint8_t>& c_bytes,
-                                  const std::vector<uint8_t>& c_i_bytes,
-                                  const BIGNUM* share,
-                                  const BIGNUM* randomness,
-                                  dao_partial_decryption_proof& proof_out);
-
-bool dao_partial_decryption_verify(const PaillierPublicKey& pk,
-                                   const std::vector<uint8_t>& V_K,
-                                   const std::vector<uint8_t>& V_K_i,
-                                   uint32_t member_index,
-                                   const std::vector<uint8_t>& c_bytes,
-                                   const std::vector<uint8_t>& c_i_bytes,
-                                   const dao_partial_decryption_proof& proof);
 
 // ====================================================================
 // Public tally-key record
@@ -469,6 +442,36 @@ inline bool dao_share_set_is_reshared(const dao_share_set_record& ss)
     return ss.version == 3
         && ss.base_share_set_id != 0
         && !ss.cl_gammas_serialized.empty();
+}
+
+// Committee bounds, per docs/DAO-V2-IMPLEMENTATION-SPEC.md §4 rev2.
+// The Nishide-Sakurai (t+1, n) construction requires t < n/2. For a
+// committee of size n the maximum t is floor((n-1)/2), so:
+//
+//     threshold T = t + 1 = ceil(n / 2)
+//
+// n = 16 yields T = 8, which reproduces the prior fixed parameterisation
+// exactly. n = 3 yields T = 2, which is the live three-node case.
+constexpr uint32_t DAO_DKG_MIN_COMMITTEE_SIZE = 3;
+constexpr uint32_t DAO_DKG_MAX_COMMITTEE_SIZE = 16;
+// Default maximum, retained as a convenience. Not a runtime requirement.
+constexpr uint32_t DAO_DKG_COMMITTEE_SIZE = DAO_DKG_MAX_COMMITTEE_SIZE;
+
+// Derived from DAO_DKG_COMMITTEE_SIZE for backward compatibility with
+// code that still builds a 16-member committee. New code must derive
+// the threshold from the actual committee size via
+// dao_dkg_expected_threshold().
+constexpr uint32_t DAO_DKG_SHARING_DEGREE = 7;
+constexpr uint32_t DAO_DKG_THRESHOLD      = 8;
+
+// Threshold for a committee of size n. Returns 0 if n is outside the
+// permitted range [DAO_DKG_MIN_COMMITTEE_SIZE, DAO_DKG_MAX_COMMITTEE_SIZE].
+constexpr uint32_t dao_dkg_expected_threshold(uint32_t n)
+{
+    return (n < DAO_DKG_MIN_COMMITTEE_SIZE ||
+            n > DAO_DKG_MAX_COMMITTEE_SIZE)
+        ? 0
+        : (n + 1) / 2;
 }
 
 struct dao_tally_key_record

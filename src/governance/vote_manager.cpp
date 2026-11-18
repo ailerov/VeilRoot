@@ -16,7 +16,6 @@
 #include "voting_weight.h"
 #include "vote_proof_verifier.h"
 #include "dao_dkg.h"
-#include "dao_paillier.h"
 #include "dao_cl_ballot.h"
 #include "dao_cl_tally_wire.h"
 #ifdef VEILROOT_ENABLE_CL

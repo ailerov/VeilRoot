@@ -120,14 +120,11 @@ set(unit_tests_sources
   dao_clsag.cpp
   dao_weight.cpp
   dao_vote_or_proof.cpp
-  dao_paillier.cpp
-  dao_threshold.cpp
   dao_tally.cpp
   dao_tally_ciphertext_hash.cpp
   dao_tally_share.cpp
   dao_dkg.cpp
   dao_wallet_v2.cpp
-  dao_bootstrap_integration.cpp
   dao_v2_replay.cpp
   treasury_validation.cpp
   dao_share_set_record.cpp

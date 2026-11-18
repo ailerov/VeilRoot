@@ -17,7 +17,6 @@
 
 #include <openssl/sha.h>
 
-#include "governance/dao_threshold.h"
 #include "misc_log_ex.h"
 
 namespace cryptonote {

@@ -26,7 +26,6 @@
 
 #include "crypto/hash.h"
 #include "governance/dao_dkg.h"
-#include "governance/dao_paillier.h"
 #include "governance/dao_supply.h"
 
 namespace cryptonote {

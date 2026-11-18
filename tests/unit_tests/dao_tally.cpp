@@ -14,7 +14,6 @@
 #include <openssl/bn.h>
 
 #include "governance/dao_tally.h"
-#include "governance/dao_paillier.h"
 #include "governance/dao_supply.h"
 
 using namespace cryptonote;

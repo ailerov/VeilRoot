@@ -42,7 +42,6 @@
 #include "governance/dao_tally_share.h"
 #include "governance/dao_tally.h"
 #include "governance/dao_supply.h"
-#include "governance/dao_paillier.h"
 #include "v2_vote_builder.h"
 #include "governance/dao_dkg_transport.h"
 #include "governance/dao_dkg.h"

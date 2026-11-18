@@ -16,9 +16,7 @@
 #include <openssl/bn.h>
 
 #include "cryptonote_core/blockchain.h"   // for proposal_record, status enum
-#include "governance/dao_paillier.h"
 #include "governance/dao_supply.h"
-#include "governance/dao_threshold.h"
 #include "governance/dao_cl_ballot.h"
 #include "governance/dao_cl_dkg_payload.h"
 #include "governance/dao_cl_tally_wire.h"

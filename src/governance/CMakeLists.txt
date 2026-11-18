@@ -17,9 +17,7 @@ set(governance_sources
     dao_clsag.cpp
     dao_weight.cpp
     dao_vote_or_proof.cpp
-    dao_paillier.cpp
     dao_crypto_backend.cpp
-    dao_threshold.cpp
     dao_tally.cpp
     dao_tally_share.cpp
     tally_manager.cpp
@@ -27,7 +25,6 @@ set(governance_sources
     dao_wallet_v2.cpp
     dao_dkg_transport.cpp
     dao_consistency_context.cpp
-    dao_tally_key.cpp
     parameter_manager.cpp
 )
 

@@ -13,7 +13,6 @@
 #include "blockchain_db/testdb.h"
 #include "governance/dao_clsag.h"
 #include "governance/dao_dkg.h"
-#include "governance/dao_paillier.h"
 #include "governance/dao_vote_or_proof.h"
 #include "governance/vote_proof_verifier.h"
 #include "governance/governance_payload.h"

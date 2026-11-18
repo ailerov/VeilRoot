@@ -18,7 +18,6 @@
 #include "governance/dao_cl_tally_wire.h"
 #include "governance/dao_crypto_backend.h"
 #include "governance/dao_dkg.h"
-#include "governance/dao_paillier.h"
 #include "governance/dao_supply.h"
 #include "governance/dao_vote_or_proof.h"
 #include "governance/governance_payload.h"
