@@ -538,6 +538,97 @@ PreparedCommit prep_commit(
     return out;
 }
 
+TEST_F(DaoClReshareChain, commit_rejects_missing_predecessor)
+{
+    v2test::CLBootstrapFixture fx;
+    ASSERT_TRUE(v2test::make_cl_bootstrap_3party(fx, 0xD001));
+    install_self_committee(fx);
+    add_proposal(fx.record.key_id, /*vote_end=*/3);
+
+    auto prep = prep_commit(fx, /*new_ssid=*/fx.share_set.share_set_id + 1,
+                            /*is_local_new_member=*/true, /*local_new_pos0=*/0);
+    prep.ctx.old_share_set_id = fx.share_set.share_set_id + 100;
+
+    auto net = dao::dkg_make_inproc_network(3);
+    auto runner = std::make_unique<dao::cl_reshare_p2p_runner>(
+        dao::cl_reshare_config{}, std::move(net.endpoints[0]));
+    bc().install_dao_v2_reshare_state_for_test(std::move(runner), prep.ctx);
+    ASSERT_TRUE(bc().force_dao_v2_reshare_runner_success_for_test(prep.fake));
+
+    EXPECT_FALSE(bc().commit_dao_v2_reshare_for_test());
+    EXPECT_FALSE(bc().has_dao_v2_reshare_runner_for_test());
+    dao::dao_share_set_record ss;
+    EXPECT_FALSE(db().get_dao_share_set(prep.ctx.new_share_set_id, ss));
+}
+
+TEST_F(DaoClReshareChain, commit_rejects_stale_predecessor)
+{
+    v2test::CLBootstrapFixture fx;
+    ASSERT_TRUE(v2test::make_cl_bootstrap_3party(fx, 0xD002));
+    install_self_committee(fx);
+    add_proposal(fx.record.key_id, /*vote_end=*/3);
+
+    const uint64_t base = fx.share_set.share_set_id;
+
+    {
+        auto prep = prep_commit(fx, base + 1, true, 0);
+        auto net = dao::dkg_make_inproc_network(3);
+        auto runner = std::make_unique<dao::cl_reshare_p2p_runner>(
+            dao::cl_reshare_config{}, std::move(net.endpoints[0]));
+        bc().install_dao_v2_reshare_state_for_test(std::move(runner), prep.ctx);
+        ASSERT_TRUE(bc().force_dao_v2_reshare_runner_success_for_test(prep.fake));
+        ASSERT_TRUE(bc().commit_dao_v2_reshare_for_test());
+    }
+
+    auto prep = prep_commit(fx, base + 2, true, 0);
+    // prep_commit sets old = base, which is now stale (base+1 is active).
+    auto net = dao::dkg_make_inproc_network(3);
+    auto runner = std::make_unique<dao::cl_reshare_p2p_runner>(
+        dao::cl_reshare_config{}, std::move(net.endpoints[0]));
+    bc().install_dao_v2_reshare_state_for_test(std::move(runner), prep.ctx);
+    ASSERT_TRUE(bc().force_dao_v2_reshare_runner_success_for_test(prep.fake));
+
+    EXPECT_FALSE(bc().commit_dao_v2_reshare_for_test());
+    dao::dao_share_set_record ss;
+    EXPECT_FALSE(db().get_dao_share_set(base + 2, ss));
+}
+
+TEST_F(DaoClReshareChain, purge_removes_all_share_sets_for_key_id)
+{
+    v2test::CLBootstrapFixture fx;
+    ASSERT_TRUE(v2test::make_cl_bootstrap_3party(fx, 0xD003));
+    install_self_committee(fx);
+    add_proposal(fx.record.key_id, /*vote_end=*/3);
+
+    const uint64_t base = fx.share_set.share_set_id;
+
+    for (int round = 1; round <= 2; ++round) {
+        auto prep = prep_commit(fx, base + round, true, 0);
+        if (round > 1) prep.ctx.old_share_set_id = base + round - 1;
+        auto net = dao::dkg_make_inproc_network(3);
+        auto runner = std::make_unique<dao::cl_reshare_p2p_runner>(
+            dao::cl_reshare_config{}, std::move(net.endpoints[0]));
+        bc().install_dao_v2_reshare_state_for_test(std::move(runner), prep.ctx);
+        ASSERT_TRUE(bc().force_dao_v2_reshare_runner_success_for_test(prep.fake));
+        ASSERT_TRUE(bc().commit_dao_v2_reshare_for_test());
+    }
+
+    for (uint64_t id : {base, base + 1, base + 2}) {
+        dao::dao_share_set_record ss;
+        ASSERT_TRUE(db().get_dao_share_set(id, ss));
+    }
+
+    // Purge path used by the reorg activation rollback.
+    db().block_wtxn_start();
+    bc().purge_dao_share_sets_for_key_id_for_test(fx.record.key_id);
+    db().block_wtxn_stop();
+
+    for (uint64_t id : {base, base + 1, base + 2}) {
+        dao::dao_share_set_record ss;
+        EXPECT_FALSE(db().get_dao_share_set(id, ss));
+    }
+}
+
 } // namespace
 
 TEST_F(DaoClReshareChain, reshare_commit_installs_new_share_set)
@@ -671,6 +762,8 @@ TEST_F(DaoClReshareChain, two_commits_same_key_install_two_share_sets)
         auto prep = prep_commit(fx, base_ssid + round,
                                 /*is_local_new_member=*/true,
                                 /*local_new_pos0=*/0);
+        if (round > 1)
+            prep.ctx.old_share_set_id = base_ssid + round - 1;
         auto net = dao::dkg_make_inproc_network(3);
         auto runner = std::make_unique<dao::cl_reshare_p2p_runner>(
             dao::cl_reshare_config{}, std::move(net.endpoints[0]));

@@ -1125,7 +1125,13 @@ block Blockchain::pop_block_from_blockchain()
       const uint64_t ssid = static_cast<uint64_t>(
           dao::share_set_id_for_key_id(act.record.key_id));
 
-      try { m_db->remove_dao_share_set(ssid); } catch (...) {}
+      // Purge every share set belonging to this key — the bootstrap
+      // set plus any reshare descendants. Descendants are only valid
+      // while the bootstrap activation is on chain; leaving them behind
+      // would let a later reshare chain to a stale predecessor and
+      // would let tally certificates bind to a noncanonical share set.
+      try { purge_dao_share_sets_for_key_id(act.record.key_id); }
+      catch (...) { try { m_db->remove_dao_share_set(ssid); } catch (...) {} }
 
       if (act.record.key_id.size() == 32)
         try { m_db->remove_dao_tally_key_by_id(act.record.key_id); }
@@ -10694,6 +10700,22 @@ dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
   // allocated at start and freed only when the runner is destroyed.
   // ------------------------------------------------------------------
 
+  void Blockchain::purge_dao_share_sets_for_key_id(
+      const std::vector<uint8_t>& key_id)
+  {
+    if (key_id.size() != 32) return;
+    std::vector<uint64_t> to_remove;
+    m_db->for_all_dao_share_sets(
+        [&](uint64_t id, const dao::dao_share_set_record& rec) -> bool {
+          if (rec.key_id.size() == 32 &&
+              std::memcmp(rec.key_id.data(), key_id.data(), 32) == 0)
+            to_remove.push_back(id);
+          return true;
+        });
+    for (uint64_t id : to_remove)
+      m_db->remove_dao_share_set(id);
+  }
+
   uint64_t Blockchain::latest_share_set_id_for_key_id(
       const std::vector<uint8_t>& key_id) const
   {
@@ -11389,6 +11411,38 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
     new_ss.base_share_set_id    = m_dao_v2_reshare_commit.old_share_set_id;
     new_ss.cl_gammas_serialized = rres.new_gammas_serialized;
     new_ss.qualified_ids        = rres.qualified_ids;
+
+    // Lineage guard: commit-time validation of the reshare transition.
+    // The runner was started against a predecessor share set. Between
+    // start and commit, a competing reshare or a reorg may have moved
+    // the active share set. Committing against a stale predecessor
+    // would fork the lineage and let certificates bind to a share set
+    // that is no longer canonical. Fail closed.
+    {
+      dao::dao_share_set_record pred_ss;
+      if (!m_db->get_dao_share_set(
+              m_dao_v2_reshare_commit.old_share_set_id, pred_ss)) {
+        MWARNING("CL reshare: predecessor share set missing");
+        clear_runner(); return false;
+      }
+      if (pred_ss.key_id != m_dao_v2_reshare_commit.key_id) {
+        MWARNING("CL reshare: predecessor key_id mismatch");
+        clear_runner(); return false;
+      }
+      const uint64_t latest =
+          latest_share_set_id_for_key_id(m_dao_v2_reshare_commit.key_id);
+      if (latest != m_dao_v2_reshare_commit.old_share_set_id) {
+        MWARNING("CL reshare: predecessor is not the current active set ("
+                 << m_dao_v2_reshare_commit.old_share_set_id
+                 << " vs latest " << latest << ")");
+        clear_runner(); return false;
+      }
+      if (m_dao_v2_reshare_commit.new_share_set_id !=
+              m_dao_v2_reshare_commit.old_share_set_id + 1) {
+        MWARNING("CL reshare: successor id is not old+1");
+        clear_runner(); return false;
+      }
+    }
 
     bool started = false;
     try { m_db->block_wtxn_start(); started = true; }

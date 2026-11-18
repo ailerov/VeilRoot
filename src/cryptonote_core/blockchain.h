@@ -1572,6 +1572,7 @@ namespace cryptonote
   // returns false when persistence failed, in which case the runner
   // and its result are preserved for retry on the next idle tick.
   bool maybe_commit_dao_v2_reshare();
+  void purge_dao_share_sets_for_key_id(const std::vector<uint8_t>& key_id);
 
   // At voting-end, if the chain-state ready roster differs from the
   // acceptance-time committee for this proposal, start a reshare
@@ -1673,6 +1674,10 @@ namespace cryptonote
     std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
     m_dao_v2_reshare_runner = std::move(runner);
     m_dao_v2_reshare_commit = ctx;
+  }
+  void purge_dao_share_sets_for_key_id_for_test(
+      const std::vector<uint8_t>& key_id) {
+    purge_dao_share_sets_for_key_id(key_id);
   }
   void force_dao_v2_local_share_pack_fail_for_test(bool v) {
     m_dao_v2_local_share_pack_fail_for_test = v;
