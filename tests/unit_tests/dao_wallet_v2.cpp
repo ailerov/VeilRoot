@@ -366,8 +366,8 @@ TEST(dao_wallet_v2, no_vote_tampered_direction_fails)
 // age_factor_from_height returns 5 (raw = 31000/720 = 43; floor(log2(44)) = 5).
 // W_total is f_real * sum(real_amount) = 5 * sum(real_amount). All values
 // below are inside W_MAX = 240000000 * 10^12 = 2.4e20 and above
-// 2^64 = 18446744073709551616, so they exercise the P1.1 overflow fix
-// without leaving the protocol's accepted range. On the pre-P1.1 code
+// 2^64 = 18446744073709551616, so they exercise the overflow guard
+// without leaving the protocol's accepted range.
 // the accumulations and BN_set_word truncate above 2^64, so decrypt
 // returns the wrapped value.
 

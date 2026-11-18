@@ -590,42 +590,6 @@ bool dao_evaluate_v2_tally(
     return true;
 }
 
-// ------------------------------------------------------------------
-// valid_share_set and bootstrap synthesis
-// ------------------------------------------------------------------
-
-namespace {
-
-bool valid_share_set(const dao_tally_key_record& key_rec,
-                     const dao_share_set_record& share_set)
-{
-    if (share_set.version != 1) return false;
-    if (share_set.share_set_id == 0) return false;
-    if (share_set.threshold == 0) return false;
-    if (share_set.threshold > share_set.committee_members.size()) return false;
-    if (share_set.committee_members.empty()) return false;
-    if (share_set.committee_members.size() > DAO_DKG_MAX_COMMITTEE_SIZE)
-        return false;
-    if (share_set.VK_i.size() != share_set.committee_members.size())
-        return false;
-    if (share_set.key_id.size() != key_rec.key_id.size()) return false;
-    if (share_set.key_id != key_rec.key_id) return false;
-    if (share_set.committee_id_hash.size() != 32) return false;
-
-    for (size_t i = 0; i < share_set.committee_members.size(); ++i) {
-        if (share_set.committee_members[i].size() != 32) return false;
-        if (share_set.VK_i[i].size() != PAILLIER_CT_BYTES) return false;
-        for (size_t j = 0; j < i; ++j) {
-            if (share_set.committee_members[i] ==
-                share_set.committee_members[j])
-                return false;
-        }
-    }
-    return true;
-}
-
-} // namespace
-
 uint32_t share_set_id_for_key_id(const std::vector<uint8_t>& key_id)
 {
     if (key_id.size() != 32) return 0;
@@ -639,30 +603,6 @@ uint32_t share_set_id_for_key_id(const std::vector<uint8_t>& key_id)
     v &= 0xFFFFFFFEu;   // force even
     if (v < 2) v = 2;   // reserve 0 and 1
     return v;
-}
-
-bool dao_synthesize_bootstrap_share_set(
-    const dao_tally_key_record& key_rec,
-    dao_share_set_record& out,
-    uint64_t share_set_id)
-{
-    if (key_rec.V_K_i.size() != key_rec.committee_size) return false;
-    if (key_rec.committee_members.size() != key_rec.committee_size)
-        return false;
-    if (key_rec.key_id.size() != 32) return false;
-
-    out = dao_share_set_record{};
-    out.version      = 1;
-    out.share_set_id = share_set_id;
-    out.height       = key_rec.activation_height;
-    out.threshold    = key_rec.threshold;
-    out.key_id       = key_rec.key_id;
-    out.committee_members = key_rec.committee_members;
-    out.VK_i         = key_rec.V_K_i;
-    out.committee_id_hash.assign(32, 0);
-    SHA256(reinterpret_cast<const unsigned char*>(key_rec.committee_id_hash.data()),
-           32, out.committee_id_hash.data());
-    return true;
 }
 
 // ------------------------------------------------------------------

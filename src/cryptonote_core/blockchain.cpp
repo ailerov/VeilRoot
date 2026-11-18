@@ -11936,19 +11936,17 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
 
     void Blockchain::install_dao_tally_key_for_proposal_for_test(
       const dao::dao_tally_key_record& record,
+      const dao::dao_share_set_record& share_set,
       const std::vector<uint8_t>& local_share_bytes)
   {
     m_db->block_wtxn_start();
     try {
       if (record.key_id.size() != 32)
         throw std::runtime_error("bad key_id");
+      if (share_set.key_id != record.key_id)
+        throw std::runtime_error("share_set.key_id != record.key_id");
       m_db->add_dao_tally_key_by_id(record.key_id, record);
-
-      const uint64_t derived_id =
-          static_cast<uint64_t>(dao::share_set_id_for_key_id(record.key_id));
-      dao::dao_share_set_record share_set;
-      if (dao::dao_synthesize_bootstrap_share_set(record, share_set, derived_id))
-        m_db->add_dao_share_set(derived_id, share_set);
+      m_db->add_dao_share_set(share_set.share_set_id, share_set);
 
       crypto::public_key self_pk{};
       if (crypto::secret_key_to_public_key(m_node_privkey, self_pk) &&
@@ -11966,8 +11964,8 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
           std::vector<uint8_t> packed = dao::dao_pack_local_share(
               record.key_id, local_share_bytes);
           if (!packed.empty())
-            m_db->add_dao_local_share(static_cast<uint32_t>(derived_id),
-                                       idx, packed);
+            m_db->add_dao_local_share(
+                static_cast<uint32_t>(share_set.share_set_id), idx, packed);
         }
       }
     } catch (...) {

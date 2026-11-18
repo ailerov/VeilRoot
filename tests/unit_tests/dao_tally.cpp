@@ -116,7 +116,7 @@ TEST(dao_evaluate_v2_tally, percent_out_of_range_rejected)
 }
 
 #ifdef VEILROOT_DAO_DKG_TESTING
-// --- P1.2 decoder overflow tests ---
+// --- decoder overflow tests ---
 
 TEST(dao_tally_decode, bn_to_u128_accepts_2p128_minus_1)
 {

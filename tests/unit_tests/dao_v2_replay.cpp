@@ -410,21 +410,26 @@ bool build_v2_vote_fixture(V2VoteFixture& fx, const std::string& tag)
         rec.t              = 1;
         rec.committee_id_hash.assign(32, 0);
         rec.committee_members.assign(3, std::vector<uint8_t>(32, 0));
-        // Placeholders: the legacy serializer still requires these
-        // sizes. They carry no meaning on the CL path.
-        rec.delta.assign(32, 0);
-        rec.N.assign(256, 0);
-        rec.G.assign(256, 0);
-        rec.theta.assign(256, 0);
-        rec.V.assign(512, 0);
-        rec.V_K_i.assign(3, std::vector<uint8_t>(512, 0));
         rec.cl_modulus = cl_key.context_wire;
         rec.activation_height = 1;
         rec.dkg_transcript_hash.assign(32, 0);
         rec.key_id.assign(32, 0);
         std::memset(rec.key_id.data(), 0x5A, 32);
         fx.key_rec = rec;
-        bc_a.install_dao_tally_key_for_proposal_for_test(rec, {});
+
+        dao::dao_share_set_record ss{};
+        ss.version           = 3;
+        ss.share_set_id      = static_cast<uint64_t>(
+                                   dao::share_set_id_for_key_id(rec.key_id));
+        ss.height            = rec.activation_height;
+        ss.threshold         = rec.threshold;
+        ss.key_id            = rec.key_id;
+        ss.committee_members = rec.committee_members;
+        ss.committee_id_hash.assign(32, 0);
+        ss.cl_gammas_serialized.assign(8, 0);
+        ss.qualified_ids     = {0, 1, 2};
+
+        bc_a.install_dao_tally_key_for_proposal_for_test(rec, ss, {});
     }
 
     // Mine empty blocks so real coinbase outputs exist.

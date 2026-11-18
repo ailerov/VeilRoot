@@ -1471,11 +1471,12 @@ namespace cryptonote
   // the activation path must not use this.
 
   // Per-proposal install: writes the key by-id only (no singleton),
-  // synthesizes the share set under the derived id, stores the local
-  // share under that same id, at the position matching this node's
-  // pubkey.
+  // installs the caller-supplied share set under its declared
+  // share_set_id and stores the local share under the same id, at the
+  // position matching this node's pubkey.
   void install_dao_tally_key_for_proposal_for_test(
       const dao::dao_tally_key_record& record,
+      const dao::dao_share_set_record& share_set,
       const std::vector<uint8_t>& local_share_bytes);
 
   // Test-only: install a CL key record + its initial share set + this

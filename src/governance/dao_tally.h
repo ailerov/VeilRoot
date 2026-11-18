@@ -173,11 +173,6 @@ bool dao_evaluate_v2_tally(
 // (none), 1 (bootstrap).
 uint32_t share_set_id_for_key_id(const std::vector<uint8_t>& key_id);
 
-bool dao_synthesize_bootstrap_share_set(
-    const dao_tally_key_record& key_rec,
-    dao_share_set_record& out,
-    uint64_t share_set_id = 1);
-
 // Build a tally certificate. The key record must carry a CL key
 // context. The share set must be a CL share set (v3) with a Gamma map
 // and a qualified-id list, matching the key record's key_id. Partial
