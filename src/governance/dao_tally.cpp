@@ -242,6 +242,7 @@ bool dao_tally_certificate::serialize(std::vector<uint8_t>& out) const
     push_u8(out, quorum_met ? 1 : 0);
     push_u8(out, majority_met ? 1 : 0);
     push_u8(out, passed ? 1 : 0);
+    push_u64(out, per_event_share_set_id);
     return true;
 }
 
@@ -278,6 +279,7 @@ bool dao_tally_certificate::deserialize(const std::vector<uint8_t>& in)
     quorum_met   = (in[off++] != 0);
     majority_met = (in[off++] != 0);
     passed       = (in[off++] != 0);
+    if (!pull_u64(in, off, per_event_share_set_id)) return false;
     return off == in.size();
 }
 
@@ -505,6 +507,7 @@ bool dao_build_tally_certificate(
     cert_out.proposal_id = proposal_id;
     cert_out.vote_end_height = vote_end_height;
     cert_out.key_id = key_rec.key_id;
+    cert_out.per_event_share_set_id = share_set.share_set_id;
     cert_out.aggregate_ciphertext_hash =
         dao_aggregate_ciphertext_hash(E_W, E_S, E_B);
     cert_out.W = W_set;
@@ -533,6 +536,8 @@ bool dao_verify_tally_certificate(
     if (cert.key_id.size() != 32) return false;
     if (std::memcmp(cert.key_id.data(), key_rec.key_id.data(), 32) != 0)
         return false;
+    if (cert.per_event_share_set_id == 0) return false;
+    if (share_set.share_set_id != cert.per_event_share_set_id) return false;
     if (cert.vote_end_height != supply_at_vote_end.height) return false;
 
     dao_tally_certificate recomputed;
@@ -546,6 +551,8 @@ bool dao_verify_tally_certificate(
     if (recomputed.S_abs      != cert.S_abs)      return false;
     if (recomputed.B_total    != cert.B_total)    return false;
     if (recomputed.aggregate_ciphertext_hash != cert.aggregate_ciphertext_hash)
+        return false;
+    if (recomputed.per_event_share_set_id != cert.per_event_share_set_id)
         return false;
 
     const dao_u128 W_rec     = recomputed.W_total;

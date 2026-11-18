@@ -11845,22 +11845,23 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
       return false;
     }
 
-    // Certificate verification requires the currently active share
-    // set to supply the Gamma map and the qualified ids for the
-    // threshold combination.
+    // Certificate verification loads the share set the certificate
+    // commits to, so a reshare that lands between production and
+    // chain inclusion does not change the Gamma map the certificate
+    // is checked against.
     if (key_rec.cl_modulus.empty()) {
       MERROR("tally-result: key record carries no CL context");
       return false;
     }
     {
       dao::dao_share_set_record share_set;
-      uint64_t ssid = latest_share_set_id_for_key_id(key_rec.key_id);
-      if (ssid == 0) {
-        MERROR("tally-result: no active share set for CL key");
+      if (cert.per_event_share_set_id == 0) {
+        MERROR("tally-result: certificate carries no share set id");
         return false;
       }
-      if (!m_db->get_dao_share_set(ssid, share_set)) {
-        MERROR("tally-result: share set " << ssid << " missing");
+      if (!m_db->get_dao_share_set(cert.per_event_share_set_id, share_set)) {
+        MERROR("tally-result: share set "
+               << cert.per_event_share_set_id << " missing");
         return false;
       }
       if (!dao::dao_verify_tally_certificate(

@@ -247,6 +247,10 @@ TEST(DaoClTallyE2E, full_cycle_yes_vote_passes)
         key_rec, share_set, proposal_id, /*vote_end_height=*/1000,
         E_W, E_S, E_B, W_set, S_set, B_set, cert));
 
+    // Certificate must commit to the exact share set used for build.
+    EXPECT_EQ(cert.per_event_share_set_id, share_set.share_set_id);
+    EXPECT_NE(cert.per_event_share_set_id, 0u);
+
     // Totals match.
     EXPECT_EQ(cert.W_total, dao_u128(100));
     EXPECT_EQ(cert.S_abs,   dao_u128(100));
@@ -269,6 +273,19 @@ TEST(DaoClTallyE2E, full_cycle_yes_vote_passes)
     EXPECT_EQ(cert.YES_weight, dao_u128(100));
     EXPECT_EQ(cert.NO_weight,  dao_u128(0));
     EXPECT_EQ(cert.quorum_threshold, dao_u128(100000));
+
+    // Wire round-trip preserves the share-set commitment.
+    {
+        std::vector<uint8_t> cw;
+        ASSERT_TRUE(cert.serialize(cw));
+        dao_tally_certificate cert_rt;
+        ASSERT_TRUE(cert_rt.deserialize(cw));
+        EXPECT_EQ(cert_rt.per_event_share_set_id, cert.per_event_share_set_id);
+        EXPECT_EQ(cert_rt.key_id, cert.key_id);
+        EXPECT_EQ(cert_rt.vote_end_height, cert.vote_end_height);
+        EXPECT_EQ(cert_rt.W_total, cert.W_total);
+        EXPECT_EQ(cert_rt.YES_weight, cert.YES_weight);
+    }
 }
 
 } // namespace

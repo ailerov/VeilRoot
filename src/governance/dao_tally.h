@@ -64,7 +64,7 @@ struct dao_partial_set
 
 struct dao_tally_certificate
 {
-    static constexpr uint8_t WIRE_VERSION = 7;
+    static constexpr uint8_t WIRE_VERSION = 8;
 
     crypto::hash         proposal_id;
     uint64_t             vote_end_height = 0;
@@ -89,18 +89,13 @@ struct dao_tally_certificate
     bool                 majority_met     = false;
     bool                 passed           = false;
 
-    // --- reshare evidence ---
-    // All zero / empty means the committee equals the acceptance-time
-    // committee; partials verify against the CL share-set gamma map.
-    //
-    // When per_event_share_set_id != 0, the cert claims a reshare
-    // occurred. The evidence is verified against these fields
-    // instead of key_rec's; certs whose evidence does not verify
-    // are rejected.
+    // The share-set id the partials were produced under. Verify loads
+    // this specific share set from consensus state and checks the
+    // partial decryptions against its Gamma map. Binding to the id
+    // (rather than "latest") means a reshare that lands after the
+    // certificate is produced does not change the Gamma map the
+    // certificate is verified against.
     uint64_t                              per_event_share_set_id = 0;
-    uint32_t                              threshold              = 0;
-    std::vector<std::vector<uint8_t>>     member_pubkeys;   // 32 bytes each
-    uint64_t                              base_share_set_id = 0;
 
     bool serialize(std::vector<uint8_t>& out) const;
     bool deserialize(const std::vector<uint8_t>& in);
