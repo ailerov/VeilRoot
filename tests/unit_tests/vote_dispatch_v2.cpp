@@ -207,22 +207,13 @@ protected:
     void store_tally_key(uint64_t activation_height)
     {
         dao::dao_tally_key_record rec;
-        rec.version = 1;
+        rec.version = dao::dao_tally_key_record::CL_WIRE_VERSION;
         rec.committee_size = 16;
         rec.threshold = 8;
         rec.t = 7;
         rec.committee_id_hash.assign(32, 0);
         rec.committee_members.assign(16, std::vector<uint8_t>(32, 0));
-        rec.delta.assign(32, 0);
-        rec.N.assign(256, 0);
-        rec.G.assign(256, 0);
-        rec.theta.assign(256, 0);
-        rec.V.assign(512, 0);
-        rec.V_K_i.assign(16, std::vector<uint8_t>(512, 0));
-        rec.vss_P.assign(64, 0);
-        rec.vss_P_prime.assign(64, 0);
-        rec.vss_g.assign(1, 4);
-        rec.vss_h.assign(64, 0);
+        rec.cl_modulus.assign(48, 0xAA);
         rec.activation_height = activation_height;
         rec.dkg_transcript_hash.assign(32, 0);
         rec.key_id.assign(32, 0);

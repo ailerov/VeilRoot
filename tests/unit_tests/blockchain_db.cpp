@@ -540,7 +540,7 @@ TYPED_TEST(BlockchainDBTest, DaoShareSetRoundTrip)
 
   auto make_record = [](uint64_t id, uint8_t fill) {
     dao::dao_share_set_record r;
-    r.version = 1;
+    r.version = 3;
     r.share_set_id = id;
     r.height = 1000 + id;
     r.threshold = 2;
@@ -548,8 +548,9 @@ TYPED_TEST(BlockchainDBTest, DaoShareSetRoundTrip)
     r.committee_id_hash.assign(32, static_cast<uint8_t>(0x10 + fill));
     for (int i = 0; i < 3; ++i) {
       r.committee_members.push_back(std::vector<uint8_t>(32, fill + i));
-      r.VK_i.push_back(std::vector<uint8_t>(512, fill + i));
     }
+    r.cl_gammas_serialized.assign(64, static_cast<uint8_t>(0x80 + fill));
+    r.qualified_ids = {0u, 1u, 2u};
     return r;
   };
 
@@ -568,7 +569,6 @@ TYPED_TEST(BlockchainDBTest, DaoShareSetRoundTrip)
     EXPECT_EQ(got.threshold, 2u);
     EXPECT_EQ(got.committee_id_hash, rec1.committee_id_hash);
     EXPECT_EQ(got.committee_members, rec1.committee_members);
-    EXPECT_EQ(got.VK_i, rec1.VK_i);
   }
 
   // Historical retention.

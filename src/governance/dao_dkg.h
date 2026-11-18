@@ -380,7 +380,6 @@ struct dao_partial_decryption_proof
 //   t                   -> DKG sharing degree (threshold - 1)
 //   committee_members   -> DKG committee member public keys
 //   committee_id_hash   -> DKG committee set hash
-//   V_K_i               -> per-member Paillier verification keys
 //
 // The whitepaper forbids a permanent GOVERNANCE committee. It does not
 // forbid the underlying distributed key-share custodians from
@@ -388,9 +387,9 @@ struct dao_partial_decryption_proof
 // ====================================================================
 
 // A share set is the set of nodes that hold shares of one
-// Paillier key, together with their per-member verification
-// keys VK_j = V^(Delta * s_j). It is independent of the key record:
-// resharing produces a new share set without changing N, V, or theta.
+// threshold key, together with the CL Gamma map that publishes
+// per-member verification state. It is independent of the key record:
+// resharing produces a new share set without changing the public key.
 //
 // share_set_id is a monotone uint64 used to bind protocol messages
 // and prevent replay. The public key does not
@@ -407,23 +406,11 @@ struct dao_share_set_record
     std::vector<uint8_t> key_id;                // 32 bytes; stable key this set belongs to
     std::vector<uint8_t> committee_id_hash;     // 32 bytes
     std::vector<std::vector<uint8_t>> committee_members;  // 32 bytes each
-    std::vector<std::vector<uint8_t>> VK_i;     // PAILLIER_CT_BYTES each
-
-    // v2 evidence: how this share set was derived from a base set via
-    // reshare. Empty for bootstrap/direct DKG sets. Populated for
-    // reshared sets. Producers copy these into tally certificates so
-    // validators can verify the reshare back to the base share set.
     uint64_t                              base_share_set_id = 0;
-    std::vector<std::vector<uint8_t>>     contributions;
-    std::vector<uint32_t>                 contributor_indices;
-    std::vector<std::vector<uint8_t>>     contributor_vk;  // base set VK_i
 
-    // CL share-set material. Empty for Paillier records. When both
-    // are empty, the record is emitted as v2 (Paillier-compatible
-    // format). When populated, the record is emitted as v3, which
-    // carries no Paillier VK_i and no Paillier reshare evidence; the
-    // public verification state is the serialized CL Gamma map plus
-    // the sorted qualified participant ids.
+    // CL share-set material. The public verification state is the
+    // serialized CL Gamma map plus the sorted qualified participant
+    // ids.
     std::vector<uint8_t>  cl_gammas_serialized;
     std::vector<uint32_t> qualified_ids;
 
@@ -488,22 +475,6 @@ struct dao_tally_key_record
     // committee.
     std::vector<std::vector<uint8_t>> committee_members;  // 32 bytes each
 
-    std::vector<uint8_t> delta;               // 32 bytes, canonical big-endian
-
-    std::vector<uint8_t> N;                   // 256 bytes
-    std::vector<uint8_t> G;                   // 256 bytes, canonical big-endian (N+1)
-
-    std::vector<uint8_t> theta;               // 256 bytes, canonical big-endian
-
-    std::vector<uint8_t> V;                   // 512 bytes, verification base
-    std::vector<std::vector<uint8_t>> V_K_i;  // one per member, 512 bytes each
-
-    // VSS group public parameters.
-    std::vector<uint8_t> vss_P;
-    std::vector<uint8_t> vss_P_prime;
-    std::vector<uint8_t> vss_g;
-    std::vector<uint8_t> vss_h;
-
     // CL-over-class-groups public parameters. Canonical layout is
     // defined by cl_key_context (dao_crypto_backend.h), including the
     // immutable interpolation scale D. Because key_id =
@@ -519,11 +490,7 @@ struct dao_tally_key_record
     bool serialize(std::vector<uint8_t>& out) const;
     bool deserialize(const std::vector<uint8_t>& in);
 
-    // CL-only wire format. Round-trips records that carry a non-empty
-    // cl_modulus and no Paillier fields. Reader accepts both.
     static constexpr inline uint32_t CL_WIRE_VERSION = 2;
-    bool serialize_cl(std::vector<uint8_t>& out) const;
-    bool deserialize_cl(const std::vector<uint8_t>& in);
 };
 
 // ====================================================================
@@ -630,10 +597,6 @@ struct dkg_result
     bool                 ok                       = false;
     bool                 candidate_accepted       = false;
     uint64_t             selection_height         = 0;
-    std::vector<uint8_t> N;
-    std::vector<uint8_t> theta;
-    std::vector<uint8_t> V;
-    std::vector<std::vector<uint8_t>> V_K_i;
     std::vector<uint8_t> key_id;
     uint32_t             candidate_attempts       = 0;
     uint32_t             biprimality_failures     = 0;

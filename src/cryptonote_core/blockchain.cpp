@@ -10637,7 +10637,7 @@ dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
       rec.key_id.assign(32, 0);
       {
         std::vector<uint8_t> kb;
-        if (rec.serialize_cl(kb))
+        if (rec.serialize(kb))
           SHA256(kb.data(), kb.size(), rec.key_id.data());
       }
 

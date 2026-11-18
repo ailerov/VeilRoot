@@ -47,7 +47,7 @@ public:
     // same order as the selected members. Its entries are the
     // bootstrap DKG member indices, which are what the certificate
     // carries and what the verify path matches against
-    // key_rec.V_K_i[index-1].
+    // the CL share-set gamma at the same position.
     bool build_tally_result_transaction(
         const crypto::hash& proposal_id,
         const std::map<crypto::public_key, dao::dao_v2_tally_share>& shares,

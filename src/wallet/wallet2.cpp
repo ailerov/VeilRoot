@@ -17454,21 +17454,21 @@ wallet2::vote_tx_result wallet2::create_vote_v2_tx(
     const boost::lock_guard<boost::recursive_mutex> lock{m_daemon_rpc_mutex};
     bool r = net_utils::invoke_http_json_rpc("/json_rpc", "get_dao_tally_key",
         tk_req, tk_res, *m_http_client, rpc_timeout);
-    if (!r || tk_res.modulus.empty() || tk_res.key_id.empty())
+    if (!r || tk_res.cl_key_context.empty() || tk_res.key_id.empty())
     {
       result.error = "Failed to fetch tally key";
       return result;
     }
   }
-  std::string modulus_str, key_id_str;
-  if (!epee::string_tools::parse_hexstr_to_binbuff(tk_res.modulus, modulus_str) ||
+  std::string cl_key_str, key_id_str;
+  if (!epee::string_tools::parse_hexstr_to_binbuff(tk_res.cl_key_context, cl_key_str) ||
       !epee::string_tools::parse_hexstr_to_binbuff(tk_res.key_id, key_id_str) ||
-      modulus_str.size() != 256 || key_id_str.size() != 32)
+      cl_key_str.empty() || key_id_str.size() != 32)
   {
     result.error = "Malformed tally key";
     return result;
   }
-  std::vector<uint8_t> modulus_bytes(modulus_str.begin(), modulus_str.end());
+  std::vector<uint8_t> cl_key_ctx_bytes(cl_key_str.begin(), cl_key_str.end());
   crypto::hash tally_key_id{};
   std::memcpy(tally_key_id.data, key_id_str.data(), 32);
 
@@ -17568,7 +17568,7 @@ wallet2::vote_tx_result wallet2::create_vote_v2_tx(
         submission_height,
         vote_height,
         tally_key_id,
-        modulus_bytes,
+        cl_key_ctx_bytes,
         direction,
         outputs,
         tx))

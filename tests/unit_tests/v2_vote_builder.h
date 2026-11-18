@@ -252,21 +252,12 @@ inline bool build_valid_vote(
         return false;
 
     // --- Tally key record (CL). Paillier placeholder fields are
-    // filled to satisfy the legacy serializer; the CL path is selected
-    // by cl_modulus being non-empty. They carry no cryptographic
-    // meaning and go away when Paillier is retired.
-    fx.key_rec.version        = 1;
+    fx.key_rec.version        = 2;
     fx.key_rec.committee_size = 16;
     fx.key_rec.threshold      = 8;
     fx.key_rec.t              = 7;
     fx.key_rec.committee_id_hash.assign(32, 0);
     fx.key_rec.committee_members.assign(16, std::vector<uint8_t>(32, 0));
-    fx.key_rec.delta.assign(32, 0);
-    fx.key_rec.N.assign(256, 0);
-    fx.key_rec.G.assign(256, 0);
-    fx.key_rec.theta.assign(256, 0);
-    fx.key_rec.V.assign(512, 0);
-    fx.key_rec.V_K_i.assign(16, std::vector<uint8_t>(512, 0));
     fx.key_rec.cl_modulus     = cl_key.context_wire;
     fx.key_rec.activation_height = 1;
     fx.key_rec.dkg_transcript_hash.assign(32, 0);

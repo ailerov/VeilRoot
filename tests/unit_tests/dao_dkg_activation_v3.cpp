@@ -12,10 +12,10 @@ namespace cryptonote {
 namespace dao {
 namespace {
 
-static dao_tally_key_record make_key_rec(bool cl)
+static dao_tally_key_record make_key_rec()
 {
     dao_tally_key_record r;
-    r.version            = 1;
+    r.version            = 2;
     r.committee_size     = 3;
     r.threshold          = 2;
     r.t                  = 1;
@@ -23,19 +23,7 @@ static dao_tally_key_record make_key_rec(bool cl)
     r.committee_members.assign(3, std::vector<uint8_t>(32, 0x33));
     r.key_id.assign(32, 0x55);
     r.dkg_transcript_hash.assign(32, 0x99);
-    if (cl) {
-        r.cl_modulus.assign(48, 0xAA);
-        r.delta.assign(32, 0x00);
-        r.N.clear(); r.G.clear(); r.theta.clear(); r.V.clear();
-        r.V_K_i.clear();
-    } else {
-        r.delta.assign(32, 0x00);
-        r.N.assign(PAILLIER_MODULUS_BYTES, 0x11);
-        r.G.assign(PAILLIER_MODULUS_BYTES, 0x12);
-        r.theta.assign(PAILLIER_MODULUS_BYTES, 0x13);
-        r.V.assign(PAILLIER_CT_BYTES, 0x14);
-        r.V_K_i.assign(3, std::vector<uint8_t>(PAILLIER_CT_BYTES, 0x44));
-    }
+    r.cl_modulus.assign(48, 0xAA);
     return r;
 }
 
@@ -61,7 +49,7 @@ TEST(DaoDkgKeyActivationV3, v2_roundtrip_without_share_set)
     a.selection_height = 50;
     a.proposal_id      = crypto::null_hash;
     std::memset(a.proposal_id.data, 0x01, 32);
-    a.record           = make_key_rec(false);
+    a.record           = make_key_rec();
     for (uint32_t i = 1; i <= 3; ++i) {
         dao_dkg_key_attestation att;
         att.member_index = i;
@@ -89,7 +77,7 @@ TEST(DaoDkgKeyActivationV3, v3_roundtrip_with_share_set)
     a.version          = 3;
     a.selection_height = 50;
     std::memset(a.proposal_id.data, 0x01, 32);
-    a.record           = make_key_rec(false);
+    a.record           = make_key_rec();
     a.initial_share_set = make_cl_share_set();
     for (uint32_t i = 1; i <= 3; ++i) {
         dao_dkg_key_attestation att;
@@ -121,7 +109,7 @@ TEST(DaoDkgKeyActivationV3, digest_v3_binds_share_set)
     crypto::hash prop{};
     std::memset(prop.data, 0x11, 32);
 
-    auto rec = make_key_rec(false);
+    auto rec = make_key_rec();
     auto ss = make_cl_share_set();
 
     auto d1 = dao_dkg_activation_digest_v3(genesis, 50, rec, ss, prop);
@@ -146,7 +134,7 @@ TEST(DaoDkgKeyActivationV3, rejects_unsorted_attestations)
 {
     dao_dkg_key_activation a;
     a.version = 3;
-    a.record = make_key_rec(false);
+    a.record = make_key_rec();
     a.initial_share_set = make_cl_share_set();
     for (uint32_t i : {2u, 1u, 3u}) {
         dao_dkg_key_attestation att;
@@ -162,7 +150,7 @@ TEST(DaoDkgKeyActivationV3, rejects_trailing_bytes)
 {
     dao_dkg_key_activation a;
     a.version = 3;
-    a.record = make_key_rec(false);
+    a.record = make_key_rec();
     a.initial_share_set = make_cl_share_set();
     dao_dkg_key_attestation att;
     att.member_index = 1;

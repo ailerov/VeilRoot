@@ -127,7 +127,6 @@ set(unit_tests_sources
   dao_wallet_v2.cpp
   dao_v2_replay.cpp
   treasury_validation.cpp
-  dao_share_set_record.cpp
   voting_weight.cpp
   vns_transfer.cpp)
 

@@ -686,45 +686,20 @@ bool dao_share_set_record::serialize(std::vector<uint8_t>& out) const
 {
     if (key_id.size() != 32) return false;
     if (committee_id_hash.size() != 32) return false;
-    if (committee_members.size() == 0) return false;
+    if (committee_members.empty()) return false;
     if (threshold == 0 || threshold > committee_members.size()) return false;
     for (const auto& m : committee_members)
         if (m.size() != 32) return false;
 
-    // CL share-set wire format v3. Emitted only when the record
-    // carries CL material; Paillier-only records stay on v2 so that
-    // existing on-disk state and historical decoding are unchanged.
-    const bool is_cl =
-        !cl_gammas_serialized.empty() || !qualified_ids.empty();
-    if (is_cl) {
-        if (cl_gammas_serialized.empty()) return false;
-        for (uint32_t q : qualified_ids)
-            if (q >= committee_members.size()) return false;
-        for (size_t i = 1; i < qualified_ids.size(); ++i)
-            if (qualified_ids[i] <= qualified_ids[i - 1]) return false;
-
-        out.clear();
-        push_u32(out, 3);
-        push_u64(out, share_set_id);
-        push_u64(out, height);
-        push_u32(out, threshold);
-        push_bytes(out, key_id);
-        push_bytes(out, committee_id_hash);
-        push_u32(out, static_cast<uint32_t>(committee_members.size()));
-        for (const auto& m : committee_members) push_bytes(out, m);
-        push_u64(out, base_share_set_id);
-        push_bytes(out, cl_gammas_serialized);
-        push_u32(out, static_cast<uint32_t>(qualified_ids.size()));
-        for (uint32_t q : qualified_ids) push_u32(out, q);
-        return true;
-    }
-
-    if (committee_members.size() != VK_i.size()) return false;
-    for (const auto& vk : VK_i)
-        if (vk.size() != PAILLIER_CT_BYTES) return false;
+    if (cl_gammas_serialized.empty()) return false;
+    if (qualified_ids.empty()) return false;
+    for (uint32_t q : qualified_ids)
+        if (q >= committee_members.size()) return false;
+    for (size_t i = 1; i < qualified_ids.size(); ++i)
+        if (qualified_ids[i] <= qualified_ids[i - 1]) return false;
 
     out.clear();
-    push_u32(out, 2);   // always serialize as v2; evidence may be empty
+    push_u32(out, 3);
     push_u64(out, share_set_id);
     push_u64(out, height);
     push_u32(out, threshold);
@@ -732,16 +707,10 @@ bool dao_share_set_record::serialize(std::vector<uint8_t>& out) const
     push_bytes(out, committee_id_hash);
     push_u32(out, static_cast<uint32_t>(committee_members.size()));
     for (const auto& m : committee_members) push_bytes(out, m);
-    for (const auto& vk : VK_i) push_bytes(out, vk);
-
-    // v2 evidence
     push_u64(out, base_share_set_id);
-    push_u32(out, static_cast<uint32_t>(contributions.size()));
-    for (const auto& c : contributions) push_bytes(out, c);
-    push_u32(out, static_cast<uint32_t>(contributor_indices.size()));
-    for (uint32_t i : contributor_indices) push_u32(out, i);
-    push_u32(out, static_cast<uint32_t>(contributor_vk.size()));
-    for (const auto& v : contributor_vk) push_bytes(out, v);
+    push_bytes(out, cl_gammas_serialized);
+    push_u32(out, static_cast<uint32_t>(qualified_ids.size()));
+    for (uint32_t q : qualified_ids) push_u32(out, q);
     return true;
 }
 
@@ -750,48 +719,12 @@ bool dao_share_set_record::deserialize(const std::vector<uint8_t>& in)
     size_t off = 0;
     uint32_t v = 0;
     if (!pull_u32(in, off, v)) return false;
-    if (v != 1 && v != 2 && v != 3) return false;
+    if (v != 3) return false;
     version = v;
 
-    if (v == 3) {
-        // v3 CL layout.
-        cl_gammas_serialized.clear();
-        qualified_ids.clear();
-        VK_i.clear();
-        contributions.clear();
-        contributor_indices.clear();
-        contributor_vk.clear();
-        if (!pull_u64(in, off, share_set_id)) return false;
-        if (!pull_u64(in, off, height)) return false;
-        if (!pull_u32(in, off, threshold)) return false;
-        if (!pull_bytes(in, off, key_id)) return false;
-        if (key_id.size() != 32) return false;
-        if (!pull_bytes(in, off, committee_id_hash)) return false;
-        if (committee_id_hash.size() != 32) return false;
-        uint32_t n = 0;
-        if (!pull_u32(in, off, n)) return false;
-        if (n == 0 || n > 64) return false;
-        committee_members.assign(n, {});
-        for (uint32_t i = 0; i < n; ++i) {
-            if (!pull_bytes(in, off, committee_members[i])) return false;
-            if (committee_members[i].size() != 32) return false;
-        }
-        if (!pull_u64(in, off, base_share_set_id)) return false;
-        if (!pull_bytes(in, off, cl_gammas_serialized)) return false;
-        if (cl_gammas_serialized.empty()) return false;
-        uint32_t nq = 0;
-        if (!pull_u32(in, off, nq)) return false;
-        if (nq == 0 || nq > 64) return false;
-        qualified_ids.assign(nq, 0);
-        for (uint32_t i = 0; i < nq; ++i) {
-            if (!pull_u32(in, off, qualified_ids[i])) return false;
-            if (qualified_ids[i] >= committee_members.size()) return false;
-            if (i > 0 && qualified_ids[i] <= qualified_ids[i - 1]) return false;
-        }
-        if (threshold == 0 || threshold > committee_members.size())
-            return false;
-        return off == in.size();
-    }
+    cl_gammas_serialized.clear();
+    qualified_ids.clear();
+
     if (!pull_u64(in, off, share_set_id)) return false;
     if (!pull_u64(in, off, height)) return false;
     if (!pull_u32(in, off, threshold)) return false;
@@ -801,106 +734,30 @@ bool dao_share_set_record::deserialize(const std::vector<uint8_t>& in)
     if (committee_id_hash.size() != 32) return false;
     uint32_t n = 0;
     if (!pull_u32(in, off, n)) return false;
-    if (n == 0 || n > DAO_DKG_MAX_COMMITTEE_SIZE) return false;
-    if (threshold == 0 || threshold > n) return false;
+    if (n == 0 || n > 64) return false;
     committee_members.assign(n, {});
     for (uint32_t i = 0; i < n; ++i) {
         if (!pull_bytes(in, off, committee_members[i])) return false;
         if (committee_members[i].size() != 32) return false;
     }
-    VK_i.assign(n, {});
-    for (uint32_t i = 0; i < n; ++i) {
-        if (!pull_bytes(in, off, VK_i[i])) return false;
-        if (VK_i[i].size() != PAILLIER_CT_BYTES) return false;
+    if (!pull_u64(in, off, base_share_set_id)) return false;
+    if (!pull_bytes(in, off, cl_gammas_serialized)) return false;
+    if (cl_gammas_serialized.empty()) return false;
+    uint32_t nq = 0;
+    if (!pull_u32(in, off, nq)) return false;
+    if (nq == 0 || nq > 64) return false;
+    qualified_ids.assign(nq, 0);
+    for (uint32_t i = 0; i < nq; ++i) {
+        if (!pull_u32(in, off, qualified_ids[i])) return false;
+        if (qualified_ids[i] >= committee_members.size()) return false;
+        if (i > 0 && qualified_ids[i] <= qualified_ids[i - 1]) return false;
     }
-
-    base_share_set_id = 0;
-    contributions.clear();
-    contributor_indices.clear();
-    contributor_vk.clear();
-
-    if (version == 2) {
-        if (!pull_u64(in, off, base_share_set_id)) return false;
-
-        uint32_t nc = 0;
-        if (!pull_u32(in, off, nc)) return false;
-        if (nc > DAO_DKG_MAX_COMMITTEE_SIZE) return false;
-        contributions.assign(nc, {});
-        for (uint32_t i = 0; i < nc; ++i)
-            if (!pull_bytes(in, off, contributions[i])) return false;
-
-        uint32_t ni = 0;
-        if (!pull_u32(in, off, ni)) return false;
-        if (ni > DAO_DKG_MAX_COMMITTEE_SIZE) return false;
-        contributor_indices.assign(ni, 0);
-        for (uint32_t i = 0; i < ni; ++i)
-            if (!pull_u32(in, off, contributor_indices[i])) return false;
-
-        uint32_t nk = 0;
-        if (!pull_u32(in, off, nk)) return false;
-        if (nk > DAO_DKG_MAX_COMMITTEE_SIZE) return false;
-        contributor_vk.assign(nk, {});
-        for (uint32_t i = 0; i < nk; ++i)
-            if (!pull_bytes(in, off, contributor_vk[i])) return false;
-    }
-
-    if (off != in.size()) return false;
-    return true;
+    if (threshold == 0 || threshold > committee_members.size())
+        return false;
+    return off == in.size();
 }
 
 bool dao_tally_key_record::serialize(std::vector<uint8_t>& out) const
-{
-    // A record that carries CL parameters goes on the wire in the
-    // CL-only form; it must not carry Paillier placeholders.
-    if (!cl_modulus.empty()) return serialize_cl(out);
-
-    // Strict canonical layout. Every field is length-prefixed or
-    // fixed-width, in a single well-defined order.
-    if (committee_id_hash.size() != 32) return false;
-    if (committee_members.size() != committee_size) return false;
-    for (const auto& m : committee_members)
-        if (m.size() != 32) return false;
-    if (delta.size() != 32) return false;
-    if (N.size() != PAILLIER_MODULUS_BYTES) return false;
-    if (G.size() != PAILLIER_MODULUS_BYTES) return false;
-    if (theta.size() != PAILLIER_MODULUS_BYTES) return false;
-    if (V.size() != PAILLIER_CT_BYTES) return false;
-    if (V_K_i.size() != committee_size) return false;
-    for (const auto& vk : V_K_i)
-        if (vk.size() != PAILLIER_CT_BYTES) return false;
-    if (dkg_transcript_hash.size() != 32) return false;
-    if (key_id.size() != 32) return false;
-
-    out.clear();
-    push_u32(out, version);
-    push_u32(out, committee_size);
-    push_u32(out, threshold);
-    push_u32(out, t);
-    out.insert(out.end(), committee_id_hash.begin(), committee_id_hash.end());
-    for (const auto& m : committee_members)
-        out.insert(out.end(), m.begin(), m.end());
-    out.insert(out.end(), delta.begin(), delta.end());
-    out.insert(out.end(), N.begin(), N.end());
-    out.insert(out.end(), G.begin(), G.end());
-    out.insert(out.end(), theta.begin(), theta.end());
-    out.insert(out.end(), V.begin(), V.end());
-    for (const auto& vk : V_K_i)
-        out.insert(out.end(), vk.begin(), vk.end());
-    push_bytes(out, vss_P);
-    push_bytes(out, vss_P_prime);
-    push_bytes(out, vss_g);
-    push_bytes(out, vss_h);
-    push_u64(out, activation_height);
-    out.insert(out.end(), dkg_transcript_hash.begin(), dkg_transcript_hash.end());
-    out.insert(out.end(), key_id.begin(), key_id.end());
-
-    // Trailing field: CL public parameters. Empty is accepted for
-    // legacy records only.
-    push_bytes(out, cl_modulus);
-    return true;
-}
-
-bool dao_tally_key_record::serialize_cl(std::vector<uint8_t>& out) const
 {
     if (cl_modulus.empty()) return false;
     if (key_id.size() != 32) return false;
@@ -928,10 +785,8 @@ bool dao_tally_key_record::serialize_cl(std::vector<uint8_t>& out) const
     return true;
 }
 
-bool dao_tally_key_record::deserialize_cl(const std::vector<uint8_t>& in)
+bool dao_tally_key_record::deserialize(const std::vector<uint8_t>& in)
 {
-    // CL-only reader. The caller must be certain the record is CL
-    // (either by inspecting the first u32, or from context).
     size_t off = 0;
     uint32_t v = 0, cs = 0, th = 0, tt = 0, nc = 0;
     if (!pull_u32(in, off, v)) return false;
@@ -967,79 +822,6 @@ bool dao_tally_key_record::deserialize_cl(const std::vector<uint8_t>& in)
     committee_size = cs;
     threshold      = th;
     t              = tt;
-    // Clear Paillier fields on a CL record.
-    delta.clear();
-    N.clear();
-    G.clear();
-    theta.clear();
-    V.clear();
-    V_K_i.clear();
-    vss_P.clear();
-    vss_P_prime.clear();
-    vss_g.clear();
-    vss_h.clear();
-    return true;
-}
-
-bool dao_tally_key_record::deserialize(const std::vector<uint8_t>& in)
-{
-    if (in.size() >= 4) {
-        uint32_t peek = static_cast<uint32_t>(in[0])
-                      | (static_cast<uint32_t>(in[1]) << 8)
-                      | (static_cast<uint32_t>(in[2]) << 16)
-                      | (static_cast<uint32_t>(in[3]) << 24);
-        if (peek == CL_WIRE_VERSION) return deserialize_cl(in);
-    }
-
-    size_t off = 0;
-    uint32_t v = 0, cs = 0, th = 0, tt = 0;
-    if (!pull_u32(in, off, v)) return false;
-    if (!pull_u32(in, off, cs)) return false;
-    if (!pull_u32(in, off, th)) return false;
-    if (!pull_u32(in, off, tt)) return false;
-    if (cs == 0 || cs > 64) return false;
-
-    auto pull_fixed = [&](size_t n, std::vector<uint8_t>& dest) -> bool {
-        if (off + n > in.size()) return false;
-        dest.assign(in.begin() + off, in.begin() + off + n);
-        off += n;
-        return true;
-    };
-
-    if (!pull_fixed(32, committee_id_hash)) return false;
-    committee_members.assign(cs, {});
-    for (uint32_t i = 0; i < cs; ++i)
-        if (!pull_fixed(32, committee_members[i])) return false;
-    if (!pull_fixed(32, delta)) return false;
-    if (!pull_fixed(PAILLIER_MODULUS_BYTES, N)) return false;
-    if (!pull_fixed(PAILLIER_MODULUS_BYTES, G)) return false;
-    if (!pull_fixed(PAILLIER_MODULUS_BYTES, theta)) return false;
-    if (!pull_fixed(PAILLIER_CT_BYTES, V)) return false;
-    V_K_i.assign(cs, {});
-    for (uint32_t i = 0; i < cs; ++i)
-        if (!pull_fixed(PAILLIER_CT_BYTES, V_K_i[i])) return false;
-
-    if (!pull_bytes(in, off, vss_P)) return false;
-    if (!pull_bytes(in, off, vss_P_prime)) return false;
-    if (!pull_bytes(in, off, vss_g)) return false;
-    if (!pull_bytes(in, off, vss_h)) return false;
-    if (!pull_u64(in, off, activation_height)) return false;
-    if (!pull_fixed(32, dkg_transcript_hash)) return false;
-    if (!pull_fixed(32, key_id)) return false;
-
-    // Trailing field: CL public parameters. Absent is accepted for
-    // legacy records only.
-    if (off < in.size()) {
-        if (!pull_bytes(in, off, cl_modulus)) return false;
-    } else {
-        cl_modulus.clear();
-    }
-    if (off != in.size()) return false;
-
-    version = v;
-    committee_size = cs;
-    threshold = th;
-    t = tt;
     return true;
 }
 

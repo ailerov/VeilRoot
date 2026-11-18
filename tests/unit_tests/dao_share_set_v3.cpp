@@ -11,20 +11,6 @@ namespace cryptonote {
 namespace dao {
 namespace {
 
-static dao_share_set_record make_paillier_v2()
-{
-    dao_share_set_record r;
-    r.version            = 2;
-    r.share_set_id       = 1;
-    r.height             = 100;
-    r.threshold          = 2;
-    r.key_id.assign(32, 0x11);
-    r.committee_id_hash.assign(32, 0x22);
-    r.committee_members.assign(3, std::vector<uint8_t>(32, 0x33));
-    r.VK_i.assign(3, std::vector<uint8_t>(PAILLIER_CT_BYTES, 0x44));
-    return r;
-}
-
 static dao_share_set_record make_cl_v3()
 {
     dao_share_set_record r;
@@ -40,26 +26,6 @@ static dao_share_set_record make_cl_v3()
     return r;
 }
 
-TEST(DaoShareSetRecordV3, paillier_v2_roundtrip)
-{
-    auto r = make_paillier_v2();
-    std::vector<uint8_t> wire;
-    ASSERT_TRUE(r.serialize(wire));
-    // v2 first word
-    ASSERT_GE(wire.size(), 4u);
-    EXPECT_EQ(wire[0], 2u);
-
-    dao_share_set_record r2;
-    ASSERT_TRUE(r2.deserialize(wire));
-    EXPECT_EQ(r2.version, 2u);
-    EXPECT_EQ(r2.share_set_id, r.share_set_id);
-    EXPECT_EQ(r2.threshold, r.threshold);
-    EXPECT_EQ(r2.key_id, r.key_id);
-    EXPECT_EQ(r2.committee_members, r.committee_members);
-    EXPECT_EQ(r2.VK_i, r.VK_i);
-    EXPECT_TRUE(r2.cl_gammas_serialized.empty());
-    EXPECT_TRUE(r2.qualified_ids.empty());
-}
 
 TEST(DaoShareSetRecordV3, cl_v3_roundtrip)
 {
@@ -78,8 +44,6 @@ TEST(DaoShareSetRecordV3, cl_v3_roundtrip)
     EXPECT_EQ(r2.committee_members, r.committee_members);
     EXPECT_EQ(r2.cl_gammas_serialized, r.cl_gammas_serialized);
     EXPECT_EQ(r2.qualified_ids, r.qualified_ids);
-    EXPECT_TRUE(r2.VK_i.empty());
-    EXPECT_TRUE(r2.contributions.empty());
 }
 
 TEST(DaoShareSetRecordV3, cl_v3_rejects_unsorted_qualified_ids)
@@ -145,6 +109,56 @@ TEST(DaoShareSetRecordV3, is_reshared_false_when_gammas_missing)
     r.base_share_set_id = 12345;
     r.cl_gammas_serialized.clear();
     EXPECT_FALSE(dao_share_set_is_reshared(r));
+}
+
+TEST(DaoShareSetRecordV3, cl_v3_rejects_zero_threshold)
+{
+    auto r = make_cl_v3();
+    r.threshold = 0;
+    std::vector<uint8_t> wire;
+    EXPECT_FALSE(r.serialize(wire));
+}
+
+TEST(DaoShareSetRecordV3, cl_v3_rejects_threshold_above_members)
+{
+    auto r = make_cl_v3();
+    r.threshold = 4;
+    std::vector<uint8_t> wire;
+    EXPECT_FALSE(r.serialize(wire));
+}
+
+TEST(DaoShareSetRecordV3, cl_v3_rejects_empty_committee)
+{
+    auto r = make_cl_v3();
+    r.committee_members.clear();
+    std::vector<uint8_t> wire;
+    EXPECT_FALSE(r.serialize(wire));
+}
+
+TEST(DaoShareSetRecordV3, cl_v3_rejects_bad_key_id_size)
+{
+    auto r = make_cl_v3();
+    r.key_id.resize(31);
+    std::vector<uint8_t> wire;
+    EXPECT_FALSE(r.serialize(wire));
+}
+
+TEST(DaoShareSetRecordV3, cl_v3_rejects_bad_committee_member_size)
+{
+    auto r = make_cl_v3();
+    r.committee_members[0].resize(31);
+    std::vector<uint8_t> wire;
+    EXPECT_FALSE(r.serialize(wire));
+}
+
+TEST(DaoShareSetRecordV3, cl_v3_rejects_truncated)
+{
+    auto r = make_cl_v3();
+    std::vector<uint8_t> wire;
+    ASSERT_TRUE(r.serialize(wire));
+    wire.resize(wire.size() - 1);
+    dao_share_set_record r2;
+    EXPECT_FALSE(r2.deserialize(wire));
 }
 
 } // namespace

@@ -135,7 +135,7 @@ inline bool make_cl_bootstrap_3party(CLBootstrapFixture& out, uint64_t seed)
     out.record.key_id.assign(32, 0);
     {
         std::vector<uint8_t> kb;
-        if (!out.record.serialize_cl(kb)) return false;
+        if (!out.record.serialize(kb)) return false;
         SHA256(kb.data(), kb.size(), out.record.key_id.data());
     }
 

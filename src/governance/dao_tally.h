@@ -99,10 +99,9 @@ struct dao_tally_certificate
     bool                 majority_met     = false;
     bool                 passed           = false;
 
-    // --- v6: reshare evidence ---
+    // --- reshare evidence ---
     // All zero / empty means the committee equals the acceptance-time
-    // committee and partials verify against key_rec.V_K_i with
-    // key_rec.threshold (v5-equivalent behaviour).
+    // committee; partials verify against the CL share-set gamma map.
     //
     // When per_event_share_set_id != 0, the cert claims a reshare
     // occurred. The evidence is verified against these fields

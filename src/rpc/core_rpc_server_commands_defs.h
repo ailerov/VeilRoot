@@ -3458,15 +3458,14 @@ struct COMMAND_RPC_PUBLISH_NOSTR_EVENT
     struct response_t: public rpc_response_base
     {
       uint32_t    version;
-      std::string key_id;    // hex, 32 bytes
-      std::string modulus;   // hex, 256 bytes (legacy; empty for CL records)
+      std::string key_id;          // hex, 32 bytes
       std::string cl_key_context;  // hex, canonical CL key context wire
 
       BEGIN_KV_SERIALIZE_MAP()
         KV_SERIALIZE_PARENT(rpc_response_base)
         KV_SERIALIZE(version)
         KV_SERIALIZE(key_id)
-        KV_SERIALIZE(modulus)
+        KV_SERIALIZE(cl_key_context)
       END_KV_SERIALIZE_MAP()
     };
     typedef epee::misc_utils::struct_init<response_t> response;

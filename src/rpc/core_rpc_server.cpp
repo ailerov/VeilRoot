@@ -4804,9 +4804,7 @@ bool core_rpc_server::on_publish_service_descriptor(const COMMAND_RPC_PUBLISH_SE
       error_resp.message = "tally key record malformed";
       return false;
     }
-    // A DAO key record carries the CL key context or, for legacy
-    // records only, a Paillier modulus. Reject when neither is present.
-    if (rec.cl_modulus.empty() && rec.N.size() != 256)
+    if (rec.cl_modulus.empty())
     {
       error_resp.code = CORE_RPC_ERROR_CODE_INTERNAL_ERROR;
       error_resp.message = "tally key record has no scheme parameters";
@@ -4816,8 +4814,6 @@ bool core_rpc_server::on_publish_service_descriptor(const COMMAND_RPC_PUBLISH_SE
     res.version = rec.version;
     res.key_id  = epee::string_tools::buff_to_hex_nodelimer(
         std::string(rec.key_id.begin(), rec.key_id.end()));
-    res.modulus = epee::string_tools::buff_to_hex_nodelimer(
-        std::string(rec.N.begin(), rec.N.end()));
     res.cl_key_context = epee::string_tools::buff_to_hex_nodelimer(
         std::string(rec.cl_modulus.begin(), rec.cl_modulus.end()));
     return true;
