@@ -95,11 +95,6 @@ bool pull_vec(const std::vector<uint8_t>& v, size_t& off,
     return true;
 }
 
-// BIGNUM -> canonical 512-byte big-endian.
-
-// Reduce a BIGNUM modulo N, decode signed Paillier plaintext.
-//   m <= N/2  -> S = m >= 0
-//   m >  N/2  -> S = m - N < 0
 
 // Non-negative decode. Rejects negatives and values wider than 128 bits.
 bool bn_to_u128(const BIGNUM* b, dao_u128& out)

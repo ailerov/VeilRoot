@@ -238,9 +238,9 @@ TEST_F(ConsensusFixture, duplicate_nullifier_in_two_txs_of_one_block_is_invalid)
 TEST_F(ConsensusFixture, rollback_restores_prior_aggregate_byte_for_byte)
 {
     // Spec section 25 requires byte-for-byte restoration even when the
-    // aggregate already contained prior votes. Paillier aggregation is
-    // modular multiplication; inverse() is the exact group inverse of
-    // the ciphertext, so (A * B) * B^-1 == A exactly.
+    // aggregate already contained prior votes. CL aggregation is
+    // homomorphic addition; inverse() is the exact group inverse of
+    // the ciphertext, so (A + B) - B == A exactly.
     const crypto::hash pid  = hash_from_byte(0x33);
 
     ValidVote fx_a, fx_b;

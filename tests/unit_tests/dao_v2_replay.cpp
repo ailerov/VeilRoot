@@ -325,8 +325,8 @@ TEST(DaoV2Replay, NodeBReceivesBlockOneFromNodeA)
 // counted and its nullifier stored.
 //
 // This is the missing end-to-end vote path: real coinbase outputs,
-// real derived spend secret, real Paillier ciphertexts, real CLSAGs,
-// real transcript, real block-apply through GovernanceManager.
+// real derived spend secret, real CL ciphertexts, real CLSAGs, real
+// transcript, real block-apply through GovernanceManager.
 // ---------------------------------------------------------------------
 namespace {
 
@@ -585,7 +585,7 @@ bool build_v2_vote_fixture(V2VoteFixture& fx, const std::string& tag)
 // ---------------------------------------------------------------------
 // Real V2 vote path.
 //
-// Real coinbase outputs, real derived spend secret, real Paillier
+// Real coinbase outputs, real derived spend secret, real CL
 // ciphertexts, real CLSAGs, real transcript, and a real block-apply
 // through GovernanceManager. Asserts the outer transaction shape is
 // the zero-input, zero-output version-3 form, that the payload
@@ -833,8 +833,8 @@ TEST(DaoV2Replay, OversizedV2VoteExtraRejectedByMempoolAndBlock)
 // Invalid V2 proof.
 //
 // A tampered vote_proof_v2 must be rejected by the mempool dry-run.
-// VoteProofVerifier step 21 rejects a non-canonical Paillier
-// ciphertext, so a single bit flip in E_W is sufficient.
+// VoteProofVerifier step 21 rejects a non-canonical CL ciphertext,
+// so a single bit flip in E_W is sufficient.
 // ---------------------------------------------------------------------
 TEST(DaoV2Replay, InvalidV2VoteProofRejectedByMempool)
 {

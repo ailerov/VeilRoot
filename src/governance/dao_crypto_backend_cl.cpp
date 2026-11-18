@@ -400,7 +400,7 @@ make_cl_backend(size_t seclevel_bits)
         return std::make_unique<CLEncryptionBackend>(seclevel_bits);
     } catch (const std::exception&) {
         // Constructor rejected its parameters. Return nullptr
-        // rather than propagate, matching make_paillier_backend.
+        // rather than propagate.
         return nullptr;
     }
 }

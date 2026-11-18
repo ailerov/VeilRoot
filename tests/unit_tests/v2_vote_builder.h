@@ -142,8 +142,8 @@ inline crypto::hash hash_from_byte(uint8_t seed)
     return h;
 }
 
-// Build one fully-valid DAO V2 vote. The shared Paillier public key
-// must be the same across every vote that will be aggregated into one
+// Build one fully-valid DAO V2 vote. The shared CL public key must
+// be the same across every vote that will be aggregated into one
 // proposal, otherwise the homomorphic add is meaningless.
 inline bool build_valid_vote(
     ValidVote& fx,
