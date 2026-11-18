@@ -122,16 +122,23 @@ bool TallyManager::build_tally_result_transaction(
                                            agg.aggregate_E_S,
                                            agg.aggregate_E_B);
 
+    // Wire-level dao_v2_tally_share::member_index is 1-based within
+    // the active share set (see Blockchain::handle_dao_v2_tally_share).
+    // Certificate-level dao_partial_set::member_indices are 0-based,
+    // matched against the CL Gamma map keys and the DKG party ids
+    // used inside BICYCL. Convert once at this boundary.
     dao::dao_partial_set W_set, S_set, B_set;
     for (const auto& kv : shares) {
         if (W_set.member_indices.size() >= eff_threshold) break;
         const auto& s = kv.second;
+        if (s.member_index == 0) continue;
         if (std::memcmp(s.aggregate_ciphertext_hash.data,
                         agg_hash.data, 32) != 0)
             continue;
-        W_set.member_indices.push_back(s.member_index);
-        S_set.member_indices.push_back(s.member_index);
-        B_set.member_indices.push_back(s.member_index);
+        const uint32_t idx0 = s.member_index - 1;
+        W_set.member_indices.push_back(idx0);
+        S_set.member_indices.push_back(idx0);
+        B_set.member_indices.push_back(idx0);
         W_set.cl_partials.push_back(s.cl_partial_W);
         S_set.cl_partials.push_back(s.cl_partial_S);
         B_set.cl_partials.push_back(s.cl_partial_B);

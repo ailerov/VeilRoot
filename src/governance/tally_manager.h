@@ -42,12 +42,11 @@ public:
     // block application, after validate_dao_v2_tally_result_tx() has
     // accepted the transaction.
     //
-    // `committee_global_indices` is the deterministic temporary
-    // committee for this proposal at its voting_end_height, in the
-    // same order as the selected members. Its entries are the
-    // bootstrap DKG member indices, which are what the certificate
-    // carries and what the verify path matches against
-    // the CL share-set gamma at the same position.
+    // Input `shares` are keyed by member pubkey and carry a 1-based
+    // `member_index` per the P2P wire format. The emitted certificate
+    // stores 0-based partial-set member indices, matched against the
+    // CL Gamma map keys and the DKG party ids inside BICYCL. The
+    // boundary conversion happens inside this function.
     bool build_tally_result_transaction(
         const crypto::hash& proposal_id,
         const std::map<crypto::public_key, dao::dao_v2_tally_share>& shares,
