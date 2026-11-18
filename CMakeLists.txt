@@ -570,23 +570,17 @@ endif()
 
 find_package(OpenSSL REQUIRED)
 
-# VEILROOT_ENABLE_CL -- CL-over-class-groups backend (research only).
-# BICYCL is NOT constant-time and NOT production-ready. Do not enable
-# in a shipped binary. Default OFF so mingw builds stay green.
-option(VEILROOT_ENABLE_CL
-    "Enable CL-over-class-groups DAO backend (research; requires gmp)"
-    OFF)
-if(VEILROOT_ENABLE_CL)
-    find_package(gmp REQUIRED)
-    # Bicycl headers are included by blockchain.h and other consensus
-    # consumers of the CL DKG runner, not only by obj_governance.
-    include_directories(SYSTEM "${CMAKE_CURRENT_SOURCE_DIR}/external/bicycl")
-    # The CL implementation is the DAO when enabled. blockchain.h
-    # includes the CL DKG runner, so every translation unit that pulls
-    # blockchain.h must see the same configure.
-    add_definitions(-DVEILROOT_ENABLE_CL=1)
-    message(STATUS "VEILROOT_ENABLE_CL=ON -- CL backend will be built")
-endif()
+# DAO V2 backend: Threshold-CL over class groups.
+# Requires gmp (native: system libgmp-dev; cross: contrib/depends builds
+# gmp automatically via packages/gmp.mk). The vendored BICYCL library is
+# NOT constant-time; see the README SECURITY note. Risk accepted for
+# MAINNET per project decision.
+find_package(gmp REQUIRED)
+# Bicycl headers are included by blockchain.h and other consensus
+# consumers of the CL DKG runner, not only by obj_governance.
+include_directories(SYSTEM "${CMAKE_CURRENT_SOURCE_DIR}/external/bicycl")
+add_definitions(-DVEILROOT_ENABLE_CL=1)
+message(STATUS "DAO V2 backend: Threshold-CL over class groups")
 message(STATUS "Using OpenSSL include dir at ${OPENSSL_INCLUDE_DIR}")
 include_directories(${OPENSSL_INCLUDE_DIR})
 if(STATIC AND NOT IOS)
@@ -688,9 +682,7 @@ ExternalProject_Add(generate_translations_header
   INSTALL_COMMAND ${CMAKE_COMMAND} -E echo "")
 include_directories("${CMAKE_CURRENT_BINARY_DIR}/translations")
 add_subdirectory(external)
-if(VEILROOT_ENABLE_CL)
-    add_subdirectory(external/bicycl)
-endif()
+add_subdirectory(external/bicycl)
 
 # Final setup for libunbound
 include_directories(${UNBOUND_INCLUDE_DIR})

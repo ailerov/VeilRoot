@@ -58,6 +58,12 @@ SET(Boost_USE_STATIC_LIBS ON)
 SET(Boost_USE_STATIC_RUNTIME ON)
 
 SET(OPENSSL_ROOT_DIR @prefix@)
+SET(GMP_ROOT_DIR @prefix@)
+SET(GMP_DIR @prefix@)
+SET(GMP_INC_DIR @prefix@/include)
+SET(GMP_INCLUDE_DIR @prefix@/include)
+SET(GMP_LIBRARY @prefix@/lib/libgmp.a)
+SET(GMP_CPP_LIBRARY @prefix@/lib/libgmpxx.a)
 SET(ARCHITECTURE @arch@)
 
 # for libraries and headers in the target directories

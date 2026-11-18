@@ -70,9 +70,7 @@ target_link_libraries(daemon
     ${EXTRA_LIBRARIES}
     ${Blocks}
     secp256k1)
-if(VEILROOT_ENABLE_CL)
   target_link_libraries(daemon PRIVATE bicycl gmp::gmp)
-endif()
 set_property(TARGET daemon
   PROPERTY
     OUTPUT_NAME "vnsd")

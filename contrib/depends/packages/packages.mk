@@ -18,7 +18,7 @@ darwin_packages = ncurses readline sodium $(hardware_packages)
 freebsd_native_packages = freebsd_base
 freebsd_packages = ncurses readline sodium
 
-linux_packages = eudev ncurses readline sodium $(hardware_packages)
+linux_packages = eudev ncurses readline sodium gmp $(hardware_packages)
 linux_native_packages = $(hardware_native_packages)
 
 ifeq ($(build_tests),ON)
@@ -29,7 +29,7 @@ ifneq ($(host_arch),riscv64)
 linux_packages += unwind
 endif
 
-mingw32_packages = icu4c sodium $(hardware_packages)
+mingw32_packages = icu4c sodium gmp $(hardware_packages)
 mingw32_native_packages = $(hardware_native_packages)
 
 ifneq ($(build_os),darwin)

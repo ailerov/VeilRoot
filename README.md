@@ -150,10 +150,16 @@ sudo apt update && sudo apt install build-essential cmake pkg-config libssl-dev 
 
 If `libsecp256k1-dev` is not available, the vendored copy will be used automatically.
 
-`libgmp-dev` is only required if you enable the opt-in CL-over-class-groups
-backend with `-DVEILROOT_ENABLE_CL=ON`. That backend is research-grade
-(the vendored BICYCL library is not constant-time) and is off by default.
-Release builds and the Windows cross-compile do not need GMP.
+The DAO V2 backend uses Threshold-CL over class groups. It requires
+`libgmp-dev` on native builds (install alongside the other build
+prerequisites). Cross-compilation via `contrib/depends` builds gmp
+automatically; no additional user setup is required.
+
+SECURITY note: the vendored BICYCL library is documented as
+non-constant-time. For MAINNET use this has been explicitly accepted as
+a known residual risk by the project. This is not a claim that BICYCL is
+constant-time, nor that the implementation has received an independent
+security certification.
 
 ### Build instructions
 
