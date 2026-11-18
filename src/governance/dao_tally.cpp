@@ -96,54 +96,10 @@ bool pull_vec(const std::vector<uint8_t>& v, size_t& off,
 }
 
 // BIGNUM -> canonical 512-byte big-endian.
-void bn_to_fixed_512(const BIGNUM* b, std::vector<uint8_t>& out)
-{
-    out.assign(PAILLIER_CT_BYTES, 0);
-    BN_bn2binpad(b, out.data(), PAILLIER_CT_BYTES);
-}
 
 // Reduce a BIGNUM modulo N, decode signed Paillier plaintext.
 //   m <= N/2  -> S = m >= 0
 //   m >  N/2  -> S = m - N < 0
-bool decode_signed(const BIGNUM* m, const BIGNUM* N,
-                   bool& negative, dao_u128& magnitude)
-{
-    if (!m || !N) return false;
-    if (BN_is_negative(m) || BN_is_negative(N)) return false;
-    BIGNUM* half = BN_new();
-    if (!half) return false;
-    BN_rshift1(half, N);
-    CtxGuard g;
-    bool result = false;
-    if (BN_cmp(m, half) <= 0) {
-        negative = false;
-        if (BN_num_bits(m) <= 128) {
-            const int nbytes = BN_num_bytes(m);
-            std::vector<uint8_t> buf(nbytes);
-            BN_bn2bin(m, buf.data());
-            magnitude = 0;
-            for (uint8_t x : buf) magnitude = (magnitude << 8) | dao_u128(x);
-            result = true;
-        }
-    } else {
-        negative = true;
-        BIGNUM* neg = BN_new();
-        if (neg) {
-            BN_sub(neg, N, m);
-            if (BN_num_bits(neg) <= 128) {
-                const int nbytes = BN_num_bytes(neg);
-                std::vector<uint8_t> buf(nbytes);
-                BN_bn2bin(neg, buf.data());
-                magnitude = 0;
-                for (uint8_t x : buf) magnitude = (magnitude << 8) | dao_u128(x);
-                result = true;
-            }
-            BN_free(neg);
-        }
-    }
-    BN_free(half);
-    return result;
-}
 
 // Non-negative decode. Rejects negatives and values wider than 128 bits.
 bool bn_to_u128(const BIGNUM* b, dao_u128& out)
@@ -166,10 +122,6 @@ bool bn_to_u128(const BIGNUM* b, dao_u128& out)
 // directly. See tests/unit_tests/dao_tally.cpp.
 bool dao_test_bn_to_u128(const BIGNUM* b, dao_u128& out) {
     return bn_to_u128(b, out);
-}
-bool dao_test_decode_signed(const BIGNUM* m, const BIGNUM* N,
-                            bool& negative, dao_u128& magnitude) {
-    return decode_signed(m, N, negative, magnitude);
 }
 #endif
 
@@ -214,67 +166,13 @@ crypto::hash dao_aggregate_ciphertext_hash(
 // dao_partial_set
 // ------------------------------------------------------------------
 
-bool dao_partial_set::serialize(std::vector<uint8_t>& out) const
-{
-    out.clear();
-    if (member_indices.size() != partials.size()) return false;
-    if (proofs.size() != partials.size()) return false;
 
-    if (member_indices.size() > DAO_DKG_MAX_COMMITTEE_SIZE) return false;
-
-    push_u32(out, uint32_t(member_indices.size()));
-    for (size_t i = 0; i < member_indices.size(); ++i) {
-        if (partials[i].size() != PAILLIER_CT_BYTES) return false;
-        if (proofs[i].E.size() != 32) return false;
-        if (proofs[i].Z.size() != DAO_DKG_PARTIAL_PROOF_Z_BYTES)
-            return false;
-        push_u32(out, member_indices[i]);
-        push_vec(out, partials[i]);
-        push_u32(out, proofs[i].member_index);
-        push_vec(out, proofs[i].E);
-        push_vec(out, proofs[i].Z);
-    }
-    return true;
-}
-
-bool dao_partial_set::deserialize(const std::vector<uint8_t>& in)
-{
-    member_indices.clear();
-    partials.clear();
-    proofs.clear();
-
-    size_t off = 0;
-    uint32_t n = 0;
-    if (!pull_u32(in, off, n)) return false;
-    if (n > DAO_DKG_MAX_COMMITTEE_SIZE) return false;
-    for (uint32_t i = 0; i < n; ++i) {
-        uint32_t idx = 0;
-        std::vector<uint8_t> p, e, z;
-        uint32_t proof_idx = 0;
-        if (!pull_u32(in, off, idx)) return false;
-        if (!pull_vec(in, off, p)) return false;
-        if (p.size() != PAILLIER_CT_BYTES) return false;
-        if (!pull_u32(in, off, proof_idx)) return false;
-        if (!pull_vec(in, off, e)) return false;
-        if (e.size() != 32) return false;
-        if (!pull_vec(in, off, z)) return false;
-        if (z.size() != DAO_DKG_PARTIAL_PROOF_Z_BYTES) return false;
-        member_indices.push_back(idx);
-        partials.push_back(std::move(p));
-        dao_partial_decryption_proof pr;
-        pr.member_index = proof_idx;
-        pr.E = std::move(e);
-        pr.Z = std::move(z);
-        proofs.push_back(std::move(pr));
-    }
-    return off == in.size();
-}
 
 // ------------------------------------------------------------------
 // dao_partial_set :: CL form
 // ------------------------------------------------------------------
 
-bool dao_partial_set::serialize_cl(std::vector<uint8_t>& out) const
+bool dao_partial_set::serialize(std::vector<uint8_t>& out) const
 {
     out.clear();
     if (member_indices.size() != cl_partials.size()) return false;
@@ -291,11 +189,9 @@ bool dao_partial_set::serialize_cl(std::vector<uint8_t>& out) const
     return true;
 }
 
-bool dao_partial_set::deserialize_cl(const std::vector<uint8_t>& in)
+bool dao_partial_set::deserialize(const std::vector<uint8_t>& in)
 {
     member_indices.clear();
-    partials.clear();
-    proofs.clear();
     cl_partials.clear();
 
     if (in.empty()) return false;
@@ -322,46 +218,13 @@ bool dao_partial_set::deserialize_cl(const std::vector<uint8_t>& in)
 
 bool dao_tally_certificate::serialize(std::vector<uint8_t>& out) const
 {
-    // CL certs are emitted as v7 and their partial sets are CL form.
-    const bool is_cl =
-        !W.cl_partials.empty() || !S.cl_partials.empty() || !B.cl_partials.empty();
-    if (is_cl) {
-        out.clear();
-        push_u8(out, WIRE_VERSION_CL);
-        out.insert(out.end(), proposal_id.data, proposal_id.data + 32);
-        push_u64(out, vote_end_height);
-        push_vec(out, key_id);
-        out.insert(out.end(), aggregate_ciphertext_hash.data,
-                   aggregate_ciphertext_hash.data + 32);
-        std::vector<uint8_t> w, s, b;
-        if (!W.serialize_cl(w)) return false;
-        if (!S.serialize_cl(s)) return false;
-        if (!B.serialize_cl(b)) return false;
-        push_vec(out, w);
-        push_vec(out, s);
-        push_vec(out, b);
-        push_u128(out, W_total);
-        push_u8(out, s_negative ? 1 : 0);
-        push_u128(out, S_abs);
-        push_u128(out, B_total);
-        push_u128(out, YES_weight);
-        push_u128(out, NO_weight);
-        push_u128(out, quorum_threshold);
-        push_u8(out, quorum_met ? 1 : 0);
-        push_u8(out, majority_met ? 1 : 0);
-        push_u8(out, passed ? 1 : 0);
-        return true;
-    }
-
     out.clear();
     push_u8(out, WIRE_VERSION);
-    out.insert(out.end(), proposal_id.data,
-               proposal_id.data + sizeof(proposal_id.data));
+    out.insert(out.end(), proposal_id.data, proposal_id.data + 32);
     push_u64(out, vote_end_height);
     push_vec(out, key_id);
     out.insert(out.end(), aggregate_ciphertext_hash.data,
                aggregate_ciphertext_hash.data + 32);
-
     std::vector<uint8_t> w, s, b;
     if (!W.serialize(w)) return false;
     if (!S.serialize(s)) return false;
@@ -369,80 +232,33 @@ bool dao_tally_certificate::serialize(std::vector<uint8_t>& out) const
     push_vec(out, w);
     push_vec(out, s);
     push_vec(out, b);
-
     push_u128(out, W_total);
     push_u8(out, s_negative ? 1 : 0);
     push_u128(out, S_abs);
     push_u128(out, B_total);
-
     push_u128(out, YES_weight);
     push_u128(out, NO_weight);
     push_u128(out, quorum_threshold);
     push_u8(out, quorum_met ? 1 : 0);
     push_u8(out, majority_met ? 1 : 0);
     push_u8(out, passed ? 1 : 0);
-
-    // v6 fields
-    push_u64(out, per_event_share_set_id);
-    push_u32(out, threshold);
-    push_u32(out, static_cast<uint32_t>(member_pubkeys.size()));
-    for (const auto& m : member_pubkeys) push_vec(out, m);
-    push_u32(out, static_cast<uint32_t>(per_event_VK_i.size()));
-    for (const auto& v : per_event_VK_i) push_vec(out, v);
-    push_u64(out, base_share_set_id);
-    push_u32(out, static_cast<uint32_t>(contributions.size()));
-    for (const auto& c : contributions) push_vec(out, c);
-    push_u32(out, static_cast<uint32_t>(contributor_indices.size()));
-    for (uint32_t i : contributor_indices) push_u32(out, i);
-    push_u32(out, static_cast<uint32_t>(contributor_vk.size()));
-    for (const auto& v : contributor_vk) push_vec(out, v);
     return true;
 }
+
 
 bool dao_tally_certificate::deserialize(const std::vector<uint8_t>& in)
 {
     size_t off = 0;
     if (in.size() < 1) return false;
-    if (in[0] == WIRE_VERSION_CL) {
-        // CL wire form.
-        off = 1;
-        if (off + 32 + 8 + 4 > in.size()) return false;
-        std::memcpy(proposal_id.data, in.data() + off, 32); off += 32;
-        if (!pull_u64(in, off, vote_end_height)) return false;
-        if (!pull_vec(in, off, key_id)) return false;
-        if (key_id.size() != 32) return false;
-        if (off + 32 > in.size()) return false;
-        std::memcpy(aggregate_ciphertext_hash.data,
-                    in.data() + off, 32); off += 32;
-        std::vector<uint8_t> w, s, b;
-        if (!pull_vec(in, off, w)) return false;
-        if (!pull_vec(in, off, s)) return false;
-        if (!pull_vec(in, off, b)) return false;
-        if (!W.deserialize_cl(w)) return false;
-        if (!S.deserialize_cl(s)) return false;
-        if (!B.deserialize_cl(b)) return false;
-        if (!pull_u128(in, off, W_total)) return false;
-        if (off + 1 > in.size()) return false;
-        s_negative = (in[off++] != 0);
-        if (!pull_u128(in, off, S_abs)) return false;
-        if (!pull_u128(in, off, B_total)) return false;
-        if (!pull_u128(in, off, YES_weight)) return false;
-        if (!pull_u128(in, off, NO_weight)) return false;
-        if (!pull_u128(in, off, quorum_threshold)) return false;
-        if (off + 3 > in.size()) return false;
-        quorum_met   = (in[off++] != 0);
-        majority_met = (in[off++] != 0);
-        passed       = (in[off++] != 0);
-        return off == in.size();
-    }
-
-    if (in.size() < 1 + 32 + 8 + 32) return false;
     if (in[off++] != WIRE_VERSION) return false;
+    if (in.size() < off + 32 + 8 + 4) return false;
     std::memcpy(proposal_id.data, in.data() + off, 32); off += 32;
     if (!pull_u64(in, off, vote_end_height)) return false;
     if (!pull_vec(in, off, key_id)) return false;
-    std::memcpy(aggregate_ciphertext_hash.data, in.data() + off, 32); off += 32;
-
+    if (key_id.size() != 32) return false;
+    if (off + 32 > in.size()) return false;
+    std::memcpy(aggregate_ciphertext_hash.data,
+                in.data() + off, 32); off += 32;
     std::vector<uint8_t> w, s, b;
     if (!pull_vec(in, off, w)) return false;
     if (!pull_vec(in, off, s)) return false;
@@ -450,13 +266,11 @@ bool dao_tally_certificate::deserialize(const std::vector<uint8_t>& in)
     if (!W.deserialize(w)) return false;
     if (!S.deserialize(s)) return false;
     if (!B.deserialize(b)) return false;
-
     if (!pull_u128(in, off, W_total)) return false;
     if (off + 1 > in.size()) return false;
     s_negative = (in[off++] != 0);
     if (!pull_u128(in, off, S_abs)) return false;
     if (!pull_u128(in, off, B_total)) return false;
-
     if (!pull_u128(in, off, YES_weight)) return false;
     if (!pull_u128(in, off, NO_weight)) return false;
     if (!pull_u128(in, off, quorum_threshold)) return false;
@@ -464,62 +278,9 @@ bool dao_tally_certificate::deserialize(const std::vector<uint8_t>& in)
     quorum_met   = (in[off++] != 0);
     majority_met = (in[off++] != 0);
     passed       = (in[off++] != 0);
-
-    // v6 fields
-    if (!pull_u64(in, off, per_event_share_set_id)) return false;
-    if (!pull_u32(in, off, threshold)) return false;
-
-    uint32_t n = 0;
-    if (!pull_u32(in, off, n)) return false;
-    if (n > DAO_DKG_MAX_COMMITTEE_SIZE) return false;
-    member_pubkeys.clear(); member_pubkeys.reserve(n);
-    for (uint32_t i = 0; i < n; ++i) {
-        std::vector<uint8_t> v;
-        if (!pull_vec(in, off, v)) return false;
-        if (v.size() != 32) return false;
-        member_pubkeys.push_back(std::move(v));
-    }
-
-    if (!pull_u32(in, off, n)) return false;
-    if (n > DAO_DKG_MAX_COMMITTEE_SIZE) return false;
-    per_event_VK_i.clear(); per_event_VK_i.reserve(n);
-    for (uint32_t i = 0; i < n; ++i) {
-        std::vector<uint8_t> v;
-        if (!pull_vec(in, off, v)) return false;
-        per_event_VK_i.push_back(std::move(v));
-    }
-
-    if (!pull_u64(in, off, base_share_set_id)) return false;
-
-    if (!pull_u32(in, off, n)) return false;
-    if (n > DAO_DKG_MAX_COMMITTEE_SIZE) return false;
-    contributions.clear(); contributions.reserve(n);
-    for (uint32_t i = 0; i < n; ++i) {
-        std::vector<uint8_t> v;
-        if (!pull_vec(in, off, v)) return false;
-        contributions.push_back(std::move(v));
-    }
-
-    if (!pull_u32(in, off, n)) return false;
-    if (n > DAO_DKG_MAX_COMMITTEE_SIZE) return false;
-    contributor_indices.clear(); contributor_indices.reserve(n);
-    for (uint32_t i = 0; i < n; ++i) {
-        uint32_t x;
-        if (!pull_u32(in, off, x)) return false;
-        contributor_indices.push_back(x);
-    }
-
-    if (!pull_u32(in, off, n)) return false;
-    if (n > DAO_DKG_MAX_COMMITTEE_SIZE) return false;
-    contributor_vk.clear(); contributor_vk.reserve(n);
-    for (uint32_t i = 0; i < n; ++i) {
-        std::vector<uint8_t> v;
-        if (!pull_vec(in, off, v)) return false;
-        contributor_vk.push_back(std::move(v));
-    }
-
     return off == in.size();
 }
+
 
 // ------------------------------------------------------------------
 // dao_v2_outcome_record

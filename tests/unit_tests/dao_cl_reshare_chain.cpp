@@ -394,7 +394,7 @@ TEST_F(DaoClReshareChain, tally_ingress_accepts_cl_v3_rejects_v2)
 
     // --- v3 (CL) share from party 0: must be accepted ---
     dao::dao_v2_tally_share s3;
-    s3.version                  = dao::dao_v2_tally_share::WIRE_VERSION_CL;
+    s3.version                  = dao::dao_v2_tally_share::WIRE_VERSION;
     s3.proposal_id              = m_prop_id;
     s3.vote_end_height          = 3;
     s3.tally_key_id             = fx.record.key_id;
@@ -405,33 +405,28 @@ TEST_F(DaoClReshareChain, tally_ingress_accepts_cl_v3_rejects_v2)
     s3.cl_partial_B.assign(64, 0x03);
     std::vector<uint8_t> wire3;
     ASSERT_TRUE(s3.serialize(wire3));
-    ASSERT_EQ(wire3[0], dao::dao_v2_tally_share::WIRE_VERSION_CL);
+    ASSERT_EQ(wire3[0], dao::dao_v2_tally_share::WIRE_VERSION);
 
     EXPECT_EQ(bc().get_dao_v2_tally_shares_size_for_test(m_prop_id), 0u);
     bc().handle_dao_v2_tally_share(fx.committee_pubs[0],
         std::string(wire3.begin(), wire3.end()));
     EXPECT_EQ(bc().get_dao_v2_tally_shares_size_for_test(m_prop_id), 1u);
 
-    // --- v2 (Paillier) share from party 1: must be rejected ---
+    // --- A share bearing the retired Paillier wire tag (2) must be
+    // rejected. Build a valid CL share and rewrite the version byte to
+    // preserve the pre-retirement rejection assertion.
     dao::dao_v2_tally_share s2;
-    s2.version                  = dao::dao_v2_tally_share::WIRE_VERSION;
     s2.proposal_id              = m_prop_id;
     s2.vote_end_height          = 3;
     s2.tally_key_id             = fx.record.key_id;
     s2.aggregate_ciphertext_hash = agg_hash;
     s2.member_index             = 2;
-    s2.partial_W.assign(PAILLIER_CT_BYTES, 0x10);
-    s2.partial_S.assign(PAILLIER_CT_BYTES, 0x11);
-    s2.partial_B.assign(PAILLIER_CT_BYTES, 0x12);
-    s2.proof_W.E.assign(32, 0x20);
-    s2.proof_W.Z.assign(DAO_DKG_PARTIAL_PROOF_Z_BYTES, 0x21);
-    s2.proof_S.E.assign(32, 0x22);
-    s2.proof_S.Z.assign(DAO_DKG_PARTIAL_PROOF_Z_BYTES, 0x23);
-    s2.proof_B.E.assign(32, 0x24);
-    s2.proof_B.Z.assign(DAO_DKG_PARTIAL_PROOF_Z_BYTES, 0x25);
+    s2.cl_partial_W.assign(64, 0x10);
+    s2.cl_partial_S.assign(64, 0x11);
+    s2.cl_partial_B.assign(64, 0x12);
     std::vector<uint8_t> wire2;
     ASSERT_TRUE(s2.serialize(wire2));
-    ASSERT_EQ(wire2[0], dao::dao_v2_tally_share::WIRE_VERSION);
+    wire2[0] = 2;  // Paillier-era tag
 
     bc().handle_dao_v2_tally_share(fx.committee_pubs[1],
         std::string(wire2.begin(), wire2.end()));
@@ -478,14 +473,12 @@ TEST_F(DaoClReshareChain, maybe_produce_dao_v2_share_cl_bootstrap)
 
     ASSERT_EQ(captured.size(), 1u);
     EXPECT_EQ(captured[0].version,
-              dao::dao_v2_tally_share::WIRE_VERSION_CL);
+              dao::dao_v2_tally_share::WIRE_VERSION);
     EXPECT_EQ(captured[0].member_index, 1u);
     EXPECT_EQ(captured[0].proposal_id, m_prop_id);
     EXPECT_FALSE(captured[0].cl_partial_W.empty());
     EXPECT_FALSE(captured[0].cl_partial_S.empty());
     EXPECT_FALSE(captured[0].cl_partial_B.empty());
-    EXPECT_TRUE(captured[0].partial_W.empty());
-    EXPECT_TRUE(captured[0].proof_W.E.empty());
 }
 
 

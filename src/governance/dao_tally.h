@@ -45,36 +45,26 @@ crypto::hash dao_aggregate_ciphertext_hash(
 struct dao_partial_set
 {
     std::vector<uint32_t>                    member_indices;
-    std::vector<std::vector<uint8_t>>        partials;   // 512 bytes each
-    std::vector<dao_partial_decryption_proof> proofs;
 
     // CL partial decryptions. Each entry is the canonical output of
     // dao_cl_partial_decryption_serialize(): QFI(w) || SCALAR(u) ||
-    // QFI(R1) || QFI(R2). Parallel to member_indices. Populated only
-    // on the CL path; the Paillier serialize()/deserialize() leave
-    // this empty.
+    // QFI(R1) || QFI(R2). Parallel to member_indices.
     std::vector<std::vector<uint8_t>>        cl_partials;
 
-    bool serialize(std::vector<uint8_t>& out) const;
-    bool deserialize(const std::vector<uint8_t>& in);
-
-    // CL wire form. Emits a discriminator tag so a CL-format set is
-    // never mistaken for the Paillier layout, and both formats can be
-    // distinguished by a reader that has not yet been upgraded.
-    //   u8 format_tag (0x02 = CL)
+    // Wire form:
+    //   u8 format_tag (0x02)
     //   u32 count
     //   { u32 member_index || u32 len || partial }  per entry
     static constexpr inline uint8_t CL_FORMAT_TAG = 0x02;
     static constexpr inline uint32_t CL_PARTIAL_MAX_BYTES = 16384;
 
-    bool serialize_cl(std::vector<uint8_t>& out) const;
-    bool deserialize_cl(const std::vector<uint8_t>& in);
+    bool serialize(std::vector<uint8_t>& out) const;
+    bool deserialize(const std::vector<uint8_t>& in);
 };
 
 struct dao_tally_certificate
 {
-    static constexpr uint8_t WIRE_VERSION    = 6;
-    static constexpr uint8_t WIRE_VERSION_CL = 7;
+    static constexpr uint8_t WIRE_VERSION = 7;
 
     crypto::hash         proposal_id;
     uint64_t             vote_end_height = 0;
@@ -110,11 +100,7 @@ struct dao_tally_certificate
     uint64_t                              per_event_share_set_id = 0;
     uint32_t                              threshold              = 0;
     std::vector<std::vector<uint8_t>>     member_pubkeys;   // 32 bytes each
-    std::vector<std::vector<uint8_t>>     per_event_VK_i;   // PAILLIER_CT_BYTES each
     uint64_t                              base_share_set_id = 0;
-    std::vector<std::vector<uint8_t>>     contributions;
-    std::vector<uint32_t>                 contributor_indices;
-    std::vector<std::vector<uint8_t>>     contributor_vk;
 
     bool serialize(std::vector<uint8_t>& out) const;
     bool deserialize(const std::vector<uint8_t>& in);

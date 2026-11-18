@@ -23,8 +23,7 @@ namespace dao {
 
 struct dao_v2_tally_share
 {
-    static constexpr inline uint8_t WIRE_VERSION = 2;
-    static constexpr inline uint8_t WIRE_VERSION_CL = 3;
+    static constexpr inline uint8_t WIRE_VERSION = 3;
     uint8_t      version = WIRE_VERSION;
     crypto::hash proposal_id;
     uint64_t     vote_end_height = 0;
@@ -42,15 +41,7 @@ struct dao_v2_tally_share
 
     uint32_t             member_index = 0;   // 1..committee_size
 
-    std::vector<uint8_t> partial_W;          // 512 bytes
-    std::vector<uint8_t> partial_S;          // 512 bytes
-    std::vector<uint8_t> partial_B;          // 512 bytes
-
-    dao_partial_decryption_proof proof_W;
-    dao_partial_decryption_proof proof_S;
-    dao_partial_decryption_proof proof_B;
-
-    // CL wire form. Each field is the canonical output of
+    // Each CL partial is the canonical output of
     // dao_cl_partial_decryption_serialize(); proof is embedded.
     std::vector<uint8_t> cl_partial_W;
     std::vector<uint8_t> cl_partial_S;
@@ -58,9 +49,6 @@ struct dao_v2_tally_share
 
     bool serialize(std::vector<uint8_t>& out) const;
     bool deserialize(const std::vector<uint8_t>& in);
-
-    bool serialize_cl(std::vector<uint8_t>& out) const;
-    bool deserialize_cl(const std::vector<uint8_t>& in);
 };
 
 } // namespace dao

@@ -280,7 +280,7 @@ bool TallyManager::produce_local_share(
     }
 
     share_out = dao::dao_v2_tally_share{};
-    share_out.version         = dao::dao_v2_tally_share::WIRE_VERSION_CL;
+    share_out.version         = dao::dao_v2_tally_share::WIRE_VERSION;
     share_out.proposal_id     = proposal_id;
     share_out.vote_end_height = prop.voting_end_height;
     share_out.tally_key_id    = key_rec.key_id;

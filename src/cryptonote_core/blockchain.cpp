@@ -11471,7 +11471,7 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
 
     // The DAO V2 tally share wire is CL-only. Accept only the CL
     // wire version; reject retired Paillier formats.
-    if (share.version != dao::dao_v2_tally_share::WIRE_VERSION_CL) {
+    if (share.version != dao::dao_v2_tally_share::WIRE_VERSION) {
       MWARNING("V2 tally share: wrong version " << (int)share.version);
       return;
     }

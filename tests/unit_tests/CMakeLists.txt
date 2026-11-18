@@ -122,7 +122,6 @@ set(unit_tests_sources
   dao_vote_or_proof.cpp
   dao_tally.cpp
   dao_tally_ciphertext_hash.cpp
-  dao_tally_share.cpp
   dao_dkg.cpp
   dao_wallet_v2.cpp
   dao_v2_replay.cpp

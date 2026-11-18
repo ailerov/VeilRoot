@@ -22,8 +22,6 @@ using namespace cryptonote::dao;
 #ifdef VEILROOT_DAO_DKG_TESTING
 namespace cryptonote { namespace dao {
 bool dao_test_bn_to_u128(const BIGNUM* b, dao_u128& out);
-bool dao_test_decode_signed(const BIGNUM* m, const BIGNUM* N,
-                            bool& negative, dao_u128& magnitude);
 }}
 #endif
 
@@ -144,35 +142,6 @@ TEST(dao_tally_decode, bn_to_u128_rejects_negative)
     dao_u128 out = 0;
     EXPECT_FALSE(dao_test_bn_to_u128(b, out));
     BN_free(b);
-}
-
-TEST(dao_tally_decode, decode_signed_rejects_oversized_positive)
-{
-    BIGNUM* m = BN_new(); BN_one(m); BN_lshift(m, m, 128); BN_add_word(m, 1000);
-    BIGNUM* N = BN_new(); BN_one(N); BN_lshift(N, N, 200);
-    bool neg = false; dao_u128 mag = 0;
-    EXPECT_FALSE(dao_test_decode_signed(m, N, neg, mag));
-    BN_free(m); BN_free(N);
-}
-
-TEST(dao_tally_decode, decode_signed_rejects_negative_magnitude)
-{
-    BIGNUM* m = BN_new(); BN_set_word(m, 5); BN_set_negative(m, 1);
-    BIGNUM* N = BN_new(); BN_set_word(N, 1000);
-    bool neg = false; dao_u128 mag = 0;
-    EXPECT_FALSE(dao_test_decode_signed(m, N, neg, mag));
-    BN_free(m); BN_free(N);
-}
-
-TEST(dao_tally_decode, decode_signed_accepts_small_positive)
-{
-    BIGNUM* m = BN_new(); BN_set_word(m, 100);
-    BIGNUM* N = BN_new(); BN_set_word(N, 1000);
-    bool neg = true; dao_u128 mag = 0;
-    ASSERT_TRUE(dao_test_decode_signed(m, N, neg, mag));
-    EXPECT_FALSE(neg);
-    EXPECT_EQ(mag, dao_u128(100));
-    BN_free(m); BN_free(N);
 }
 #endif
 
