@@ -140,7 +140,7 @@ namespace BICYCL {
     hash_update (args...);
 
     Digest h (digest_nbytes_);
-    int algo = EVP_MD_CTX_get_type(mdctx_);
+    int algo = EVP_MD_CTX_type(mdctx_);
     if (algo == SHAKE128 or algo == SHAKE256)
     {
       // Extendable output function with custom digest length
