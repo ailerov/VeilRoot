@@ -1595,7 +1595,7 @@ namespace BICYCL
   * If nbits <= 1, it always returns 2.
   */
   inline
-  Mpz RandGen::random_prime (size_t nbits)
+  Mpz RandGen::random_prime (mp_bitcnt_t nbits)
   {
     Mpz p;
 

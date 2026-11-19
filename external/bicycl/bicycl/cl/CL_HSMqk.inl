@@ -20,6 +20,7 @@
  */
 #ifndef BICYCL_CL_CL_HSMQK_INL
 #define BICYCL_CL_CL_HSMQK_INL
+#include <string>
 
 #include "CL_HSMqk.hpp"
 
@@ -890,7 +891,7 @@ namespace BICYCL
     hash (CL.p());
     hash (CL.h());
     hash (CL.Cl_G());
-    hash (Mpz(CL.lambda_distance()));
+    hash (Mpz (std::to_string (CL.lambda_distance ())));
   }
 
   /* */

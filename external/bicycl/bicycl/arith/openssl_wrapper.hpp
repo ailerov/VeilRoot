@@ -300,9 +300,13 @@ namespace BICYCL {
       EC_GROUP *ec_group_;
       Mpz order_;
       /* ctx_ is used in OpenSSL calls for temporary storage.
-       * 'static thread_local' makes it thread safe.
-       * 'inline' is needed as BICYCL is header-only. */
-      inline static thread_local BN_CTX_ ctx_;
+       * This inline accessor supplies one thread-local context per thread
+       * while remaining compatible with the project's C++14 standard. */
+      static BN_CTX_ &ctx_ ()
+      {
+        static thread_local BN_CTX_ ctx;
+        return ctx;
+      }
   }; /* ECGroup */
 
 } /* namespace BICYCL */

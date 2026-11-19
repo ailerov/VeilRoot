@@ -650,7 +650,7 @@ namespace BICYCL {
   BN ECGroup::a () const
   {
     BN a;
-    int ret = EC_GROUP_get_curve (ec_group_, NULL, a.bn_, NULL, ctx_);
+    int ret = EC_GROUP_get_curve (ec_group_, NULL, a.bn_, NULL, ctx_());
     if (ret != 1)
     {
       throw std::runtime_error ("EC_GROUP_get_curve failed for a");
@@ -663,7 +663,7 @@ namespace BICYCL {
   BN ECGroup::b () const
   {
     BN b;
-    int ret = EC_GROUP_get_curve (ec_group_, NULL, NULL, b.bn_, ctx_);
+    int ret = EC_GROUP_get_curve (ec_group_, NULL, NULL, b.bn_, ctx_());
     if (ret != 1)
     {
       throw std::runtime_error ("EC_GROUP_get_curve failed for b");
@@ -676,7 +676,7 @@ namespace BICYCL {
   BN ECGroup::p () const
   {
     BN p;
-    int ret = EC_GROUP_get_curve (ec_group_, p.bn_, NULL, NULL, ctx_);
+    int ret = EC_GROUP_get_curve (ec_group_, p.bn_, NULL, NULL, ctx_());
     if (ret != 1)
     {
       throw std::runtime_error ("EC_GROUP_get_curve failed for p");
@@ -688,7 +688,7 @@ namespace BICYCL {
   inline
   bool ECGroup::is_on_curve (const ECPoint &P) const
   {
-    return EC_POINT_is_on_curve (ec_group_, P.P_, ctx_);
+    return EC_POINT_is_on_curve (ec_group_, P.P_, ctx_());
   }
 
   /* */
@@ -699,7 +699,7 @@ namespace BICYCL {
       return false;
     ECPoint T (*this);
     int ret = EC_POINT_mul (ec_group_, T.P_, NULL, P.P_,
-                                      EC_GROUP_get0_cofactor (ec_group_), ctx_);
+                                      EC_GROUP_get0_cofactor (ec_group_), ctx_());
     if (ret != 1)
       throw std::runtime_error ("EC_POINT_mul failed in is_on_curve");
     return !is_at_infinity (T);
@@ -717,7 +717,7 @@ namespace BICYCL {
   void ECGroup::x_coord_of_point (BN &x, const ECPoint &P) const
   {
     int ret = EC_POINT_get_affine_coordinates (ec_group_, P.P_, x.bn_, NULL,
-                                                                            ctx_);
+                                                                            ctx_());
     if (ret != 1)
       throw std::runtime_error ("Could not get x coordinate");
   }
@@ -736,7 +736,7 @@ namespace BICYCL {
      * https://www.secg.org/sec1-v2.pdf
      */
     int ret
-        = EC_POINT_set_compressed_coordinates(ec_group_, P.P_, x.bn_, y_bit ? 1 : 0, ctx_);
+        = EC_POINT_set_compressed_coordinates(ec_group_, P.P_, x.bn_, y_bit ? 1 : 0, ctx_());
     if (ret != 1)
       throw std::runtime_error ("Could not set coordinates");
   }
@@ -745,7 +745,7 @@ namespace BICYCL {
   void ECGroup::set_coords_of_point (ECPoint &P, const BN &x, const BN &y) const
   {
     int ret
-        = EC_POINT_set_affine_coordinates(ec_group_, P.P_, x.bn_, y.bn_, ctx_);
+        = EC_POINT_set_affine_coordinates(ec_group_, P.P_, x.bn_, y.bn_, ctx_());
     if (ret != 1)
       throw std::runtime_error ("Could not set coordinates");
   }
@@ -754,14 +754,14 @@ namespace BICYCL {
   inline
   bool ECGroup::ec_point_eq (const ECPoint &P, const ECPoint &Q) const
   {
-    return EC_POINT_cmp (ec_group_, P.P_, Q.P_, ctx_) == 0;
+    return EC_POINT_cmp (ec_group_, P.P_, Q.P_, ctx_()) == 0;
   }
 
   /* */
   inline
   void ECGroup::ec_add (ECPoint &R, const ECPoint &P, const ECPoint &Q) const
   {
-    int ret = EC_POINT_add (ec_group_, R.P_, P.P_, Q.P_, ctx_);
+    int ret = EC_POINT_add (ec_group_, R.P_, P.P_, Q.P_, ctx_());
     if (ret != 1)
       throw std::runtime_error ("EC_POINT_add failed in add");
   }
@@ -770,7 +770,7 @@ namespace BICYCL {
   inline
   void ECGroup::ec_neg (ECPoint &R) const
   {
-    int ret = EC_POINT_invert (ec_group_, R.P_, ctx_);
+    int ret = EC_POINT_invert (ec_group_, R.P_, ctx_());
     if (ret != 1)
       throw std::runtime_error ("EC_POINT_invert failed in ec_neg");
   }
@@ -779,7 +779,7 @@ namespace BICYCL {
   inline
   void ECGroup::scal_mul_gen (ECPoint &R, const BN &n) const
   {
-    int ret = EC_POINT_mul (ec_group_, R.P_, n.bn_, NULL, NULL, ctx_);
+    int ret = EC_POINT_mul (ec_group_, R.P_, n.bn_, NULL, NULL, ctx_());
     if (ret != 1)
       throw std::runtime_error ("EC_POINT_mul failed in scal_mul_gen");
   }
@@ -788,7 +788,7 @@ namespace BICYCL {
   inline
   void ECGroup::scal_mul (ECPoint &R, const BN &n, const ECPoint &P) const
   {
-    int ret = EC_POINT_mul (ec_group_, R.P_, NULL, P.P_, n.bn_, ctx_);
+    int ret = EC_POINT_mul (ec_group_, R.P_, NULL, P.P_, n.bn_, ctx_());
     if (ret != 1)
       throw std::runtime_error ("EC_POINT_mul failed in scal_mul");
   }
@@ -798,7 +798,7 @@ namespace BICYCL {
   void ECGroup::scal_mul (ECPoint &R, const BN &m, const BN &n,
                                                       const ECPoint &P) const
   {
-    int ret = EC_POINT_mul (ec_group_, R.P_, m.bn_, P.P_, n.bn_, ctx_);
+    int ret = EC_POINT_mul (ec_group_, R.P_, m.bn_, P.P_, n.bn_, ctx_());
     if (ret != 1)
       throw std::runtime_error ("EC_POINT_mul failed in scal_mul");
   }
@@ -814,7 +814,7 @@ namespace BICYCL {
       return false;
 
     ECPoint T (*this);
-    int ret = EC_POINT_mul (ec_group_, T.P_, NULL, G.P_, get_order (), ctx_);
+    int ret = EC_POINT_mul (ec_group_, T.P_, NULL, G.P_, get_order (), ctx_());
     if (ret != 1)
       throw std::runtime_error ("EC_POINT_mul failed in has_correct_prime_order");
     return is_at_infinity (T);
@@ -824,7 +824,7 @@ namespace BICYCL {
   inline
   void ECGroup::mod_order (BN &r, const BN &a) const
   {
-    int ret = BN_nnmod (r.bn_, a.bn_, get_order (), ctx_);
+    int ret = BN_nnmod (r.bn_, a.bn_, get_order (), ctx_());
     if (ret != 1)
       throw std::runtime_error ("BN_nnmod failed");
   }
@@ -833,7 +833,7 @@ namespace BICYCL {
   inline
   void ECGroup::add_mod_order (BN &r, const BN &a, const BN &b) const
   {
-    int ret = BN_mod_add (r.bn_, a.bn_, b.bn_, get_order (), ctx_);
+    int ret = BN_mod_add (r.bn_, a.bn_, b.bn_, get_order (), ctx_());
     if (ret != 1)
       throw std::runtime_error ("BN_mod_add failed");
   }
@@ -842,7 +842,7 @@ namespace BICYCL {
   inline
   void ECGroup::sub_mod_order (BN &r, const BN &a, const BN &b) const
   {
-    int ret = BN_mod_sub (r.bn_, a.bn_, b.bn_, get_order (), ctx_);
+    int ret = BN_mod_sub (r.bn_, a.bn_, b.bn_, get_order (), ctx_());
     if (ret != 1)
       throw std::runtime_error ("BN_mod_sub failed");
   }
@@ -851,7 +851,7 @@ namespace BICYCL {
   inline
   void ECGroup::neg_mod_order (BN &r, const BN &a) const
   {
-    int ret = BN_mod_sub (r.bn_, get_order(), a.bn_, get_order (), ctx_);
+    int ret = BN_mod_sub (r.bn_, get_order(), a.bn_, get_order (), ctx_());
     if (ret != 1)
       throw std::runtime_error ("BN_mod_sub failed");
   }
@@ -870,7 +870,7 @@ namespace BICYCL {
   inline
   void ECGroup::mul_mod_order (BN &r, const BN &a, const BN &b) const
   {
-    int ret = BN_mod_mul (r.bn_, a.bn_, b.bn_, get_order (), ctx_);
+    int ret = BN_mod_mul (r.bn_, a.bn_, b.bn_, get_order (), ctx_());
     if (ret != 1)
       throw std::runtime_error ("BN_mod_mul failed");
   }
@@ -879,7 +879,7 @@ namespace BICYCL {
   inline
   void ECGroup::inverse_mod_order (BN &r, const BN &a) const
   {
-    const BIGNUM *ret = BN_mod_inverse (r.bn_, a.bn_, get_order (), ctx_);
+    const BIGNUM *ret = BN_mod_inverse (r.bn_, a.bn_, get_order (), ctx_());
     if (ret == NULL)
       throw std::runtime_error ("could not inverse modulo order");
   }
@@ -911,7 +911,7 @@ namespace BICYCL {
   inline
   void ECGroup::coords_of_point (BN &x, BN &y, const EC_POINT *P) const
   {
-    int ret = EC_POINT_get_affine_coordinates (ec_group_, P, x.bn_, y.bn_, ctx_);
+    int ret = EC_POINT_get_affine_coordinates (ec_group_, P, x.bn_, y.bn_, ctx_());
     if (ret != 1)
       throw std::runtime_error ("Could not get x, y coordinates");
   }
@@ -921,7 +921,7 @@ namespace BICYCL {
   size_t ECGroup::num_bytes_of(const EC_POINT *P) const
   {
     size_t s = EC_POINT_point2oct (ec_group_, P, POINT_CONVERSION_UNCOMPRESSED,
-                                  NULL, 0, ctx_);
+                                  NULL, 0, ctx_());
     if (s == 0)
     {
       throw std::runtime_error ("could not get size in point_to_bytes");
@@ -942,7 +942,7 @@ namespace BICYCL {
     size_t s = num_bytes_of(P);
     std::vector<unsigned char> r(s);
     s = EC_POINT_point2oct (ec_group_, P, POINT_CONVERSION_UNCOMPRESSED,
-                            r.data(), s, ctx_);
+                            r.data(), s, ctx_());
     if (s == 0)
     {
       throw std::runtime_error ("could not convert in point_to_bytes");
