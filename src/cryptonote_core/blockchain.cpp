@@ -10686,13 +10686,42 @@ dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
       return dao::dao_dkg_start_status::runner_start_failed;
     }
 
+    std::deque<std::pair<crypto::public_key, std::string>>
+        pending_messages;
+    bool runner_inserted = false;
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_dkg_runners_mutex);
       if (m_dao_v2_dkg_shutdown.load()) {
         runner->stop();
         return dao::dao_dkg_start_status::shutting_down;
       }
-      m_dao_v2_dkg_runners.emplace(ceremony_id, runner);
+
+      runner_inserted =
+          m_dao_v2_dkg_runners.emplace(ceremony_id, runner).second;
+
+      if (runner_inserted) {
+        auto pending_it = m_dao_v2_pending_dkg_msgs.find(ceremony_id);
+        if (pending_it != m_dao_v2_pending_dkg_msgs.end()) {
+          pending_messages.swap(pending_it->second);
+          m_dao_v2_pending_dkg_msgs.erase(pending_it);
+        }
+      }
+    }
+
+    if (!runner_inserted) {
+      runner->stop();
+      return dao::dao_dkg_start_status::already_running;
+    }
+
+    // Replay messages received before this runner was registered.
+    // Use the normal handler so private envelopes are decrypted and
+    // validated exactly as they are for messages received afterwards.
+    for (const auto& pending : pending_messages)
+      handle_dao_v2_dkg_msg(pending.first, pending.second);
+
+    if (!pending_messages.empty()) {
+      MINFO("DAO V2 DKG: replayed " << pending_messages.size()
+            << " buffered messages for ceremony " << ceremony_id);
     }
 
     auto* self = this;
