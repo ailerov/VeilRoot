@@ -10299,6 +10299,51 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       return;
     }
 
+    // BEGIN_VNS_DAO_V2_PEER_READY_TX_IMPORT
+    // Import the authenticated peer's signed readiness record into
+    // this node's transaction pool. Reuse the canonical transaction
+    // format used by maybe_announce_dao_v2_node_ready().
+    {
+      node_ready_payload nr;
+      nr.version = 1;
+      nr.sender_pubkey.assign(sender.data, sender.data + 32);
+      nr.height = sender_height;
+      nr.block_hash.assign(sender_block_hash.data,
+                           sender_block_hash.data + 32);
+      nr.signature.assign(m.bytes_a.begin(), m.bytes_a.end());
+
+      governance_payload gp;
+      gp.type = governance_object::node_ready;
+      const std::string nr_blob = t_serializable_object_to_blob(nr);
+      gp.data.assign(nr_blob.begin(), nr_blob.end());
+
+      tx_extra_governance_payload txgp;
+      txgp.payload = std::move(gp);
+      tx_extra_field ef = txgp;
+      const std::string eb = t_serializable_object_to_blob(ef);
+
+      transaction nr_tx;
+      nr_tx.version = 2;
+      nr_tx.unlock_time = 0;
+      nr_tx.extra.assign(eb.begin(), eb.end());
+      nr_tx.rct_signatures = rct::rctSig{};
+      nr_tx.rct_signatures.type = rct::RCTTypeNull;
+
+      tx_verification_context tvc{};
+      const uint8_t hf_v = get_current_hard_fork_version();
+
+      if (!m_tx_pool.add_tx(nr_tx, tvc, relay_method::local, true,
+                            hf_v, hf_v)) {
+        MWARNING("node_ready: peer transaction rejected by mempool from "
+                 << sender << " height=" << sender_height
+                 << " verification_failed=" << tvc.m_verifivation_failed
+                 << " fee_too_low=" << tvc.m_fee_too_low);
+      } else {
+        MINFO("node_ready: peer transaction submitted to mempool from "
+              << sender << " height=" << sender_height);
+      }
+    }
+    // END_VNS_DAO_V2_PEER_READY_TX_IMPORT
     // Bind the announced key to the authenticated sender: the sender
     // is the pubkey the P2P connection authenticated as, and the
     // digest is bound to that same pubkey, so a peer cannot announce
