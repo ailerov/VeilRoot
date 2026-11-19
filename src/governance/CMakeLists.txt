@@ -41,7 +41,12 @@ set(governance_sources
 
 monero_add_library(obj_governance OBJECT ${governance_sources})
     target_compile_definitions(obj_obj_governance PRIVATE VEILROOT_ENABLE_CL=1)
-    target_link_libraries(obj_obj_governance PRIVATE bicycl gmp::gmp)
+    # obj_obj_governance is an OBJECT library -- target_link_libraries
+    # on it does not propagate to consumers. Attach the link deps to
+    # the STATIC archive obj_governance instead, PUBLIC so that every
+    # consumer (cryptonote_core, wallet, blockchain_utilities, ...)
+    # receives -lgmp on its final link line.
+    target_link_libraries(obj_governance PUBLIC bicycl gmp::gmp)
 target_link_libraries(obj_obj_governance PRIVATE secp256k1)
 
 target_include_directories(obj_governance PRIVATE ${CMAKE_SOURCE_DIR}/src)

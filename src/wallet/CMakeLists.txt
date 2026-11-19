@@ -53,7 +53,10 @@ target_link_libraries(obj_wallet PRIVATE secp256k1)
 # its objects must be pulled into the wallet library explicitly.
 target_sources(obj_wallet PRIVATE $<TARGET_OBJECTS:obj_governance>)
   target_compile_definitions(obj_wallet PRIVATE VEILROOT_ENABLE_CL=1)
-  target_link_libraries(obj_wallet PRIVATE bicycl gmp::gmp)
+  # obj_wallet is an OBJECT library; link deps on it do not
+  # propagate. wallet is the STATIC archive consumed by wallet-cli,
+  # wallet-rpc, etc. -- attach gmp PUBLIC there so every consumer
+  # gets -lgmp.
 target_link_libraries(wallet
   PUBLIC
     rpc_base
@@ -73,6 +76,14 @@ target_link_libraries(wallet
   PRIVATE
     ${EXTRA_LIBRARIES}
     secp256k1)
+if(VEILROOT_ENABLE_CL)
+  # wallet embeds obj_governance objects via target_sources
+  # $<TARGET_OBJECTS:obj_governance>; those objects reference GMP
+  # symbols. Propagate bicycl/gmp PUBLIC so wallet's consumers
+  # (wallet-cli, wallet-rpc, ...) get them on their link lines.
+  target_link_libraries(wallet PUBLIC bicycl gmp::gmp)
+endif()
+
 
 if(NOT IOS)
   set(wallet_rpc_sources

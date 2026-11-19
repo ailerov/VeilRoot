@@ -66,6 +66,15 @@ target_link_libraries(cryptonote_core
     ixwebsocket
     obj_governance
 	${EXTRA_LIBRARIES})
+if(VEILROOT_ENABLE_CL)
+  # obj_governance is a STATIC library whose objects reference GMP
+  # symbols. STATIC libraries do not propagate PRIVATE link
+  # dependencies, so consumers of cryptonote_core must also link
+  # gmp. Declaring bicycl/gmp PUBLIC here makes them visible to
+  # every downstream consumer automatically.
+  target_link_libraries(cryptonote_core PUBLIC bicycl gmp::gmp)
+endif()
+
 
 # Add ixwebsocket and secp256k1 include paths for object library
 if(TARGET obj_cryptonote_core)
