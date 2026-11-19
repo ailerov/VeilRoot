@@ -12,6 +12,7 @@
 
 #include "governance/dao_cl_dkg_payload.h"
 #include "governance/dao_crypto_backend.h"
+#include "governance/voting_weight.h"
 
 #include "bicycl/bicycl.hpp"
 #include "bicycl/bicycl/seclevel.hpp"
@@ -247,10 +248,12 @@ bool dao_cl_check_ballot_modulus(const BICYCL::CL_HSMqk& cl)
     if (cl.q() != expect_q) return false;
 
     // Invariant 2: 2 * W_MAX < q.
-    unsigned __int128 wmax = DAO_WEIGHTED_MAX;
+    const governance_weight_t wmax = governance_w_max();
+    const governance_weight_t mask64 =
+        (governance_weight_t(1) << 64) - 1;
     std::vector<uint8_t> wbe;
-    uint64_t lo = static_cast<uint64_t>(wmax);
-    uint64_t hi = static_cast<uint64_t>(wmax >> 64);
+    const uint64_t lo = (wmax & mask64).convert_to<uint64_t>();
+    const uint64_t hi = (wmax >> 64).convert_to<uint64_t>();
     for (int i = 7; i >= 0; --i) {
         uint8_t b = (hi >> (8*i)) & 0xff;
         if (!wbe.empty() || b != 0) wbe.push_back(b);
