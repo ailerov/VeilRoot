@@ -3,7 +3,7 @@
 **Technical White Paper v1.5**  
 *Updated with Resolution & Merkle Proof Specifications*
 
-**Modified:** 20/09/2026  
+**Modified:** 19/11/2026  
 **Created:** 06/03/2025
 
 ---
@@ -108,40 +108,58 @@ At least one relay is required; at most three are permitted.
 
 The transfer signature is verified against the **current** on-chain registrant key before ownership is changed.
 
-### 2.2.4 DAO Governance Layer (New)
+### 2.2.4 DAO Governance Layer
 
-The VNS blockchain embeds a fully permissionless DAO that controls the treasury and adjusts system parameters. Governance is implemented through on-chain proposals with homomorphic threshold-decrypted voting to ensure maximum privacy.
+The VNS blockchain embeds a permissionless DAO that governs the
+treasury and protocol parameters through consensus-enforced proposals.
 
-**Treasury Lock:** The 18% treasury share of the fixed block subsidy (0.117 VNS/block) is sent to a special `tx_out_type_treasury` output. These outputs are consensus-locked – they cannot be spent unless accompanied by a valid DAO execution transaction that references a passed proposal.
+**Treasury lock:** The 18% treasury share of the fixed block subsidy
+(0.117 VNS per block) is sent to a special `tx_out_type_treasury`
+output. These outputs are consensus-locked and can only be spent
+through a valid DAO execution transaction referencing a passed
+proposal.
 
-**Proposal System:**
+**Proposals:** Anyone may submit a proposal by burning the required
+proposal fee. Proposals can request treasury grants, protocol
+parameter changes, or bridge configuration changes. The proposal
+defines its voting period.
 
-- Anyone may submit a proposal by burning a symbolic fee (0.00001 VNS). Proposals can request:
-  - Treasury grants (specify recipient and amount).
-  - Parameter changes (extension tiers, premium labels, banned terms, fee schedules).
-  - Bridge configuration (committee sizes, bond requirements, slashing rates).
-- Each proposal specifies a voting period (1-30 days).
+**Voting weight:** Voting power is determined by the protocol's
+balance-and-age weighting rules. Voting does not consume the underlying
+UTXO; the voter's balance and stake age remain intact.
 
-**Voting Mechanism (Maximum Privacy):**
+**Private ballots:** A ballot combines a ring-signature ownership
+proof, a Pedersen commitment, and Threshold-CL ciphertexts under the
+proposal's class-group public key. CL consistency proofs bind the
+encrypted values to the Pedersen commitment, permitted weight range,
+and voting direction. Nullifiers prevent reuse of the same voting
+authority. The required privacy property is that a ballot cannot be
+linked to the wallet or UTXO that authorized it.
 
-- Voting power is determined by stake-age weight: `weight = balance * log₂(age_in_days + 1)`, where age is the time since the UTXO was created.
-- Voting does not consume the UTXO – voters retain their full balance and age.
-- Each vote is a transaction containing:
-  - A ring signature proving ownership of a UTXO without revealing it.
-  - A Pedersen commitment to either `+weight` (yes) or `-weight` (no).
-  - The blinding factor is encrypted under a threshold public key generated via Distributed Key Generation (DKG) during network bootstrap. Each daemon automatically loads or creates its stable local DKG identity on startup, retains its required local secret material, and announces readiness over the network. DKG eligibility does not require a wallet command, a wallet UTXO, or operator registration.
-- The blockchain sums all commitments homomorphically to produce an aggregate commitment representing `(Total_Yes_Weight - Total_No_Weight)`.
+**Proposal-specific key establishment:** Each proposal uses its own
+Threshold-CL key context. The participating nodes perform distributed
+key generation and retain their respective secret shares locally.
+There is no permanent network-wide tally key or governance master key.
 
-**Tallying (Permissionless & Automated):**
+**Committee and resharing:** The protocol automatically selects
+eligible, ready daemon nodes for the proposal's cryptographic
+operations. When committee membership changes, Threshold-CL resharing
+transfers the share distribution to the new committee while preserving
+the proposal's aggregate public key.
 
-- At the end of the voting period, the protocol automatically selects between 3 and 16 ready, share-capable daemon nodes as the tally committee for that specific proposal. Membership is event-specific and is not persisted as a database record.
-- These nodes collaboratively decrypt the aggregate blinding factor using temporary per-event shares of the same stable tally key, and publish the plaintext totals: `Total_Yes_Weight` and `Total_No_Weight`. The temporary operation shares are destroyed when the operation completes; each node's underlying share remains available for subsequent operations.
-- A proposal passes if:
-  1. `Total_Yes_Weight > Total_No_Weight`
-  2. The total participation coins (the raw VNS amount represented by accepted votes) meets or exceeds the quorum (default: 10% of the circulating supply at the voting end height). Circulating supply is `minted_supply - treasury_balance - burned_fees`, representing VNS held by users and available for participation; it excludes locked treasury VNS and permanently burned fees. The DAO may adjust the quorum percentage via on-chain proposals.
-- The final result (adopted/rejected), the aggregate totals, and the quorum percentage are publicly recorded on-chain.
+**Tally:** The network homomorphically aggregates the encrypted voting
+values. Committee members produce partial decryptions of the aggregate.
+Nodes verify and combine a sufficient threshold of valid partials to
+recover the aggregate voting result. The tally certificate binds the
+result to the proposal, key context, aggregate ciphertexts, committee,
+and cryptographic evidence.
 
-**Execution:** Once a proposal passes, anyone may submit an execution transaction that references the proposal ID. The blockchain validates the proof and, if successful, releases treasury funds or updates the governance parameters.
+**Acceptance and execution:** A proposal passes when its age-weighted
+majority and raw-coin participation quorum conditions are satisfied.
+The result is recorded on-chain. Anyone may submit the corresponding
+execution transaction, and consensus validates the proposal outcome
+and execution authorization before treasury funds or governed
+parameters change.
 
 ---
 
@@ -594,11 +612,32 @@ By design, VNS:
 
 ## 9.4 Permissionless Tally & Bridge Committees
 
-**Automatic DKG readiness.** Each daemon automatically loads or creates its stable local DKG identity, retains its required local secret material, and announces readiness over the network. DKG eligibility does not require a wallet command, a wallet UTXO, or operator registration.
+**DAO Threshold-CL key establishment.** DAO V2 uses proposal-scoped
+Threshold-CL over class groups. The DKG for a proposal establishes its
+canonical public key context and distributes the corresponding secret
+shares among the participating nodes. DKG messages are bound to the
+proposal and committee context. Each node retains its own share; there
+is no single permanent network-wide tally key.
 
-**Stable tally key.** Once at least three participants are ready, the network automatically bootstraps the stable tally public key. Each participant retains only its own required secret share locally. The wallet uses the public key to construct non-consuming votes.
+**Automatic readiness and selection.** Daemons announce readiness
+automatically. The protocol selects eligible, ready participants for
+the proposal's cryptographic operations according to its committee
+rules. Committee membership is a temporary protocol role rather than
+a permanent operator appointment.
 
-**Temporary committees.** When a tally or other DAO operation requires a committee, the network automatically selects between 3 and 16 ready, share-capable nodes for that specific operation. Event committee membership and temporary shares are not persisted as database records. Temporary operation shares are destroyed when the operation completes; the node's underlying share remains available for subsequent operations.
+**Same-key resharing.** When committee membership changes, the
+Threshold-CL resharing protocol distributes the existing secret among
+the new participants while preserving the same aggregate public key.
+The new share set is verified and activated as a consistent state
+transition.
+
+**Tally.** Committee members produce partial decryptions of the
+proposal's aggregate CL ciphertexts. Nodes verify the partials and
+combine the required threshold to obtain the aggregate voting result.
+
+Bridge committees remain a separate protocol role. Their selection,
+threshold-signing duties, and bridge-specific requirements are
+governed by the bridge protocol and its DAO-controlled parameters.
 
 ## 9.5 DAO-Controlled Parameters
 

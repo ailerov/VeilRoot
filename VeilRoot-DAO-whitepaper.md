@@ -3,7 +3,7 @@
 ## A Privacy-Preserving, Permissionless and Protocol-Enforced Governance System for the VeilRoot Name System (by Ailerov Thuypan)
 
 ###### *Decentralized Governance Protocol and Economic Architecture*  
-*Version 1.0 — June 2026*  
+*Version 1.1 — Nov 2026*  
 *© 2026 VeilRoot. All rights reserved.*  
 *This document describes the VeilRoot DAO protocol, including its governance architecture, economic mechanisms, voting system, treasury mechanism, domain governance, and associated protocol innovations. The protocol design and original material presented herein are the intellectual property of VeilRoot and its author, except where otherwise stated.*
 
@@ -290,109 +290,157 @@ The whitepaper explicitly defines this property.
 
 # 7. Private Vote Construction
 
-Each vote is represented by a transaction containing cryptographic evidence of voting authority.
+Each vote is represented by a transaction containing cryptographic
+evidence of voting authority and the encrypted voting values.
 
-The protocol specifies:
+The CL ballot contains:
 
-1. a ring signature proving ownership of an eligible UTXO without identifying it;
-2. a Pedersen commitment representing either positive or negative voting weight;
-3. encryption of the commitment's blinding factor under a threshold public key.
+1. A ring signature proving ownership of eligible voting authority
+   without identifying the underlying UTXO.
+2. A Pedersen commitment to the voting weight.
+3. Threshold-CL ciphertexts over the proposal's class-group public key.
+4. Cryptographic proofs binding the encrypted values to the Pedersen
+   commitment, the permitted voting-weight range, and the selected
+   voting direction.
 
-The intended vote therefore reveals the participant's decision to the protocol without revealing the participant's underlying output.
+The encrypted weight channel represents W. Its CL ciphertext is proven
+to encrypt the same integer represented by the Pedersen commitment.
+A Bulletproof+ range proof establishes that the committed weight lies
+within the protocol's permitted interval:
 
-Conceptually:
+    0 <= W <= DAO_WEIGHTED_MAX
 
-**C_YES = Commit(+W, r)**
+The signed channel represents the selected direction, +W or -W. Its
+proof is linked to the weight channel, and the direction OR proof binds
+the ciphertexts and their consistency proofs together. The verifier
+also enforces the modulus relationship required for unambiguous signed
+decoding.
 
-and
+These checks establish that the encrypted voting values, Pedersen
+commitment, range proof, and voting direction describe the same valid
+ballot. Nodes can validate ballot consistency and range without
+publishing the voter's individual weight.
 
-**C_NO = Commit(-W, r)**
+The ballot's privacy property is unlinkability between the ballot and
+the wallet or UTXO that authorized it. Threshold decryption authority
+is distributed among committee members; the design does not rely on
+MPC/SPDZ to prevent a colluding threshold from decrypting an individual
+ciphertext. The ring-signature and nullifier mechanisms protect the
+association between voting authority and the submitted ballot.
 
-where r is a secret blinding factor.
-
-The cryptographic commitment allows the network to aggregate votes without exposing each participant's private voting weight.
-
----
+A vote does not consume the underlying UTXO. The participant retains
+the balance and its stake age.
 
 # 8. Homomorphic Vote Aggregation
 
-The DAO uses the additive properties of Pedersen commitments.
+The DAO combines the additive properties of Pedersen commitments with
+the homomorphic encryption properties of Threshold-CL.
 
-Individual commitments can be combined into an aggregate commitment:
+Individual Pedersen commitments are added to form aggregate
+commitments. The corresponding CL ciphertext components are combined
+homomorphically to form aggregate encrypted voting values.
 
-**C_aggregate = Σᵢ Cᵢ**
+The ballot consistency proofs ensure that the encrypted values and
+Pedersen commitments represent the same voting weight and direction.
+The range and direction proofs prevent malformed encrypted values
+from being accepted as valid votes.
 
-which corresponds to the aggregate difference:
+The network therefore accumulates the voting result without publishing
+each voter's individual voting weight or linking that weight to the
+voter's wallet.
 
-**W_YES − W_NO**
+The aggregate CL ciphertexts are the inputs to the threshold tally.
+Committee members decrypt the aggregate values through their
+distributed Threshold-CL shares; the protocol does not require a
+central decryption key.
 
-without requiring every individual vote weight to be published.
+# 9. Proposal-Scoped Threshold-CL Distributed Key Generation
 
-The protocol therefore separates:
+DAO V2 uses Threshold-CL over class groups, implemented with BICYCL,
+for encrypted voting and threshold tallying.
 
-**vote authorization**
+Key establishment is proposal-scoped. The protocol does not bootstrap
+one permanent network-wide tally public key for every proposal to
+reuse. Each proposal uses its own canonical CL key context, containing
+the class-group parameters and public key needed to encrypt, verify,
+and decrypt that proposal's voting values.
 
-from
+The nodes participating in the proposal's DKG operate as individual
+Threshold-CL parties. They jointly generate the distributed key:
+each party deals its polynomial commitments and accompanying proof,
+sends its private share to the intended recipient, and verifies the
+commitments, proofs, and shares received from the other parties.
+Complaints and completion messages are part of the DKG message flow.
 
-**vote disclosure**.
+The DKG uses a t+1-of-n threshold. Each participant retains its own
+secret share locally. The parties derive the common public key and
+the public information needed to verify and combine threshold
+decryptions. No participant reconstructs the complete threshold
+secret.
 
-Individual voters remain private while the final governance result becomes publicly verifiable.
+DKG messages are bound to their proposal and committee context. The
+resulting canonical proposal key context is used by wallets and
+consensus verification so that a key or ciphertext from another
+proposal cannot be substituted.
 
-The whitepaper specifies that the blockchain aggregates the commitments to represent:
-
-**Total_Yes − Total_No**
-
-and that the final totals are subsequently recovered through threshold decryption.
-
----
-
-# 9. Distributed Key Generation
-
-The blinding factor associated with voting commitments is protected by a threshold public key.
-
-Each daemon automatically loads or creates its stable local DKG identity on startup, retains its required local secret material, and announces readiness over the network. DKG eligibility does not require a wallet command, a wallet UTXO, or operator registration.
-
-Once at least three participants are ready, the network automatically bootstraps the stable tally public key. Each participant retains only its own required secret share locally. The wallet uses the public key to construct non-consuming votes.
-
-No individual tally participant therefore possesses the complete secret necessary to decrypt the aggregate voting information.
-
-Instead, the system distributes authority across the selected tally participants.
-
-This prevents the tally mechanism from degenerating into a single private decryption key controlled by one operator.
-
----
+This proposal-scoped construction avoids a permanent governance
+master key and avoids making every proposal depend on one globally
+reused tally key.
 
 # 10. Permissionless Tally Committee
 
-At the end of a voting period, the protocol automatically selects between 3 and 16 ready, share-capable daemon nodes as the tally committee for that specific proposal.
+For each proposal, the protocol determines the eligible committee
+according to its automatic readiness, eligibility, and selection
+rules. Tally committee membership is temporary and determined by
+protocol state, not by a permanent appointment or a fixed list of
+operator identities.
 
-Event committee membership and temporary shares are not persisted as database records. The selected nodes use temporary per-event shares of the same stable tally key. Temporary operation shares are destroyed when the operation completes; each node's underlying share remains available for subsequent operations.
+The committee operates the proposal's Threshold-CL key shares. The
+configured committee size and threshold determine how many valid
+participants are required to complete a tally. A single participant
+cannot independently produce the threshold decryption result.
 
-Committee membership is therefore not permanent.
+When the committee membership changes, Threshold-CL resharing
+distributes shares of the existing aggregate secret to the new
+committee. Resharing preserves the proposal's public key: it changes
+the share distribution, not the underlying public key or encrypted
+voting context.
 
-It is determined from protocol state at the moment when the tally is required.
+The resharing protocol binds its messages to the reshare session and
+identifies the contributing old members and receiving new members.
+The new parties verify the contributions and proofs before completing
+the new share set. The completed share set is activated as one
+consistent state transition. The old share set is not replaced by a
+partially completed reshare.
 
-The broader VNS architecture applies the same principle to bridge committees: selection is automatic, based on eligibility and readiness, with no permanent operator identities or whitelists.
+The committee remains a temporary cryptographic role. It does not
+vote on proposals, determine political outcomes, or exercise
+discretionary control over treasury execution.
 
----
+# 11. Threshold-CL Tally Process
 
-# 11. Tally Process
+At the end of the voting period, the protocol forms the aggregate
+encrypted voting values for the proposal.
 
-The selected tally participants collaboratively use their DKG shares to decrypt the aggregate voting information.
+Each selected committee member uses its local Threshold-CL share to
+produce a partial decryption of the aggregate ciphertexts. The
+resulting partial decryptions are exchanged and cryptographically
+verified. A sufficient threshold of valid partial decryptions is
+then combined to recover the aggregate plaintext values.
 
-The protocol recovers:
+Signed values are decoded under the proposal's CL plaintext modulus
+using the protocol's centred signed representation. The recovered
+values provide the authoritative total voting weights for and against
+the proposal. The raw participation amount used for quorum remains a
+separate quantity from age-weighted voting power.
 
-**Total_Yes**
+The tally certificate binds the result to the relevant proposal,
+proposal key context, aggregate encrypted values, committee, and
+cryptographic evidence. Every validating node verifies the threshold
+tally evidence and applies the proposal's majority and quorum rules.
 
-and
-
-**Total_No**
-
-These values, together with the relevant quorum parameters, form the authoritative governance result.
-
-The final result is recorded on-chain.
-
----
+The resulting governance decision is recorded on-chain and is
+enforced by blockchain consensus.
 
 # 12. Proposal Acceptance
 
