@@ -7492,6 +7492,63 @@ leave:
   }
   // END_VNS_DAO_V2_PROPOSAL_DKG_TRIGGER
 
+  // BEGIN_VNS_DAO_V2_DKG_READINESS_RETRY
+  // A proposal's first DKG attempt may precede the inclusion of enough
+  // chain-recorded node_ready transactions. Retry pending active
+  // proposals when a new readiness record becomes canonical.
+  //
+  // The retry runs while processing the block that commits node_ready.
+  // Therefore every node derives selection_height from the same
+  // canonical block and uses the same deterministic committee selector.
+  {
+    bool node_ready_committed = false;
+
+    for (const auto& tx_pair : txs) {
+      if (is_dao_v2_node_ready_tx(tx_pair.first)) {
+        node_ready_committed = true;
+        break;
+      }
+    }
+
+    if (node_ready_committed) {
+      std::vector<crypto::hash> pending_proposals;
+
+      // Collect IDs first. Do not start DKG from inside this DB
+      // iteration: start_dao_v2_dkg_for_proposal() performs its own
+      // database reads, and nested read transactions must be avoided.
+      m_db->for_all_proposal_records(
+          [&](const crypto::hash& proposal_id,
+              const proposal_record& rec) -> bool {
+            if (rec.status != PROPOSAL_STATUS_ACTIVE)
+              return true;
+
+            if (rec.tally_key_id != crypto::null_hash)
+              return true;
+
+            if (rec.submission_height >= new_height)
+              return true;
+
+            pending_proposals.push_back(proposal_id);
+            return true;
+          });
+
+      for (const auto& proposal_id : pending_proposals) {
+        const auto st =
+            start_dao_v2_dkg_for_proposal(proposal_id);
+
+        if (st != dao::dao_dkg_start_status::started &&
+            st != dao::dao_dkg_start_status::already_running &&
+            st != dao::dao_dkg_start_status::local_node_not_selected &&
+            st != dao::dao_dkg_start_status::insufficient_ready_committee) {
+          MWARNING("DAO V2 DKG readiness retry: status="
+                   << static_cast<int>(st)
+                   << " for proposal " << proposal_id);
+        }
+      }
+    }
+  }
+  // END_VNS_DAO_V2_DKG_READINESS_RETRY
+
   // BEGIN_VNS_ELIGIBLE_APPLY
   // Register any committee-eligible announcements carried by this
   // block. Rollback removes them by key image.
