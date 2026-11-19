@@ -13,6 +13,7 @@
 #include "crypto/crypto-ops.h"
 #include "crypto/hash.h"
 #include "governance/dao_crypto_backend.h"
+#include "governance/voting_weight.h"
 #include "ringct/bulletproofs_plus.h"
 #include "ringct/rctOps.h"
 #include "serialization/binary_utils.h"
@@ -145,13 +146,15 @@ Mpz rct_scalar_to_mpz(const rct::key& k)
     return mpz_from_bytes_be(be.data() + skip, 32 - skip);
 }
 
-// unsigned __int128 → 32-byte LE rct::key (value must be < q).
-rct::key u128_to_rct_scalar(unsigned __int128 v)
+// 128-bit governance weight → 32-byte LE rct::key (value must be < q).
+rct::key u128_to_rct_scalar(const governance_weight_t& v)
 {
     rct::key out;
     std::memset(out.bytes, 0, 32);
-    uint64_t lo = static_cast<uint64_t>(v);
-    uint64_t hi = static_cast<uint64_t>(v >> 64);
+    const governance_weight_t mask64 =
+        (governance_weight_t(1) << 64) - 1;
+    const uint64_t lo = (v & mask64).convert_to<uint64_t>();
+    const uint64_t hi = (v >> 64).convert_to<uint64_t>();
     for (int i = 0; i < 8; ++i) out.bytes[i]     = (lo >> (8*i)) & 0xff;
     for (int i = 0; i < 8; ++i) out.bytes[8 + i] = (hi >> (8*i)) & 0xff;
     return out;
@@ -266,8 +269,6 @@ bool hash_challenge(
 
 static const Mpz& range_B_mpz()
 {
-    static const Mpz B(static_cast<unsigned long>(1UL << 34) == 0 ?
-                       Mpz(0UL) : Mpz(0UL));
     // Cannot use shift on unsigned long for 2^34 on 32-bit UL, so build
     // 2^34 = 4 * 2^32 = 4 * (2^16 * 2^16).
     static const Mpz Bv = []{
@@ -381,7 +382,7 @@ bool range_verify(const rct::key& C, const dao_cl_range_proof& in)
         rct::key one = rct::identity();
         sc_sub(Bm1.bytes, B.bytes, one.bytes);
     }
-    rct::key W_MAX_scalar = u128_to_rct_scalar(DAO_WEIGHTED_MAX);
+    rct::key W_MAX_scalar = u128_to_rct_scalar(governance_w_max());
 
     // Check 1: C_0 + C_2 == (B-1)*H
     {
@@ -457,10 +458,12 @@ bool dao_cl_consistency_prove(
     // Range guard.
     Mpz w_max_mpz;
     {
-        unsigned __int128 wmax = DAO_WEIGHTED_MAX;
+        const governance_weight_t wmax = governance_w_max();
+        const governance_weight_t mask64 =
+            (governance_weight_t(1) << 64) - 1;
         std::vector<uint8_t> be;
-        uint64_t lo = static_cast<uint64_t>(wmax);
-        uint64_t hi = static_cast<uint64_t>(wmax >> 64);
+        const uint64_t lo = (wmax & mask64).convert_to<uint64_t>();
+        const uint64_t hi = (wmax >> 64).convert_to<uint64_t>();
         // Build BE bytes: 8 bytes hi, 8 bytes lo.
         for (int i = 7; i >= 0; --i) {
             uint8_t b = (hi >> (8*i)) & 0xff;
@@ -566,10 +569,12 @@ bool dao_cl_consistency_prove(
 // Shared helper: build the W_MAX Mpz once.
 static Mpz weighted_max_mpz()
 {
-    unsigned __int128 wmax = DAO_WEIGHTED_MAX;
+    const governance_weight_t wmax = governance_w_max();
+    const governance_weight_t mask64 =
+        (governance_weight_t(1) << 64) - 1;
     std::vector<uint8_t> be;
-    uint64_t lo = static_cast<uint64_t>(wmax);
-    uint64_t hi = static_cast<uint64_t>(wmax >> 64);
+    const uint64_t lo = (wmax & mask64).convert_to<uint64_t>();
+    const uint64_t hi = (wmax >> 64).convert_to<uint64_t>();
     for (int i = 7; i >= 0; --i) {
         uint8_t b = (hi >> (8*i)) & 0xff;
         if (!be.empty() || b != 0) be.push_back(b);
