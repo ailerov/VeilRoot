@@ -386,6 +386,9 @@ vote_kind VoteManager::classify_vote_tx(const transaction& tx) const
         switch (gp.type) {
             case governance_object::proposal:
             case governance_object::execution:
+            case governance_object::tally_result:
+            case governance_object::dkg_key_activation:
+            case governance_object::node_ready:
                 break;
             case governance_object::vote:
                 ++v1;
