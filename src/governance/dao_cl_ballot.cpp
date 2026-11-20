@@ -9,6 +9,7 @@
 #include <cstring>
 
 #include <openssl/sha.h>
+#include "misc_log_ex.h"
 
 #include "governance/dao_cl_dkg_payload.h"
 #include "governance/dao_crypto_backend.h"
@@ -145,6 +146,8 @@ std::shared_ptr<BICYCL::CL_HSMqk> dao_cl_make_hsmq_from_seed(
     // randgen.random_prime(DeltaK_nbits); identical seed produces
     // identical p across nodes.
     RandGen rng;
+    uint8_t seed_digest_saved[32] = {0};
+    size_t seed_input_len = 0;
     {
         // Mix a domain tag with the seed so that unrelated uses of the
         // same seed do not collide.
@@ -155,14 +158,65 @@ std::shared_ptr<BICYCL::CL_HSMqk> dao_cl_make_hsmq_from_seed(
         uint8_t h[32];
         SHA256(buf.data(), buf.size(), h);
         Mpz seed_mpz(std::vector<uint8_t>(h, h + sizeof(h)));
+        std::memcpy(seed_digest_saved, h, 32);
+        seed_input_len = buf.size();
         rng.set_seed(seed_mpz);
     }
 
     try {
         SecLevel sl(static_cast<int>(seclevel_bits));
-        return std::make_shared<CL_HSMqk>(
+        auto cl = std::make_shared<CL_HSMqk>(
             q, static_cast<size_t>(1), sl, rng,
             CL_Params(static_cast<size_t>(seclevel_bits)));
+
+        // --- diagnostic: fingerprint class-group construction ---
+        {
+            auto hex_full = [](const uint8_t* d, size_t n) {
+                static const char hx[] = "0123456789abcdef";
+                std::string r; r.reserve(n * 2);
+                for (size_t i = 0; i < n; ++i) {
+                    r.push_back(hx[(d[i] >> 4) & 0xf]);
+                    r.push_back(hx[d[i] & 0xf]);
+                }
+                return r;
+            };
+            auto hash_mpz = [&](const Mpz& v) {
+                std::vector<uint8_t> b;
+                if (!cl_dkg_mpz_to_bytes_signed(b, v)) return std::string("<fail>");
+                uint8_t out[32];
+                SHA256(b.data(), b.size(), out);
+                return hex_full(out, 32);
+            };
+            auto hash_qfi = [&](const QFI& f) {
+                std::vector<uint8_t> b;
+                if (!cl_dkg_qfi_to_bytes(b, f)) return std::string("<fail>");
+                uint8_t out[32];
+                SHA256(b.data(), b.size(), out);
+                return hex_full(out, 32);
+            };
+
+            QFI hq;
+            cl->power_of_h(hq, Mpz(1UL));
+
+            std::string seed_hex = hex_full(seed_digest_saved, 32);
+            std::string in_hex   = seed.empty() ? std::string("<empty>")
+                                                : hex_full(seed.data(),
+                                                           seed.size() > 64 ? 64 : seed.size());
+
+            MWARNING("CL factory: in=" << in_hex
+                     << " in_len=" << seed.size()
+                     << " seed_len=" << seed_input_len
+                     << " seed_sha=" << seed_hex
+                     << " q_sha=" << hash_mpz(cl->q())
+                     << " p_sha=" << hash_mpz(cl->p())
+                     << " k=" << cl->k()
+                     << " h_sha=" << hash_qfi(hq)
+                     << " q_bits=" << cl->q().nbits()
+                     << " p_bits=" << cl->p().nbits()
+                     << " dist=" << cl->lambda_distance()
+                     << " compact=" << (cl->compact_variant() ? 1 : 0));
+        }
+        return cl;
     } catch (...) {
         return nullptr;
     }

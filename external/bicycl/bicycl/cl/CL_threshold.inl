@@ -24,6 +24,7 @@
 
 #include "CL_threshold.hpp"
 #include <sstream>
+#include <cstdio>
 
 namespace BICYCL
 {
@@ -587,14 +588,30 @@ namespace BICYCL
         if (*it == i_) // For every other P
           continue;
 
-        if (false == keygen_verify_player_proof(CL_Hsmq, *it, false))
+        const bool proof_ok =
+            keygen_verify_player_proof(CL_Hsmq, *it, false);
+
+        if (!proof_ok)
         {
-          // Remove Pj from Q immediately
+          std::fprintf(
+              stderr,
+              "[CL_DKG_VERIFY] local=%u peer=%u proof=FAIL share=SKIPPED\n",
+              i_ + 1u, *it + 1u);
+
           disqualify.push_back(*it);
+          continue;
         }
-        else if (false == keygen_check_player_shares(CL_Hsmq, *it, false))
+
+        const bool share_ok =
+            keygen_check_player_shares(CL_Hsmq, *it, false);
+
+        std::fprintf(
+            stderr,
+            "[CL_DKG_VERIFY] local=%u peer=%u proof=OK share=%s\n",
+            i_ + 1u, *it + 1u, share_ok ? "OK" : "FAIL");
+
+        if (!share_ok)
         {
-          // Complain to Pj before deciding its removal from Q
           complain.push_back(*it);
         }
       }
