@@ -7511,6 +7511,8 @@ leave:
     }
 
     if (node_ready_committed) {
+      MWARNING("DAO V2 DKG readiness retry: node_ready tx in block "
+               << new_height);
       std::vector<crypto::hash> pending_proposals;
 
       // Collect IDs first. Do not start DKG from inside this DB
@@ -7532,18 +7534,15 @@ leave:
             return true;
           });
 
+      MWARNING("DAO V2 DKG readiness retry: "
+               << pending_proposals.size()
+               << " pending proposal(s) at height " << new_height);
       for (const auto& proposal_id : pending_proposals) {
         const auto st =
             start_dao_v2_dkg_for_proposal(proposal_id);
 
-        if (st != dao::dao_dkg_start_status::started &&
-            st != dao::dao_dkg_start_status::already_running &&
-            st != dao::dao_dkg_start_status::local_node_not_selected &&
-            st != dao::dao_dkg_start_status::insufficient_ready_committee) {
-          MWARNING("DAO V2 DKG readiness retry: status="
-                   << static_cast<int>(st)
-                   << " for proposal " << proposal_id);
-        }
+        MWARNING("DAO V2 DKG readiness retry: proposal=" << proposal_id
+                 << " status=" << static_cast<int>(st));
       }
     }
   }
@@ -10109,6 +10108,8 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     crypto::hash bh{};
     std::memcpy(bh.data, nr.block_hash.data(), 32);
 
+    MWARNING("DAO V2 node_ready applied to chain-state: sender="
+             << sender << " height=" << nr.height);
     m_db->add_dao_v2_node_ready(sender, nr.height, bh);
     return true;
   }
@@ -10616,9 +10617,15 @@ dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
         select_dao_v2_proposal_dkg_committee(proposal_id, selection_height);
     if (shareholders.size() < dao::DAO_DKG_MIN_COMMITTEE_SIZE) {
       MWARNING("start_dao_v2_dkg_for_proposal: not enough chain-state "
-               "ready peers for proposal " << proposal_id);
+               "ready peers for proposal " << proposal_id
+               << " found=" << shareholders.size()
+               << " need=" << dao::DAO_DKG_MIN_COMMITTEE_SIZE
+               << " selection_height=" << selection_height);
       return dao::dao_dkg_start_status::insufficient_ready_committee;
     }
+    MWARNING("start_dao_v2_dkg_for_proposal: committee selected for "
+             << proposal_id << " size=" << shareholders.size()
+             << " selection_height=" << selection_height);
 
     crypto::public_key self_pk{};
     if (!crypto::secret_key_to_public_key(m_node_privkey, self_pk)) {
