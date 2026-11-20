@@ -51,8 +51,10 @@ CLCommitteeParty::CLCommitteeParty(std::shared_ptr<CL_HSMqk> cl,
 
 bool CLCommitteeParty::keygen_dealing(RandGen& randgen)
 {
+    last_error_.clear();
     try { player_->keygen_dealing(*cl_, randgen); return true; }
-    catch (...) { return false; }
+    catch (const std::exception& e) { last_error_ = e.what(); return false; }
+    catch (...) { last_error_ = "unknown exception in keygen_dealing"; return false; }
 }
 
 const std::vector<QFI>& CLCommitteeParty::keygen_commitments() const
@@ -73,33 +75,43 @@ const Mpz& CLCommitteeParty::keygen_y_k(unsigned int recipient_id) const
 bool CLCommitteeParty::keygen_add_commitments(
     unsigned int sender_id, const std::vector<QFI>& C)
 {
+    last_error_.clear();
     try { player_->keygen_add_commitments(sender_id, C); return true; }
-    catch (...) { return false; }
+    catch (const std::exception& e) { last_error_ = e.what(); return false; }
+    catch (...) { last_error_ = "unknown exception in keygen_add_commitments"; return false; }
 }
 
 bool CLCommitteeParty::keygen_add_proof(
     unsigned int sender_id, const CL_HSMqk_Batch_Dlog_AoK& proof)
 {
+    last_error_.clear();
     try { player_->keygen_add_proof(sender_id, proof); return true; }
-    catch (...) { return false; }
+    catch (const std::exception& e) { last_error_ = e.what(); return false; }
+    catch (...) { last_error_ = "unknown exception in keygen_add_proof"; return false; }
 }
 
 bool CLCommitteeParty::keygen_add_share(unsigned int sender_id, const Mpz& y)
 {
+    last_error_.clear();
     try { player_->keygen_add_share(sender_id, y); return true; }
-    catch (...) { return false; }
+    catch (const std::exception& e) { last_error_ = e.what(); return false; }
+    catch (...) { last_error_ = "unknown exception in keygen_add_share"; return false; }
 }
 
 bool CLCommitteeParty::keygen_check_verify_all()
 {
+    last_error_.clear();
     try { return player_->keygen_check_verify_all_players(*cl_); }
-    catch (...) { return false; }
+    catch (const std::exception& e) { last_error_ = e.what(); return false; }
+    catch (...) { last_error_ = "unknown exception in keygen_check_verify_all"; return false; }
 }
 
 bool CLCommitteeParty::keygen_extract()
 {
+    last_error_.clear();
     try { player_->keygen_extract(*cl_); keygen_done_ = true; return true; }
-    catch (...) { return false; }
+    catch (const std::exception& e) { last_error_ = e.what(); return false; }
+    catch (...) { last_error_ = "unknown exception in keygen_extract"; return false; }
 }
 
 const CL_HSMqk::PublicKey& CLCommitteeParty::public_key() const

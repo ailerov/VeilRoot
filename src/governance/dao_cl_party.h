@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "bicycl/bicycl.hpp"
@@ -105,6 +106,11 @@ public:
     bool keygen_extract();
     bool keygen_done() const { return keygen_done_; }
 
+    // Reason for the most recent failed stage. Cleared at the start of
+    // each stage that can fail. Read this only after a stage returns
+    // false; populated on the calling thread.
+    const std::string& last_error() const { return last_error_; }
+
     // ---- Post-keygen ----
     const BICYCL::CL_HSMqk::PublicKey& public_key() const;
 
@@ -131,6 +137,7 @@ private:
     unsigned int local_id_;
     size_t soundness_bytes_;
     bool keygen_done_ = false;
+    std::string last_error_;
     std::unique_ptr<BICYCL::CL_Threshold_Static> player_;
 };
 

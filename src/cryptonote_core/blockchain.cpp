@@ -10444,7 +10444,8 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     for (auto& item : pending) {
       if (!item.result.ok) {
         MWARNING("DAO V2 CL DKG ceremony_id " << item.ceremony_id
-                 << ": result not ok");
+                 << ": result not ok at " << item.result.failure_stage
+                 << ": " << item.result.failure_reason);
         continue;
       }
 
@@ -10682,8 +10683,9 @@ dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
             return false;
           return m_dao_v2_dkg_send(encrypted);
         },
-        [this](const std::string& payload) {
-          if (m_dao_v2_dkg_send) (void)m_dao_v2_dkg_send(payload);
+        [this](const std::string& payload) -> bool {
+          if (!m_dao_v2_dkg_send) return false;
+          return m_dao_v2_dkg_send(payload);
         });
 
     auto runner = std::make_shared<dao::cl_dkg_p2p_runner>(cfg, transport);
@@ -10738,7 +10740,9 @@ dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
          shareholders]() {
       dao::cl_dkg_result cl_res;
       if (!runner->wait(cl_res, 0) || !cl_res.ok) {
-        MWARNING("DAO V2 CL DKG ceremony " << ceremony_id << ": failed");
+        MWARNING("DAO V2 CL DKG ceremony " << ceremony_id
+                 << " failed at " << cl_res.failure_stage
+                 << ": " << cl_res.failure_reason);
         return;
       }
 
@@ -11391,8 +11395,9 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
             return false;
           return m_dao_v2_dkg_send(encrypted);
         },
-        [this](const std::string& payload) {
-          if (m_dao_v2_dkg_send) (void)m_dao_v2_dkg_send(payload);
+        [this](const std::string& payload) -> bool {
+          if (!m_dao_v2_dkg_send) return false;
+          return m_dao_v2_dkg_send(payload);
         });
 
     auto runner = std::make_unique<dao::cl_reshare_p2p_runner>(

@@ -18,6 +18,7 @@
 #include <memory>
 #include <mutex>
 #include <queue>
+#include <string>
 #include <vector>
 
 #include "governance/dao_crypto_backend.h"
@@ -57,6 +58,12 @@ struct cl_dkg_result
     uint64_t selection_height = 0;
     cl_key_context ctx;
 
+    // Populated when ok == false. Identifies the stage that failed and,
+    // for library exceptions, the wrapped message. Read only after the
+    // runner's wait() has observed completion.
+    std::string failure_stage;
+    std::string failure_reason;
+
     // This node's secret share, encoded by serialize_secret_share() on
     // the wrapped player. Persist to the node's local store; never to
     // consensus state.
@@ -83,7 +90,7 @@ public:
         std::vector<crypto::public_key> members,
         std::function<bool(const crypto::public_key&,
                            const std::string&)> send_to,
-        std::function<void(const std::string&)> broadcast);
+        std::function<bool(const std::string&)> broadcast);
 
     bool send(const dkg_msg& m) override;
     bool recv(dkg_msg& m) override;
@@ -95,7 +102,7 @@ private:
     std::vector<crypto::public_key> members_;
     std::function<bool(const crypto::public_key&,
                        const std::string&)> send_to_;
-    std::function<void(const std::string&)>    broadcast_;
+    std::function<bool(const std::string&)>    broadcast_;
     std::mutex               mu_;
     std::condition_variable  cv_;
     std::queue<dkg_msg>      queue_;

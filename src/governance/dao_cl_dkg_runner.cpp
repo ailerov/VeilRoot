@@ -85,7 +85,7 @@ struct cl_dkg_p2p_runner::impl
             && peer_shares.size()      == cfg.committee_size - 1;
     }
 
-    bool process_inbound(const dkg_msg& m)
+    bool process_inbound(const dkg_msg& m, std::string& stage)
     {
         if (m.hdr.type != dkg_msg_type::cl_dkg_envelope) return true;
         if (m.hdr.version != 2) return true;
@@ -104,24 +104,36 @@ struct cl_dkg_p2p_runner::impl
             std::vector<QFI> C;
             if (!cl_dkg_decode_commitments(
                     p, C, cfg.cl->Cl_G().discriminant(),
-                    cfg.committee_size)) return false;
-            if (!party->keygen_add_commitments(s0, C)) return false;
+                    cfg.committee_size)) {
+                stage = "decode_commitments"; return false;
+            }
+            if (!party->keygen_add_commitments(s0, C)) {
+                stage = "add_commitments"; return false;
+            }
             peer_commitments.insert(m.hdr.sender_id);
             return true;
         }
         case cl_dkg_subtype::keygen_batch_proof: {
             Mpz u; QFI R;
             if (!cl_dkg_decode_batch_proof(
-                    p, u, R, cfg.cl->Cl_G().discriminant())) return false;
+                    p, u, R, cfg.cl->Cl_G().discriminant())) {
+                stage = "decode_batch_proof"; return false;
+            }
             CLBatchDlogAoKExposed proof(u, R);
-            if (!party->keygen_add_proof(s0, proof)) return false;
+            if (!party->keygen_add_proof(s0, proof)) {
+                stage = "add_proof"; return false;
+            }
             peer_proofs.insert(m.hdr.sender_id);
             return true;
         }
         case cl_dkg_subtype::keygen_private_share: {
             Mpz y;
-            if (!cl_dkg_decode_private_share(p, y)) return false;
-            if (!party->keygen_add_share(s0, y)) return false;
+            if (!cl_dkg_decode_private_share(p, y)) {
+                stage = "decode_private_share"; return false;
+            }
+            if (!party->keygen_add_share(s0, y)) {
+                stage = "add_share"; return false;
+            }
             peer_shares.insert(m.hdr.sender_id);
             return true;
         }
@@ -164,10 +176,14 @@ struct cl_dkg_p2p_runner::impl
         return true;
     }
 
-    void mark_finished(bool ok)
+    void mark_finished(bool ok,
+                       const std::string& stage = {},
+                       const std::string& reason = {})
     {
         std::lock_guard<std::mutex> lk(mu);
         result.ok = ok;
+        result.failure_stage = stage;
+        result.failure_reason = reason;
         finished = true;
         running = false;
         cv.notify_all();
@@ -181,55 +197,121 @@ struct cl_dkg_p2p_runner::impl
 
     void run()
     {
-        if (!party->keygen_dealing(randgen)) { mark_finished(false); return; }
+        if (!party->keygen_dealing(randgen)) {
+            mark_finished(false, "keygen_dealing", party->last_error());
+            return;
+        }
 
         {
             cl_dkg_payload p;
-            if (!cl_dkg_encode_commitments(party->keygen_commitments(), p))
-            { mark_finished(false); return; }
-            if (!broadcast(p)) { mark_finished(false); return; }
+            if (!cl_dkg_encode_commitments(party->keygen_commitments(), p)) {
+                mark_finished(false, "encode_commitments", "");
+                return;
+            }
+            if (!broadcast(p)) {
+                mark_finished(false, "broadcast_commitments",
+                              "transport send failed");
+                return;
+            }
             if (!cl_dkg_encode_batch_proof(
                     party->keygen_batch_proof().u(),
-                    party->keygen_batch_proof().R(), p))
-            { mark_finished(false); return; }
-            if (!broadcast(p)) { mark_finished(false); return; }
+                    party->keygen_batch_proof().R(), p)) {
+                mark_finished(false, "encode_batch_proof", "");
+                return;
+            }
+            if (!broadcast(p)) {
+                mark_finished(false, "broadcast_batch_proof",
+                              "transport send failed");
+                return;
+            }
         }
         for (uint32_t peer = 1; peer <= cfg.committee_size; ++peer) {
             if (peer == cfg.local_party_id) continue;
             cl_dkg_payload p;
             if (!cl_dkg_encode_private_share(
-                    party->keygen_y_k(peer - 1), p))
-            { mark_finished(false); return; }
-            if (!unicast(peer, p)) { mark_finished(false); return; }
+                    party->keygen_y_k(peer - 1), p)) {
+                mark_finished(false, "encode_private_share", "");
+                return;
+            }
+            if (!unicast(peer, p)) {
+                mark_finished(false, "unicast_private_share",
+                              "transport send failed to peer "
+                              + std::to_string(peer));
+                return;
+            }
         }
 
         const auto deadline = std::chrono::steady_clock::now()
                             + std::chrono::seconds(cfg.phase_timeout_seconds);
         while (!all_peer_inputs_received()) {
-            if (should_stop()) { mark_finished(false); return; }
-            if (std::chrono::steady_clock::now() >= deadline)
-            { mark_finished(false); return; }
+            if (should_stop()) {
+                mark_finished(false, "waiting_for_peer_inputs",
+                              "shutdown");
+                return;
+            }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                const size_t need =
+                    static_cast<size_t>(cfg.committee_size - 1);
+                std::string reason =
+                    "timeout after "
+                    + std::to_string(cfg.phase_timeout_seconds) + "s"
+                    + " commitments=" + std::to_string(peer_commitments.size())
+                    + "/" + std::to_string(need)
+                    + " proofs=" + std::to_string(peer_proofs.size())
+                    + "/" + std::to_string(need)
+                    + " shares=" + std::to_string(peer_shares.size())
+                    + "/" + std::to_string(need);
+                mark_finished(false, "waiting_for_peer_inputs", reason);
+                return;
+            }
             dkg_msg m;
             if (transport->try_recv(m)) {
-                if (!process_inbound(m)) { mark_finished(false); return; }
+                std::string stage;
+                if (!process_inbound(m, stage)) {
+                    mark_finished(false, stage, party->last_error());
+                    return;
+                }
             } else {
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
         }
 
-        if (!party->keygen_check_verify_all()) { mark_finished(false); return; }
-        if (!party->keygen_extract())           { mark_finished(false); return; }
+        if (!party->keygen_check_verify_all()) {
+            mark_finished(false, "keygen_check_verify_all",
+                          party->last_error());
+            return;
+        }
+        if (!party->keygen_extract()) {
+            mark_finished(false, "keygen_extract", party->last_error());
+            return;
+        }
 
         cl_dkg_payload comp;
-        if (!cl_dkg_encode_complete(comp)) { mark_finished(false); return; }
-        if (!broadcast(comp)) { mark_finished(false); return; }
+        if (!cl_dkg_encode_complete(comp)) {
+            mark_finished(false, "encode_complete", "");
+            return;
+        }
+        if (!broadcast(comp)) {
+            mark_finished(false, "broadcast_complete",
+                          "transport send failed");
+            return;
+        }
 
-        std::lock_guard<std::mutex> lk(mu);
-        if (!fill_result(result)) { result.ok = false; finished = true; running = false; cv.notify_all(); return; }
-        result.ok = true;
-        finished = true;
-        running = false;
-        cv.notify_all();
+        cl_dkg_result local;
+        if (!fill_result(local)) {
+            mark_finished(false, "fill_result", "fill_result returned false");
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            result = std::move(local);
+            result.ok = true;
+            result.failure_stage.clear();
+            result.failure_reason.clear();
+            finished = true;
+            running = false;
+            cv.notify_all();
+        }
     }
 };
 
@@ -240,7 +322,7 @@ struct cl_dkg_p2p_runner::impl
 cl_dkg_p2p_transport::cl_dkg_p2p_transport(
     std::vector<crypto::public_key> members,
     std::function<bool(const crypto::public_key&, const std::string&)> send_to,
-    std::function<void(const std::string&)> broadcast)
+    std::function<bool(const std::string&)> broadcast)
     : members_(std::move(members))
     , send_to_(std::move(send_to))
     , broadcast_(std::move(broadcast)) {}
@@ -252,8 +334,8 @@ bool cl_dkg_p2p_transport::send(const dkg_msg& m)
     std::string payload(buf.begin(), buf.end());
 
     if (m.hdr.recipient_id == 0) {
-        if (broadcast_) broadcast_(payload);
-        return true;
+        if (!broadcast_) return false;
+        return broadcast_(payload);
     }
     const uint32_t idx = m.hdr.recipient_id;
     if (idx < 1 || idx > members_.size()) return false;
