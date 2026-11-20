@@ -10616,6 +10616,14 @@ dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
 
     std::vector<crypto::public_key> shareholders =
         select_dao_v2_proposal_dkg_committee(proposal_id, selection_height);
+    // Deterministic party ordering for DKG. Sort by pubkey so every
+    // node derives the same party ids for the same committee set,
+    // regardless of the local chain tip used to pick the committee.
+    std::sort(shareholders.begin(), shareholders.end(),
+              [](const crypto::public_key& a, const crypto::public_key& b) {
+                  return std::memcmp(a.data, b.data,
+                                     sizeof(a.data)) < 0;
+              });
     if (shareholders.size() < dao::DAO_DKG_MIN_COMMITTEE_SIZE) {
       MWARNING("start_dao_v2_dkg_for_proposal: not enough chain-state "
                "ready peers for proposal " << proposal_id
