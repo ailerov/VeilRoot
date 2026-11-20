@@ -6,6 +6,7 @@
 #ifdef VEILROOT_ENABLE_CL
 
 #include "governance/dao_cl_dkg_payload.h"
+#include "crypto/hash.h"
 #include "governance/dao_cl_party.h"
 
 #include "misc_log_ex.h"
@@ -313,6 +314,27 @@ struct cl_dkg_p2p_runner::impl
                 if (i) memb += ",";
                 memb += hex_pk(cfg.member_ids[i]);
             }
+            auto hex8 = [](const crypto::hash& h) {
+                static const char hx[] = "0123456789abcdef";
+                std::string r; r.reserve(16);
+                for (size_t i = 0; i < 8; ++i) {
+                    r.push_back(hx[(h.data[i] >> 4) & 0xf]);
+                    r.push_back(hx[h.data[i] & 0xf]);
+                }
+                return r;
+            };
+            std::vector<uint8_t> p_bytes, q_bytes, h_bytes;
+            cl_dkg_mpz_to_bytes_be(p_bytes, cfg.cl->p());
+            cl_dkg_mpz_to_bytes_be(q_bytes, cfg.cl->q());
+            {
+                QFI hq;
+                cfg.cl->power_of_h(hq, Mpz(1UL));
+                cl_dkg_qfi_to_bytes(h_bytes, hq);
+            }
+            crypto::hash p_h{}, q_h{}, h_h{};
+            crypto::cn_fast_hash(p_bytes.data(), p_bytes.size(), p_h);
+            crypto::cn_fast_hash(q_bytes.data(), q_bytes.size(), q_h);
+            crypto::cn_fast_hash(h_bytes.data(), h_bytes.size(), h_h);
             MWARNING("CL DKG pre-verify: local_id=" << cfg.local_party_id
                      << " n=" << cfg.committee_size
                      << " members=[" << memb << "]"
@@ -321,7 +343,10 @@ struct cl_dkg_p2p_runner::impl
                      << " shares_recv=[" << join_set(peer_shares) << "]"
                      << " cl_k=" << cfg.cl->k()
                      << " cl_q_bits=" << cfg.cl->q().nbits()
-                     << " cl_p_bits=" << cfg.cl->p().nbits());
+                     << " cl_p_bits=" << cfg.cl->p().nbits()
+                     << " p_sha=" << hex8(p_h)
+                     << " q_sha=" << hex8(q_h)
+                     << " h_sha=" << hex8(h_h));
         }
         if (!party->keygen_check_verify_all()) {
             mark_finished(false, "keygen_check_verify_all",
