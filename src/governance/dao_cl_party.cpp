@@ -101,7 +101,14 @@ bool CLCommitteeParty::keygen_add_share(unsigned int sender_id, const Mpz& y)
 bool CLCommitteeParty::keygen_check_verify_all()
 {
     last_error_.clear();
-    try { return player_->keygen_check_verify_all_players(*cl_); }
+    try {
+        // BICYCL's keygen_check_verify_all_players disqualifies any peer
+        // whose proof or share fails and returns false on any failure.
+        // A threshold scheme does not require unanimity: proceed as long
+        // as the surviving qualified set is at least the threshold size.
+        (void)player_->keygen_check_verify_all_players(*cl_);
+        return player_->QualifiedPlayerSet().size() >= (t_ + 1);
+    }
     catch (const std::exception& e) { last_error_ = e.what(); return false; }
     catch (...) { last_error_ = "unknown exception in keygen_check_verify_all"; return false; }
 }
