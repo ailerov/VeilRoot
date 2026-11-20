@@ -10624,9 +10624,26 @@ dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
                << " selection_height=" << selection_height);
       return dao::dao_dkg_start_status::insufficient_ready_committee;
     }
-    MWARNING("start_dao_v2_dkg_for_proposal: committee selected for "
-             << proposal_id << " size=" << shareholders.size()
-             << " selection_height=" << selection_height);
+    {
+      auto hex_pk = [](const crypto::public_key& pk) {
+        static const char hx[] = "0123456789abcdef";
+        std::string r; r.reserve(64);
+        for (size_t i = 0; i < sizeof(pk.data); ++i) {
+          r.push_back(hx[(pk.data[i] >> 4) & 0xf]);
+          r.push_back(hx[pk.data[i] & 0xf]);
+        }
+        return r;
+      };
+      std::string memb;
+      for (size_t i = 0; i < shareholders.size(); ++i) {
+        if (i) memb += ",";
+        memb += hex_pk(shareholders[i]);
+      }
+      MWARNING("start_dao_v2_dkg_for_proposal: committee selected for "
+               << proposal_id << " size=" << shareholders.size()
+               << " selection_height=" << selection_height
+               << " members=[" << memb << "]");
+    }
 
     crypto::public_key self_pk{};
     if (!crypto::secret_key_to_public_key(m_node_privkey, self_pk)) {

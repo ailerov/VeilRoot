@@ -8,6 +8,8 @@
 #include "governance/dao_cl_dkg_payload.h"
 #include "governance/dao_cl_party.h"
 
+#include "misc_log_ex.h"
+
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -111,6 +113,11 @@ struct cl_dkg_p2p_runner::impl
                 stage = "add_commitments"; return false;
             }
             peer_commitments.insert(m.hdr.sender_id);
+            MWARNING("CL DKG rx: id=" << m.hdr.sender_id
+                     << " type=commitments"
+                     << " c=" << peer_commitments.size()
+                     << " p=" << peer_proofs.size()
+                     << " s=" << peer_shares.size());
             return true;
         }
         case cl_dkg_subtype::keygen_batch_proof: {
@@ -124,6 +131,11 @@ struct cl_dkg_p2p_runner::impl
                 stage = "add_proof"; return false;
             }
             peer_proofs.insert(m.hdr.sender_id);
+            MWARNING("CL DKG rx: id=" << m.hdr.sender_id
+                     << " type=proof"
+                     << " c=" << peer_commitments.size()
+                     << " p=" << peer_proofs.size()
+                     << " s=" << peer_shares.size());
             return true;
         }
         case cl_dkg_subtype::keygen_private_share: {
@@ -135,6 +147,11 @@ struct cl_dkg_p2p_runner::impl
                 stage = "add_share"; return false;
             }
             peer_shares.insert(m.hdr.sender_id);
+            MWARNING("CL DKG rx: id=" << m.hdr.sender_id
+                     << " type=share"
+                     << " c=" << peer_commitments.size()
+                     << " p=" << peer_proofs.size()
+                     << " s=" << peer_shares.size());
             return true;
         }
         case cl_dkg_subtype::keygen_complaint:
@@ -276,6 +293,36 @@ struct cl_dkg_p2p_runner::impl
             }
         }
 
+        {
+            auto hex_pk = [](const crypto::public_key& pk) {
+                static const char hx[] = "0123456789abcdef";
+                std::string r; r.reserve(64);
+                for (size_t i = 0; i < sizeof(pk.data); ++i) {
+                    r.push_back(hx[(pk.data[i] >> 4) & 0xf]);
+                    r.push_back(hx[pk.data[i] & 0xf]);
+                }
+                return r;
+            };
+            auto join_set = [](const std::set<uint32_t>& st) {
+                std::string r;
+                for (auto v : st) { if (!r.empty()) r += ","; r += std::to_string(v); }
+                return r;
+            };
+            std::string memb;
+            for (size_t i = 0; i < cfg.member_ids.size(); ++i) {
+                if (i) memb += ",";
+                memb += hex_pk(cfg.member_ids[i]);
+            }
+            MWARNING("CL DKG pre-verify: local_id=" << cfg.local_party_id
+                     << " n=" << cfg.committee_size
+                     << " members=[" << memb << "]"
+                     << " commits_recv=[" << join_set(peer_commitments) << "]"
+                     << " proofs_recv=[" << join_set(peer_proofs) << "]"
+                     << " shares_recv=[" << join_set(peer_shares) << "]"
+                     << " cl_k=" << cfg.cl->k()
+                     << " cl_q_bits=" << cfg.cl->q().nbits()
+                     << " cl_p_bits=" << cfg.cl->p().nbits());
+        }
         if (!party->keygen_check_verify_all()) {
             mark_finished(false, "keygen_check_verify_all",
                           party->last_error());
