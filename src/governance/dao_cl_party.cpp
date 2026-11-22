@@ -6,6 +6,7 @@
 #ifdef VEILROOT_ENABLE_CL
 
 #include <stdexcept>
+#include <string>
 
 namespace cryptonote {
 namespace dao {
@@ -102,12 +103,31 @@ bool CLCommitteeParty::keygen_check_verify_all()
 {
     last_error_.clear();
     try {
-        // BICYCL's keygen_check_verify_all_players disqualifies any peer
-        // whose proof or share fails and returns false on any failure.
-        // A threshold scheme does not require unanimity: proceed as long
-        // as the surviving qualified set is at least the threshold size.
         (void)player_->keygen_check_verify_all_players(*cl_);
-        return player_->QualifiedPlayerSet().size() >= (t_ + 1);
+
+        const auto& qualified  = player_->QualifiedPlayerSet();
+        const auto& complaints = player_->ComplaintsSet();
+
+        const size_t required = static_cast<size_t>(t_) + 1;
+
+        if (qualified.size() < required) {
+            last_error_ =
+                "qualified set below threshold: "
+                + std::to_string(qualified.size()) + "/"
+                + std::to_string(required)
+                + ", unresolved complaints="
+                + std::to_string(complaints.size());
+            return false;
+        }
+
+        if (!complaints.empty()) {
+            last_error_ =
+                "unresolved private-share complaints: "
+                + std::to_string(complaints.size());
+            return false;
+        }
+
+        return true;
     }
     catch (const std::exception& e) { last_error_ = e.what(); return false; }
     catch (...) { last_error_ = "unknown exception in keygen_check_verify_all"; return false; }
