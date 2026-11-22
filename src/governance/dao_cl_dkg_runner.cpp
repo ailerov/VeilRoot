@@ -83,9 +83,20 @@ struct cl_dkg_p2p_runner::impl
 
     bool all_peer_inputs_received() const
     {
-        return peer_commitments.size() == cfg.committee_size - 1
-            && peer_proofs.size()      == cfg.committee_size - 1
-            && peer_shares.size()      == cfg.committee_size - 1;
+        // Threshold is (t_+1) total qualified players, one of which
+        // is self, so at least t_ peers must contribute. Proceed once
+        // enough peers have supplied each input class. Peers whose
+        // batch proof fails verification are disqualified by the
+        // library at check_verify time and their unicast shares are
+        // not needed; peers whose proof is valid but whose share is
+        // missing surface as complaints at extract time.
+        const size_t required_peers =
+            (cfg.threshold_internal > 0)
+                ? static_cast<size_t>(cfg.threshold_internal)
+                : 1;
+        return peer_commitments.size() >= required_peers
+            && peer_proofs.size()      >= required_peers
+            && peer_shares.size()      >= required_peers;
     }
 
     bool process_inbound(const dkg_msg& m, std::string& stage)
@@ -269,7 +280,9 @@ struct cl_dkg_p2p_runner::impl
             }
             if (std::chrono::steady_clock::now() >= deadline) {
                 const size_t need =
-                    static_cast<size_t>(cfg.committee_size - 1);
+                    (cfg.threshold_internal > 0)
+                        ? static_cast<size_t>(cfg.threshold_internal)
+                        : 1;
                 std::string reason =
                     "timeout after "
                     + std::to_string(cfg.phase_timeout_seconds) + "s"
