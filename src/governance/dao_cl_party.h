@@ -103,6 +103,7 @@ public:
                           const BICYCL::Mpz& y);
 
     bool keygen_check_verify_all();
+    bool keygen_disqualify_player(unsigned int id);
     bool keygen_extract();
     bool keygen_done() const { return keygen_done_; }
 

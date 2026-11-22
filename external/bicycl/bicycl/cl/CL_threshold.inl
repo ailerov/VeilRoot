@@ -593,10 +593,6 @@ namespace BICYCL
 
         if (!proof_ok)
         {
-          std::fprintf(
-              stderr,
-              "[CL_DKG_VERIFY] local=%u peer=%u proof=FAIL share=SKIPPED\n",
-              i_ + 1u, *it + 1u);
 
           disqualify.push_back(*it);
           continue;
@@ -605,10 +601,6 @@ namespace BICYCL
         const bool share_ok =
             keygen_check_player_shares(CL_Hsmq, *it, false);
 
-        std::fprintf(
-            stderr,
-            "[CL_DKG_VERIFY] local=%u peer=%u proof=OK share=%s\n",
-            i_ + 1u, *it + 1u, share_ok ? "OK" : "FAIL");
 
         if (!share_ok)
         {

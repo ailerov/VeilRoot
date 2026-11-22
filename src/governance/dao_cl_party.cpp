@@ -133,6 +133,25 @@ bool CLCommitteeParty::keygen_check_verify_all()
     catch (...) { last_error_ = "unknown exception in keygen_check_verify_all"; return false; }
 }
 
+bool CLCommitteeParty::keygen_disqualify_player(unsigned int id)
+{
+    last_error_.clear();
+
+    try {
+        player_->keygen_disqualify_player(id);
+        return true;
+    }
+    catch (const std::exception& e) {
+        last_error_ = e.what();
+        return false;
+    }
+    catch (...) {
+        last_error_ = "unknown exception in keygen_disqualify_player";
+        return false;
+    }
+}
+
+
 bool CLCommitteeParty::keygen_extract()
 {
     last_error_.clear();

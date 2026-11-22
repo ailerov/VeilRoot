@@ -348,19 +348,22 @@ struct cl_dkg_p2p_runner::impl
             crypto::cn_fast_hash(p_bytes.data(), p_bytes.size(), p_h);
             crypto::cn_fast_hash(q_bytes.data(), q_bytes.size(), q_h);
             crypto::cn_fast_hash(h_bytes.data(), h_bytes.size(), h_h);
-            MWARNING("CL DKG pre-verify: local_id=" << cfg.local_party_id
-                     << " n=" << cfg.committee_size
-                     << " members=[" << memb << "]"
-                     << " commits_recv=[" << join_set(peer_commitments) << "]"
-                     << " proofs_recv=[" << join_set(peer_proofs) << "]"
-                     << " shares_recv=[" << join_set(peer_shares) << "]"
-                     << " cl_k=" << cfg.cl->k()
-                     << " cl_q_bits=" << cfg.cl->q().nbits()
-                     << " cl_p_bits=" << cfg.cl->p().nbits()
-                     << " p_sha=" << hex8(p_h)
-                     << " q_sha=" << hex8(q_h)
-                     << " h_sha=" << hex8(h_h));
         }
+        for (unsigned int pid = 1; pid <= cfg.committee_size; ++pid) {
+            if (pid == cfg.local_party_id) continue;
+            const bool has_pub = peer_commitments.count(pid) > 0
+                              && peer_proofs.count(pid) > 0;
+            if (has_pub) continue;
+            MWARNING("CL DKG disqualify: local_id=" << cfg.local_party_id
+                     << " missing public contribution from id=" << pid);
+            try {
+                party->keygen_disqualify_player(pid);
+            } catch (const std::exception& e) {
+                mark_finished(false, "keygen_disqualify_player", e.what());
+                return;
+            }
+        }
+
         if (!party->keygen_check_verify_all()) {
             mark_finished(false, "keygen_check_verify_all",
                           party->last_error());
