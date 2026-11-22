@@ -10609,6 +10609,15 @@ dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
         return dao::dao_dkg_start_status::already_running;
     }
 
+    {
+      // A completed local ceremony for this proposal is final.
+      // Retry cycles must not overwrite its stored share set.
+      std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
+      if (m_dao_v2_local_records.count(
+              epee::string_tools::pod_to_hex(proposal_id)) > 0) {
+        return dao::dao_dkg_start_status::already_running;
+      }
+    }
     const uint64_t chain_height = get_current_blockchain_height();
     if (chain_height == 0)
       return dao::dao_dkg_start_status::no_chain;
