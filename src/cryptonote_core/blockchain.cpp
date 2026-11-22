@@ -10829,6 +10829,7 @@ dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
         self->m_dao_v2_local_selection_height[ceremony_id] = selection_height;
       }
 
+      cl_res.selection_height = selection_height;
       self->queue_dao_v2_dkg_result(ceremony_id, std::move(cl_res));
     }));
 
