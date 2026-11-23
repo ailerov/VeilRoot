@@ -46,6 +46,7 @@ struct cl_dkg_p2p_runner::impl
     std::set<uint32_t> peer_commitments;
     std::set<uint32_t> peer_proofs;
     std::set<uint32_t> peer_shares;
+    std::string inbound_failure_reason;
 
     void seed_randgen()
     {
@@ -60,8 +61,9 @@ struct cl_dkg_p2p_runner::impl
     bool broadcast(const cl_dkg_payload& p)
     {
         dkg_msg m;
-        m.hdr.version = 2;
+        m.hdr.version = 3;
         m.hdr.proposal_id = cfg.proposal_id;
+        m.hdr.attempt_id = cfg.attempt_id;
         m.hdr.sender_id = cfg.local_party_id;
         m.hdr.recipient_id = 0;
         m.hdr.type = dkg_msg_type::cl_dkg_envelope;
@@ -72,8 +74,9 @@ struct cl_dkg_p2p_runner::impl
     bool unicast(uint32_t peer, const cl_dkg_payload& p)
     {
         dkg_msg m;
-        m.hdr.version = 2;
+        m.hdr.version = 3;
         m.hdr.proposal_id = cfg.proposal_id;
+        m.hdr.attempt_id = cfg.attempt_id;
         m.hdr.sender_id = cfg.local_party_id;
         m.hdr.recipient_id = peer;
         m.hdr.type = dkg_msg_type::cl_dkg_envelope;
@@ -81,29 +84,34 @@ struct cl_dkg_p2p_runner::impl
         return transport->send(m);
     }
 
+    size_t complete_peer_count() const
+    {
+        size_t complete = 0;
+        for (uint32_t peer = 1; peer <= cfg.committee_size; ++peer) {
+            if (peer == cfg.local_party_id) continue;
+            if (peer_commitments.count(peer) && peer_proofs.count(peer) &&
+                peer_shares.count(peer))
+                ++complete;
+        }
+        return complete;
+    }
     bool all_peer_inputs_received() const
     {
-        // Threshold is (t_+1) total qualified players, one of which
-        // is self, so at least t_ peers must contribute. Proceed once
-        // enough peers have supplied each input class. Peers whose
-        // batch proof fails verification are disqualified by the
-        // library at check_verify time and their unicast shares are
-        // not needed; peers whose proof is valid but whose share is
-        // missing surface as complaints at extract time.
-        const size_t required_peers =
-            (cfg.threshold_internal > 0)
-                ? static_cast<size_t>(cfg.threshold_internal)
-                : 1;
-        return peer_commitments.size() >= required_peers
-            && peer_proofs.size()      >= required_peers
-            && peer_shares.size()      >= required_peers;
+        // A participant is ready only when that same participant has
+        // supplied commitments, proof, and its unicast share. Aggregate
+        // per-message counts can otherwise combine contributions from
+        // different peers and incorrectly advance verification.
+        const size_t required_peers = cfg.committee_size > 0
+            ? static_cast<size_t>(cfg.committee_size - 1) : 0;
+        return complete_peer_count() == required_peers;
     }
 
     bool process_inbound(const dkg_msg& m, std::string& stage)
     {
         if (m.hdr.type != dkg_msg_type::cl_dkg_envelope) return true;
-        if (m.hdr.version != 2) return true;
+        if (m.hdr.version != 3) return true;
         if (m.hdr.proposal_id != cfg.proposal_id) return true;
+        if (m.hdr.attempt_id != cfg.attempt_id) return true;
         if (m.hdr.sender_id == 0 || m.hdr.sender_id > cfg.committee_size)
             return true;
         if (m.hdr.recipient_id != 0 && m.hdr.recipient_id != cfg.local_party_id)
@@ -166,7 +174,28 @@ struct cl_dkg_p2p_runner::impl
                      << " s=" << peer_shares.size());
             return true;
         }
-        case cl_dkg_subtype::keygen_complaint:
+        case cl_dkg_subtype::keygen_complaint: {
+            uint32_t against_sender_id = 0;
+            uint32_t complaint_reason = 0;
+            if (!cl_dkg_decode_complaint(
+                    p, against_sender_id, complaint_reason) ||
+                against_sender_id == 0 ||
+                against_sender_id > cfg.committee_size) {
+                stage = "keygen_complaint_decode";
+                inbound_failure_reason = "malformed keygen complaint";
+                return false;
+            }
+            stage = "keygen_complaint";
+            inbound_failure_reason =
+                "unresolved complaint from peer " +
+                std::to_string(m.hdr.sender_id) + " against peer " +
+                std::to_string(against_sender_id) + " (reason " +
+                std::to_string(complaint_reason) + ")";
+            // The exposed CL party API has no complaint-resolution
+            // transition. Do not treat this as resolved and do not
+            // locally disqualify either participant. Abort this attempt.
+            return false;
+        }
         case cl_dkg_subtype::keygen_complete:
             return true;
         case cl_dkg_subtype::reshare_prestate:
@@ -180,6 +209,7 @@ struct cl_dkg_p2p_runner::impl
 
     bool fill_result(cl_dkg_result& out) const
     {
+        out.attempt_id = cfg.attempt_id;
         const auto& cl = *cfg.cl;
         out.ctx.q.clear();
         cl_dkg_mpz_to_bytes_be(out.ctx.q, cl.q());
@@ -210,6 +240,7 @@ struct cl_dkg_p2p_runner::impl
                        const std::string& reason = {})
     {
         std::lock_guard<std::mutex> lk(mu);
+        result.attempt_id = cfg.attempt_id;
         result.ok = ok;
         result.failure_stage = stage;
         result.failure_reason = reason;
@@ -225,6 +256,17 @@ struct cl_dkg_p2p_runner::impl
     }
 
     void run()
+    {
+        try { run_impl(); }
+        catch (const std::exception& e) {
+            mark_finished(false, "runner_exception", e.what());
+        }
+        catch (...) {
+            mark_finished(false, "runner_exception", "unknown");
+        }
+    }
+
+    void run_impl()
     {
         if (!party->keygen_dealing(randgen)) {
             mark_finished(false, "keygen_dealing", party->last_error());
@@ -279,19 +321,17 @@ struct cl_dkg_p2p_runner::impl
                 return;
             }
             if (std::chrono::steady_clock::now() >= deadline) {
-                const size_t need =
-                    (cfg.threshold_internal > 0)
-                        ? static_cast<size_t>(cfg.threshold_internal)
-                        : 1;
+                const size_t need = cfg.committee_size > 0
+                    ? static_cast<size_t>(cfg.committee_size - 1) : 0;
                 std::string reason =
                     "timeout after "
                     + std::to_string(cfg.phase_timeout_seconds) + "s"
+                    + " complete_peers=" +
+                    std::to_string(complete_peer_count()) + "/" +
+                    std::to_string(need)
                     + " commitments=" + std::to_string(peer_commitments.size())
-                    + "/" + std::to_string(need)
                     + " proofs=" + std::to_string(peer_proofs.size())
-                    + "/" + std::to_string(need)
-                    + " shares=" + std::to_string(peer_shares.size())
-                    + "/" + std::to_string(need);
+                    + " shares=" + std::to_string(peer_shares.size());
                 mark_finished(false, "waiting_for_peer_inputs", reason);
                 return;
             }
@@ -299,7 +339,10 @@ struct cl_dkg_p2p_runner::impl
             if (transport->try_recv(m)) {
                 std::string stage;
                 if (!process_inbound(m, stage)) {
-                    mark_finished(false, stage, party->last_error());
+                    mark_finished(false, stage,
+                                  inbound_failure_reason.empty()
+                                      ? party->last_error()
+                                      : inbound_failure_reason);
                     return;
                 }
             } else {
@@ -307,6 +350,20 @@ struct cl_dkg_p2p_runner::impl
             }
         }
 
+        // Drain messages already queued at the collection boundary. A
+        // complaint or malformed contribution must not sit behind the
+        // final share and be bypassed by verification.
+        dkg_msg queued;
+        while (transport->try_recv(queued)) {
+            std::string stage;
+            if (!process_inbound(queued, stage)) {
+                mark_finished(false, stage,
+                              inbound_failure_reason.empty()
+                                  ? party->last_error()
+                                  : inbound_failure_reason);
+                return;
+            }
+        }
         {
             auto hex_pk = [](const crypto::public_key& pk) {
                 static const char hx[] = "0123456789abcdef";
@@ -349,20 +406,9 @@ struct cl_dkg_p2p_runner::impl
             crypto::cn_fast_hash(q_bytes.data(), q_bytes.size(), q_h);
             crypto::cn_fast_hash(h_bytes.data(), h_bytes.size(), h_h);
         }
-        for (unsigned int pid = 1; pid <= cfg.committee_size; ++pid) {
-            if (pid == cfg.local_party_id) continue;
-            const bool has_pub = peer_commitments.count(pid) > 0
-                              && peer_proofs.count(pid) > 0;
-            if (has_pub) continue;
-            MWARNING("CL DKG disqualify: local_id=" << cfg.local_party_id
-                     << " missing public contribution from id=" << pid);
-            try {
-                party->keygen_disqualify_player(pid);
-            } catch (const std::exception& e) {
-                mark_finished(false, "keygen_disqualify_player", e.what());
-                return;
-            }
-        }
+
+        MWARNING("CL DKG pre-verify: qualified=" << party->qualified_players().size()
+                 << "/" << cfg.committee_size << " complaints=" << party->complaints_count());
 
         if (!party->keygen_check_verify_all()) {
             mark_finished(false, "keygen_check_verify_all",
@@ -503,9 +549,21 @@ bool cl_dkg_p2p_runner::start()
     std::lock_guard<std::mutex> lk(p_->mu);
     if (p_->running) return true;
     if (p_->finished) return false;
-    if (!p_->transport) return false;
+    if (!p_->transport || p_->cfg.attempt_id == crypto::null_hash)
+        return false;
     p_->running = true;
-    p_->worker = std::thread([this] { p_->run(); });
+    try {
+        p_->worker = std::thread([this] { p_->run(); });
+    } catch (...) {
+        p_->running = false;
+        p_->finished = true;
+        p_->result.attempt_id = p_->cfg.attempt_id;
+        p_->result.ok = false;
+        p_->result.failure_stage = "thread_start";
+        p_->result.failure_reason = "worker thread creation failed";
+        p_->cv.notify_all();
+        return false;
+    }
     return true;
 }
 
@@ -541,8 +599,16 @@ bool cl_dkg_p2p_runner::wait(cl_dkg_result& out, uint32_t timeout_s)
     return true;
 }
 
-bool cl_dkg_p2p_runner::running()  const { return p_->running; }
-bool cl_dkg_p2p_runner::finished() const { return p_->finished; }
+bool cl_dkg_p2p_runner::running() const
+{
+    std::lock_guard<std::mutex> lk(p_->mu);
+    return p_->running;
+}
+bool cl_dkg_p2p_runner::finished() const
+{
+    std::lock_guard<std::mutex> lk(p_->mu);
+    return p_->finished;
+}
 uint32_t cl_dkg_p2p_runner::local_party_id() const
 {
     return p_->cfg.local_party_id;

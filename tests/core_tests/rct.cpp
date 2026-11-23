@@ -95,11 +95,48 @@ bool gen_rct_tx_validation_base::generate_with_full(std::vector<test_event_entry
     sources.resize(1);
     tx_source_entry& src = sources.back();
 
-    const size_t index_in_tx = 5;
-    src.amount = 30000000000000;
+    // Miner transactions in this tree may contain fewer than six
+    // outputs. Select a spendable output present at the same index
+    // and amount in all four blocks instead of assuming vout[5].
+    size_t index_in_tx = blocks[0].miner_tx.vout.size();
+    uint64_t source_amount = 0;
+    for (size_t candidate = 0;
+         candidate < blocks[0].miner_tx.vout.size(); ++candidate) {
+      const auto& first = blocks[0].miner_tx.vout[candidate];
+      const auto& first_type = first.target.type();
+      if (first_type != typeid(txout_to_key) &&
+          first_type != typeid(txout_to_tagged_key))
+        continue;
+      if (first.amount == 0) continue;
+      bool common_output = true;
+      for (size_t m = 1; m < 4; ++m) {
+        if (candidate >= blocks[m].miner_tx.vout.size()) {
+          common_output = false;
+          break;
+        }
+        const auto& other = blocks[m].miner_tx.vout[candidate];
+        const auto& other_type = other.target.type();
+        if (other.amount != first.amount ||
+            (other_type != typeid(txout_to_key) &&
+             other_type != typeid(txout_to_tagged_key))) {
+          common_output = false;
+          break;
+        }
+      }
+      if (common_output) {
+        index_in_tx = candidate;
+        source_amount = first.amount;
+        break;
+      }
+    }
+    CHECK_AND_ASSERT_MES(index_in_tx < blocks[0].miner_tx.vout.size(),
+        false, "Could not find a common spendable miner output for RCT test");
+    src.amount = source_amount;
     for (int m = 0; m < 4; ++m) {
       crypto::public_key output_public_key;
-      cryptonote::get_output_public_key(blocks[m].miner_tx.vout[index_in_tx], output_public_key);
+      CHECK_AND_ASSERT_MES(cryptonote::get_output_public_key(
+          blocks[m].miner_tx.vout[index_in_tx], output_public_key),
+          false, "Could not read selected miner output public key in RCT test");
       src.push_output(m, output_public_key, src.amount);
     }
     src.real_out_tx_key = cryptonote::get_tx_pub_key_from_extra(blocks[n].miner_tx);

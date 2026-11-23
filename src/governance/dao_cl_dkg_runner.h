@@ -42,6 +42,7 @@ struct cl_dkg_config
     uint32_t threshold_internal = 0;   // CL t_, i.e. threshold - 1
     std::vector<crypto::public_key> member_ids;
     crypto::hash proposal_id{};
+    crypto::hash attempt_id{};  // deterministic identity for this retry
     uint32_t local_party_id     = 0;   // 1..committee_size
     size_t   soundness_bytes    = 32;
     uint32_t phase_timeout_seconds = 120;
@@ -56,6 +57,7 @@ struct cl_dkg_result
 {
     bool ok = false;
     uint64_t selection_height = 0;
+    crypto::hash attempt_id{};
     cl_key_context ctx;
 
     // Populated when ok == false. Identifies the stage that failed and,

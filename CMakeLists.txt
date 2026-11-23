@@ -1264,6 +1264,7 @@ set(USE_OPEN_SSL ON CACHE BOOL "Use OpenSSL for TLS" FORCE)
 add_subdirectory(external/ixwebsocket)
 # DAO DKG test-accessor flag: set before adding src.
 if(BUILD_TESTS)
+  add_definitions(-DVEILROOT_DAO_DKG_TESTING=1)
   set(VEILROOT_DAO_DKG_TESTING_BUILD 1)
 else()
   set(VEILROOT_DAO_DKG_TESTING_BUILD 0)

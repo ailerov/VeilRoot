@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -69,6 +70,8 @@ public:
         gammas() const;
     const BICYCL::CL_Threshold_Static::ParticipantsSet&
         qualified_players() const;
+
+    std::size_t complaints_count() const;
 
     // Persist this player's secret share. Wire format is the
     // sign-magnitude encoding documented on the wrapped type.
@@ -132,6 +135,7 @@ public:
                  const BICYCL::CL_HSMqk::CipherText& ct);
 
 private:
+    mutable std::mutex mu_;
     std::shared_ptr<BICYCL::CL_HSMqk> cl_;
     unsigned int n_;
     unsigned int t_;

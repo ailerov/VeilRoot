@@ -1992,6 +1992,9 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     std::map<std::string, std::shared_ptr<dao::cl_dkg_p2p_runner>>
         m_dao_v2_dkg_runners;
 #endif
+    // Serialize start/retry transitions so two triggers cannot join or
+    // retire the same watcher concurrently.
+    mutable std::mutex m_dao_v2_dkg_start_mutex;
     mutable std::mutex m_dao_v2_dkg_runners_mutex;
     // Inbound DKG envelopes that arrived before the matching runner
     // for their ceremony existed. Keyed by ceremony_id: bootstrap
@@ -2047,6 +2050,10 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
         m_dao_v2_key_ready_attestations;
     std::map<std::string, bool>
         m_dao_v2_key_ready_submitted;
+    // The only attempt currently authorized to populate this proposal's
+    // local record, key_ready attestations, or activation result.
+    std::map<std::string, crypto::hash>
+        m_dao_v2_active_attempt_ids;
     mutable std::mutex m_dao_v2_key_ready_mutex;
     // END_VNS_DAO_V2_KEY_READY
 

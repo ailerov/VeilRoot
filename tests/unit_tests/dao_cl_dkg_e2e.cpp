@@ -45,6 +45,8 @@ TEST(dao_cl_dkg_e2e, p2p_dkg_aggregate_and_threshold_decrypt)
     ASSERT_TRUE(cl);
 
     auto net = dkg_make_inproc_network(3);
+    crypto::hash common_attempt{};
+    common_attempt.data[0] = 0xD1;
 
     std::vector<std::unique_ptr<cl_dkg_p2p_runner>> runners;
     for (uint32_t i = 0; i < 3; ++i) {
@@ -52,6 +54,7 @@ TEST(dao_cl_dkg_e2e, p2p_dkg_aggregate_and_threshold_decrypt)
         cfg.cl = cl;
         cfg.committee_size = 3;
         cfg.threshold_internal = 1;
+        cfg.attempt_id = common_attempt;
         cfg.member_ids.resize(3);
         cfg.local_party_id = i + 1;
         cfg.soundness_bytes = 32;

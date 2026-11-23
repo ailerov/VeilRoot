@@ -756,6 +756,7 @@ bool Blockchain::store_blockchain()
 void Blockchain::stop_dao_v2_dkg_workers() noexcept
 {
 #ifdef VEILROOT_ENABLE_CL
+    std::lock_guard<std::mutex> start_guard(m_dao_v2_dkg_start_mutex);
   // Mark shutdown under the runners mutex so any in-flight start
   // observes it before taking its own lock.
   {
@@ -9687,7 +9688,9 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       MWARNING("key_ready: deserialize failed");
       return;
     }
-    if (act.version != 2 && act.version != 3) return;
+    if (m.hdr.version != 3 || act.version != 4) return;
+    if (act.attempt_id == crypto::null_hash ||
+        act.attempt_id != m.hdr.attempt_id) return;
     if (act.attestations.size() != 1) return;
 
     // Route by proposal identity from the outer header. The emitter
@@ -9709,6 +9712,9 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     uint64_t local_sel_h = 0;
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
+      auto attempt_it = m_dao_v2_active_attempt_ids.find(ceremony_id);
+      if (attempt_it == m_dao_v2_active_attempt_ids.end() ||
+          attempt_it->second != act.attempt_id) return;
       auto rec_it = m_dao_v2_local_records.find(ceremony_id);
       if (rec_it == m_dao_v2_local_records.end())
         return;   // not our ceremony
@@ -9734,9 +9740,9 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       }
     }
 
-    // v3 activations carry the initial CL share set. Compare it to the
-    // local one byte-for-byte when present.
-    if (act.version == 3) {
+    // v4 activations carry the initial CL share set. Compare it to the
+    // local one byte-for-byte.
+    if (act.version == 4) {
       dao::dao_share_set_record local_ss;
       {
         std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
@@ -9781,13 +9787,9 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     } catch (...) { return; }
     if (genesis_hash == crypto::null_hash) return;
 
-    const crypto::hash digest = (act.version == 3)
-        ? dao::dao_dkg_activation_digest_v3(
-              genesis_hash, act.selection_height, act.record,
-              act.initial_share_set, act.proposal_id)
-        : dao::dao_dkg_activation_digest(
-              genesis_hash, act.selection_height, act.record,
-              act.proposal_id);
+    const crypto::hash digest = dao::dao_dkg_activation_digest_v4(
+        genesis_hash, act.selection_height, act.record,
+        act.initial_share_set, act.proposal_id, act.attempt_id);
 
     crypto::public_key signer_pk{};
     std::memcpy(signer_pk.data, claimed_pk.data(), sizeof(signer_pk.data));
@@ -9802,6 +9804,9 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
+      auto active_it = m_dao_v2_active_attempt_ids.find(ceremony_id);
+      if (active_it == m_dao_v2_active_attempt_ids.end() ||
+          active_it->second != act.attempt_id) return;
       auto& accum = m_dao_v2_key_ready_attestations[ceremony_id];
       if (accum.count(att.member_index) == 0)
         accum[att.member_index] = att;
@@ -9817,6 +9822,9 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     dao::dao_dkg_key_activation full;
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
+      auto active_it = m_dao_v2_active_attempt_ids.find(ceremony_id);
+      if (active_it == m_dao_v2_active_attempt_ids.end() ||
+          active_it->second == crypto::null_hash) return false;
       auto rec_it = m_dao_v2_local_records.find(ceremony_id);
       if (rec_it == m_dao_v2_local_records.end()) return false;
       if (m_dao_v2_key_ready_submitted.count(ceremony_id) > 0) return false;
@@ -9826,15 +9834,13 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       if (acc_it->second.size() < rec_it->second.threshold) return false;
 
       full.proposal_id      = ceremony_id_to_hash(ceremony_id);
+      full.attempt_id       = active_it->second;
+      full.version          = 4;
       full.selection_height = m_dao_v2_local_selection_height[ceremony_id];
       full.record           = rec_it->second;
       auto ss_it = m_dao_v2_local_share_sets.find(ceremony_id);
-      if (ss_it != m_dao_v2_local_share_sets.end()) {
-        full.version            = 3;
-        full.initial_share_set  = ss_it->second;
-      } else {
-        full.version            = 2;
-      }
+      if (ss_it == m_dao_v2_local_share_sets.end()) return false;
+      full.initial_share_set = ss_it->second;
       // std::map iterates in ascending member_index order, which the
       // serializer requires.
       for (const auto& kv : acc_it->second)
@@ -10434,7 +10440,8 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
   bool Blockchain::process_pending_dao_v2_dkg_results()
   {
-    std::deque<pending_dao_v2_dkg_result> pending;
+        std::lock_guard<std::mutex> start_guard(m_dao_v2_dkg_start_mutex);
+std::deque<pending_dao_v2_dkg_result> pending;
     {
       std::lock_guard<std::mutex> lock(m_dao_v2_dkg_result_mutex);
       if (m_pending_dao_v2_dkg_results.empty()) return true;
@@ -10448,7 +10455,12 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
                  << ": " << item.result.failure_reason);
         continue;
       }
-
+      {
+        std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
+        auto active_it = m_dao_v2_active_attempt_ids.find(item.ceremony_id);
+        if (active_it == m_dao_v2_active_attempt_ids.end() ||
+            active_it->second != item.result.attempt_id) continue;
+      }
       crypto::public_key self_pk{};
       if (!crypto::secret_key_to_public_key(m_node_privkey, self_pk)) {
         MWARNING("DAO V2 CL DKG ceremony_id " << item.ceremony_id
@@ -10460,6 +10472,9 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       dao::dao_share_set_record ss;
       {
         std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
+        auto active_it = m_dao_v2_active_attempt_ids.find(item.ceremony_id);
+        if (active_it == m_dao_v2_active_attempt_ids.end() ||
+            active_it->second != item.result.attempt_id) continue;
         auto rit = m_dao_v2_local_records.find(item.ceremony_id);
         auto sit = m_dao_v2_local_share_sets.find(item.ceremony_id);
         if (rit == m_dao_v2_local_records.end() ||
@@ -10537,9 +10552,9 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
         const crypto::hash proposal_hash =
             ceremony_id_to_hash(item.ceremony_id);
-        const crypto::hash digest = dao::dao_dkg_activation_digest_v3(
+        const crypto::hash digest = dao::dao_dkg_activation_digest_v4(
             genesis_hash, item.result.selection_height,
-            rec, ss, proposal_hash);
+            rec, ss, proposal_hash, item.result.attempt_id);
         if (digest == crypto::null_hash) continue;
 
         crypto::signature sig;
@@ -10552,20 +10567,26 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
         {
           std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
+          auto active_it = m_dao_v2_active_attempt_ids.find(item.ceremony_id);
+          if (active_it == m_dao_v2_active_attempt_ids.end() ||
+              active_it->second != item.result.attempt_id) continue;
           m_dao_v2_key_ready_attestations[item.ceremony_id][local_id] = att;
         }
 
         // Broadcast the attestation so peers can accumulate quorum.
         if (m_dao_v2_dkg_send) {
           dao::dao_dkg_key_activation act;
-          act.version          = 3;
+          act.version          = 4;
           act.selection_height = item.result.selection_height;
           act.proposal_id      = proposal_hash;
+          act.attempt_id       = item.result.attempt_id;
           act.record           = rec;
           act.initial_share_set = ss;
           act.attestations.push_back(att);
 
           dao::dkg_msg m;
+          m.hdr.version      = 3;
+          m.hdr.attempt_id   = item.result.attempt_id;
           std::memcpy(m.hdr.committee_id_hash,
                       rec.committee_id_hash.data(), 32);
           m.hdr.type         = dao::dkg_msg_type::key_record_ready;
@@ -10600,23 +10621,48 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
       const crypto::hash& proposal_id)
   {
+    std::lock_guard<std::mutex> start_guard(m_dao_v2_dkg_start_mutex);
     const std::string ceremony_id = epee::string_tools::pod_to_hex(proposal_id);
+    std::shared_ptr<dao::cl_dkg_p2p_runner> previous_runner;
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_dkg_runners_mutex);
       if (m_dao_v2_dkg_shutdown.load())
         return dao::dao_dkg_start_status::shutting_down;
-      if (m_dao_v2_dkg_runners.count(ceremony_id) > 0)
-        return dao::dao_dkg_start_status::already_running;
+      auto existing = m_dao_v2_dkg_runners.find(ceremony_id);
+      if (existing != m_dao_v2_dkg_runners.end())
+        previous_runner = existing->second;
     }
-
+    if (previous_runner) {
+      if (!previous_runner->finished())
+        return dao::dao_dkg_start_status::already_running;
+      dao::cl_dkg_result previous_result;
+      if (!previous_runner->wait(previous_result, 1))
+        return dao::dao_dkg_start_status::already_running;
+      auto watcher = m_dao_v2_dkg_watchers.find(ceremony_id);
+      if (watcher != m_dao_v2_dkg_watchers.end()) {
+        if (watcher->second.joinable()) watcher->second.join();
+        m_dao_v2_dkg_watchers.erase(watcher);
+      }
+      {
+        std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
+        if (m_dao_v2_local_records.count(ceremony_id) > 0)
+          return dao::dao_dkg_start_status::already_running;
+      }
+      previous_runner->stop();
+      {
+        std::lock_guard<std::mutex> lk(m_dao_v2_dkg_runners_mutex);
+        auto existing = m_dao_v2_dkg_runners.find(ceremony_id);
+        if (existing != m_dao_v2_dkg_runners.end() &&
+            existing->second == previous_runner)
+          m_dao_v2_dkg_runners.erase(existing);
+      }
+    }
     {
       // A completed local ceremony for this proposal is final.
       // Retry cycles must not overwrite its stored share set.
       std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
-      if (m_dao_v2_local_records.count(
-              epee::string_tools::pod_to_hex(proposal_id)) > 0) {
+      if (m_dao_v2_local_records.count(ceremony_id) > 0)
         return dao::dao_dkg_start_status::already_running;
-      }
     }
     const uint64_t chain_height = get_current_blockchain_height();
     if (chain_height == 0)
@@ -10641,6 +10687,32 @@ dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
                << " selection_height=" << selection_height);
       return dao::dao_dkg_start_status::insufficient_ready_committee;
     }
+    crypto::hash retry_block_hash{};
+    try {
+      retry_block_hash = m_db->get_block_hash_from_height(selection_height);
+    } catch (const std::exception& e) {
+      MWARNING("start_dao_v2_dkg_for_proposal: retry block hash unavailable: "
+               << e.what());
+      return dao::dao_dkg_start_status::runner_start_failed;
+    }
+    if (retry_block_hash == crypto::null_hash)
+      return dao::dao_dkg_start_status::runner_start_failed;
+    std::vector<uint8_t> attempt_committee_bytes;
+    const char* attempt_committee_domain =
+        "VeilRoot-DAO-DKG-COMMITTEE-V1";
+    attempt_committee_bytes.insert(
+        attempt_committee_bytes.end(), attempt_committee_domain,
+        attempt_committee_domain + std::strlen(attempt_committee_domain));
+    for (const auto& pk : shareholders)
+      attempt_committee_bytes.insert(attempt_committee_bytes.end(),
+                                     pk.data, pk.data + sizeof(pk.data));
+    crypto::hash attempt_committee_hash{};
+    SHA256(attempt_committee_bytes.data(), attempt_committee_bytes.size(),
+           reinterpret_cast<unsigned char*>(attempt_committee_hash.data));
+    const crypto::hash attempt_id = dao::dao_dkg_attempt_id(
+        proposal_id, retry_block_hash, attempt_committee_hash);
+    if (attempt_id == crypto::null_hash)
+      return dao::dao_dkg_start_status::runner_start_failed;
     {
       auto hex_pk = [](const crypto::public_key& pk) {
         static const char hx[] = "0123456789abcdef";
@@ -10701,6 +10773,7 @@ dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
             static_cast<uint32_t>(shareholders.size())) - 1u);
     cfg.member_ids     = shareholders;
     cfg.proposal_id    = proposal_id;
+    cfg.attempt_id     = attempt_id;
     cfg.local_party_id = local_id;
     cfg.soundness_bytes = 32;
     cfg.phase_timeout_seconds = 120;
@@ -10755,7 +10828,15 @@ dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
       runner->stop();
       return dao::dao_dkg_start_status::already_running;
     }
-
+    {
+      std::lock_guard<std::mutex> lk(m_dao_v2_key_ready_mutex);
+      m_dao_v2_active_attempt_ids[ceremony_id] = attempt_id;
+      m_dao_v2_key_ready_attestations.erase(ceremony_id);
+      m_dao_v2_key_ready_submitted.erase(ceremony_id);
+      m_dao_v2_local_records.erase(ceremony_id);
+      m_dao_v2_local_share_sets.erase(ceremony_id);
+      m_dao_v2_local_selection_height.erase(ceremony_id);
+    }
     // Replay messages received before this runner was registered.
     // Use the normal handler so private envelopes are decrypted and
     // validated exactly as they are for messages received afterwards.
@@ -10771,9 +10852,10 @@ dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
     const crypto::hash proposal_copy = proposal_id;
     m_dao_v2_dkg_watchers.emplace(ceremony_id, std::thread(
         [self, runner, ceremony_id, selection_height, proposal_copy,
-         shareholders]() {
+         attempt_id, shareholders]() {
       dao::cl_dkg_result cl_res;
-      if (!runner->wait(cl_res, 0) || !cl_res.ok) {
+      if (!runner->wait(cl_res, 0) || !cl_res.ok ||
+          cl_res.attempt_id != attempt_id) {
         MWARNING("DAO V2 CL DKG ceremony " << ceremony_id
                  << " failed at " << cl_res.failure_stage
                  << ": " << cl_res.failure_reason);
@@ -10833,6 +10915,9 @@ dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
 
       {
         std::lock_guard<std::mutex> lk(self->m_dao_v2_key_ready_mutex);
+        auto active_it = self->m_dao_v2_active_attempt_ids.find(ceremony_id);
+        if (active_it == self->m_dao_v2_active_attempt_ids.end() ||
+            active_it->second != attempt_id) return;
         self->m_dao_v2_local_records[ceremony_id] = rec;
         self->m_dao_v2_local_share_sets[ceremony_id] = ss;
         self->m_dao_v2_local_selection_height[ceremony_id] = selection_height;
@@ -10841,8 +10926,6 @@ dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
       cl_res.selection_height = selection_height;
       self->queue_dao_v2_dkg_result(ceremony_id, std::move(cl_res));
     }));
-
-    m_dao_v2_local_selection_height[ceremony_id] = selection_height;
     MINFO("start_dao_v2_dkg_for_proposal: CL runner started for proposal "
           << proposal_id << " committee=" << shareholders.size());
     return dao::dao_dkg_start_status::started;
@@ -12258,9 +12341,9 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
     if (!act.deserialize(gp.data))
       return false;
 
-    // 1. version
-    if (act.version != 3)
-      return false;
+    // 1. version. v3 remains valid for historical chain records.
+    if (act.version != 3 && act.version != 4) return false;
+    if (act.version == 4 && act.attempt_id == crypto::null_hash) return false;
 
     // 2. selection_height strictly before the containing block.
     if (act.selection_height >= block_height)
@@ -12332,6 +12415,27 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
       }
     }
 
+    if (act.version == 4) {
+      // Bind this activation to the canonical block at selection_height
+      // and the recomputed ordered committee hash.
+      crypto::hash retry_block_hash{};
+      try {
+        retry_block_hash = m_db->get_block_hash_from_height(
+            act.selection_height);
+      } catch (...) {
+        return false;
+      }
+      crypto::hash committee_hash{};
+      std::memcpy(committee_hash.data, rec.committee_id_hash.data(), 32);
+      const crypto::hash expected_attempt = dao::dao_dkg_attempt_id(
+          act.proposal_id, retry_block_hash, committee_hash);
+      if (retry_block_hash == crypto::null_hash ||
+          expected_attempt == crypto::null_hash ||
+          expected_attempt != act.attempt_id) {
+        MERROR("dkg-activation: attempt_id mismatch");
+        return false;
+      }
+    }
     // 6. key_id recomputation.
     {
       dao::dao_tally_key_record tmp = rec;
@@ -12373,6 +12477,10 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
       auto selected =
           select_dao_v2_proposal_dkg_committee(act.proposal_id,
                                                act.selection_height);
+      std::sort(selected.begin(), selected.end(),
+                [](const crypto::public_key& a, const crypto::public_key& b) {
+                  return std::memcmp(a.data, b.data, sizeof(a.data)) < 0;
+                });
       if (selected.size() < rec.committee_size) {
         MERROR("dkg-activation: fewer ready peers than record at height "
                << act.selection_height << " (have " << selected.size()
@@ -12451,7 +12559,13 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
       }
       if (genesis_hash == crypto::null_hash) return false;
 
-      const crypto::hash digest = dao::dao_dkg_activation_digest(genesis_hash, act.selection_height, rec, act.proposal_id);
+      const crypto::hash digest = (act.version == 3)
+          ? dao::dao_dkg_activation_digest_v3(
+                genesis_hash, act.selection_height, rec,
+                act.initial_share_set, act.proposal_id)
+          : dao::dao_dkg_activation_digest_v4(
+                genesis_hash, act.selection_height, rec,
+                act.initial_share_set, act.proposal_id, act.attempt_id);
       if (digest == crypto::null_hash) return false;
 
       size_t valid = 0;

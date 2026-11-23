@@ -46,12 +46,15 @@ TEST(dao_cl_reshare_e2e, three_to_three_preserves_pk_and_decrypts_pre_reshare_ct
 
     // ---- Phase 1: 3-party P2P DKG ----
     auto net1 = dkg_make_inproc_network(3);
+    crypto::hash common_attempt{};
+    common_attempt.data[0] = 0xD2;
     std::vector<std::unique_ptr<cl_dkg_p2p_runner>> dkg_runners;
     for (uint32_t i = 0; i < 3; ++i) {
         cl_dkg_config cfg;
         cfg.cl = cl;
         cfg.committee_size = 3;
         cfg.threshold_internal = 1;
+        cfg.attempt_id = common_attempt;
         cfg.member_ids.resize(3);
         cfg.local_party_id = i + 1;
         cfg.soundness_bytes = 32;
@@ -187,12 +190,15 @@ TEST(dao_cl_reshare_e2e, old_only_contributor_gets_gammas_via_completion)
     ASSERT_TRUE(cl);
 
     auto net = dkg_make_inproc_network(3);
+    crypto::hash common_attempt{};
+    common_attempt.data[0] = 0xD3;
     std::vector<std::unique_ptr<cl_dkg_p2p_runner>> dkg_runners;
     for (uint32_t i = 0; i < 3; ++i) {
         cl_dkg_config cfg;
         cfg.cl = cl;
         cfg.committee_size = 3;
         cfg.threshold_internal = 2;
+        cfg.attempt_id = common_attempt;
         cfg.member_ids.resize(3);
         cfg.local_party_id = i + 1;
         cfg.soundness_bytes = 32;

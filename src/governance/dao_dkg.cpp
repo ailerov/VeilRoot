@@ -256,6 +256,9 @@ bool pull_u8(const std::vector<uint8_t>& v, size_t& off, uint8_t& b)
 
 bool dkg_msg::serialize(std::vector<uint8_t>& out) const
 {
+    if (hdr.version != 2 && hdr.version != 3) return false;
+    if (hdr.version == 3 && hdr.attempt_id == crypto::null_hash)
+        return false;
     out.clear();
     out.push_back(hdr.version);
     push_u32(out, hdr.candidate_id);
@@ -265,6 +268,8 @@ bool dkg_msg::serialize(std::vector<uint8_t>& out) const
     out.insert(out.end(),
                hdr.proposal_id.data,
                hdr.proposal_id.data + 32);
+    if (hdr.version == 3)
+        out.insert(out.end(), hdr.attempt_id.data, hdr.attempt_id.data + 32);
     push_u32(out, hdr.sender_id);
     push_u32(out, hdr.recipient_id);
     push_u32(out, hdr.phase);
@@ -286,7 +291,8 @@ bool dkg_msg::deserialize(const std::vector<uint8_t>& in)
     size_t off = 0;
     if (in.size() < 4) return false;
     hdr.version = in[off++];
-    if (hdr.version != 2) return false;
+    if (hdr.version != 2 && hdr.version != 3) return false;
+    hdr.attempt_id = crypto::null_hash;
     if (!pull_u32(in, off, hdr.candidate_id)) return false;
     if (off + 32 > in.size()) return false;
     std::memcpy(hdr.committee_id_hash, in.data() + off, 32);
@@ -294,6 +300,12 @@ bool dkg_msg::deserialize(const std::vector<uint8_t>& in)
     if (off + 32 > in.size()) return false;
     std::memcpy(hdr.proposal_id.data, in.data() + off, 32);
     off += 32;
+    if (hdr.version == 3) {
+        if (off + 32 > in.size()) return false;
+        std::memcpy(hdr.attempt_id.data, in.data() + off, 32);
+        off += 32;
+        if (hdr.attempt_id == crypto::null_hash) return false;
+    }
     if (!pull_u32(in, off, hdr.sender_id)) return false;
     if (!pull_u32(in, off, hdr.recipient_id)) return false;
     if (!pull_u32(in, off, hdr.phase)) return false;
@@ -901,7 +913,6 @@ crypto::hash dao_dkg_activation_digest_v3(
     for (int i = 0; i < 8; ++i)
         body.push_back((selection_height >> (8 * i)) & 0xff);
     body.insert(body.end(), proposal_id.data, proposal_id.data + 32);
-
     std::vector<uint8_t> rec_blob;
     if (!record.serialize(rec_blob))
         return crypto::null_hash;
@@ -912,6 +923,54 @@ crypto::hash dao_dkg_activation_digest_v3(
         return crypto::null_hash;
     body.insert(body.end(), ss_blob.begin(), ss_blob.end());
 
+    crypto::hash h{};
+    crypto::cn_fast_hash(body.data(), body.size(), h);
+    return h;
+}
+
+crypto::hash dao_dkg_attempt_id(
+    const crypto::hash& proposal_id,
+    const crypto::hash& retry_block_hash,
+    const crypto::hash& committee_id_hash)
+{
+    if (retry_block_hash == crypto::null_hash ||
+        committee_id_hash == crypto::null_hash)
+        return crypto::null_hash;
+    std::vector<uint8_t> body;
+    const char* dom = "VeilRoot-DAO-DKG-ATTEMPT-V1";
+    body.insert(body.end(), dom, dom + std::strlen(dom));
+    body.insert(body.end(), proposal_id.data, proposal_id.data + 32);
+    body.insert(body.end(), retry_block_hash.data, retry_block_hash.data + 32);
+    body.insert(body.end(), committee_id_hash.data, committee_id_hash.data + 32);
+    crypto::hash h{};
+    crypto::cn_fast_hash(body.data(), body.size(), h);
+    return h;
+}
+
+crypto::hash dao_dkg_activation_digest_v4(
+    const crypto::hash& genesis_block_hash,
+    uint64_t selection_height,
+    const dao_tally_key_record& record,
+    const dao_share_set_record& initial_share_set,
+    const crypto::hash& proposal_id,
+    const crypto::hash& attempt_id)
+{
+    if (attempt_id == crypto::null_hash) return crypto::null_hash;
+    std::vector<uint8_t> body;
+    const char* dom = "VeilRoot-DAO-DKG-KEY-ACTIVATION-V4";
+    body.insert(body.end(), dom, dom + std::strlen(dom));
+    body.insert(body.end(), genesis_block_hash.data,
+                genesis_block_hash.data + sizeof(genesis_block_hash.data));
+    for (int i = 0; i < 8; ++i)
+        body.push_back((selection_height >> (8 * i)) & 0xff);
+    body.insert(body.end(), proposal_id.data, proposal_id.data + 32);
+    body.insert(body.end(), attempt_id.data, attempt_id.data + 32);
+    std::vector<uint8_t> rec_blob;
+    if (!record.serialize(rec_blob)) return crypto::null_hash;
+    body.insert(body.end(), rec_blob.begin(), rec_blob.end());
+    std::vector<uint8_t> ss_blob;
+    if (!initial_share_set.serialize(ss_blob)) return crypto::null_hash;
+    body.insert(body.end(), ss_blob.begin(), ss_blob.end());
     crypto::hash h{};
     crypto::cn_fast_hash(body.data(), body.size(), h);
     return h;
@@ -950,7 +1009,8 @@ bool dao_dkg_key_activation::serialize(std::vector<uint8_t>& out) const
 {
     out.clear();
 
-    if (version != 2 && version != 3) return false;
+    if (version != 2 && version != 3 && version != 4) return false;
+    if (version == 4 && attempt_id == crypto::null_hash) return false;
     if (attestations.size() > 64) return false;
 
     // Validate attestation ordering before writing.
@@ -968,9 +1028,11 @@ bool dao_dkg_key_activation::serialize(std::vector<uint8_t>& out) const
     push_u32(out, version);
     push_u64(out, selection_height);
     out.insert(out.end(), proposal_id.data, proposal_id.data + 32);
+    if (version == 4)
+        out.insert(out.end(), attempt_id.data, attempt_id.data + 32);
     push_bytes(out, rec_blob);
 
-    if (version == 3) {
+    if (version >= 3) {
         std::vector<uint8_t> ss_blob;
         if (!initial_share_set.serialize(ss_blob)) return false;
         push_bytes(out, ss_blob);
@@ -989,19 +1051,25 @@ bool dao_dkg_key_activation::deserialize(const std::vector<uint8_t>& in)
     size_t off = 0;
     uint32_t v = 0;
     if (!pull_u32(in, off, v)) return false;
-    if (v != 2 && v != 3) return false;
+    if (v != 2 && v != 3 && v != 4) return false;
     version = v;
+    attempt_id = crypto::null_hash;
     initial_share_set = dao_share_set_record{};
     if (!pull_u64(in, off, selection_height)) return false;
     if (off + 32 > in.size()) return false;
     std::memcpy(proposal_id.data, in.data() + off, 32);
     off += 32;
-
+    if (v == 4) {
+        if (off + 32 > in.size()) return false;
+        std::memcpy(attempt_id.data, in.data() + off, 32);
+        off += 32;
+        if (attempt_id == crypto::null_hash) return false;
+    }
     std::vector<uint8_t> rec_blob;
     if (!pull_bytes(in, off, rec_blob)) return false;
     if (!record.deserialize(rec_blob)) return false;
 
-    if (v == 3) {
+    if (v >= 3) {
         std::vector<uint8_t> ss_blob;
         if (!pull_bytes(in, off, ss_blob)) return false;
         if (!initial_share_set.deserialize(ss_blob)) return false;

@@ -90,12 +90,15 @@ TEST(DaoClTallyE2E, full_cycle_yes_vote_passes)
 
     // --- 3-party P2P DKG ---
     auto net = dkg_make_inproc_network(3);
+    crypto::hash common_attempt{};
+    common_attempt.data[0] = 0xD4;
     std::vector<std::unique_ptr<cl_dkg_p2p_runner>> dkg_runners;
     for (uint32_t i = 0; i < 3; ++i) {
         cl_dkg_config cfg;
         cfg.cl = cl;
         cfg.committee_size = 3;
         cfg.threshold_internal = 1;
+        cfg.attempt_id = common_attempt;
         cfg.member_ids.resize(3);
         cfg.local_party_id = i + 1;
         cfg.soundness_bytes = 32;

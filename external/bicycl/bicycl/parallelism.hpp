@@ -34,6 +34,8 @@
   #include <iterator>
   #include <thread>
   #include <vector>
+  #include <exception>
+  #include <mutex>
 
 namespace BICYCL
 {
@@ -92,30 +94,90 @@ namespace Parallelism
 
       // Divide the workload
       std::vector<std::thread> threads(nb_threads - 1u);
+      std::exception_ptr first_exception;
+      std::mutex exception_mutex;
+      auto record_exception = [&first_exception, &exception_mutex](
+                                  std::exception_ptr exception)
+      {
+        std::lock_guard<std::mutex> lock(exception_mutex);
+        if (!first_exception)
+          first_exception = exception;
+      };
+
       const size_t per_thread = (worksize + nb_threads - 1u) / nb_threads;
       const size_t remainder = nb_threads * per_thread - worksize;
       Iterator start = it_start;
       Iterator end = start;
-
       unsigned int u = 0u;
-      for (; u < nb_threads - ((remainder == 0) ? 1 : remainder); ++u)
-      {
-        std::advance(end, per_thread);
-        threads[u] = std::thread(task, start, end, u);
-        std::advance(start, per_thread);
-      }
-      for (; u < nb_threads - 1; ++u)
-      {
-        std::advance(end, per_thread - 1);
-        threads[u] = std::thread(task, start, end, u);
-        std::advance(start, per_thread - 1);
-      }
-      // Handle remaining work in main thread
-      end = it_end;
-      task(start, end, u);
+      bool launch_failed = false;
 
-      // Wait until all threads finish
-      for (u = 0; u < nb_threads - 1; ++u) threads[u].join();
+      try
+      {
+        for (; u < nb_threads - ((remainder == 0) ? 1 : remainder); ++u)
+        {
+          std::advance(end, per_thread);
+          threads[u] = std::thread(
+              [task, start, end, u, &record_exception]() mutable
+              {
+                try
+                {
+                  task(start, end, u);
+                }
+                catch (...)
+                {
+                  record_exception(std::current_exception());
+                }
+              });
+          std::advance(start, per_thread);
+        }
+        for (; u < nb_threads - 1; ++u)
+        {
+          std::advance(end, per_thread - 1);
+          threads[u] = std::thread(
+              [task, start, end, u, &record_exception]() mutable
+              {
+                try
+                {
+                  task(start, end, u);
+                }
+                catch (...)
+                {
+                  record_exception(std::current_exception());
+                }
+              });
+          std::advance(start, per_thread - 1);
+        }
+      }
+      catch (...)
+      {
+        record_exception(std::current_exception());
+        launch_failed = true;
+      }
+
+      // Run the final partition on the calling thread unless a worker could
+      // not be launched; in that case the operation is incomplete.
+      if (!launch_failed)
+      {
+        end = it_end;
+        try
+        {
+          task(start, end, u);
+        }
+        catch (...)
+        {
+          record_exception(std::current_exception());
+        }
+      }
+
+      // Always join every worker that was successfully started.
+      for (u = 0; u < nb_threads - 1; ++u)
+      {
+        if (threads[u].joinable())
+          threads[u].join();
+      }
+
+      if (first_exception)
+        std::rethrow_exception(first_exception);
     }
   }
 
@@ -165,30 +227,90 @@ namespace Parallelism
 
       // Divide the workload
       std::vector<std::thread> threads(nb_threads - 1u);
+      std::exception_ptr first_exception;
+      std::mutex exception_mutex;
+      auto record_exception = [&first_exception, &exception_mutex](
+                                  std::exception_ptr exception)
+      {
+        std::lock_guard<std::mutex> lock(exception_mutex);
+        if (!first_exception)
+          first_exception = exception;
+      };
+
       const size_t per_thread = (worksize + nb_threads - 1u) / nb_threads;
       const size_t remainder = nb_threads * per_thread - worksize;
       unsigned int start = idx_start;
       unsigned int end = start;
-
       unsigned int u = 0u;
-      for (; u < nb_threads - ((remainder == 0) ? 1 : remainder); ++u)
-      {
-        end += per_thread;
-        threads[u] = std::thread(task, start, end, u);
-        start += per_thread;
-      }
-      for (; u < nb_threads - 1; ++u)
-      {
-        end += per_thread - 1;
-        threads[u] = std::thread(task, start, end, u);
-        start += per_thread - 1;
-      }
-      // Handle remaining work in main thread
-      end = idx_end;
-      task(start, end, u);
+      bool launch_failed = false;
 
-      // Wait until all threads finish
-      for (u = 0; u < nb_threads - 1; ++u) threads[u].join();
+      try
+      {
+        for (; u < nb_threads - ((remainder == 0) ? 1 : remainder); ++u)
+        {
+          end += per_thread;
+          threads[u] = std::thread(
+              [task, start, end, u, &record_exception]() mutable
+              {
+                try
+                {
+                  task(start, end, u);
+                }
+                catch (...)
+                {
+                  record_exception(std::current_exception());
+                }
+              });
+          start += per_thread;
+        }
+        for (; u < nb_threads - 1; ++u)
+        {
+          end += per_thread - 1;
+          threads[u] = std::thread(
+              [task, start, end, u, &record_exception]() mutable
+              {
+                try
+                {
+                  task(start, end, u);
+                }
+                catch (...)
+                {
+                  record_exception(std::current_exception());
+                }
+              });
+          start += per_thread - 1;
+        }
+      }
+      catch (...)
+      {
+        record_exception(std::current_exception());
+        launch_failed = true;
+      }
+
+      // Run the final partition on the calling thread unless a worker could
+      // not be launched; in that case the operation is incomplete.
+      if (!launch_failed)
+      {
+        end = idx_end;
+        try
+        {
+          task(start, end, u);
+        }
+        catch (...)
+        {
+          record_exception(std::current_exception());
+        }
+      }
+
+      // Always join every worker that was successfully started.
+      for (u = 0; u < nb_threads - 1; ++u)
+      {
+        if (threads[u].joinable())
+          threads[u].join();
+      }
+
+      if (first_exception)
+        std::rethrow_exception(first_exception);
     }
   }
 } /* Parallelism namespace */

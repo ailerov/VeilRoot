@@ -52,6 +52,7 @@ CLCommitteeParty::CLCommitteeParty(std::shared_ptr<CL_HSMqk> cl,
 
 bool CLCommitteeParty::keygen_dealing(RandGen& randgen)
 {
+    std::lock_guard<std::mutex> lk(mu_);
     last_error_.clear();
     try { player_->keygen_dealing(*cl_, randgen); return true; }
     catch (const std::exception& e) { last_error_ = e.what(); return false; }
@@ -76,6 +77,7 @@ const Mpz& CLCommitteeParty::keygen_y_k(unsigned int recipient_id) const
 bool CLCommitteeParty::keygen_add_commitments(
     unsigned int sender_id, const std::vector<QFI>& C)
 {
+    std::lock_guard<std::mutex> lk(mu_);
     last_error_.clear();
     try { player_->keygen_add_commitments(sender_id, C); return true; }
     catch (const std::exception& e) { last_error_ = e.what(); return false; }
@@ -85,6 +87,7 @@ bool CLCommitteeParty::keygen_add_commitments(
 bool CLCommitteeParty::keygen_add_proof(
     unsigned int sender_id, const CL_HSMqk_Batch_Dlog_AoK& proof)
 {
+    std::lock_guard<std::mutex> lk(mu_);
     last_error_.clear();
     try { player_->keygen_add_proof(sender_id, proof); return true; }
     catch (const std::exception& e) { last_error_ = e.what(); return false; }
@@ -93,6 +96,7 @@ bool CLCommitteeParty::keygen_add_proof(
 
 bool CLCommitteeParty::keygen_add_share(unsigned int sender_id, const Mpz& y)
 {
+    std::lock_guard<std::mutex> lk(mu_);
     last_error_.clear();
     try { player_->keygen_add_share(sender_id, y); return true; }
     catch (const std::exception& e) { last_error_ = e.what(); return false; }
@@ -101,6 +105,7 @@ bool CLCommitteeParty::keygen_add_share(unsigned int sender_id, const Mpz& y)
 
 bool CLCommitteeParty::keygen_check_verify_all()
 {
+    std::lock_guard<std::mutex> lk(mu_);
     last_error_.clear();
     try {
         (void)player_->keygen_check_verify_all_players(*cl_);
@@ -135,6 +140,7 @@ bool CLCommitteeParty::keygen_check_verify_all()
 
 bool CLCommitteeParty::keygen_disqualify_player(unsigned int id)
 {
+    std::lock_guard<std::mutex> lk(mu_);
     last_error_.clear();
 
     try {
@@ -154,6 +160,7 @@ bool CLCommitteeParty::keygen_disqualify_player(unsigned int id)
 
 bool CLCommitteeParty::keygen_extract()
 {
+    std::lock_guard<std::mutex> lk(mu_);
     last_error_.clear();
     try { player_->keygen_extract(*cl_); keygen_done_ = true; return true; }
     catch (const std::exception& e) { last_error_ = e.what(); return false; }
@@ -220,8 +227,15 @@ CLCommitteeParty::qualified_players() const
     return player_->QualifiedPlayerSet();
 }
 
+std::size_t CLCommitteeParty::complaints_count() const
+{
+    std::lock_guard<std::mutex> lk(mu_);
+    return player_->ComplaintsSet().size();
+}
+
 bool CLCommitteeParty::serialize_secret_share(std::vector<uint8_t>& out) const
 {
+    std::lock_guard<std::mutex> lk(mu_);
     return player_->serialize_secret_share(out);
 }
 
@@ -231,6 +245,7 @@ bool CLCommitteeParty::restore_decryption_state(
     const BICYCL::CL_Threshold_Static::ParticipantsSet& qualified_players,
     const BICYCL::Mpz& local_secret_share)
 {
+    std::lock_guard<std::mutex> lk(mu_);
     if (!player_->restore_decryption_state(
             *cl_, public_key, gammas, qualified_players, local_secret_share))
         return false;

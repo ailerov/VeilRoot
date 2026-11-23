@@ -218,14 +218,15 @@ constexpr uint32_t DAO_RANGE_VALUE_TAG_R    = 2;
 
 struct dkg_msg_header
 {
-    // Version 2 adds proposal_id, which is required to route a DKG
-    // envelope to the correct runner. Version 1 (no proposal_id) is
-    // rejected by deserialize; the upgrade requires all peers to be
-    // on v2 before a DKG ceremony starts.
+    // Version 2 carries proposal_id. Version 3 additionally carries
+    // the deterministic DKG attempt identity; CL envelopes and
+    // key_ready messages require v3. Other DKG message families may
+    // continue to use v2.
     uint8_t  version      = 2;
     uint32_t candidate_id = 0;              // monotone within ceremony
     uint8_t  committee_id_hash[32] = {};    // H(domain || member ids)
     crypto::hash proposal_id{};             // null for bootstrap
+    crypto::hash attempt_id{};              // non-null in v3
     uint32_t sender_id    = 0;              // 1..committee_size
     uint32_t recipient_id = 0;              // 0 = broadcast
     uint32_t phase        = 0;
@@ -516,18 +517,16 @@ struct dao_dkg_key_attestation
 
 struct dao_dkg_key_activation
 {
-    // Version 3 carries the initial CL share set alongside the key
-    // record. Version 2 omits the share set and is accepted only for
-    // reading pre-activation records. New producers always emit v3.
+    // Version 4 binds the initial CL share set and deterministic
+    // attempt identity. Keep v3 as the compatibility default; every
+    // new CL activation producer explicitly selects v4.
     uint32_t                    version          = 3;
     uint64_t                    selection_height = 0;
     crypto::hash                proposal_id{};
+    crypto::hash                attempt_id{};
     dao_tally_key_record        record;
-
-    // v3 only. Carries the CL public verification state for the
-    // initial DKG committee so that validators can install the exact
-    // share set the DKG produced, without re-deriving Gamma values.
-    // Left default-constructed in v2.
+    // v3/v4 carry the CL public verification state for the initial
+    // DKG committee without re-deriving Gamma values.
     dao_share_set_record        initial_share_set;
 
     std::vector<dao_dkg_key_attestation> attestations;
@@ -556,6 +555,21 @@ crypto::hash dao_dkg_activation_digest_v3(
     const dao_tally_key_record& record,
     const dao_share_set_record& initial_share_set,
     const crypto::hash& proposal_id);
+// Deterministic identity for one proposal attempt. Inputs are fixed-width
+// hashes and are domain-separated before hashing.
+crypto::hash dao_dkg_attempt_id(
+    const crypto::hash& proposal_id,
+    const crypto::hash& retry_block_hash,
+    const crypto::hash& committee_id_hash);
+// v4 binds the signed activation to both the initial CL share set and
+// the exact DKG attempt that produced it.
+crypto::hash dao_dkg_activation_digest_v4(
+    const crypto::hash& genesis_block_hash,
+    uint64_t selection_height,
+    const dao_tally_key_record& record,
+    const dao_share_set_record& initial_share_set,
+    const crypto::hash& proposal_id,
+    const crypto::hash& attempt_id);
 
 // Local share envelope. The share is stored together with the
 // key_id of the record it belongs to, so a share for one

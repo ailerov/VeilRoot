@@ -62,6 +62,12 @@ inline bool make_cl_bootstrap_3party(CLBootstrapFixture& out, uint64_t seed)
         crypto::generate_keys(committee_pubs[i], committee_sks[i]);
 
     auto net = dkg_make_inproc_network(3);
+    crypto::hash common_attempt{};
+    for (size_t byte = 0; byte < sizeof(seed); ++byte)
+        common_attempt.data[byte] = static_cast<char>(
+            (seed >> (8u * byte)) & 0xffu);
+    if (common_attempt == crypto::null_hash)
+        common_attempt.data[0] = 1;
     std::vector<std::unique_ptr<cl_dkg_p2p_runner>> runners;
     for (uint32_t i = 0; i < 3; ++i) {
         cl_dkg_config cfg;
@@ -69,6 +75,7 @@ inline bool make_cl_bootstrap_3party(CLBootstrapFixture& out, uint64_t seed)
         cfg.committee_size = 3;
         cfg.threshold_internal = 1;
         cfg.member_ids = committee_pubs;
+        cfg.attempt_id = common_attempt;
         cfg.local_party_id = i + 1;
         cfg.soundness_bytes = 32;
         cfg.test_seed = seed + i + 1;
