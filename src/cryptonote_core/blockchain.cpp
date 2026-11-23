@@ -9757,7 +9757,49 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       if (!act.initial_share_set.serialize(a)) return;
       if (!local_ss.serialize(b)) return;
       if (a != b) {
-        MWARNING("key_ready: initial_share_set mismatch");
+        // Keep the strict byte-for-byte rejection. Log the exact public
+        // share-set fields that differ so cross-platform DKG disagreement
+        // can be diagnosed without accepting inconsistent key material.
+        auto bytes_sha = [](const std::vector<uint8_t>& bytes) {
+          if (bytes.empty()) return std::string("empty");
+          crypto::hash h{};
+          crypto::cn_fast_hash(bytes.data(), bytes.size(), h);
+          return epee::string_tools::pod_to_hex(h);
+        };
+        auto ids_text = [](const std::vector<uint32_t>& ids) {
+          std::string out;
+          for (uint32_t id : ids) {
+            if (!out.empty()) out += ",";
+            out += std::to_string(id);
+          }
+          return out.empty() ? std::string("-") : out;
+        };
+        const auto& incoming = act.initial_share_set;
+        MWARNING("key_ready: initial_share_set mismatch"
+                 << " proposal=" << ceremony_id
+                 << " attempt=" << epee::string_tools::pod_to_hex(act.attempt_id)
+                 << " sender=" << epee::string_tools::pod_to_hex(member)
+                 << " sender_id=" << m.hdr.sender_id
+                 << " version_diff=" << (incoming.version != local_ss.version)
+                 << " share_set_id_diff=" << (incoming.share_set_id != local_ss.share_set_id)
+                 << " height_diff=" << (incoming.height != local_ss.height)
+                 << " threshold_diff=" << (incoming.threshold != local_ss.threshold)
+                 << " key_id_diff=" << (incoming.key_id != local_ss.key_id)
+                 << " committee_hash_diff=" << (incoming.committee_id_hash != local_ss.committee_id_hash)
+                 << " members_diff=" << (incoming.committee_members != local_ss.committee_members)
+                 << " base_share_set_id_diff=" << (incoming.base_share_set_id != local_ss.base_share_set_id)
+                 << " gamma_diff=" << (incoming.cl_gammas_serialized != local_ss.cl_gammas_serialized)
+                 << " gamma_in_size=" << incoming.cl_gammas_serialized.size()
+                 << " gamma_local_size=" << local_ss.cl_gammas_serialized.size()
+                 << " gamma_in_sha=" << bytes_sha(incoming.cl_gammas_serialized)
+                 << " gamma_local_sha=" << bytes_sha(local_ss.cl_gammas_serialized)
+                 << " qualified_diff=" << (incoming.qualified_ids != local_ss.qualified_ids)
+                 << " qualified_in=[" << ids_text(incoming.qualified_ids) << "]"
+                 << " qualified_local=[" << ids_text(local_ss.qualified_ids) << "]"
+                 << " wire_in_size=" << a.size()
+                 << " wire_local_size=" << b.size()
+                 << " wire_in_sha=" << bytes_sha(a)
+                 << " wire_local_sha=" << bytes_sha(b));
         return;
       }
     }
