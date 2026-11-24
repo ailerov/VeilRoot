@@ -648,6 +648,7 @@ enum class dao_dkg_start_status {
     local_node_not_selected,
     runner_start_failed,
     proposal_not_eligible,
+    committee_busy,
 };
 
 ;

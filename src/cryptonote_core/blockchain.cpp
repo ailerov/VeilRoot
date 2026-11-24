@@ -30,7 +30,9 @@
 
 #include <algorithm>
 #include <set>
+#include <map>
 #include <cstdio>
+#include <cstring>
 #include <boost/asio/dispatch.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/range/adaptor/reversed.hpp>
@@ -7491,7 +7493,8 @@ leave:
     // New canonical readiness information can retry the queue head.
     if (!scheduler_triggered) {
       for (const auto& tx_pair : txs) {
-        if (is_dao_v2_node_ready_tx(tx_pair.first)) {
+        if (is_dao_v2_node_ready_tx(tx_pair.first) ||
+            is_dao_v2_tally_result_tx(tx_pair.first)) {
           scheduler_triggered = true;
           break;
         }
@@ -10657,6 +10660,119 @@ std::deque<pending_dao_v2_dkg_result> pending;
     }
     return true;
   }
+
+// Returns the node identities currently reserved by active proposals.
+//
+// Public share-set rows are retained for historical audit. They must
+// not all be treated as active committees: terminal proposals release
+// their committee, and a reshare replaces the previous share set.
+//
+// The highest share_set_id for each active proposal key is its current
+// committee. Missing or inconsistent state fails closed.
+static bool dao_v2_collect_active_committee_owners(
+    const BlockchainDB& db,
+    std::map<crypto::public_key, crypto::hash>& owners)
+{
+    owners.clear();
+
+    try {
+        // Map each currently active proposal key to its proposal id.
+        std::map<std::vector<uint8_t>, crypto::hash> active_keys;
+
+        const bool proposals_ok = db.for_all_proposal_records(
+            [&](const crypto::hash& proposal_id,
+                const proposal_record& proposal) -> bool {
+                if (proposal.status != PROPOSAL_STATUS_ACTIVE ||
+                    proposal.tally_key_id == crypto::null_hash)
+                    return true;
+
+                const std::vector<uint8_t> key_id(
+                    proposal.tally_key_id.data,
+                    proposal.tally_key_id.data +
+                        sizeof(proposal.tally_key_id.data));
+
+                const auto inserted =
+                    active_keys.emplace(key_id, proposal_id);
+
+                // Per-proposal keys must not be owned by two proposals.
+                return inserted.second ||
+                       inserted.first->second == proposal_id;
+            });
+
+        if (!proposals_ok)
+            return false;
+
+        if (active_keys.empty())
+            return true;
+
+        // Find the latest persisted share-set id for each active key.
+        std::map<std::vector<uint8_t>, uint64_t> latest_ids;
+        for (const auto& active : active_keys)
+            latest_ids.emplace(active.first, 0);
+
+        const bool share_sets_ok = db.for_all_dao_share_sets(
+            [&](uint64_t share_set_id,
+                const dao::dao_share_set_record& share_set) -> bool {
+                const auto it = latest_ids.find(share_set.key_id);
+                if (it != latest_ids.end() && share_set_id > it->second)
+                    it->second = share_set_id;
+                return true;
+            });
+
+        if (!share_sets_ok)
+            return false;
+
+        // Load only the latest share set belonging to each active key.
+        for (const auto& active : active_keys) {
+            const auto latest = latest_ids.find(active.first);
+
+            if (latest == latest_ids.end() || latest->second == 0) {
+                MERROR("DAO DKG committee reservations: active proposal "
+                       << active.second
+                       << " has a tally key but no persisted share set");
+                owners.clear();
+                return false;
+            }
+
+            dao::dao_share_set_record share_set;
+            if (!db.get_dao_share_set(latest->second, share_set) ||
+                share_set.key_id != active.first ||
+                share_set.committee_members.empty()) {
+                MERROR("DAO DKG committee reservations: latest share set "
+                       << latest->second
+                       << " is missing or inconsistent for proposal "
+                       << active.second);
+                owners.clear();
+                return false;
+            }
+
+            for (const auto& member : share_set.committee_members) {
+                if (member.size() != sizeof(crypto::public_key::data)) {
+                    MERROR("DAO DKG committee reservations: malformed "
+                           "committee member for proposal "
+                           << active.second);
+                    owners.clear();
+                    return false;
+                }
+
+                crypto::public_key pk{};
+                std::memcpy(pk.data, member.data(), sizeof(pk.data));
+                owners.emplace(pk, active.second);
+            }
+        }
+    } catch (const std::exception& e) {
+        MERROR("DAO DKG committee reservation lookup failed: " << e.what());
+        owners.clear();
+        return false;
+    } catch (...) {
+        MERROR("DAO DKG committee reservation lookup failed");
+        owners.clear();
+        return false;
+    }
+
+    return true;
+}
+
 #ifdef VEILROOT_ENABLE_CL
 dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
       const crypto::hash& proposal_id)
@@ -10737,6 +10853,29 @@ dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
                << " selection_height=" << selection_height);
       return dao::dao_dkg_start_status::insufficient_ready_committee;
     }
+    // Do not start a CL ceremony whose selected members are still
+    // custodians for another active proposal. Terminal proposals and
+    // superseded share sets are excluded by the shared chain-state lookup.
+    std::map<crypto::public_key, crypto::hash> reserved_members;
+    if (!dao_v2_collect_active_committee_owners(
+            *m_db, reserved_members)) {
+      MERROR("start_dao_v2_dkg_for_proposal: cannot resolve active "
+             "committee reservations; refusing to start DKG");
+      return dao::dao_dkg_start_status::runner_start_failed;
+    }
+
+    for (const auto& member : shareholders) {
+      const auto owner = reserved_members.find(member);
+      if (owner != reserved_members.end()) {
+        MWARNING("start_dao_v2_dkg_for_proposal: committee busy; "
+                 "proposal " << proposal_id
+                 << " deferred until active proposal "
+                 << owner->second << " becomes terminal; member="
+                 << member);
+        return dao::dao_dkg_start_status::committee_busy;
+      }
+    }
+
     crypto::hash retry_block_hash{};
     try {
       retry_block_hash = m_db->get_block_hash_from_height(selection_height);
@@ -12610,23 +12749,24 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
       }
       if (this_set.empty()) return false;
 
-      bool overlap = false;
-      m_db->for_all_dao_share_sets(
-          [&](uint64_t /*ssid*/,
-              const dao::dao_share_set_record& ss) -> bool {
-            if (ss.key_id == rec.key_id) return true;  // own (impossible: dup check earlier)
-            for (const auto& m : ss.committee_members) {
-              if (m.size() != 32) continue;
-              crypto::public_key pk{};
-              std::memcpy(pk.data, m.data(), 32);
-              if (this_set.count(pk)) { overlap = true; return false; }
-            }
-            return true;
-          });
-      if (overlap) {
-        MERROR("dkg-activation: committee overlaps an already-active "
-               "proposal");
+      // Only the latest committee of another ACTIVE proposal reserves
+      // its members. Terminal proposal share sets remain in LMDB for
+      // audit, but no longer reserve their former committee.
+      std::map<crypto::public_key, crypto::hash> active_committee_owners;
+      if (!dao_v2_collect_active_committee_owners(
+              *m_db, active_committee_owners)) {
+        MERROR("dkg-activation: cannot resolve active proposal "
+               "committee reservations");
         return false;
+      }
+
+      for (const auto& pk : this_set) {
+        const auto owner = active_committee_owners.find(pk);
+        if (owner != active_committee_owners.end()) {
+          MERROR("dkg-activation: committee overlaps active proposal "
+                 << owner->second << " at member " << pk);
+          return false;
+        }
       }
 
       if (block_committees) {
