@@ -74,6 +74,27 @@ TEST(dao_cl_dkg_e2e, p2p_dkg_aggregate_and_threshold_decrypt)
     for (auto& r : runners) r->stop();
     runners.clear();
 
+    // Exercise the exact key-context wire format consumed by the
+    // blockchain activation validator.
+    std::vector<uint8_t> ctx_wire;
+    ASSERT_TRUE(dao_cl_key_context_serialize(results[0].ctx, ctx_wire));
+    ASSERT_TRUE(dao_cl_modulus_wire_valid(ctx_wire));
+
+    cl_key_context parsed_ctx;
+    ASSERT_TRUE(dao_cl_key_context_parse(ctx_wire, parsed_ctx));
+    EXPECT_EQ(parsed_ctx.q, results[0].ctx.q);
+    EXPECT_EQ(parsed_ctx.k, results[0].ctx.k);
+    EXPECT_EQ(parsed_ctx.p, results[0].ctx.p);
+    EXPECT_EQ(parsed_ctx.pk_qfi, results[0].ctx.pk_qfi);
+    EXPECT_EQ(parsed_ctx.D, results[0].ctx.D);
+
+    for (size_t i = 1; i < results.size(); ++i) {
+        std::vector<uint8_t> peer_ctx_wire;
+        ASSERT_TRUE(dao_cl_key_context_serialize(
+            results[i].ctx, peer_ctx_wire));
+        EXPECT_EQ(peer_ctx_wire, ctx_wire) << "party " << i;
+    }
+
     for (size_t i = 1; i < 3; ++i) {
         ASSERT_EQ(results[0].ctx.pk_qfi, results[i].ctx.pk_qfi);
         ASSERT_EQ(results[0].gammas_serialized, results[i].gammas_serialized);

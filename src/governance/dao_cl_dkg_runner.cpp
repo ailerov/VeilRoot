@@ -211,15 +211,49 @@ struct cl_dkg_p2p_runner::impl
     {
         out.attempt_id = cfg.attempt_id;
         const auto& cl = *cfg.cl;
+        // DKG scalar encoding is sign || u32(length) || magnitude.
+        // cl_key_context stores sign || magnitude because its serializer
+        // writes the length prefix itself.
+        auto scalar_to_key_context_payload = [](
+            std::vector<uint8_t>& dst,
+            const BICYCL::Mpz& value,
+            bool require_positive) -> bool
+        {
+            std::vector<uint8_t> wire;
+            if (!cl_dkg_mpz_to_bytes_signed(wire, value) ||
+                wire.size() < 5u || wire[0] > 1u)
+                return false;
+
+            const uint32_t len =
+                (static_cast<uint32_t>(wire[1]) << 24)
+              | (static_cast<uint32_t>(wire[2]) << 16)
+              | (static_cast<uint32_t>(wire[3]) <<  8)
+              |  static_cast<uint32_t>(wire[4]);
+
+            if (len >= 4096u ||
+                wire.size() != 5u + static_cast<size_t>(len) ||
+                (len != 0u && wire[5] == 0u) ||
+                (len == 0u && wire[0] != 0u) ||
+                (require_positive && wire[0] != 0u))
+                return false;
+
+            dst.clear();
+            dst.reserve(1u + static_cast<size_t>(len));
+            dst.push_back(wire[0]);
+            dst.insert(dst.end(), wire.begin() + 5, wire.end());
+            return true;
+        };
+
         out.ctx.q.clear();
         cl_dkg_mpz_to_bytes_be(out.ctx.q, cl.q());
         out.ctx.k = static_cast<uint32_t>(cl.k());
-        out.ctx.p.clear();
-        cl_dkg_mpz_to_bytes_signed(out.ctx.p, cl.p());
+        if (!scalar_to_key_context_payload(out.ctx.p, cl.p(), false))
+            return false;
         out.ctx.pk_qfi.clear();
         cl_dkg_qfi_to_bytes(out.ctx.pk_qfi, party->public_key().elt());
-        out.ctx.D.clear();
-        cl_dkg_mpz_to_bytes_signed(out.ctx.D, party->interpolation_scale());
+        if (!scalar_to_key_context_payload(
+                out.ctx.D, party->interpolation_scale(), true))
+            return false;
 
         out.local_secret_share.clear();
         if (!party->serialize_secret_share(out.local_secret_share)) return false;
