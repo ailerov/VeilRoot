@@ -113,6 +113,49 @@ TEST(dao_evaluate_v2_tally, percent_out_of_range_rejected)
         dao_u128(0), 101, qthr, qmet, mmet, passed));
 }
 
+
+TEST(dao_tally_share_set_id, interprets_hash_bytes_as_unsigned)
+{
+    std::vector<std::uint8_t> key_id(32, 0);
+    crypto::hash digest{};
+    bool found_sign_sensitive_digest = false;
+
+    // Find deterministic input whose digest has a high-bit byte among
+    // positions 0..2, where signed-char promotion changes the result.
+    for (std::uint32_t seed = 0;
+         seed < 256 && !found_sign_sensitive_digest; ++seed) {
+        for (std::size_t i = 0; i < key_id.size(); ++i) {
+            key_id[i] = static_cast<std::uint8_t>(
+                (seed + 29u * static_cast<std::uint32_t>(i)) & 0xffu);
+        }
+
+        std::vector<std::uint8_t> input(key_id.begin(), key_id.end());
+        const char* tag = "share_set_id";
+        input.insert(input.end(), tag, tag + 13);
+        digest = crypto::cn_fast_hash(input.data(), input.size());
+
+        for (int i = 0; i < 3; ++i) {
+            if ((static_cast<std::uint8_t>(digest.data[i]) & 0x80u) != 0) {
+                found_sign_sensitive_digest = true;
+                break;
+            }
+        }
+    }
+
+    ASSERT_TRUE(found_sign_sensitive_digest);
+
+    std::uint32_t expected = 0;
+    for (int i = 0; i < 4; ++i) {
+        const auto byte = static_cast<std::uint8_t>(digest.data[i]);
+        expected |= static_cast<std::uint32_t>(byte) << (8 * i);
+    }
+
+    expected &= 0xFFFFFFFEu;
+    if (expected < 2) expected = 2;
+
+    EXPECT_EQ(share_set_id_for_key_id(key_id), expected);
+}
+
 #ifdef VEILROOT_DAO_DKG_TESTING
 // --- decoder overflow tests ---
 

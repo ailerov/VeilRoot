@@ -357,7 +357,7 @@ uint32_t share_set_id_for_key_id(const std::vector<uint8_t>& key_id)
     crypto::hash h{};
     crypto::cn_fast_hash(buf.data(), buf.size(), h);
     uint32_t v = 0;
-    for (int i = 0; i < 4; ++i) v |= static_cast<uint32_t>(h.data[i]) << (8*i);
+    for (int i = 0; i < 4; ++i) v |= static_cast<uint32_t>(static_cast<uint8_t>(h.data[i])) << (8*i);
     v &= 0xFFFFFFFEu;   // force even
     if (v < 2) v = 2;   // reserve 0 and 1
     return v;
