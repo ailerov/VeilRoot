@@ -410,15 +410,40 @@ struct cl_dkg_p2p_runner::impl
         MWARNING("CL DKG pre-verify: qualified=" << party->qualified_players().size()
                  << "/" << cfg.committee_size << " complaints=" << party->complaints_count());
 
+        MWARNING("CL DKG stage begin: keygen_check_verify_all");
+        const auto verify_started = std::chrono::steady_clock::now();
         if (!party->keygen_check_verify_all()) {
-            mark_finished(false, "keygen_check_verify_all",
-                          party->last_error());
+            const auto verify_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - verify_started).count();
+            const std::string reason = party->last_error();
+            MWARNING("CL DKG stage FAILED: keygen_check_verify_all elapsed_ms="
+                     << verify_ms << " reason=" << reason);
+            mark_finished(false, "keygen_check_verify_all", reason);
             return;
         }
+        const auto verify_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - verify_started).count();
+        MWARNING("CL DKG stage OK: keygen_check_verify_all elapsed_ms="
+                 << verify_ms);
+        MWARNING("CL DKG stage begin: keygen_extract");
+        const auto extract_started = std::chrono::steady_clock::now();
         if (!party->keygen_extract()) {
-            mark_finished(false, "keygen_extract", party->last_error());
+            const auto extract_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - extract_started).count();
+            const std::string reason = party->last_error();
+            MWARNING("CL DKG stage FAILED: keygen_extract elapsed_ms="
+                     << extract_ms << " reason=" << reason);
+            mark_finished(false, "keygen_extract", reason);
             return;
         }
+        const auto extract_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - extract_started).count();
+        MWARNING("CL DKG stage OK: keygen_extract elapsed_ms="
+                 << extract_ms);
 
         cl_dkg_payload comp;
         if (!cl_dkg_encode_complete(comp)) {
@@ -432,10 +457,22 @@ struct cl_dkg_p2p_runner::impl
         }
 
         cl_dkg_result local;
+        MWARNING("CL DKG stage begin: fill_result");
+        const auto fill_started = std::chrono::steady_clock::now();
         if (!fill_result(local)) {
+            const auto fill_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - fill_started).count();
+            MWARNING("CL DKG stage FAILED: fill_result elapsed_ms="
+                     << fill_ms);
             mark_finished(false, "fill_result", "fill_result returned false");
             return;
         }
+        const auto fill_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - fill_started).count();
+        MWARNING("CL DKG stage OK: fill_result elapsed_ms="
+                 << fill_ms);
         {
             std::lock_guard<std::mutex> lk(mu);
             result = std::move(local);
