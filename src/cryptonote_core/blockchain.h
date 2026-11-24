@@ -157,6 +157,15 @@ namespace cryptonote
     crypto::public_key recipient_view_public_key;   // main/account view public key for ECDH
     bool is_subaddress;   // from wallet proposal; true if recipient is a subaddress
   };
+
+  // A per-proposal DKG is permitted only while the proposal is active
+  // and has not already acquired a tally key.
+  inline bool dao_v2_dkg_proposal_eligible(const proposal_record& rec)
+  {
+    return rec.status == PROPOSAL_STATUS_ACTIVE &&
+           rec.tally_key_id == crypto::null_hash;
+  }
+
   // ---------- VNS PROPOSALS END ----------
   // BEGIN_VNS_PROPOSAL_EXECUTION_RECORD
   struct proposal_execution_record

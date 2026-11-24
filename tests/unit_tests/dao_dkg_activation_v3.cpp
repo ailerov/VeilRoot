@@ -4,6 +4,7 @@
 #include "gtest/gtest.h"
 
 #include "governance/dao_dkg.h"
+#include "cryptonote_core/blockchain.h"
 
 #include <cstring>
 #include <vector>
@@ -40,6 +41,34 @@ static dao_share_set_record make_cl_share_set()
     r.cl_gammas_serialized = std::vector<uint8_t>(64, 0x88);
     r.qualified_ids = {0u, 1u, 2u};
     return r;
+}
+
+TEST(DaoDkgProposalEligibility, rejects_terminal_and_already_keyed_proposals)
+{
+    cryptonote::proposal_record rec{};
+    rec.tally_key_id = crypto::null_hash;
+
+    rec.status = cryptonote::PROPOSAL_STATUS_ACTIVE;
+    EXPECT_TRUE(cryptonote::dao_v2_dkg_proposal_eligible(rec));
+
+    rec.status = cryptonote::PROPOSAL_STATUS_REJECTED;
+    EXPECT_FALSE(cryptonote::dao_v2_dkg_proposal_eligible(rec));
+
+    rec.status = cryptonote::PROPOSAL_STATUS_EXPIRED;
+    EXPECT_FALSE(cryptonote::dao_v2_dkg_proposal_eligible(rec));
+
+    rec.status = cryptonote::PROPOSAL_STATUS_PASSED;
+    EXPECT_FALSE(cryptonote::dao_v2_dkg_proposal_eligible(rec));
+
+    rec.status = cryptonote::PROPOSAL_STATUS_EXECUTED;
+    EXPECT_FALSE(cryptonote::dao_v2_dkg_proposal_eligible(rec));
+
+    rec.status = cryptonote::PROPOSAL_STATUS_FAILED_EXECUTION;
+    EXPECT_FALSE(cryptonote::dao_v2_dkg_proposal_eligible(rec));
+
+    rec.status = cryptonote::PROPOSAL_STATUS_ACTIVE;
+    rec.tally_key_id.data[0] = 1;
+    EXPECT_FALSE(cryptonote::dao_v2_dkg_proposal_eligible(rec));
 }
 
 TEST(DaoDkgKeyActivationV3, v2_roundtrip_without_share_set)

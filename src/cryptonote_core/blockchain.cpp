@@ -7479,12 +7479,13 @@ leave:
       proposal_record rec;
       if (!m_db->get_proposal_record(tx_hash, rec)) continue;
       if (rec.submission_height != new_height) continue;
-      if (rec.tally_key_id != crypto::null_hash) continue;
+      if (!dao_v2_dkg_proposal_eligible(rec)) continue;
       {
         auto st = start_dao_v2_dkg_for_proposal(tx_hash);
         if (st != dao::dao_dkg_start_status::started &&
             st != dao::dao_dkg_start_status::already_running &&
-            st != dao::dao_dkg_start_status::local_node_not_selected) {
+            st != dao::dao_dkg_start_status::local_node_not_selected &&
+            st != dao::dao_dkg_start_status::proposal_not_eligible) {
           MWARNING("start_dao_v2_dkg_for_proposal: status="
                    << (int)st << " for proposal " << tx_hash);
         }
@@ -7522,10 +7523,7 @@ leave:
       m_db->for_all_proposal_records(
           [&](const crypto::hash& proposal_id,
               const proposal_record& rec) -> bool {
-            if (rec.status != PROPOSAL_STATUS_ACTIVE)
-              return true;
-
-            if (rec.tally_key_id != crypto::null_hash)
+            if (!dao_v2_dkg_proposal_eligible(rec))
               return true;
 
             if (rec.submission_height >= new_height)
@@ -10665,6 +10663,16 @@ dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
   {
     std::lock_guard<std::mutex> start_guard(m_dao_v2_dkg_start_mutex);
     const std::string ceremony_id = epee::string_tools::pod_to_hex(proposal_id);
+
+    proposal_record proposal;
+    if (!m_db->get_proposal_record(proposal_id, proposal) ||
+        !dao_v2_dkg_proposal_eligible(proposal)) {
+      MINFO("start_dao_v2_dkg_for_proposal: refusing DKG for "
+            "missing, inactive, or already-keyed proposal "
+            << proposal_id);
+      return dao::dao_dkg_start_status::proposal_not_eligible;
+    }
+
     std::shared_ptr<dao::cl_dkg_p2p_runner> previous_runner;
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_dkg_runners_mutex);
