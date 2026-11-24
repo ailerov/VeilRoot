@@ -7471,77 +7471,77 @@ leave:
   // END_VNS_GOVERNANCE_PROCESS
 
   // BEGIN_VNS_DAO_V2_PROPOSAL_DKG_TRIGGER
-  // Start a per-proposal DKG for every proposal first indexed at this
-  // height whose tally_key_id is still null. Idempotent: reorg/remine
-  // of the same block does not start a second runner.
+  // One deterministic DKG queue shared by proposal-submission and
+  // node_ready triggers. Only the oldest eligible proposal may run.
   {
+    bool scheduler_triggered = false;
+
+    // A newly submitted eligible proposal can trigger the scheduler.
     for (const auto& tx_hash : bl.tx_hashes) {
       proposal_record rec;
-      if (!m_db->get_proposal_record(tx_hash, rec)) continue;
-      if (rec.submission_height != new_height) continue;
-      if (!dao_v2_dkg_proposal_eligible(rec)) continue;
-      {
-        auto st = start_dao_v2_dkg_for_proposal(tx_hash);
-        if (st != dao::dao_dkg_start_status::started &&
-            st != dao::dao_dkg_start_status::already_running &&
-            st != dao::dao_dkg_start_status::local_node_not_selected &&
-            st != dao::dao_dkg_start_status::proposal_not_eligible) {
-          MWARNING("start_dao_v2_dkg_for_proposal: status="
-                   << (int)st << " for proposal " << tx_hash);
-        }
-      }
-    }
-  }
-  // END_VNS_DAO_V2_PROPOSAL_DKG_TRIGGER
-
-  // BEGIN_VNS_DAO_V2_DKG_READINESS_RETRY
-  // A proposal's first DKG attempt may precede the inclusion of enough
-  // chain-recorded node_ready transactions. Retry pending active
-  // proposals when a new readiness record becomes canonical.
-  //
-  // The retry runs while processing the block that commits node_ready.
-  // Therefore every node derives selection_height from the same
-  // canonical block and uses the same deterministic committee selector.
-  {
-    bool node_ready_committed = false;
-
-    for (const auto& tx_pair : txs) {
-      if (is_dao_v2_node_ready_tx(tx_pair.first)) {
-        node_ready_committed = true;
+      if (!m_db->get_proposal_record(tx_hash, rec))
+        continue;
+      if (rec.submission_height == new_height &&
+          dao_v2_dkg_proposal_eligible(rec)) {
+        scheduler_triggered = true;
         break;
       }
     }
 
-    if (node_ready_committed) {
-      MWARNING("DAO V2 DKG readiness retry: node_ready tx in block "
-               << new_height);
-      std::vector<crypto::hash> pending_proposals;
+    // New canonical readiness information can retry the queue head.
+    if (!scheduler_triggered) {
+      for (const auto& tx_pair : txs) {
+        if (is_dao_v2_node_ready_tx(tx_pair.first)) {
+          scheduler_triggered = true;
+          break;
+        }
+      }
+    }
 
-      // Collect IDs first. Do not start DKG from inside this DB
-      // iteration: start_dao_v2_dkg_for_proposal() performs its own
-      // database reads, and nested read transactions must be avoided.
+    if (scheduler_triggered) {
+      std::vector<std::pair<uint64_t, crypto::hash>> pending_proposals;
+
+      // Collect first; start_dao_v2_dkg_for_proposal performs DB reads.
       m_db->for_all_proposal_records(
           [&](const crypto::hash& proposal_id,
               const proposal_record& rec) -> bool {
             if (!dao_v2_dkg_proposal_eligible(rec))
               return true;
 
-            if (rec.submission_height >= new_height)
-              return true;
-
-            pending_proposals.push_back(proposal_id);
+            pending_proposals.emplace_back(
+                rec.submission_height, proposal_id);
             return true;
           });
 
-      MWARNING("DAO V2 DKG readiness retry: "
-               << pending_proposals.size()
-               << " pending proposal(s) at height " << new_height);
-      for (const auto& proposal_id : pending_proposals) {
-        const auto st =
-            start_dao_v2_dkg_for_proposal(proposal_id);
+      // Every node derives exactly the same queue order.
+      std::sort(
+          pending_proposals.begin(), pending_proposals.end(),
+          [](const std::pair<uint64_t, crypto::hash>& a,
+             const std::pair<uint64_t, crypto::hash>& b) {
+            if (a.first != b.first)
+              return a.first < b.first;
+            return std::memcmp(
+                a.second.data, b.second.data,
+                sizeof(a.second.data)) < 0;
+          });
 
-        MWARNING("DAO V2 DKG readiness retry: proposal=" << proposal_id
+      if (!pending_proposals.empty()) {
+        const crypto::hash& proposal_id =
+            pending_proposals.front().second;
+
+        MWARNING("DAO V2 DKG scheduler: starting only queue head "
+                 << proposal_id
+                 << " pending=" << pending_proposals.size()
+                 << " submission_height="
+                 << pending_proposals.front().first);
+
+        const auto st = start_dao_v2_dkg_for_proposal(proposal_id);
+
+        MWARNING("DAO V2 DKG scheduler: queue-head proposal="
+                 << proposal_id
                  << " status=" << static_cast<int>(st));
+      } else {
+        MWARNING("DAO V2 DKG scheduler: no eligible proposals");
       }
     }
   }
