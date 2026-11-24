@@ -12399,6 +12399,48 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
     if (act.selection_height >= block_height)
       return false;
 
+    // Per-proposal activations must follow the deterministic DKG queue.
+    // This rejects stale activations and activations for later proposals
+    // while an older eligible proposal is still awaiting its key.
+    if (act.proposal_id != crypto::null_hash) {
+      proposal_record proposal;
+      if (!m_db->get_proposal_record(act.proposal_id, proposal) ||
+          !dao_v2_dkg_proposal_eligible(proposal)) {
+        MERROR("dkg-activation: proposal is missing, terminal, "
+               "or already keyed: " << act.proposal_id);
+        return false;
+      }
+
+      std::vector<std::pair<uint64_t, crypto::hash>> eligible_proposals;
+      m_db->for_all_proposal_records(
+          [&](const crypto::hash& proposal_id,
+              const proposal_record& candidate) -> bool {
+            if (dao_v2_dkg_proposal_eligible(candidate)) {
+              eligible_proposals.emplace_back(
+                  candidate.submission_height, proposal_id);
+            }
+            return true;
+          });
+
+      std::sort(
+          eligible_proposals.begin(), eligible_proposals.end(),
+          [](const std::pair<uint64_t, crypto::hash>& a,
+             const std::pair<uint64_t, crypto::hash>& b) {
+            if (a.first != b.first)
+              return a.first < b.first;
+            return std::memcmp(
+                a.second.data, b.second.data,
+                sizeof(a.second.data)) < 0;
+          });
+
+      if (eligible_proposals.empty() ||
+          eligible_proposals.front().second != act.proposal_id) {
+        MERROR("dkg-activation: proposal is not the oldest eligible "
+               "DKG queue item: " << act.proposal_id);
+        return false;
+      }
+    }
+
     const dao::dao_tally_key_record& rec = act.record;
 
     // Duplicate check for per-proposal activation (by-id only).

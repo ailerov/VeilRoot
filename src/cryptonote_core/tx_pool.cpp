@@ -1882,6 +1882,8 @@ namespace cryptonote
     size_t max_total_weight_v5 = 2 * median_weight - CRYPTONOTE_COINBASE_BLOB_RESERVED_SIZE;
     size_t max_total_weight = version >= 5 ? max_total_weight_v5 : max_total_weight_pre_v5;
     std::unordered_set<crypto::key_image> k_images;
+    // A block may carry only one DAO V2 DKG activation.
+    bool dkg_activation_selected = false;
 
     LOG_PRINT_L2("Filling block template, median weight " << median_weight << ", " << m_txs_by_fee_and_receive_time.size() << " txes in the pool");
 
@@ -1906,6 +1908,7 @@ namespace cryptonote
       cryptonote::blobdata txblob = m_blockchain.get_txpool_tx_blob(sorted_it->second, relay_category::all);
       cryptonote::transaction tx;
       bool is_vns_special = false;
+      bool is_dkg_activation = false;
       if (parse_and_validate_tx_from_blob(txblob, tx))
       {
         tx.set_hash(sorted_it->second);
@@ -1929,9 +1932,11 @@ namespace cryptonote
         // not; without this exemption they entered the mempool and
         // never reached a block. Same classifiers as admission, so the
         // two paths stay consistent.
+        is_dkg_activation =
+            m_blockchain.is_dao_v2_dkg_activation_tx(tx);
         if (!is_vns_special) {
           is_vns_special = m_blockchain.is_dao_v2_tally_result_tx(tx) ||
-                           m_blockchain.is_dao_v2_dkg_activation_tx(tx) ||
+                           is_dkg_activation ||
                            m_blockchain.is_dao_v2_node_ready_tx(tx);
         }
         // END_VNS_DAO_ZERO_FEE_MINING
@@ -2038,6 +2043,24 @@ namespace cryptonote
         LOG_PRINT_L2("  not ready to go");
         continue;
       }
+
+      if (is_dkg_activation) {
+        if (dkg_activation_selected) {
+          LOG_PRINT_L1(
+              "Skipping DAO V2 DKG activation: another activation "
+              "is already selected for this block");
+          continue;
+        }
+
+        if (!m_blockchain.validate_dao_v2_dkg_activation_tx(
+                tx, m_blockchain.get_current_blockchain_height())) {
+          LOG_PRINT_L1(
+              "Skipping DAO V2 DKG activation: proposal is not the "
+              "oldest eligible proposal or activation is invalid");
+          continue;
+        }
+      }
+
       if (have_key_images(k_images, tx))
       {
         LOG_PRINT_L2("  key images already seen");
@@ -2045,6 +2068,8 @@ namespace cryptonote
       }
 
       bl.tx_hashes.push_back(sorted_it->second);
+      if (is_dkg_activation)
+        dkg_activation_selected = true;
       total_weight += meta.weight;
       fee += meta.fee;
       best_coinbase = coinbase;
