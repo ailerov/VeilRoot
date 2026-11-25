@@ -7532,7 +7532,7 @@ leave:
         const crypto::hash& proposal_id =
             pending_proposals.front().second;
 
-        MWARNING("DAO V2 DKG scheduler: starting only queue head "
+        MINFO("DAO V2 DKG scheduler: starting only queue head "
                  << proposal_id
                  << " pending=" << pending_proposals.size()
                  << " submission_height="
@@ -7540,11 +7540,11 @@ leave:
 
         const auto st = start_dao_v2_dkg_for_proposal(proposal_id);
 
-        MWARNING("DAO V2 DKG scheduler: queue-head proposal="
+        MINFO("DAO V2 DKG scheduler: queue-head proposal="
                  << proposal_id
                  << " status=" << static_cast<int>(st));
       } else {
-        MWARNING("DAO V2 DKG scheduler: no eligible proposals");
+        MDEBUG("DAO V2 DKG scheduler: no eligible proposals");
       }
     }
   }
@@ -10157,9 +10157,98 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     crypto::hash bh{};
     std::memcpy(bh.data, nr.block_hash.data(), 32);
 
-    MWARNING("DAO V2 node_ready applied to chain-state: sender="
-             << sender << " height=" << nr.height);
+    MDEBUG("DAO V2 node_ready applied to chain-state: sender="
+           << sender << " height=" << nr.height);
     m_db->add_dao_v2_node_ready(sender, nr.height, bh);
+    {
+      std::lock_guard<std::mutex> lk(m_dao_v2_ready_tx_mutex);
+      auto it = m_dao_v2_ready_tx_pending.find(sender);
+      if (it != m_dao_v2_ready_tx_pending.end() &&
+          it->second.first == nr.height &&
+          it->second.second == bh)
+        m_dao_v2_ready_tx_pending.erase(it);
+    }
+    return true;
+  }
+
+  bool Blockchain::submit_dao_v2_node_ready_tx(
+      const crypto::public_key& sender, uint64_t height,
+      const crypto::hash& block_hash,
+      const crypto::signature& signature)
+  {
+    crypto::hash stored_hash{};
+    try {
+      if (m_db->get_dao_v2_node_ready(sender, height, stored_hash) &&
+          stored_hash == block_hash)
+      {
+        std::lock_guard<std::mutex> lk(m_dao_v2_ready_tx_mutex);
+        auto it = m_dao_v2_ready_tx_pending.find(sender);
+        if (it != m_dao_v2_ready_tx_pending.end() &&
+            it->second.first == height &&
+            it->second.second == block_hash)
+          m_dao_v2_ready_tx_pending.erase(it);
+        return true;
+      }
+    } catch (const std::exception& e) {
+      MWARNING("node_ready: chain-state lookup failed for "
+               << sender << " height=" << height << ": " << e.what());
+      return false;
+    }
+
+    {
+      std::lock_guard<std::mutex> lk(m_dao_v2_ready_tx_mutex);
+      auto it = m_dao_v2_ready_tx_pending.find(sender);
+      if (it != m_dao_v2_ready_tx_pending.end()) {
+        if (it->second.first > height)
+          return true;
+        if (it->second.first == height &&
+            it->second.second == block_hash)
+          return true;
+        it->second = std::make_pair(height, block_hash);
+      } else {
+        m_dao_v2_ready_tx_pending.emplace(
+            sender, std::make_pair(height, block_hash));
+      }
+    }
+
+    node_ready_payload nr;
+    nr.version = 1;
+    nr.sender_pubkey.assign(sender.data, sender.data + 32);
+    nr.height = height;
+    nr.block_hash.assign(block_hash.data, block_hash.data + 32);
+    nr.signature.assign(
+        reinterpret_cast<const uint8_t*>(&signature),
+        reinterpret_cast<const uint8_t*>(&signature)
+            + sizeof(crypto::signature));
+    governance_payload gp;
+    gp.type = governance_object::node_ready;
+    const std::string nr_blob = t_serializable_object_to_blob(nr);
+    gp.data.assign(nr_blob.begin(), nr_blob.end());
+
+    tx_extra_governance_payload txgp;
+    txgp.payload = std::move(gp);
+    tx_extra_field ef = txgp;
+    const std::string eb = t_serializable_object_to_blob(ef);
+    transaction nr_tx;
+    nr_tx.version = 2;
+    nr_tx.unlock_time = 0;
+    nr_tx.extra.assign(eb.begin(), eb.end());
+    nr_tx.rct_signatures = rct::rctSig{};
+    nr_tx.rct_signatures.type = rct::RCTTypeNull;
+
+    tx_verification_context tvc{};
+    const uint8_t hf_v = get_current_hard_fork_version();
+    if (!m_tx_pool.add_tx(nr_tx, tvc, relay_method::local, true,
+                          hf_v, hf_v)) {
+      MWARNING("node_ready: mempool rejected chain-state tx from "
+               << sender << " height=" << height
+               << " verification_failed=" << tvc.m_verifivation_failed
+               << " fee_too_low=" << tvc.m_fee_too_low);
+      return false;
+    }
+
+    MDEBUG("node_ready: chain-state tx queued for "
+           << sender << " height=" << height);
     return true;
   }
 
@@ -10197,9 +10286,12 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     const uint64_t now = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count());
-    if (m_dao_v2_last_announce_time != 0 &&
-        now < m_dao_v2_last_announce_time +
-              DAO_NODE_READY_ANNOUNCE_INTERVAL_S)
+    const bool force_announce =
+        m_dao_v2_force_announce.load(std::memory_order_relaxed);
+    const uint64_t last_announce_time =
+        m_dao_v2_last_announce_time.load(std::memory_order_relaxed);
+    if (!force_announce && last_announce_time != 0 &&
+        now < last_announce_time + DAO_NODE_READY_ANNOUNCE_INTERVAL_S)
       return;
 
     crypto::hash genesis{};
@@ -10234,62 +10326,28 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
 
     std::vector<uint8_t> wire;
     if (!m.serialize(wire)) return;
+    (void)m_dao_v2_force_announce.exchange(
+        false, std::memory_order_relaxed);
     std::string payload(wire.begin(), wire.end());
 
-    // Chain-state submission (canonical path). Submitted to mempool so
-    // a miner can include it; every validator reads the durable record
-    // from chain state. P2P below is the fast path.
-    {
-      node_ready_payload nr;
-      nr.version = 1;
-      nr.sender_pubkey.assign(self_pk.data, self_pk.data + 32);
-      nr.height = announce_height;
-      nr.block_hash.assign(announce_block_hash.data,
-                           announce_block_hash.data + 32);
-      nr.signature.assign(reinterpret_cast<const uint8_t*>(&sig),
-                          reinterpret_cast<const uint8_t*>(&sig)
-                              + sizeof(crypto::signature));
-
-      governance_payload gp;
-      gp.type = governance_object::node_ready;
-      {
-        const std::string nr_blob = t_serializable_object_to_blob(nr);
-        gp.data.assign(nr_blob.begin(), nr_blob.end());
-      }
-
-      tx_extra_governance_payload txgp;
-      txgp.payload = std::move(gp);
-      tx_extra_field ef = txgp;
-      std::string eb = t_serializable_object_to_blob(ef);
-
-      transaction nr_tx;
-      nr_tx.version = 2;
-      nr_tx.unlock_time = 0;
-      nr_tx.extra.assign(eb.begin(), eb.end());
-      nr_tx.rct_signatures = rct::rctSig{};
-      nr_tx.rct_signatures.type = rct::RCTTypeNull;
-
-      tx_verification_context tvc{};
-      const uint8_t hf_v = get_current_hard_fork_version();
-      if (!m_tx_pool.add_tx(nr_tx, tvc, relay_method::local, true,
-                            hf_v, hf_v)) {
-        MWARNING("node_ready: mempool rejected chain-state tx at height "
-                 << announce_height);
-      }
-    }
+    // Chain-state record is submitted once per (sender, height, hash).
+    // Keep the periodic P2P heartbeat independent of this deduplication.
+    (void)submit_dao_v2_node_ready_tx(
+        self_pk, announce_height, announce_block_hash, sig);
 
     // P2P broadcast (fast path). Best-effort: chain-state submission
     // above is the durable record.
     (void)m_dao_v2_dkg_send(payload);
 
-    m_dao_v2_last_announce_time = now;
+    m_dao_v2_last_announce_time.store(
+        now, std::memory_order_relaxed);
     // Record ourselves so a single-node network can reach the gate if
     // it ever grows to MIN without needing a peer announcement first.
     std::lock_guard<std::mutex> lk(m_dao_v2_ready_mutex);
     m_dao_v2_ready_peers[self_pk] =
         std::make_pair(announce_height, announce_block_hash);
-    MWARNING("V2 DKG announce fired, roster="
-             << m_dao_v2_ready_peers.size());
+    MDEBUG("V2 DKG announce fired, roster="
+           << m_dao_v2_ready_peers.size());
   }
 
   void Blockchain::handle_dao_v2_node_ready(
@@ -10349,67 +10407,38 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       return;
     }
 
-    // BEGIN_VNS_DAO_V2_PEER_READY_TX_IMPORT
-    // Import the authenticated peer's signed readiness record into
-    // this node's transaction pool. Reuse the canonical transaction
-    // format used by maybe_announce_dao_v2_node_ready().
-    {
-      node_ready_payload nr;
-      nr.version = 1;
-      nr.sender_pubkey.assign(sender.data, sender.data + 32);
-      nr.height = sender_height;
-      nr.block_hash.assign(sender_block_hash.data,
-                           sender_block_hash.data + 32);
-      nr.signature.assign(m.bytes_a.begin(), m.bytes_a.end());
-
-      governance_payload gp;
-      gp.type = governance_object::node_ready;
-      const std::string nr_blob = t_serializable_object_to_blob(nr);
-      gp.data.assign(nr_blob.begin(), nr_blob.end());
-
-      tx_extra_governance_payload txgp;
-      txgp.payload = std::move(gp);
-      tx_extra_field ef = txgp;
-      const std::string eb = t_serializable_object_to_blob(ef);
-
-      transaction nr_tx;
-      nr_tx.version = 2;
-      nr_tx.unlock_time = 0;
-      nr_tx.extra.assign(eb.begin(), eb.end());
-      nr_tx.rct_signatures = rct::rctSig{};
-      nr_tx.rct_signatures.type = rct::RCTTypeNull;
-
-      tx_verification_context tvc{};
-      const uint8_t hf_v = get_current_hard_fork_version();
-
-      if (!m_tx_pool.add_tx(nr_tx, tvc, relay_method::local, true,
-                            hf_v, hf_v)) {
-        MWARNING("node_ready: peer transaction rejected by mempool from "
-                 << sender << " height=" << sender_height
-                 << " verification_failed=" << tvc.m_verifivation_failed
-                 << " fee_too_low=" << tvc.m_fee_too_low);
-      } else {
-        MINFO("node_ready: peer transaction submitted to mempool from "
-              << sender << " height=" << sender_height);
-      }
-    }
-    // END_VNS_DAO_V2_PEER_READY_TX_IMPORT
     // Bind the announced key to the authenticated sender: the sender
     // is the pubkey the P2P connection authenticated as, and the
     // digest is bound to that same pubkey, so a peer cannot announce
     // on behalf of another node.
+    bool readiness_changed = false;
+    size_t readiness_roster_size = 0;
     {
       std::lock_guard<std::mutex> lk(m_dao_v2_ready_mutex);
-      m_dao_v2_ready_peers[sender] =
-          std::make_pair(sender_height, sender_block_hash);
-      MWARNING("V2 DKG node_ready rx from " << sender
-               << " height=" << sender_height
-               << " roster=" << m_dao_v2_ready_peers.size());
+      auto it = m_dao_v2_ready_peers.find(sender);
+      if (it == m_dao_v2_ready_peers.end() ||
+          it->second.first != sender_height ||
+          it->second.second != sender_block_hash) {
+        m_dao_v2_ready_peers[sender] =
+            std::make_pair(sender_height, sender_block_hash);
+        readiness_changed = true;
+      }
+      readiness_roster_size = m_dao_v2_ready_peers.size();
     }
 
-    // Reply so a peer that announced before we were listening still
-    // learns we are ready without waiting for the next periodic tick.
-    m_dao_v2_last_announce_time = 0;
+    // The same tuple is commonly rebroadcast by the 60-second P2P
+    // heartbeat. The shared helper suppresses duplicate chain-state txs.
+    (void)submit_dao_v2_node_ready_tx(
+        sender, sender_height, sender_block_hash, sig);
+
+    if (readiness_changed) {
+      MDEBUG("V2 DKG node_ready updated from " << sender
+             << " height=" << sender_height
+             << " roster=" << readiness_roster_size);
+      // A new/updated peer gets one prompt local announcement. Repeated
+      // identical heartbeats do not reset the periodic announcement timer.
+      m_dao_v2_force_announce.store(true, std::memory_order_relaxed);
+    }
   }
 
 #ifdef VEILROOT_DAO_DKG_TESTING

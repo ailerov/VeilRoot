@@ -1429,7 +1429,13 @@ namespace cryptonote
   bool validate_dao_v2_node_ready_tx(const transaction& tx,
                                      uint64_t block_height) const;
   bool apply_dao_v2_node_ready(const transaction& tx,
-                               uint64_t block_height);
+                                uint64_t block_height);
+  // Submit one signed readiness record to the mempool. Idempotent across
+  // local announcements and imported peer announcements.
+  bool submit_dao_v2_node_ready_tx(
+      const crypto::public_key& sender, uint64_t height,
+      const crypto::hash& block_hash,
+      const crypto::signature& signature);
 
   // Purge every local secret share for this key_id across all
   // share sets. Idempotent. Called from the block-apply purge
@@ -1986,10 +1992,15 @@ std::unordered_map<std::string, cached_service_descriptor> m_service_descriptor_
     // valid announcement was received. Never persisted to LMDB.
     mutable std::mutex m_dao_v2_ready_mutex;
     std::map<crypto::public_key, std::pair<uint64_t, crypto::hash>> m_dao_v2_ready_peers;
-
-    // Throttle for our own announcement. Set to 0 to force an announce
-    // on the next on_idle tick.
-    uint64_t m_dao_v2_last_announce_time = 0;
+    // Last readiness tuple submitted/attempted for each sender. Entries are
+    // removed when that exact tuple is committed to chain state.
+    mutable std::mutex m_dao_v2_ready_tx_mutex;
+    std::map<crypto::public_key, std::pair<uint64_t, crypto::hash>>
+        m_dao_v2_ready_tx_pending;
+    // These are touched by both the idle/announcement path and P2P receive
+    // handlers, so keep the throttle and one-shot response request atomic.
+    std::atomic<uint64_t> m_dao_v2_last_announce_time{0};
+    std::atomic<bool> m_dao_v2_force_announce{false};
     std::map<crypto::hash, std::map<crypto::public_key, std::pair<rct::key, rct::key>>> m_decryption_shares;
 
     // BEGIN_VNS_DAO_V2_TALLY_SHARE
