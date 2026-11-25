@@ -1068,6 +1068,27 @@ namespace cryptonote
     return true;
   }
   //---------------------------------------------------------------------------------
+  bool tx_memory_pool::is_relayable_transaction(
+      const txpool_tx_meta_t& meta,
+      bool consensus_valid_zero_fee_dao_tx) noexcept
+  {
+    return !meta.pruned && !meta.do_not_relay &&
+           (meta.fee > 0 || consensus_valid_zero_fee_dao_tx);
+  }
+  //---------------------------------------------------------------------------------
+  bool tx_memory_pool::is_relay_delay_elapsed(
+      const txpool_tx_meta_t& meta, uint64_t now) noexcept
+  {
+    if (meta.last_relayed_time ==
+        std::numeric_limits<uint64_t>::max())
+      return true;
+    if (meta.last_relayed_time > now)
+      return false;
+    return now - meta.last_relayed_time >
+        get_relay_delay(static_cast<time_t>(meta.last_relayed_time),
+                        static_cast<time_t>(meta.receive_time));
+  }
+  //---------------------------------------------------------------------------------
   //TODO: investigate whether boolean return is appropriate
   bool tx_memory_pool::get_relayable_transactions(std::vector<std::tuple<crypto::hash, cryptonote::blobdata, relay_method>> &txs)
   {
@@ -1084,9 +1105,37 @@ namespace cryptonote
     CRITICAL_REGION_LOCAL1(m_blockchain);
     LockedTXN lock(m_blockchain.get_db());
     txs.reserve(m_blockchain.get_txpool_tx_count());
-    m_blockchain.for_all_txpool_txes([this, now, &txs, &change_timestamps, &next_check](const crypto::hash &txid, const txpool_tx_meta_t &meta, const cryptonote::blobdata_ref *){
-      // 0 fee transactions are never relayed
-      if(!meta.pruned && meta.fee > 0 && !meta.do_not_relay)
+    const uint64_t relay_validation_height =
+        m_blockchain.get_current_blockchain_height();
+    m_blockchain.for_all_txpool_txes([this, now, relay_validation_height, &txs, &change_timestamps, &next_check](const crypto::hash &txid, const txpool_tx_meta_t &meta, const cryptonote::blobdata_ref *){
+      bool consensus_valid_zero_fee_dao_tx = false;
+      if (!meta.pruned && meta.fee == 0 && !meta.do_not_relay)
+      {
+        try
+        {
+          cryptonote::blobdata tx_blob =
+              m_blockchain.get_txpool_tx_blob(txid, relay_category::all);
+          cryptonote::transaction tx;
+          if (parse_and_validate_tx_from_blob(tx_blob, tx))
+          {
+            tx.set_hash(txid);
+            if (m_blockchain.is_dao_v2_dkg_activation_tx(tx))
+              consensus_valid_zero_fee_dao_tx =
+                  m_blockchain.validate_dao_v2_dkg_activation_tx(
+                      tx, relay_validation_height);
+            else if (m_blockchain.is_dao_v2_tally_result_tx(tx))
+              consensus_valid_zero_fee_dao_tx =
+                  m_blockchain.validate_dao_v2_tally_result_tx(
+                      tx, relay_validation_height);
+          }
+        }
+        catch (const std::exception& e)
+        {
+          MDEBUG("Skipping zero-fee DAO V2 relay candidate " << txid
+                 << ": " << e.what());
+        }
+      }
+      if (is_relayable_transaction(meta, consensus_valid_zero_fee_dao_tx))
       {
         const relay_method tx_relay = meta.get_relay_method();
         switch (tx_relay)
@@ -1106,7 +1155,7 @@ namespace cryptonote
           case relay_method::local:
           case relay_method::fluff:
           case relay_method::block:
-            if (now - meta.last_relayed_time <= get_relay_delay(meta.last_relayed_time, meta.receive_time))
+            if (!is_relay_delay_elapsed(meta, now))
               return true; // continue to next tx
             break;
         }

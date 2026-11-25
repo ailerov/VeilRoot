@@ -5,8 +5,10 @@
 
 #include "governance/dao_dkg.h"
 #include "cryptonote_core/blockchain.h"
+#include "cryptonote_core/tx_pool.h"
 
 #include <cstring>
+#include <limits>
 #include <vector>
 
 namespace cryptonote {
@@ -190,6 +192,44 @@ TEST(DaoDkgKeyActivationV3, rejects_trailing_bytes)
     wire.push_back(0);
     dao_dkg_key_activation a2;
     EXPECT_FALSE(a2.deserialize(wire));
+}
+
+TEST(DaoDkgActivationRelay, only_consensus_valid_zero_fee_dao_tx_bypasses_fee_gate)
+{
+    txpool_tx_meta_t meta{};
+
+    EXPECT_FALSE(tx_memory_pool::is_relayable_transaction(meta, false));
+    EXPECT_TRUE(tx_memory_pool::is_relayable_transaction(meta, true));
+
+    // Ordinary fee-paying transactions remain relayable without the DAO
+    // exception, while the existing metadata filters remain authoritative.
+    meta.fee = 1;
+    EXPECT_TRUE(tx_memory_pool::is_relayable_transaction(meta, false));
+
+    meta.fee = 0;
+    meta.pruned = 1;
+    EXPECT_FALSE(tx_memory_pool::is_relayable_transaction(meta, true));
+
+    meta.pruned = 0;
+    meta.do_not_relay = 1;
+    EXPECT_FALSE(tx_memory_pool::is_relayable_transaction(meta, true));
+}
+
+TEST(DaoDkgActivationRelay, unset_last_relay_timestamp_allows_first_broadcast)
+{
+    txpool_tx_meta_t meta{};
+    meta.receive_time = 1000;
+    meta.last_relayed_time = std::numeric_limits<uint64_t>::max();
+    EXPECT_TRUE(tx_memory_pool::is_relay_delay_elapsed(meta, 1001));
+
+    // After the first relay, the ordinary minimum relay delay applies.
+    meta.last_relayed_time = 1000;
+    EXPECT_FALSE(tx_memory_pool::is_relay_delay_elapsed(meta, 1001));
+    EXPECT_TRUE(tx_memory_pool::is_relay_delay_elapsed(meta, 1301));
+
+    // Future timestamps are not treated as elapsed.
+    meta.last_relayed_time = 1400;
+    EXPECT_FALSE(tx_memory_pool::is_relay_delay_elapsed(meta, 1301));
 }
 
 } // namespace
