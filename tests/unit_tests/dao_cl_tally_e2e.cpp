@@ -154,11 +154,9 @@ TEST(DaoClTallyE2E, full_cycle_yes_vote_passes)
             dkg_results[0].ctx.pk_qfi, off, pk_qfi,
             cl->Cl_G().discriminant()));
         ASSERT_TRUE(cl_dkg_qfi_to_bytes(ctx.pk_qfi, pk_qfi));
-        BICYCL::Mpz D;
-        off = 0;
-        ASSERT_TRUE(cl_dkg_mpz_from_bytes_signed(
-            dkg_results[0].ctx.D, off, D, true));
-        to_sign_magnitude(D, ctx.D);
+        // The DKG result already carries D in cl_key_context's
+        // sign||magnitude representation.
+        ctx.D = dkg_results[0].ctx.D;
         std::vector<uint8_t> ctx_wire;
         ASSERT_TRUE(dao_cl_key_context_serialize(ctx, ctx_wire));
         key_rec.cl_modulus = ctx_wire;

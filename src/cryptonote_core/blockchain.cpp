@@ -7484,7 +7484,7 @@ leave:
       if (!m_db->get_proposal_record(tx_hash, rec))
         continue;
       if (rec.submission_height == new_height &&
-          dao_v2_dkg_proposal_eligible(rec)) {
+          dao_v2_dkg_proposal_eligible(rec, new_height)) {
         scheduler_triggered = true;
         break;
       }
@@ -7508,7 +7508,7 @@ leave:
       m_db->for_all_proposal_records(
           [&](const crypto::hash& proposal_id,
               const proposal_record& rec) -> bool {
-            if (!dao_v2_dkg_proposal_eligible(rec))
+            if (!dao_v2_dkg_proposal_eligible(rec, new_height))
               return true;
 
             pending_proposals.emplace_back(
@@ -10778,13 +10778,15 @@ dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
       const crypto::hash& proposal_id)
   {
     std::lock_guard<std::mutex> start_guard(m_dao_v2_dkg_start_mutex);
+    const uint64_t chain_height = get_current_blockchain_height();
+    if (chain_height == 0)
+      return dao::dao_dkg_start_status::no_chain;
     const std::string ceremony_id = epee::string_tools::pod_to_hex(proposal_id);
-
     proposal_record proposal;
     if (!m_db->get_proposal_record(proposal_id, proposal) ||
-        !dao_v2_dkg_proposal_eligible(proposal)) {
+        !dao_v2_dkg_proposal_eligible(proposal, chain_height)) {
       MINFO("start_dao_v2_dkg_for_proposal: refusing DKG for "
-            "missing, inactive, or already-keyed proposal "
+            "missing, inactive, expired, or already-keyed proposal "
             << proposal_id);
       return dao::dao_dkg_start_status::proposal_not_eligible;
     }
@@ -10830,9 +10832,6 @@ dao::dao_dkg_start_status Blockchain::start_dao_v2_dkg_for_proposal(
       if (m_dao_v2_local_records.count(ceremony_id) > 0)
         return dao::dao_dkg_start_status::already_running;
     }
-    const uint64_t chain_height = get_current_blockchain_height();
-    if (chain_height == 0)
-      return dao::dao_dkg_start_status::no_chain;
     const uint64_t selection_height = chain_height - 1;
 
     std::vector<crypto::public_key> shareholders =
@@ -12127,12 +12126,22 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
     // key if this node is a committee member of the currently active
     // share set.
     m_db->for_all_proposal_records(
-      [&](const crypto::hash& pid, const proposal_record& rec) -> bool {
-        if (rec.status != PROPOSAL_STATUS_ACTIVE) return true;
+      [&](const crypto::hash& pid, const proposal_record& rec) -> bool {        if (rec.status != PROPOSAL_STATUS_ACTIVE) return true;
         if (rec.voting_end_height + 1 > height) return true;
-
+        // An installed key alone is not evidence of encrypted participation.
+        // Do not reshare or produce tally shares for an expired proposal when
+        // no complete DAO V2 aggregate ciphertext exists.
+        dao_proposal_aggregate aggregate;
+        if (!m_db->get_dao_proposal_aggregate(pid, aggregate) ||
+            aggregate.aggregate_E_W.empty() ||
+            aggregate.aggregate_E_S.empty() ||
+            aggregate.aggregate_E_B.empty()) {
+          MDEBUG("V2 tally: skipping expired proposal without encrypted "
+                 "aggregate " << pid);
+          return true;
+        }
 #ifdef VEILROOT_ENABLE_CL
-        {
+{
           std::lock_guard<std::mutex> lk(m_dao_v2_reshare_mutex);
           if (m_dao_v2_reshare_runner) return true;
         }
@@ -12544,7 +12553,7 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
     if (act.proposal_id != crypto::null_hash) {
       proposal_record proposal;
       if (!m_db->get_proposal_record(act.proposal_id, proposal) ||
-          !dao_v2_dkg_proposal_eligible(proposal)) {
+          !dao_v2_dkg_proposal_eligible(proposal, block_height)) {
         MERROR("dkg-activation: proposal is missing, terminal, "
                "or already keyed: " << act.proposal_id);
         return false;
@@ -12553,9 +12562,8 @@ void Blockchain::maybe_start_dao_v2_reshare_for_proposal(
       std::vector<std::pair<uint64_t, crypto::hash>> eligible_proposals;
       m_db->for_all_proposal_records(
           [&](const crypto::hash& proposal_id,
-              const proposal_record& candidate) -> bool {
-            if (dao_v2_dkg_proposal_eligible(candidate)) {
-              eligible_proposals.emplace_back(
+              const proposal_record& candidate) -> bool {             if (dao_v2_dkg_proposal_eligible(candidate, block_height)) {
+eligible_proposals.emplace_back(
                   candidate.submission_height, proposal_id);
             }
             return true;

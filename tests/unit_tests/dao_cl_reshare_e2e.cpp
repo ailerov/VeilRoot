@@ -37,6 +37,29 @@ static BICYCL::Mpz decode_share_wire(const std::vector<uint8_t>& in)
     return v;
 }
 
+static bool key_context_D_to_reshare_wire(
+    const std::vector<uint8_t>& in, std::vector<uint8_t>& out)
+{
+    // D is positive (enforced by cl_dkg_p2p_runner::fill_result).
+    // Key-context format is sign||magnitude; the reshare runner expects
+    // sign||u32(BE)||magnitude.
+    constexpr std::size_t max_magnitude_bytes = 4095;
+    if (in.size() < 2 || in[0] != 0 || in[1] == 0 ||
+        in.size() - 1 > max_magnitude_bytes)
+        return false;
+
+    const uint32_t len = static_cast<uint32_t>(in.size() - 1);
+    out.clear();
+    out.reserve(in.size() + 4);
+    out.push_back(in[0]);
+    out.push_back(static_cast<uint8_t>((len >> 24) & 0xffu));
+    out.push_back(static_cast<uint8_t>((len >> 16) & 0xffu));
+    out.push_back(static_cast<uint8_t>((len >> 8) & 0xffu));
+    out.push_back(static_cast<uint8_t>(len & 0xffu));
+    out.insert(out.end(), in.begin() + 1, in.end());
+    return true;
+}
+
 TEST(dao_cl_reshare_e2e, three_to_three_preserves_pk_and_decrypts_pre_reshare_ct)
 {
     BICYCL::RandGen rng;
@@ -73,6 +96,9 @@ TEST(dao_cl_reshare_e2e, three_to_three_preserves_pk_and_decrypts_pre_reshare_ct
     }
     for (auto& r : dkg_runners) r->stop();
     dkg_runners.clear();
+    std::vector<uint8_t> D_signed;
+    ASSERT_TRUE(key_context_D_to_reshare_wire(
+        dkg_results[0].ctx.D, D_signed));
 
     // ---- Reconstruct old pk and encrypt pre-reshare ciphertext ----
     BICYCL::QFI pk_qfi;
@@ -93,7 +119,7 @@ TEST(dao_cl_reshare_e2e, three_to_three_preserves_pk_and_decrypts_pre_reshare_ct
     for (uint32_t i = 0; i < 3; ++i) {
         cl_reshare_config cfg;
         cfg.cl = cl;
-        cfg.D_signed             = dkg_results[0].ctx.D;
+        cfg.D_signed = D_signed;
         cfg.old_n                = 3;
         cfg.old_t_internal       = 1;
         cfg.old_contributors     = {0u, 1u};
@@ -215,6 +241,9 @@ TEST(dao_cl_reshare_e2e, old_only_contributor_gets_gammas_via_completion)
     }
     for (auto& r : dkg_runners) r->stop();
     dkg_runners.clear();
+    std::vector<uint8_t> D_signed;
+    ASSERT_TRUE(key_context_D_to_reshare_wire(
+        dkg_results[0].ctx.D, D_signed));
 
     std::vector<crypto::public_key> new_pks(2);
     std::vector<crypto::secret_key> new_sks(2);
@@ -226,7 +255,7 @@ TEST(dao_cl_reshare_e2e, old_only_contributor_gets_gammas_via_completion)
     for (uint32_t i = 0; i < 3; ++i) {
         cl_reshare_config cfg;
         cfg.cl                    = cl;
-        cfg.D_signed              = dkg_results[0].ctx.D;
+        cfg.D_signed = D_signed;
         cfg.old_n                 = 3;
         cfg.old_t_internal        = 2;
         cfg.old_contributors      = {0u, 1u, 2u};

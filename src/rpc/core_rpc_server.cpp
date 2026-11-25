@@ -4866,49 +4866,36 @@ bool core_rpc_server::on_publish_service_descriptor(const COMMAND_RPC_PUBLISH_SE
         // No separate metadata fetch needed.
         // END_VNS_PROPOSAL_METADATA_ONCHAIN
 
+        switch (rec.status) {
+        case PROPOSAL_STATUS_ACTIVE: entry.proposal_status = "active"; break;
+        case PROPOSAL_STATUS_PASSED: entry.proposal_status = "passed"; break;
+        case PROPOSAL_STATUS_REJECTED: entry.proposal_status = "rejected"; break;
+        case PROPOSAL_STATUS_EXECUTED: entry.proposal_status = "executed"; break;
+        case PROPOSAL_STATUS_FAILED_EXECUTION: entry.proposal_status = "failed_execution"; break;
+        case PROPOSAL_STATUS_EXPIRED: entry.proposal_status = "expired"; break;
+        default: entry.proposal_status = "unknown"; break;
+        }
+
         // Execution status
         proposal_execution_record exec_rec;
-        entry.executed = blockchain.get_db().get_proposal_execution_record(pid, exec_rec);
-
-        // Vote outcome
+        entry.executed = blockchain.get_db().get_proposal_execution_record(pid, exec_rec);        // Vote outcome metrics are independent of the canonical status.
         uint64_t yes_w = 0, no_w = 0, yes_b = 0, no_b = 0;
         bool has_outcome = blockchain.get_db().get_proposal_outcome(pid, yes_w, no_w, yes_b, no_b);
-        if (has_outcome)
+        if (has_outcome && current_height > rec.voting_end_height)
         {
-            // Evaluate proposal state
-            if (current_height <= rec.voting_end_height)
-            {
-                entry.proposal_status = "active";
-            }
-            else
-            {
-                entry.tally_passed = blockchain.governance().is_proposal_passed(yes_w, no_w, yes_b, no_b, rec.voting_end_height);
-                entry.proposal_status = entry.tally_passed ? "passed" : "rejected";
-
-                uint64_t participating = yes_b + no_b;
-                vns_supply_t minted = blockchain.get_db().get_block_already_generated_coins(rec.voting_end_height);
-                uint64_t treasury = blockchain.get_db().get_treasury_balance();
-                uint64_t burned = blockchain.get_db().get_total_burned_fees();
-                vns_supply_t circulating = (minted > treasury + burned) ? (minted - treasury - burned) : 0;
-                governance_params gp;
-                if (!blockchain.get_governance_params(gp))
-                    gp = governance_params::default_params();
-                vns_supply_t required_quorum = circulating * gp.voting_quorum_percent / 100;
-                entry.quorum_met = (participating >= required_quorum);
-            }
+            entry.tally_passed = blockchain.governance().is_proposal_passed(yes_w, no_w, yes_b, no_b, rec.voting_end_height);
+            uint64_t participating = yes_b + no_b;
+            vns_supply_t minted = blockchain.get_db().get_block_already_generated_coins(rec.voting_end_height);
+            uint64_t treasury = blockchain.get_db().get_treasury_balance();
+            uint64_t burned = blockchain.get_db().get_total_burned_fees();
+            vns_supply_t circulating = (minted > treasury + burned) ? (minted - treasury - burned) : 0;
+            governance_params gp;
+            if (!blockchain.get_governance_params(gp))
+                gp = governance_params::default_params();
+            vns_supply_t required_quorum = circulating * gp.voting_quorum_percent / 100;
+            entry.quorum_met = (participating >= required_quorum);
         }
-        else
-        {
-            if (current_height > rec.voting_end_height)
-            {
-                entry.proposal_status = "rejected";
-            }
-            else
-            {
-                entry.proposal_status = "active";
-            }
-        }
-    }
+}
 
     // Filter by optional proposal_id
     if (!req.proposal_id.empty())
@@ -4986,10 +4973,17 @@ bool core_rpc_server::on_publish_service_descriptor(const COMMAND_RPC_PUBLISH_SE
   res.voting_period_days = rec.voting_period_days;
   res.submission_height = rec.submission_height;
   res.voting_end_height = rec.voting_end_height;
-  res.submission_tx_hash = epee::string_tools::pod_to_hex(rec.submission_tx_hash);
-  res.tally_key_id = epee::string_tools::buff_to_hex_nodelimer(
+  res.submission_tx_hash = epee::string_tools::pod_to_hex(rec.submission_tx_hash);  res.tally_key_id = epee::string_tools::buff_to_hex_nodelimer(
       std::string(rec.tally_key_id.data, rec.tally_key_id.data + 32));
-
+  switch (rec.status) {
+  case PROPOSAL_STATUS_ACTIVE: res.proposal_status = "active"; break;
+  case PROPOSAL_STATUS_PASSED: res.proposal_status = "passed"; break;
+  case PROPOSAL_STATUS_REJECTED: res.proposal_status = "rejected"; break;
+  case PROPOSAL_STATUS_EXECUTED: res.proposal_status = "executed"; break;
+  case PROPOSAL_STATUS_FAILED_EXECUTION: res.proposal_status = "failed_execution"; break;
+  case PROPOSAL_STATUS_EXPIRED: res.proposal_status = "expired"; break;
+  default: res.proposal_status = "unknown"; break;
+  }
   // BEGIN_VNS_GET_PROPOSAL_DATA_BLOB
   res.data_blob.clear();
   if (rec.type == 1)
@@ -5001,9 +4995,7 @@ bool core_rpc_server::on_publish_service_descriptor(const COMMAND_RPC_PUBLISH_SE
   // END_VNS_GET_PROPOSAL_DATA_BLOB
 
   proposal_execution_record exec_rec;
-  res.executed = blockchain.get_db().get_proposal_execution_record(pid, exec_rec);
-
-  uint64_t yes_w = 0, no_w = 0, yes_b = 0, no_b = 0;
+  res.executed = blockchain.get_db().get_proposal_execution_record(pid, exec_rec);  uint64_t yes_w = 0, no_w = 0, yes_b = 0, no_b = 0;
   bool has_outcome = blockchain.get_db().get_proposal_outcome(pid, yes_w, no_w, yes_b, no_b);
   if (has_outcome)
   {
@@ -5011,7 +5003,6 @@ bool core_rpc_server::on_publish_service_descriptor(const COMMAND_RPC_PUBLISH_SE
     res.no_weight = no_w;
     res.yes_participation_balance = yes_b;
     res.no_participation_balance = no_b;
-
     uint64_t current_height = blockchain.get_current_blockchain_height();
     if (current_height > rec.voting_end_height)
     {
@@ -5026,13 +5017,11 @@ bool core_rpc_server::on_publish_service_descriptor(const COMMAND_RPC_PUBLISH_SE
         vns_supply_t required_quorum = circulating * gp.voting_quorum_percent / 100;
         res.quorum_met = (participating >= required_quorum);
         res.tally_passed = blockchain.governance().is_proposal_passed(yes_w, no_w, yes_b, no_b, rec.voting_end_height);
-        res.proposal_status = res.tally_passed ? "passed" : "rejected";
     }
     else
     {
         res.quorum_met = false;
         res.tally_passed = false;
-        res.proposal_status = "active";
     }
   }
   else
@@ -5043,11 +5032,8 @@ bool core_rpc_server::on_publish_service_descriptor(const COMMAND_RPC_PUBLISH_SE
     res.no_participation_balance = 0;
     res.quorum_met = false;
     res.tally_passed = false;
-    uint64_t current_height = m_core.get_current_blockchain_height();
-    res.proposal_status = (current_height > rec.voting_end_height) ? "rejected" : "active";
   }
-
-  res.status = CORE_RPC_STATUS_OK;
+res.status = CORE_RPC_STATUS_OK;
   return true;
 }
 

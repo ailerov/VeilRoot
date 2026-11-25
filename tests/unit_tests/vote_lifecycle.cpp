@@ -227,7 +227,6 @@ TEST_F(VoteFixture, DuplicateVoteIsRejectedWithoutSecondCount)
     const uint64_t height = 1000;
 
     store_proposal(gov, pid, /*submit=*/1, /*end=*/2000);
-
     transaction tx = make_vote_tx(pid, /*yes=*/true,
                                   /*balance=*/5000,
                                   /*weight=*/7000,
@@ -245,7 +244,6 @@ TEST_F(VoteFixture, DuplicateVoteIsRejectedWithoutSecondCount)
         r2 = vm.process_vote(tx, height, false);
     }
     EXPECT_EQ(r2, vote_result::already_voted);
-
     // The tally must reflect only the first vote.
     uint64_t yw = 0, nw = 0, yb = 0, nb = 0;
     EXPECT_TRUE(gov.get_outcome(pid, yw, nw, yb, nb));
@@ -253,4 +251,22 @@ TEST_F(VoteFixture, DuplicateVoteIsRejectedWithoutSecondCount)
     EXPECT_EQ(yb, 5000u);
 }
 
+TEST(DaoV2DkgProposalEligibility, RejectsProposalAfterVotingWindow)
+{
+    proposal_record rec{};
+    rec.status = PROPOSAL_STATUS_ACTIVE;
+    rec.tally_key_id = crypto::null_hash;
+    rec.voting_end_height = 100;
+
+    EXPECT_TRUE(dao_v2_dkg_proposal_eligible(rec));
+    EXPECT_TRUE(dao_v2_dkg_proposal_eligible(rec, 100));
+    EXPECT_FALSE(dao_v2_dkg_proposal_eligible(rec, 101));
+
+    rec.status = PROPOSAL_STATUS_REJECTED;
+    EXPECT_FALSE(dao_v2_dkg_proposal_eligible(rec, 100));
+
+    rec.status = PROPOSAL_STATUS_ACTIVE;
+    rec.tally_key_id.data[0] = 1;
+    EXPECT_FALSE(dao_v2_dkg_proposal_eligible(rec, 100));
+}
 } // namespace

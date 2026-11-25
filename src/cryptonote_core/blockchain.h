@@ -165,6 +165,15 @@ namespace cryptonote
     return rec.status == PROPOSAL_STATUS_ACTIVE &&
            rec.tally_key_id == crypto::null_hash;
   }
+  // A proposal whose voting window has closed must not start a new DKG or
+  // accept a late key activation, even if its persisted status has not yet
+  // been caught up to REJECTED.
+  inline bool dao_v2_dkg_proposal_eligible(
+      const proposal_record& rec, uint64_t height)
+  {
+    return dao_v2_dkg_proposal_eligible(rec) &&
+           height <= rec.voting_end_height;
+  }
 
   // ---------- VNS PROPOSALS END ----------
   // BEGIN_VNS_PROPOSAL_EXECUTION_RECORD

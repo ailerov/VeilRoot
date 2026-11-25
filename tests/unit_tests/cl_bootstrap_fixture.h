@@ -105,11 +105,10 @@ inline bool make_cl_bootstrap_3party(CLBootstrapFixture& out, uint64_t seed)
                                    cl->Cl_G().discriminant()))
             return false;
         if (!cl_dkg_qfi_to_bytes(ctx.pk_qfi, pk_qfi)) return false;
-        BICYCL::Mpz D;
-        off = 0;
-        if (!cl_dkg_mpz_from_bytes_signed(results[0].ctx.D, off, D, true))
-            return false;
-        ctx.D = sign_magnitude(D);
+        // cl_dkg_result.ctx.D already uses cl_key_context's
+        // sign||magnitude representation. The key-context serializer
+        // writes the length prefix when it builds the enclosing record.
+        ctx.D = results[0].ctx.D;
     }
     std::vector<uint8_t> ctx_wire;
     if (!dao_cl_key_context_serialize(ctx, ctx_wire)) return false;
