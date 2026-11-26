@@ -136,25 +136,41 @@ namespace levin
       return std::max(local_blockchain_height, get_median_remote_height(p2p));
     }
 
-    //! \return Outgoing connections supporting fragments in `connections` filtered by blockchain height.
+        //! \return Outgoing connections at the required height, falling back to
+    //! all live outgoing connections only when none meet that height.
     std::vector<boost::uuids::uuid> get_out_connections(connections& p2p, uint64_t blockchain_height)
     {
       std::vector<boost::uuids::uuid> outs;
+      std::vector<boost::uuids::uuid> fallback_outs;
       outs.reserve(connection_id_reserve_size);
+      fallback_outs.reserve(connection_id_reserve_size);
 
       /* The foreach call is serialized with a lock, but should be quick due to
          the reserve call so a strand is not used. Investigate if there is lots
          of waiting in here. */
-
-      p2p.foreach_connection([&outs, blockchain_height] (detail::p2p_context& context) {
-        if (!context.m_is_income && context.m_remote_blockchain_height >= blockchain_height)
-          outs.emplace_back(context.m_connection_id);
+      p2p.foreach_connection([&outs, &fallback_outs, blockchain_height] (detail::p2p_context& context) {
+        if (!context.m_is_income)
+        {
+          fallback_outs.emplace_back(context.m_connection_id);
+          if (context.m_remote_blockchain_height >= blockchain_height)
+            outs.emplace_back(context.m_connection_id);
+        }
         return true;
       });
 
-      MDEBUG("Found " << outs.size() << " out connections having height >= " << blockchain_height);
+      // Do not leave the relay channels empty just because every connected
+      // outbound peer is briefly behind our current chain height.
+      if (outs.empty() && !fallback_outs.empty())
+      {
+        MDEBUG("No outbound peer at height >= " << blockchain_height
+               << "; using " << fallback_outs.size() << " live outbound connection(s) as fallback");
+        outs.swap(fallback_outs);
+      }
+
+      MDEBUG("Found " << outs.size() << " out connections for relay at required height " << blockchain_height);
       return outs;
     }
+
 
     std::vector<boost::uuids::uuid> get_out_connections(connections& p2p, const i_core_events* core)
     {

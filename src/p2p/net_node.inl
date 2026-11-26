@@ -2429,8 +2429,20 @@ namespace nodetool
     if (m_network_zones.empty())
       return enet::zone::invalid;
 
-    if (origin != enet::zone::invalid)
-      return send(*m_network_zones.begin()); // send all txs received via p2p over public network
+        if (origin != enet::zone::invalid)
+    {
+      // Keep P2P-received transactions on the network they arrived over.
+      // In particular, Tor-received transactions must be forwarded over Tor,
+      // not redirected to the public zone in a Tor-first network.
+      const auto network = m_network_zones.find(origin);
+      if (network == m_network_zones.end())
+      {
+        MWARNING("Unable to relay transaction(s): originating network zone is unavailable");
+        return enet::zone::invalid;
+      }
+      return send(*network);
+    }
+
 
     if (m_network_zones.size() <= 2)
       return send(*m_network_zones.rbegin()); // see static asserts below; sends over anonymity network iff enabled
