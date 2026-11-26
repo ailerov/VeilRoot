@@ -530,6 +530,14 @@ namespace cryptonote
         tvc.m_no_drop_offense = true;
         return false;
       }
+      if (is_dao_node_ready &&
+          !m_blockchain.validate_dao_v2_node_ready_tx(
+              tx, candidate_height))
+      {
+        tvc.m_verifivation_failed = true;
+        tvc.m_no_drop_offense = true;
+        return false;
+      }
       // END_VNS_DAO_V2_MEMPOOL_VALIDATE
 
       try
@@ -558,7 +566,7 @@ namespace cryptonote
           // relay_method::none to zero‑fee txs, which blocks mining.
           const bool is_dao_protocol_tx =
               is_dao_tally_result || is_dao_dkg_activation ||
-              is_dao_v2_vote;
+              is_dao_node_ready || is_dao_v2_vote;
 
           if ((tx.vin.empty() && !is_dao_protocol_tx) ||
               (!tx.vin.empty() &&
@@ -622,6 +630,8 @@ namespace cryptonote
     if ((meta.fee > 0 ||
          is_dao_tally_result ||
          is_dao_dkg_activation ||
+         is_dao_node_ready ||
+         is_dao_v2_vote ||
          std::any_of(tx.vin.begin(), tx.vin.end(),
              [](const auto& in)
              {
@@ -1127,6 +1137,15 @@ namespace cryptonote
               consensus_valid_zero_fee_dao_tx =
                   m_blockchain.validate_dao_v2_tally_result_tx(
                       tx, relay_validation_height);
+            else if (m_blockchain.is_dao_v2_node_ready_tx(tx))
+              consensus_valid_zero_fee_dao_tx =
+                  m_blockchain.validate_dao_v2_node_ready_tx(
+                      tx, relay_validation_height);
+            else if (is_dao_v2_vote_tx(tx))
+              consensus_valid_zero_fee_dao_tx =
+                  m_blockchain.governance().process_vote(
+                      tx, relay_validation_height + 1, /*dry_run=*/true) ==
+                  vote_result::success;
           }
         }
         catch (const std::exception& e)
@@ -1137,7 +1156,12 @@ namespace cryptonote
       }
       if (is_relayable_transaction(meta, consensus_valid_zero_fee_dao_tx))
       {
-        const relay_method tx_relay = meta.get_relay_method();
+        relay_method tx_relay = meta.get_relay_method();
+        // Older node_ready transactions were admitted with relay_method::none.
+        // Promote only DAO zero-fee transactions that passed the validator above.
+        if (tx_relay == relay_method::none &&
+            consensus_valid_zero_fee_dao_tx)
+          tx_relay = relay_method::fluff;
         switch (tx_relay)
         {
           case relay_method::stem:
@@ -1164,7 +1188,10 @@ namespace cryptonote
         // mentioned by smooth where nodes would flush txes at slightly different times, causing
         // flushed txes to be re-added when received from a node which was just about to flush it
         uint64_t max_age = (tx_relay == relay_method::block) ? CRYPTONOTE_MEMPOOL_TX_FROM_ALT_BLOCK_LIVETIME : CRYPTONOTE_MEMPOOL_TX_LIVETIME;
-        if (now - meta.receive_time <= max_age / 2)
+        const bool never_relayed =
+            meta.last_relayed_time == std::numeric_limits<uint64_t>::max();
+        if (now - meta.receive_time <= max_age / 2 ||
+            (consensus_valid_zero_fee_dao_tx && never_relayed))
         {
           try
           {
@@ -1178,7 +1205,7 @@ namespace cryptonote
         }
       }
       return true;
-    }, false, relay_category::relayable);
+    }, false, relay_category::all);
 
     for (auto& elem : change_timestamps)
     {

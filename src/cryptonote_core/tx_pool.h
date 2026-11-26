@@ -362,9 +362,10 @@ namespace cryptonote
     /**
      * @brief get a list of all relayable transactions and their hashes
      *
-     * "relayable" in this case means:
-      *   nonzero fee, or a consensus-valid DAO V2 DKG activation/tally-result
-      *   hasn't been relayed too recently
+       * "relayable" in this case means:
+       *   nonzero fee, or a consensus-valid DAO V2 activation, tally-result,
+       *   node_ready, or vote transaction
+       *   hasn't been relayed too recently
      *   isn't old enough that relaying it is considered harmful
      * Note a transaction can be "relayable" even if do_not_relay is true
      *
