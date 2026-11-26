@@ -465,7 +465,9 @@ namespace levin
           if (only_inbound)
             MDEBUG("No inbound anonymous peers available for optional transaction relay");
           else
-            MWARNING("Unable to send transaction(s), no available connections");
+            MWARNING("Unable to send transaction(s) in "
+                     << epee::net_utils::zone_to_string(zone->nzone)
+                     << ", no available connections");
         }
         else if (!zone->flush_callbacks || next_flush < zone->flush_txs.expiry())
           fluff_flush::queue(std::move(zone), next_flush);

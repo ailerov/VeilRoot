@@ -1184,14 +1184,12 @@ namespace cryptonote
             break;
         }
 
-        // if the tx is older than half the max lifetime, we don't re-relay it, to avoid a problem
-        // mentioned by smooth where nodes would flush txes at slightly different times, causing
-        // flushed txes to be re-added when received from a node which was just about to flush it
+        // Legacy transactions older than half their maximum lifetime are not
+        // re-relayed. Validated zero-fee DAO V2 protocol transactions remain
+        // eligible for periodic retries until their normal mempool expiry.
         uint64_t max_age = (tx_relay == relay_method::block) ? CRYPTONOTE_MEMPOOL_TX_FROM_ALT_BLOCK_LIVETIME : CRYPTONOTE_MEMPOOL_TX_LIVETIME;
-        const bool never_relayed =
-            meta.last_relayed_time == std::numeric_limits<uint64_t>::max();
         if (now - meta.receive_time <= max_age / 2 ||
-            (consensus_valid_zero_fee_dao_tx && never_relayed))
+            consensus_valid_zero_fee_dao_tx)
         {
           try
           {
