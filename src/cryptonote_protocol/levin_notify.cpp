@@ -877,38 +877,71 @@ namespace levin
         tx_relay = relay_method::local; // do not put into stempool embargo (hopefully not there already!).
       }
 
-      core_->on_transactions_relayed(epee::to_span(txs), tx_relay);
+            // A single covert notification is limited to MAX_FRAGMENTS noise
+      // fragments. Split large transaction sets before serializing them so
+      // one oversized batch cannot prevent every transaction from being sent.
+      const std::size_t max_covert_size =
+        CRYPTONOTE_MAX_FRAGMENTS * zone_->noise.size();
+      // Leave headroom for the serialized request and fragmentation overhead.
+      const std::size_t max_batch_blob_bytes = max_covert_size * 3 / 4;
 
-      // Copy txs for later fluff delivery to inbound peers
-      std::vector<blobdata> txs_for_fluff = txs;
-
-      // Padding is not useful when using noise mode. Send as stem so receiver
-      // forwards in Dandelion++ mode.
-      epee::byte_slice message = epee::levin::make_fragmented_notify(
-        zone_->noise.size(), NOTIFY_NEW_TRANSACTIONS::ID, make_tx_message(std::move(txs), false, false)
-      );
-      if (CRYPTONOTE_MAX_FRAGMENTS * zone_->noise.size() < message.size())
+      std::vector<std::vector<blobdata>> batches;
+      std::vector<blobdata> batch;
+      std::size_t batch_blob_bytes = 0;
+      for (auto& tx : txs)
       {
-        MERROR("notify::send_txs provided message exceeding covert fragment size");
-        return false;
+        if (!batch.empty() &&
+            (tx.size() > max_batch_blob_bytes ||
+             batch_blob_bytes > max_batch_blob_bytes - tx.size()))
+        {
+          batches.emplace_back(std::move(batch));
+          batch.clear();
+          batch_blob_bytes = 0;
+        }
+        batch_blob_bytes += tx.size();
+        batch.emplace_back(std::move(tx));
+      }
+      if (!batch.empty())
+        batches.emplace_back(std::move(batch));
+
+      // Preflight every serialized batch before marking any transaction as
+      // relayed or queueing any part of the set.
+      std::vector<epee::byte_slice> messages;
+      messages.reserve(batches.size());
+      for (const auto& tx_batch : batches)
+      {
+        epee::byte_slice message = epee::levin::make_fragmented_notify(
+          zone_->noise.size(), NOTIFY_NEW_TRANSACTIONS::ID,
+          make_tx_message(std::vector<blobdata>(tx_batch), false, false)
+        );
+        if (max_covert_size < message.size())
+        {
+          MERROR("notify::send_txs transaction batch exceeds covert fragment size: "
+                 << message.size() << " > " << max_covert_size);
+          return false;
+        }
+        messages.emplace_back(std::move(message));
       }
 
-      for (std::size_t channel = 0; channel < zone_->channels.size(); ++channel)
+      for (std::size_t batch_index = 0; batch_index < batches.size(); ++batch_index)
       {
-        boost::asio::dispatch(
-          zone_->channels[channel].strand,
-          queue_covert_notify{zone_, message.clone(), channel}
-        );
-      }
-
-      // VeilRoot: deliver the transaction to inbound anonymous peers
-      // using the fluff mechanism with its randomized delay.
-      if (zone_->nzone != epee::net_utils::zone::public_)
-      {
-        boost::asio::dispatch(
-          zone_->strand,
-          fluff_notify{zone_, std::move(txs_for_fluff), source, true}
-        );
+        core_->on_transactions_relayed(epee::to_span(batches[batch_index]), tx_relay);
+        for (std::size_t channel = 0; channel < zone_->channels.size(); ++channel)
+        {
+          boost::asio::dispatch(
+            zone_->channels[channel].strand,
+            queue_covert_notify{zone_, messages[batch_index].clone(), channel}
+          );
+        }
+        // VeilRoot: deliver each batch to inbound anonymous peers using the
+        // fluff mechanism with its randomized delay.
+        if (zone_->nzone != epee::net_utils::zone::public_)
+        {
+          boost::asio::dispatch(
+            zone_->strand,
+            fluff_notify{zone_, std::move(batches[batch_index]), source, true}
+          );
+        }
       }
     }
     else
