@@ -364,7 +364,7 @@ namespace cryptonote
      *
        * "relayable" in this case means:
        *   nonzero fee, or a consensus-valid DAO V2 activation, tally-result,
-       *   node_ready, or vote transaction
+        *   node_ready, vote, or committee-eligibility transaction
        *   hasn't been relayed too recently
      *   isn't old enough that relaying it is considered harmful
      * Note a transaction can be "relayable" even if do_not_relay is true
@@ -377,11 +377,11 @@ namespace cryptonote
      * @return True if DB was checked, false if DB checks skipped.
      */
     bool get_relayable_transactions(std::vector<std::tuple<crypto::hash, cryptonote::blobdata, relay_method>>& txs);
-    // A zero-fee exception is allowed only after the corresponding full
-    // DAO V2 consensus validator has accepted the transaction.
+    // A zero-fee exception is allowed only after full consensus validation
+     // has accepted the corresponding protocol transaction.
     static bool is_relayable_transaction(
         const txpool_tx_meta_t& meta,
-        bool consensus_valid_zero_fee_dao_tx) noexcept;
+        bool consensus_valid_zero_fee_protocol_tx) noexcept;
 
     // UINT64_MAX is the tx-pool sentinel for a transaction that has not
     // been relayed yet; it must be eligible for its first relay immediately.

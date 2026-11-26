@@ -630,8 +630,9 @@ namespace cryptonote
     if ((meta.fee > 0 ||
          is_dao_tally_result ||
          is_dao_dkg_activation ||
-         is_dao_node_ready ||
+                  is_dao_node_ready ||
          is_dao_v2_vote ||
+         is_eligible ||
          std::any_of(tx.vin.begin(), tx.vin.end(),
              [](const auto& in)
              {
@@ -1080,10 +1081,10 @@ namespace cryptonote
   //---------------------------------------------------------------------------------
   bool tx_memory_pool::is_relayable_transaction(
       const txpool_tx_meta_t& meta,
-      bool consensus_valid_zero_fee_dao_tx) noexcept
+      bool consensus_valid_zero_fee_protocol_tx) noexcept
   {
     return !meta.pruned && !meta.do_not_relay &&
-           (meta.fee > 0 || consensus_valid_zero_fee_dao_tx);
+           (meta.fee > 0 || consensus_valid_zero_fee_protocol_tx);
   }
   //---------------------------------------------------------------------------------
   bool tx_memory_pool::is_relay_delay_elapsed(
@@ -1118,7 +1119,7 @@ namespace cryptonote
     const uint64_t relay_validation_height =
         m_blockchain.get_current_blockchain_height();
     m_blockchain.for_all_txpool_txes([this, now, relay_validation_height, &txs, &change_timestamps, &next_check](const crypto::hash &txid, const txpool_tx_meta_t &meta, const cryptonote::blobdata_ref *){
-      bool consensus_valid_zero_fee_dao_tx = false;
+      bool consensus_valid_zero_fee_protocol_tx = false;
       if (!meta.pruned && meta.fee == 0 && !meta.do_not_relay)
       {
         try
@@ -1130,37 +1131,46 @@ namespace cryptonote
           {
             tx.set_hash(txid);
             if (m_blockchain.is_dao_v2_dkg_activation_tx(tx))
-              consensus_valid_zero_fee_dao_tx =
+              consensus_valid_zero_fee_protocol_tx =
                   m_blockchain.validate_dao_v2_dkg_activation_tx(
                       tx, relay_validation_height);
             else if (m_blockchain.is_dao_v2_tally_result_tx(tx))
-              consensus_valid_zero_fee_dao_tx =
+              consensus_valid_zero_fee_protocol_tx =
                   m_blockchain.validate_dao_v2_tally_result_tx(
                       tx, relay_validation_height);
             else if (m_blockchain.is_dao_v2_node_ready_tx(tx))
-              consensus_valid_zero_fee_dao_tx =
+              consensus_valid_zero_fee_protocol_tx =
                   m_blockchain.validate_dao_v2_node_ready_tx(
                       tx, relay_validation_height);
-            else if (is_dao_v2_vote_tx(tx))
-              consensus_valid_zero_fee_dao_tx =
+                        else if (is_dao_v2_vote_tx(tx))
+              consensus_valid_zero_fee_protocol_tx =
                   m_blockchain.governance().process_vote(
                       tx, relay_validation_height + 1, /*dry_run=*/true) ==
                   vote_result::success;
+            else if (!tx.vin.empty() &&
+                     tx.vin[0].type() ==
+                         typeid(cryptonote::txin_vns_eligible))
+            {
+              tx_verification_context eligibility_tvc{};
+              consensus_valid_zero_fee_protocol_tx =
+                  m_blockchain.check_tx_inputs(
+                      tx, eligibility_tvc, nullptr, relay_validation_height);
+            }
           }
         }
         catch (const std::exception& e)
         {
-          MDEBUG("Skipping zero-fee DAO V2 relay candidate " << txid
+          MDEBUG("Skipping zero-fee protocol relay candidate " << txid
                  << ": " << e.what());
         }
       }
-      if (is_relayable_transaction(meta, consensus_valid_zero_fee_dao_tx))
+      if (is_relayable_transaction(meta, consensus_valid_zero_fee_protocol_tx))
       {
         relay_method tx_relay = meta.get_relay_method();
-        // Older node_ready transactions were admitted with relay_method::none.
-        // Promote only DAO zero-fee transactions that passed the validator above.
+                // Older protocol transactions may have been admitted with relay_method::none.
+        // Promote only zero-fee protocol transactions that passed validation above.
         if (tx_relay == relay_method::none &&
-            consensus_valid_zero_fee_dao_tx)
+            consensus_valid_zero_fee_protocol_tx)
           tx_relay = relay_method::fluff;
         switch (tx_relay)
         {
@@ -1184,12 +1194,12 @@ namespace cryptonote
             break;
         }
 
-        // Legacy transactions older than half their maximum lifetime are not
-        // re-relayed. Validated zero-fee DAO V2 protocol transactions remain
-        // eligible for periodic retries until their normal mempool expiry.
+                // Legacy transactions older than half their maximum lifetime are not
+        // re-relayed. Validated zero-fee protocol transactions remain eligible
+        // for periodic retries until their normal mempool expiry.
         uint64_t max_age = (tx_relay == relay_method::block) ? CRYPTONOTE_MEMPOOL_TX_FROM_ALT_BLOCK_LIVETIME : CRYPTONOTE_MEMPOOL_TX_LIVETIME;
         if (now - meta.receive_time <= max_age / 2 ||
-            consensus_valid_zero_fee_dao_tx)
+            consensus_valid_zero_fee_protocol_tx)
         {
           try
           {
