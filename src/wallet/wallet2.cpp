@@ -9299,15 +9299,14 @@ std::pair<std::set<uint64_t>, size_t> outs_unique(const std::vector<std::vector<
   return std::make_pair(std::move(unique), total);
 }
 
-void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> &outs, const std::vector<size_t> &selected_transfers, size_t fake_outputs_count, bool rct, std::unordered_set<crypto::public_key> &valid_public_keys_cache)
+void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> &outs, const std::vector<size_t> &selected_transfers, size_t fake_outputs_count, bool rct, std::unordered_set<crypto::public_key> &valid_public_keys_cache, bool use_spend_ring_history)
 {
   std::vector<uint64_t> rct_offsets;
   for (size_t attempts = 3; attempts > 0; --attempts)
   {
-    get_outs(outs, selected_transfers, fake_outputs_count, rct_offsets, valid_public_keys_cache);
+    get_outs(outs, selected_transfers, fake_outputs_count, rct_offsets, valid_public_keys_cache, use_spend_ring_history);
 
-    if (!rct)
-      return;
+    if (!rct || !use_spend_ring_history) return;
 
     const auto unique = outs_unique(outs);
     if (tx_sanity_check(unique.first, unique.second, rct_offsets.empty() ? 0 : rct_offsets.back()))
@@ -9326,7 +9325,7 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
   THROW_WALLET_EXCEPTION(error::wallet_internal_error, tr("Transaction sanity check failed"));
 }
 
-void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> &outs, const std::vector<size_t> &selected_transfers, size_t fake_outputs_count, std::vector<uint64_t> &rct_offsets, std::unordered_set<crypto::public_key> &valid_public_keys_cache)
+void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> &outs, const std::vector<size_t> &selected_transfers, size_t fake_outputs_count, std::vector<uint64_t> &rct_offsets, std::unordered_set<crypto::public_key> &valid_public_keys_cache, bool use_spend_ring_history)
 {
   LOG_PRINT_L2("fake_outputs_count: " << fake_outputs_count);
   outs.clear();
@@ -9456,7 +9455,7 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
     for(size_t idx: selected_transfers)
     {
       const transfer_details &td = m_transfers[idx];
-      if (td.m_key_image_known && !td.m_key_image_partial)
+      if (use_spend_ring_history && td.m_key_image_known && !td.m_key_image_partial)
         ring_key_images.push_back(td.m_key_image);
     }
     if (!ring_key_images.empty())
@@ -9611,7 +9610,7 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
       uint64_t num_found = 0;
 
       // if we have a known ring, use it
-      if (td.m_key_image_known && !td.m_key_image_partial)
+      if (use_spend_ring_history && td.m_key_image_known && !td.m_key_image_partial)
       {
 
         const auto it = existing_rings.find(td.m_key_image);
@@ -9895,7 +9894,7 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
       outs.back().push_back(std::make_tuple(td.m_global_output_index, td.get_public_key(), mask));
 
       // then pick outs from an existing ring, if any
-      if (td.m_key_image_known && !td.m_key_image_partial)
+      if (use_spend_ring_history && td.m_key_image_known && !td.m_key_image_partial)
       {
         const auto it = existing_rings.find(td.m_key_image);
         if (it != existing_rings.end())
@@ -9969,22 +9968,25 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
     }
   }
 
-  // save those outs in the ringdb for reuse
-  std::vector<std::pair<crypto::key_image, std::vector<uint64_t>>> rings;
-  rings.reserve(selected_transfers.size());
-  for (size_t i = 0; i < selected_transfers.size(); ++i)
+  if (use_spend_ring_history)
   {
-    const size_t idx = selected_transfers[i];
-    THROW_WALLET_EXCEPTION_IF(idx >= m_transfers.size(), error::wallet_internal_error, "selected_transfers entry out of range");
-    const transfer_details &td = m_transfers[idx];
-    std::vector<uint64_t> ring;
-    ring.reserve(outs[i].size());
-    for (const auto &e: outs[i])
-      ring.push_back(std::get<0>(e));
-    rings.push_back(std::make_pair(td.m_key_image, std::move(ring)));
+    // save those outs in the ringdb for reuse
+    std::vector<std::pair<crypto::key_image, std::vector<uint64_t>>> rings;
+    rings.reserve(selected_transfers.size());
+    for (size_t i = 0; i < selected_transfers.size(); ++i)
+    {
+      const size_t idx = selected_transfers[i];
+      THROW_WALLET_EXCEPTION_IF(idx >= m_transfers.size(), error::wallet_internal_error, "selected_transfers entry out of range");
+      const transfer_details &td = m_transfers[idx];
+      std::vector<uint64_t> ring;
+      ring.reserve(outs[i].size());
+      for (const auto &e: outs[i])
+        ring.push_back(std::get<0>(e));
+      rings.push_back(std::make_pair(td.m_key_image, std::move(ring)));
+    }
+    if (!set_rings(rings, false))
+      MERROR("Failed to set rings");
   }
-  if (!set_rings(rings, false))
-    MERROR("Failed to set rings");
 }
 
 template<typename T>
@@ -17150,7 +17152,7 @@ wallet2::vote_tx_result wallet2::create_vote_tx(
     std::vector<size_t> selected_transfers{best_idx};
     std::vector<std::vector<get_outs_entry>> outs;
     std::unordered_set<crypto::public_key> valid_public_keys_cache;
-    get_outs(outs, selected_transfers, ring_size - 1, true, valid_public_keys_cache);
+    get_outs(outs, selected_transfers, ring_size - 1, true, valid_public_keys_cache, false);
     if (outs.empty() || outs[0].empty())
     {
       result.error = "Failed to fetch ring members";
@@ -17287,7 +17289,7 @@ bool wallet2::get_dao_v2_ring(
   try
   {
     get_outs(outs, selected_transfers, fake_outputs_count, true,
-              valid_public_keys_cache);
+              valid_public_keys_cache, false);
   }
   catch (const std::exception &e)
   {
