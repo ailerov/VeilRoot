@@ -2351,8 +2351,51 @@ namespace cryptonote
     m_spent_key_images.clear();
     m_txpool_weight = 0;
     std::vector<crypto::hash> remove;
+    // BEGIN_VNS_PURGE_CONFIRMED_TXPOOL_ON_STARTUP
+    // The blockchain DB is initialized before this persisted txpool is loaded.
+    // Discard rows whose transactions are already in the main chain; otherwise
+    // a transaction left in LMDB across a shutdown can be reloaded and
+    // revalidated as if it were still pending.
+    std::vector<crypto::hash> persisted_txids;
+    m_blockchain.for_all_txpool_txes(
+        [&persisted_txids](const crypto::hash& txid,
+                           const txpool_tx_meta_t&,
+                           const cryptonote::blobdata_ref*) {
+          persisted_txids.push_back(txid);
+          return true;
+        },
+        false, relay_category::all);
 
+    std::vector<crypto::hash> already_confirmed;
+    already_confirmed.reserve(persisted_txids.size());
+    for (const crypto::hash& txid : persisted_txids)
+    {
+      if (m_blockchain.have_tx(txid))
+        already_confirmed.push_back(txid);
+    }
+
+    if (!already_confirmed.empty())
+    {
+      LockedTXN confirmed_txn(m_blockchain.get_db());
+      for (const crypto::hash& txid : already_confirmed)
+      {
+        try
+        {
+          m_blockchain.remove_txpool_tx(txid);
+          MINFO("Removed already-confirmed transaction " << txid
+                << " from persisted txpool during startup");
+        }
+        catch (const std::exception& e)
+        {
+          MWARNING("Failed to remove already-confirmed txpool transaction "
+                   << txid << " during startup: " << e.what());
+        }
+      }
+      confirmed_txn.commit();
+    }
+    // END_VNS_PURGE_CONFIRMED_TXPOOL_ON_STARTUP
     // first add the not kept by block, then the kept by block,
+
     // to avoid rejection due to key image collision
     for (int pass = 0; pass < 2; ++pass)
     {
