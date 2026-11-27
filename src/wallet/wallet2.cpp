@@ -17275,9 +17275,11 @@ bool wallet2::get_dao_v2_ring(
   const uint64_t real_global = td.m_global_output_index;
   const uint8_t  real_age    = dao_vote_age_factor(vote_height, td.m_block_height);
 
-  // Over-sample decoys so that after filtering to the real output's
-  // age factor we still have enough to reach target_ring_size.
-  const size_t over_sample = target_ring_size * 8;
+  // Use one bounded candidate batch, then filter by the real output's
+  // age factor. Avoid repeated expanding RPC samples that include the
+  // same real output in every request.
+  const size_t over_sample = std::min<size_t>(
+      std::max<size_t>(target_ring_size * 32, 256), 512);
   std::vector<size_t> selected_transfers{transfer_idx};
   std::unordered_set<crypto::public_key> valid_public_keys_cache;
   std::vector<std::vector<get_outs_entry>> outs;
@@ -17368,7 +17370,7 @@ bool wallet2::get_dao_v2_ring(
     return false;
   }
 
-  if (filtered.size() < 2)
+  if (filtered.empty())
   {
     LOG_ERROR("Cannot cast vote: only " << filtered.size()
         << " output(s) at your coin's age factor f=" << (int)real_age
@@ -17490,10 +17492,10 @@ wallet2::vote_tx_result wallet2::create_vote_v2_tx(
     return result;
   }
 
-  // Ring target is enforced by the DAO verifier. The wallet builds
-  // up to DAO_VOTE_RING_TARGET members from the real output's age
-  // factor bucket; anything smaller than 2 fails ring construction
-  // below, with a clear diagnostic.
+  // DAO V2 rings are variable-sized during chain bootstrap. The wallet
+  // uses the same-age members found in one bounded candidate batch, up
+  // to DAO_VOTE_RING_TARGET. A singleton (mixin 0) is valid when no
+  // same-age decoy is found; an empty ring is never valid.
 
   // ---- Build the shared-shape outputs vector ----
   std::vector<dao::dao_v2_vote_output> outputs;
@@ -17512,7 +17514,7 @@ wallet2::vote_tx_result wallet2::create_vote_v2_tx(
       result.error = "Failed to build ring for a selected output";
       return result;
     }
-    if (real_index == SIZE_MAX || ring.size() < 2)
+    if (real_index == SIZE_MAX || ring.empty())
     {
       result.error = "Ring construction failed";
       return result;

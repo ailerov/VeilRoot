@@ -94,8 +94,8 @@ verification_result VoteProofVerifier::verify(
         const size_t n = in.key_offsets.size();
         if (n == 0)
             return fail("step8: empty ring");
-        if (n < 2)
-            return fail("step8: ring size 1 not permitted");
+        // A singleton ring is the zero-mixin bootstrap case.
+
         if (in.weight_signature.s.size() != n)
             return fail("step8: weight CLSAG response/ring size mismatch");
         if (in.balance_signature.s.size() != n)

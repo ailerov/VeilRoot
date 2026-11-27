@@ -271,6 +271,32 @@ TEST(vote_proof_verifier, step8_empty_ring)
     EXPECT_NE(r.reason.find("step8"), std::string::npos);
 }
 
+TEST(vote_proof_verifier, step8_single_member_ring_accepted)
+{
+    VerifierTestDB db;
+    db.have_proposal = true;
+    db.proposal_submission_height = 50;
+    db.proposal_voting_end_height = 200;
+    db.have_tally_key = true;
+    db.proposal_tally_key_id.data[0] = 1;
+    db.add_output(0);
+
+    vote_proof_v2 p;
+    p.version = vote_proof_v2::VERSION;
+    p.vote_height = 100;
+    p.tally_key_id.data[0] = 1;
+    p.inputs.push_back(make_ring_input(1));
+    { crypto::hash n; n.data[0] = 0x01; p.nullifiers.push_back(n); }
+
+    std::unordered_set<crypto::hash> bn;
+    auto r = VoteProofVerifier::verify(p, db, 100, bn);
+    EXPECT_FALSE(r.success);
+    EXPECT_EQ(r.reason.find("step8"), std::string::npos);
+    EXPECT_EQ(r.reason.find("step9"), std::string::npos);
+    EXPECT_EQ(r.reason.find("step14"), std::string::npos);
+    EXPECT_NE(r.reason.find("step15"), std::string::npos);
+}
+
 TEST(vote_proof_verifier, step8_clsag_size_mismatch)
 {
     VerifierTestDB db;

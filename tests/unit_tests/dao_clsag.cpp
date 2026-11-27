@@ -132,6 +132,28 @@ TEST(dao_clsag, generate_then_verify)
 }
 
 
+TEST(dao_clsag, singleton_ring_generate_then_verify)
+{
+    auto ctx = make_reference_context();
+    const rct::key real_P = ctx.P[2];
+    const rct::key real_C = ctx.C[2];
+    const uint64_t real_output_index = ctx.output_indices[2];
+    const uint64_t real_output_height = ctx.output_heights[2];
+    const uint8_t real_age_factor = ctx.age_factors[2];
+    ctx.P = { real_P };
+    ctx.C = { real_C };
+    ctx.output_indices = { real_output_index };
+    ctx.output_heights = { real_output_height };
+    ctx.age_factors = { real_age_factor };
+
+    crypto::secret_key sk = sec_from_hex(X_L_HEX);
+    rct::key rho = hex_to_key(RHO_HEX);
+    rct::clsag sig;
+    ASSERT_TRUE(dao_clsag_generate(ctx, 0, sk, rho, sig));
+    ASSERT_EQ(sig.s.size(), 1u);
+    EXPECT_TRUE(dao_clsag_verify(ctx, sig));
+}
+
 // ---- Nullifier scope ----
 
 TEST(dao_clsag, different_proposal_different_nullifier)
