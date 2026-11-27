@@ -17275,18 +17275,19 @@ bool wallet2::get_dao_v2_ring(
   const uint64_t real_global = td.m_global_output_index;
   const uint8_t  real_age    = dao_vote_age_factor(vote_height, td.m_block_height);
 
-  // Use one bounded candidate batch, then filter by the real output's
-  // age factor. Avoid repeated expanding RPC samples that include the
-  // same real output in every request.
-  const size_t over_sample = std::min<size_t>(
-      std::max<size_t>(target_ring_size * 32, 256), 512);
+  // get_outs' third argument is fake_outputs_count, not a candidate
+  // sample size. Ask it for the ordinary target ring's decoys; the
+  // same-age filter below may shrink the ring to the real output alone
+  // (mixin 0), which is valid during chain bootstrap.
+  const size_t fake_outputs_count =
+      target_ring_size > 0 ? target_ring_size - 1 : 0;
   std::vector<size_t> selected_transfers{transfer_idx};
   std::unordered_set<crypto::public_key> valid_public_keys_cache;
   std::vector<std::vector<get_outs_entry>> outs;
   try
   {
-    get_outs(outs, selected_transfers, over_sample, true,
-             valid_public_keys_cache);
+    get_outs(outs, selected_transfers, fake_outputs_count, true,
+              valid_public_keys_cache);
   }
   catch (const std::exception &e)
   {
@@ -17511,7 +17512,10 @@ wallet2::vote_tx_result wallet2::create_vote_v2_tx(
                          config::DAO_VOTE_RING_TARGET,
                          ring, real_index))
     {
-      result.error = "Failed to build ring for a selected output";
+      result.error = "Failed to build ring for selected output transfer=" +
+          std::to_string(sel) + " height=" +
+          std::to_string(td.m_block_height) + " global_index=" +
+          std::to_string(td.m_global_output_index);
       return result;
     }
     if (real_index == SIZE_MAX || ring.empty())
