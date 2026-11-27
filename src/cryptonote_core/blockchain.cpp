@@ -10176,6 +10176,268 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
       const crypto::hash& block_hash,
       const crypto::signature& signature)
   {
+    // Durable node_ready lifecycle gate and pool coalescing.
+    // P2P heartbeats remain active; only their durable zero-fee chain-state
+    // transactions are restricted to phases that consume the canonical roster.
+    uint64_t ready_chain_height = 0;
+    uint64_t ready_tip_height = 0;
+    bool node_ready_chain_state_needed = false;
+    try {
+      {
+        CRITICAL_REGION_LOCAL(m_blockchain_lock);
+        ready_chain_height = get_current_blockchain_height();
+        if (ready_chain_height != 0) {
+          ready_tip_height = ready_chain_height - 1;
+          m_db->for_all_proposal_records(
+              [&](const crypto::hash& proposal_id,
+                  const proposal_record& rec) -> bool {
+                if (rec.status != PROPOSAL_STATUS_ACTIVE)
+                  return true;
+
+                // DKG discovery/retry needs current readiness while the
+                // proposal is active and its tally key has not been installed.
+                if (dao_v2_dkg_proposal_eligible(rec, ready_tip_height)) {
+                  node_ready_chain_state_needed = true;
+                  return false;
+                }
+                if (rec.tally_key_id == crypto::null_hash)
+                  return true;
+
+                // The first tally committee is selected at voting_end_height
+                // from readiness records no older than 15 blocks.
+                if (ready_tip_height <= rec.voting_end_height &&
+                    rec.voting_end_height - ready_tip_height <= 15) {
+                  node_ready_chain_state_needed = true;
+                  return false;
+                }
+                if (ready_tip_height <= rec.voting_end_height)
+                  return true;
+
+                // A later re-reshare uses the current roster, but only after
+                // a complete encrypted aggregate exists and the previous
+                // reshared set has reached its 10-block retry interval.
+                dao_proposal_aggregate aggregate;
+                if (!m_db->get_dao_proposal_aggregate(proposal_id, aggregate) ||
+                    aggregate.aggregate_E_W.empty() ||
+                    aggregate.aggregate_E_S.empty() ||
+                    aggregate.aggregate_E_B.empty())
+                  return true;
+
+                std::vector<uint8_t> key_id(
+                    rec.tally_key_id.data, rec.tally_key_id.data + 32);
+                dao::dao_tally_key_record key_rec;
+                if (!m_db->get_dao_tally_key_by_id(key_id, key_rec) ||
+                    key_rec.key_id.size() != 32 || key_rec.cl_modulus.empty())
+                  return true;
+
+                const uint64_t base_id =
+                    static_cast<uint64_t>(dao::share_set_id_for_key_id(key_rec.key_id));
+                const uint64_t latest_id =
+                    latest_share_set_id_for_key_id(key_rec.key_id);
+                if (base_id == 0 || latest_id == 0 || latest_id == base_id)
+                  return true;
+
+                dao::dao_share_set_record latest_ss;
+                if (!m_db->get_dao_share_set(latest_id, latest_ss) ||
+                    !dao::dao_share_set_is_reshared(latest_ss))
+                  return true;
+
+                if (ready_chain_height >= latest_ss.height &&
+                    ready_chain_height - latest_ss.height >= 10) {
+                  node_ready_chain_state_needed = true;
+                  return false;
+                }
+                return true;
+              });
+        }
+      }
+    } catch (const std::exception& e) {
+      // Fail open on a DB read error: omitting readiness could stall DKG or
+      // a required re-reshare on this node. The heartbeat itself is unchanged.
+      node_ready_chain_state_needed = true;
+      MWARNING("node_ready: lifecycle lookup failed; allowing chain-state "
+               << "submission: " << e.what());
+    } catch (...) {
+      node_ready_chain_state_needed = true;
+      MWARNING("node_ready: lifecycle lookup failed; allowing chain-state "
+               << "submission");
+    }
+
+    struct pending_node_ready_tx {
+      crypto::hash txid;
+      crypto::public_key sender;
+      uint64_t height;
+      crypto::hash block_hash;
+    };
+    std::vector<crypto::hash> node_ready_remove_ids;
+    std::vector<pending_node_ready_tx> fresh_node_ready_txs;
+    std::map<crypto::public_key, std::pair<uint64_t, crypto::hash>> newest_by_sender;
+    std::map<crypto::public_key, crypto::hash> newest_txid_by_sender;
+
+    // Inspect the pool once. Purge every node_ready transaction when no DAO
+    // phase needs a roster; otherwise retain at most the newest fresh pending
+    // transaction per sender. Confirmed, non-canonical, and >15-block-old
+    // entries can no longer contribute to any readiness selection.
+    std::vector<crypto::hash> pool_hashes;
+    m_tx_pool.get_transaction_hashes(pool_hashes, true);
+    for (const auto& txid : pool_hashes) {
+      tx_memory_pool::tx_details details;
+      if (!m_tx_pool.get_transaction_info(txid, details, true, false))
+        continue;
+      if (!is_dao_v2_node_ready_tx(details.tx))
+        continue;
+      if (!node_ready_chain_state_needed) {
+        node_ready_remove_ids.push_back(txid);
+        continue;
+      }
+
+      std::vector<tx_extra_field> fields;
+      if (!parse_tx_extra(details.tx.extra, fields)) {
+        node_ready_remove_ids.push_back(txid);
+        continue;
+      }
+      bool decoded = false;
+      node_ready_payload pending;
+      for (const auto& field : fields) {
+        if (field.type() != typeid(tx_extra_governance_payload))
+          continue;
+        const auto& gp = boost::get<tx_extra_governance_payload>(field);
+        if (gp.payload.type != governance_object::node_ready)
+          continue;
+        epee::span<const uint8_t> payload_span(
+            gp.payload.data.data(), gp.payload.data.size());
+        binary_archive<false> ar(payload_span);
+        decoded = ::serialization::serialize(ar, pending);
+        break;
+      }
+      if (!decoded || pending.version != 1 ||
+          pending.sender_pubkey.size() != 32 ||
+          pending.block_hash.size() != 32) {
+        node_ready_remove_ids.push_back(txid);
+        continue;
+      }
+
+      pending_node_ready_tx candidate{};
+      candidate.txid = txid;
+      std::memcpy(candidate.sender.data,
+                  pending.sender_pubkey.data(), 32);
+      candidate.height = pending.height;
+      std::memcpy(candidate.block_hash.data,
+                  pending.block_hash.data(), 32);
+
+      bool canonical = false;
+      bool already_committed = false;
+      if (ready_chain_height != 0 && candidate.height < ready_chain_height) {
+        {
+          CRITICAL_REGION_LOCAL(m_blockchain_lock);
+          try {
+            canonical = get_block_id_by_height(candidate.height) ==
+                        candidate.block_hash;
+            crypto::hash stored_hash{};
+            already_committed =
+                m_db->get_dao_v2_node_ready(candidate.sender,
+                                             candidate.height,
+                                             stored_hash) &&
+                stored_hash == candidate.block_hash;
+          } catch (...) {
+            canonical = false;
+          }
+        }
+      }
+      if (!canonical || already_committed ||
+          ready_tip_height < candidate.height ||
+          ready_tip_height - candidate.height > 15) {
+        node_ready_remove_ids.push_back(txid);
+        continue;
+      }
+
+      fresh_node_ready_txs.push_back(candidate);
+      auto best = newest_by_sender.find(candidate.sender);
+      if (best == newest_by_sender.end() ||
+          candidate.height > best->second.first) {
+        newest_by_sender[candidate.sender] =
+            std::make_pair(candidate.height, candidate.block_hash);
+        newest_txid_by_sender[candidate.sender] = candidate.txid;
+      }
+    }
+
+    bool sender_has_fresh_pending_tx = false;
+    uint64_t sender_pending_height = 0;
+    crypto::hash sender_pending_block_hash{};
+    for (const auto& candidate : fresh_node_ready_txs) {
+      const auto best = newest_by_sender.find(candidate.sender);
+      const auto best_txid = newest_txid_by_sender.find(candidate.sender);
+      if (best == newest_by_sender.end() ||
+          best_txid == newest_txid_by_sender.end() ||
+          candidate.height != best->second.first ||
+          candidate.block_hash != best->second.second ||
+          candidate.txid != best_txid->second) {
+        node_ready_remove_ids.push_back(candidate.txid);
+        continue;
+      }
+      if (candidate.sender == sender) {
+        sender_has_fresh_pending_tx = true;
+        sender_pending_height = candidate.height;
+        sender_pending_block_hash = candidate.block_hash;
+      }
+    }
+
+    const bool keep_sender_pending = sender_has_fresh_pending_tx &&
+        (sender_pending_height > height ||
+         (sender_pending_height == height &&
+          sender_pending_block_hash == block_hash));
+    if (sender_has_fresh_pending_tx && !keep_sender_pending) {
+      // A newer heartbeat arrived while an older announcement from this
+      // sender was still waiting in the pool. Replace it instead of
+      // accumulating one zero-fee transaction per new height.
+      const auto old_txid = newest_txid_by_sender.find(sender);
+      if (old_txid != newest_txid_by_sender.end())
+        node_ready_remove_ids.push_back(old_txid->second);
+    }
+
+    size_t node_ready_removed = 0;
+    for (const auto& txid : node_ready_remove_ids) {
+      transaction removed_tx;
+      cryptonote::blobdata removed_blob;
+      size_t removed_weight = 0;
+      uint64_t removed_fee = 0;
+      bool relayed = false;
+      bool do_not_relay = false;
+      bool double_spend_seen = false;
+      bool pruned = false;
+      if (m_tx_pool.take_tx(txid, removed_tx, removed_blob,
+                            removed_weight, removed_fee, relayed,
+                            do_not_relay, double_spend_seen, pruned, true))
+        ++node_ready_removed;
+    }
+    if (node_ready_removed != 0)
+      MINFO("node_ready: pruned " << node_ready_removed
+            << " obsolete/duplicate chain-state transaction(s) from the local pool");
+
+    if (!node_ready_chain_state_needed) {
+      std::lock_guard<std::mutex> lk(m_dao_v2_ready_tx_mutex);
+      m_dao_v2_ready_tx_pending.clear();
+      return true;
+    }
+
+    if (keep_sender_pending) {
+      std::lock_guard<std::mutex> lk(m_dao_v2_ready_tx_mutex);
+      m_dao_v2_ready_tx_pending[sender] =
+          std::make_pair(sender_pending_height, sender_pending_block_hash);
+      return true;
+    }
+    {
+      std::lock_guard<std::mutex> lk(m_dao_v2_ready_tx_mutex);
+      m_dao_v2_ready_tx_pending.erase(sender);
+    }
+
+    // Peer heartbeats outside the 15-block consensus roster window are not
+    // eligible for future DKG/tally selections and must not be registered.
+    if (ready_chain_height == 0 || height > ready_tip_height ||
+        ready_tip_height - height > 15)
+      return true;
+
+
     crypto::hash stored_hash{};
     try {
       if (m_db->get_dao_v2_node_ready(sender, height, stored_hash) &&
@@ -10240,6 +10502,15 @@ void Blockchain::handle_dkg_confirm(const crypto::hash& proposal_id, const crypt
     const uint8_t hf_v = get_current_hard_fork_version();
     if (!m_tx_pool.add_tx(nr_tx, tvc, relay_method::local, true,
                           hf_v, hf_v)) {
+      {
+        std::lock_guard<std::mutex> lk(m_dao_v2_ready_tx_mutex);
+        auto it = m_dao_v2_ready_tx_pending.find(sender);
+        if (it != m_dao_v2_ready_tx_pending.end() &&
+            it->second.first == height &&
+            it->second.second == block_hash)
+          m_dao_v2_ready_tx_pending.erase(it);
+      }
+
       MWARNING("node_ready: mempool rejected chain-state tx from "
                << sender << " height=" << height
                << " verification_failed=" << tvc.m_verifivation_failed
