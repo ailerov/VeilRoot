@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "crypto/crypto.h"
@@ -39,6 +40,11 @@ rct::key dao_hash_to_point(const rct::key& P, const crypto::hash& proposal_id);
 rct::key dao_clsag_message(const dao_clsag_context& ctx,
                            const rct::key& N,
                            const rct::key& V);
+
+// Diagnostic fingerprints for comparing the wallet and consensus contexts.
+std::string dao_clsag_context_fingerprint(const dao_clsag_context& ctx,
+                                         const rct::clsag& sig);
+std::string dao_clsag_signature_fingerprint(const rct::clsag& sig);
 
 // Generate a DAO V2 weighted CLSAG for one hidden ring member.
 // output_secret is x_l; weight_blinding is rho_l.

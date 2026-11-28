@@ -94,12 +94,22 @@ public:
         return tx_out_index{};
     }
 
+        output_data_t get_output_key(const uint64_t& amount,
+                                 const uint64_t& index,
+                                 bool include_commitmemt) const override
+    {
+        (void)include_commitmemt;
+        if (amount != 0)
+            throw std::runtime_error("DAO V2 verifier expects RingCT amount bucket 0");
+        auto it = outputs.find(index);
+        if (it == outputs.end())
+            throw std::runtime_error("amount-specific output not found");
+        return it->second;
+    }
     output_data_t get_output_key_from_global(const uint64_t& idx) const override
     {
-        auto it = outputs.find(idx);
-        if (it == outputs.end())
-            throw std::runtime_error("output not found");
-        return it->second;
+        (void)idx;
+        throw std::runtime_error("DAO V2 key offsets are amount-specific, not unified output IDs");
     }
 };
 

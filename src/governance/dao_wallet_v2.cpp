@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "governance/dao_wallet_v2.h"
+#include "misc_log_ex.h"
 
 #include <array>
 #include <cstring>
@@ -260,7 +261,13 @@ bool build_dao_v2_vote(
                 std::to_string(ring_size) + ")";
             return false;
         }
-
+        if (source_index == 0) {
+            MINFO("DAO V2 CLSAG wallet input=0 vote_height=" << vote_height
+                  << " submission_height=" << proposal_submission_height
+                  << " ring_size=" << ring_size
+                  << " context_fp=" << dao_clsag_context_fingerprint(cc, w_sig)
+                  << " signature_fp=" << dao_clsag_signature_fingerprint(w_sig));
+        }
         dao_clsag_context bcc = cc;
         bcc.age_factors.assign(ring_size, 1);
         bcc.V = B_i;

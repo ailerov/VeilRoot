@@ -4,6 +4,8 @@
 #include "dao_clsag.h"
 
 #include <cstring>
+#include <cstdio>
+#include <string>
 #include <vector>
 
 #include "crypto/crypto.h"
@@ -123,6 +125,43 @@ key dao_clsag_message(const dao_clsag_context& ctx,
     key out;
     cn_fast_hash(out, m.data(), m.size());
     return out;
+}
+
+namespace {
+std::string dao_clsag_fingerprint_bytes(const uint8_t* data, size_t size)
+{
+    uint64_t hash = 14695981039346656037ULL;
+    for (size_t i = 0; i < size; ++i) {
+        hash ^= data[i];
+        hash *= 1099511628211ULL;
+    }
+    char out[17];
+    std::snprintf(out, sizeof(out), "%016llx",
+                  static_cast<unsigned long long>(hash));
+    return std::string(out);
+}
+}
+
+std::string dao_clsag_context_fingerprint(const dao_clsag_context& ctx,
+                                         const rct::clsag& sig)
+{
+    const rct::key message = dao_clsag_message(ctx, sig.I, ctx.V);
+    return dao_clsag_fingerprint_bytes(message.bytes, sizeof(message.bytes));
+}
+
+std::string dao_clsag_signature_fingerprint(const rct::clsag& sig)
+{
+    std::vector<uint8_t> bytes;
+    bytes.reserve((3 + sig.s.size()) * 32);
+    const auto append = [&bytes](const rct::key& value) {
+        bytes.insert(bytes.end(), value.bytes, value.bytes + sizeof(value.bytes));
+    };
+    append(sig.c1);
+    append(sig.I);
+    append(sig.D);
+    for (const auto& scalar : sig.s)
+        append(scalar);
+    return dao_clsag_fingerprint_bytes(bytes.data(), bytes.size());
 }
 
 bool dao_clsag_generate(const dao_clsag_context& ctx,

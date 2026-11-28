@@ -121,14 +121,14 @@ verification_result VoteProofVerifier::verify(
             return fail("step8: duplicate absolute index within ring");
     }
 
-    // Step 9: every referenced global output exists and resolves to a
-    // canonical RingCT output record.
+    // Step 9: every referenced amount-zero RingCT bucket index exists.
+    // key_offsets are amount-specific indices, not unified output IDs.
     for (const auto& in : proof.inputs) {
         uint64_t acc = 0;
         for (uint64_t off : in.key_offsets) {
             acc += off; // overflow already checked in step 8
             try {
-                (void)db.get_output_key_from_global(acc);
+                (void)db.get_output_key(0, acc, true);
             } catch (...) {
                 return fail("step9: output lookup failed");
             }
@@ -170,7 +170,7 @@ verification_result VoteProofVerifier::verify(
 
             output_data_t od;
             try {
-                od = db.get_output_key_from_global(acc);
+                od = db.get_output_key(0, acc, true);
             } catch (...) {
                 return fail("step14: output lookup failed");
             }
@@ -211,10 +211,19 @@ verification_result VoteProofVerifier::verify(
     // Step 15: weighted DAO CLSAG per input.
     for (size_t i = 0; i < proof.inputs.size(); ++i) {
         if (!dao_clsag_verify(clsag_ctxs[i],
-                              proof.inputs[i].weight_signature))
+                              proof.inputs[i].weight_signature)) {
+            const auto& sig = proof.inputs[i].weight_signature;
             return fail("step15: weight CLSAG verification failed at input " +
                         std::to_string(i) + " (ring size " +
-                        std::to_string(proof.inputs[i].key_offsets.size()) + ")");
+                        std::to_string(proof.inputs[i].key_offsets.size()) +
+                        ") context_fp=" +
+                        dao_clsag_context_fingerprint(clsag_ctxs[i], sig) +
+                        " signature_fp=" +
+                        dao_clsag_signature_fingerprint(sig) +
+                        " submission_height=" +
+                        std::to_string(clsag_ctxs[i].proposal_submission_height) +
+                        " vote_height=" + std::to_string(clsag_ctxs[i].vote_height));
+        }
     }
 
     // Step 16: balance DAO CLSAG per input with age_factors = 1 and

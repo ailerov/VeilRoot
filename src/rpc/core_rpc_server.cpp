@@ -1425,7 +1425,9 @@ bool core_rpc_server::on_send_raw_tx_json(const COMMAND_RPC_SEND_RAW_TX::request
         if (reason.empty())
         {
             cryptonote::transaction tx;
-            if (cryptonote::parse_and_validate_tx_from_blob(tx_blob, tx))
+            if (cryptonote::parse_and_validate_tx_from_blob(tx_blob, tx) &&
+                tx.vin.size() == 1 &&
+                tx.vin[0].type() == typeid(cryptonote::txin_vns_vote))
             {
                 uint64_t current_height = m_core.get_blockchain_storage().get_current_blockchain_height();
                 cryptonote::vote_result vres = m_core.get_blockchain_storage().governance().process_vote(tx, current_height, true);

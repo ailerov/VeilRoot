@@ -449,7 +449,7 @@ bool build_v2_vote_fixture(V2VoteFixture& fx, const std::string& tag)
 
     // Enumerate owned coinbase outputs.
     struct OwnedOutput {
-        uint64_t           global_index;
+        uint64_t           amount_output_index;
         crypto::public_key pubkey;
         rct::key           commitment;
         uint64_t           height;
@@ -458,13 +458,14 @@ bool build_v2_vote_fixture(V2VoteFixture& fx, const std::string& tag)
     };
     std::vector<OwnedOutput> owned;
     {
-        const uint64_t n = db_a.get_num_outputs(0);
-        for (uint64_t g = 0; g < n; ++g) {
+        const uint64_t amount_zero_output_count = db_a.get_num_outputs(0);
+        for (uint64_t amount_index = 0;
+             amount_index < amount_zero_output_count; ++amount_index) {
             output_data_t od;
-            try { od = db_a.get_output_key_from_global(g); }
+            try { od = db_a.get_output_key(0, amount_index, true); }
             catch (...) { continue; }
             tx_out_index toi;
-            try { toi = db_a.get_output_tx_and_index_from_global(g); }
+            try { toi = db_a.get_output_tx_and_index(0, amount_index); }
             catch (...) { continue; }
             transaction tx;
             if (!db_a.get_tx(toi.first, tx)) continue;
@@ -491,7 +492,7 @@ bool build_v2_vote_fixture(V2VoteFixture& fx, const std::string& tag)
             crypto::ec_scalar der_scalar;
             crypto::derivation_to_scalar(der, toi.second, der_scalar);
             OwnedOutput oo{};
-            oo.global_index = g;
+            oo.amount_output_index = amount_index;
             oo.pubkey       = od.pubkey;
             oo.commitment   = od.commitment;
             oo.height       = od.height;
@@ -511,7 +512,7 @@ bool build_v2_vote_fixture(V2VoteFixture& fx, const std::string& tag)
     if (owned.size() < 4) return false;
     std::sort(owned.begin(), owned.end(),
               [](const OwnedOutput& x, const OwnedOutput& y) {
-                  return x.global_index < y.global_index; });
+                  return x.amount_output_index < y.amount_output_index; });
 
     // Proposal record the verifier reads.
     fx.chain_height = fx.node->core->get_current_blockchain_height();
@@ -545,7 +546,8 @@ bool build_v2_vote_fixture(V2VoteFixture& fx, const std::string& tag)
         dao::dao_v2_ring_member_data rm;
         rm.P = rct::pk2rct(owned[i].pubkey);
         rm.C = owned[i].commitment;
-        rm.global_index = owned[i].global_index;
+        // V2 key offsets are indices in the RingCT amount=0 bucket.
+        rm.global_index = owned[i].amount_output_index;
         rm.height       = owned[i].height;
         vo.ring.push_back(std::move(rm));
     }
