@@ -12881,14 +12881,42 @@ bool simple_wallet::get_proposal(const std::vector<std::string> &args)
     << tr("Voting Period: ") << (int)res.voting_period_days << " days\n"
     << tr("Submission Height: ") << res.submission_height << "\n"
     << tr("Voting End Height: ") << res.voting_end_height << "\n"
-    << tr("Status: ") << res.proposal_status << "\n"
-    << tr("Yes Weight: ") << res.yes_weight << "\n"
-    << tr("No Weight: ") << res.no_weight << "\n"
-    << tr("Yes Balance: ") << res.yes_participation_balance << "\n"
-    << tr("No Balance: ") << res.no_participation_balance << "\n"
-    << tr("Quorum Met: ") << (res.quorum_met ? "Yes" : "No") << "\n"
-    << tr("Tally Passed: ") << (res.tally_passed ? "Yes" : "No") << "\n"
-    << tr("Executed: ") << (res.executed ? "Yes" : "No");
+    << tr("Status: ") << res.proposal_status;
+
+  if (res.v2_encrypted)
+  {
+    success_msg_writer()
+      << tr("Encrypted vote transactions: ") << res.encrypted_vote_tx_count << "\n"
+      << tr("Encrypted aggregate: ")
+      << (res.encrypted_aggregate_present ? "Recorded" : "Not recorded");
+    if (res.v2_tally_finalized)
+    {
+      success_msg_writer()
+        << tr("Final Yes Weight: ") << res.v2_yes_weight << "\n"
+        << tr("Final No Weight: ") << res.v2_no_weight << "\n"
+        << tr("Final Participation Balance: ") << res.v2_participation_coins << "\n"
+        << tr("Final Quorum Threshold: ") << res.v2_quorum_threshold << "\n"
+        << tr("Quorum Met: ") << (res.quorum_met ? "Yes" : "No") << "\n"
+        << tr("Tally Passed: ") << (res.tally_passed ? "Yes" : "No");
+    }
+    else
+    {
+      success_msg_writer()
+        << tr("Vote totals: Encrypted until the final tally certificate") << "\n"
+        << tr("Final tally: Pending committee certificate");
+    }
+  }
+  else
+  {
+    success_msg_writer()
+      << tr("Yes Weight: ") << res.yes_weight << "\n"
+      << tr("No Weight: ") << res.no_weight << "\n"
+      << tr("Yes Balance: ") << res.yes_participation_balance << "\n"
+      << tr("No Balance: ") << res.no_participation_balance << "\n"
+      << tr("Quorum Met: ") << (res.quorum_met ? "Yes" : "No") << "\n"
+      << tr("Tally Passed: ") << (res.tally_passed ? "Yes" : "No");
+  }
+  success_msg_writer() << tr("Executed: ") << (res.executed ? "Yes" : "No");
 
   if (res.type == 1 && !res.data_blob.empty())
   {

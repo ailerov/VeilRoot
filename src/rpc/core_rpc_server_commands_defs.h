@@ -88,7 +88,7 @@ namespace cryptonote
 // advance which version they will stop working with
 // Don't go over 32767 for any of these
 #define CORE_RPC_VERSION_MAJOR 3
-#define CORE_RPC_VERSION_MINOR 16
+#define CORE_RPC_VERSION_MINOR 17
 #define MAKE_CORE_RPC_VERSION(major,minor) (((major)<<16)|(minor))
 #define CORE_RPC_VERSION MAKE_CORE_RPC_VERSION(CORE_RPC_VERSION_MAJOR, CORE_RPC_VERSION_MINOR)
 
@@ -3357,6 +3357,15 @@ struct COMMAND_RPC_PUBLISH_NOSTR_EVENT
       bool quorum_met;
       bool tally_passed;
       bool executed;
+      // V2 vote amounts remain encrypted until a final tally certificate is applied.
+      bool v2_encrypted = false;
+      uint64_t encrypted_vote_tx_count = 0;
+      bool encrypted_aggregate_present = false;
+      bool v2_tally_finalized = false;
+      std::string v2_yes_weight;
+      std::string v2_no_weight;
+      std::string v2_participation_coins;
+      std::string v2_quorum_threshold;
       std::string data_blob;   // hex-encoded parameter payload, when applicable
 
       BEGIN_KV_SERIALIZE_MAP()
@@ -3380,6 +3389,14 @@ struct COMMAND_RPC_PUBLISH_NOSTR_EVENT
         KV_SERIALIZE(quorum_met)
         KV_SERIALIZE(tally_passed)
         KV_SERIALIZE(executed)
+        KV_SERIALIZE(v2_encrypted)
+        KV_SERIALIZE(encrypted_vote_tx_count)
+        KV_SERIALIZE(encrypted_aggregate_present)
+        KV_SERIALIZE(v2_tally_finalized)
+        KV_SERIALIZE(v2_yes_weight)
+        KV_SERIALIZE(v2_no_weight)
+        KV_SERIALIZE(v2_participation_coins)
+        KV_SERIALIZE(v2_quorum_threshold)
         KV_SERIALIZE(data_blob)
       END_KV_SERIALIZE_MAP()
     };

@@ -76,6 +76,8 @@ using namespace epee;
 #include "governance/vote_proof_verifier.h"
 #include "governance/governance.h"
 #include "governance/domain_policy.h"
+#include "blockchain_db/blockchain_db.h"
+#include "governance/dao_tally.h"
 
 #undef MONERO_DEFAULT_LOG_CATEGORY
 #define MONERO_DEFAULT_LOG_CATEGORY "daemon.rpc"
@@ -4997,43 +4999,91 @@ bool core_rpc_server::on_publish_service_descriptor(const COMMAND_RPC_PUBLISH_SE
   // END_VNS_GET_PROPOSAL_DATA_BLOB
 
   proposal_execution_record exec_rec;
-  res.executed = blockchain.get_db().get_proposal_execution_record(pid, exec_rec);  uint64_t yes_w = 0, no_w = 0, yes_b = 0, no_b = 0;
-  bool has_outcome = blockchain.get_db().get_proposal_outcome(pid, yes_w, no_w, yes_b, no_b);
-  if (has_outcome)
+  res.executed = blockchain.get_db().get_proposal_execution_record(pid, exec_rec);
+  res.yes_weight = 0;
+  res.no_weight = 0;
+  res.yes_participation_balance = 0;
+  res.no_participation_balance = 0;
+  res.quorum_met = false;
+  res.tally_passed = false;
+  res.v2_encrypted = (rec.tally_key_id != crypto::null_hash);
+  res.encrypted_vote_tx_count = 0;
+  res.encrypted_aggregate_present = false;
+  res.v2_tally_finalized = false;
+  res.v2_yes_weight.clear();
+  res.v2_no_weight.clear();
+  res.v2_participation_coins.clear();
+  res.v2_quorum_threshold.clear();
+
+  if (res.v2_encrypted)
   {
-    res.yes_weight = yes_w;
-    res.no_weight = no_w;
-    res.yes_participation_balance = yes_b;
-    res.no_participation_balance = no_b;
-    uint64_t current_height = blockchain.get_current_blockchain_height();
-    if (current_height > rec.voting_end_height)
+    auto& db = blockchain.get_db();
+    dao_proposal_aggregate aggregate;
+    res.encrypted_aggregate_present =
+        db.get_dao_proposal_aggregate(pid, aggregate) &&
+        !aggregate.aggregate_E_W.empty() &&
+        !aggregate.aggregate_E_S.empty() &&
+        !aggregate.aggregate_E_B.empty();
+
+    const bool vote_records_ok = db.for_all_dao_vote_records_v2(
+        [&](const crypto::hash&, const dao_vote_record_v2& vote_record)
+        {
+          if (vote_record.proposal_id == pid)
+            ++res.encrypted_vote_tx_count;
+          return true;
+        });
+    if (!vote_records_ok)
     {
-        uint64_t participating = yes_b + no_b;
-        vns_supply_t minted = blockchain.get_db().get_block_already_generated_coins(rec.voting_end_height);
-        uint64_t treasury = blockchain.get_db().get_treasury_balance();
-        uint64_t burned = blockchain.get_db().get_total_burned_fees();
-        vns_supply_t circulating = (minted > treasury + burned) ? (minted - treasury - burned) : 0;
-        governance_params gp;
-        if (!blockchain.get_governance_params(gp))
-          gp = governance_params::default_params();
-        vns_supply_t required_quorum = circulating * gp.voting_quorum_percent / 100;
-        res.quorum_met = (participating >= required_quorum);
-        res.tally_passed = blockchain.governance().is_proposal_passed(yes_w, no_w, yes_b, no_b, rec.voting_end_height);
+      error_resp.code = CORE_RPC_ERROR_CODE_INTERNAL_ERROR;
+      error_resp.message = "Failed to enumerate DAO V2 vote records";
+      return false;
     }
-    else
+
+    dao::dao_v2_outcome_record v2_outcome;
+    if (db.get_dao_v2_outcome(pid, v2_outcome))
     {
-        res.quorum_met = false;
-        res.tally_passed = false;
+      res.v2_tally_finalized = true;
+      res.v2_yes_weight = v2_outcome.yes_weight.convert_to<std::string>();
+      res.v2_no_weight = v2_outcome.no_weight.convert_to<std::string>();
+      res.v2_participation_coins =
+          v2_outcome.participation_coins.convert_to<std::string>();
+      res.v2_quorum_threshold =
+          v2_outcome.quorum_threshold.convert_to<std::string>();
+      res.quorum_met = v2_outcome.quorum_met;
+      res.tally_passed = v2_outcome.passed;
     }
   }
   else
   {
-    res.yes_weight = 0;
-    res.no_weight = 0;
-    res.yes_participation_balance = 0;
-    res.no_participation_balance = 0;
-    res.quorum_met = false;
-    res.tally_passed = false;
+    uint64_t yes_w = 0, no_w = 0, yes_b = 0, no_b = 0;
+    const bool has_outcome =
+        blockchain.get_db().get_proposal_outcome(pid, yes_w, no_w, yes_b, no_b);
+    if (has_outcome)
+    {
+      res.yes_weight = yes_w;
+      res.no_weight = no_w;
+      res.yes_participation_balance = yes_b;
+      res.no_participation_balance = no_b;
+      const uint64_t current_height = blockchain.get_current_blockchain_height();
+      if (current_height > rec.voting_end_height)
+      {
+        const uint64_t participating = yes_b + no_b;
+        const vns_supply_t minted =
+            blockchain.get_db().get_block_already_generated_coins(rec.voting_end_height);
+        const uint64_t treasury = blockchain.get_db().get_treasury_balance();
+        const uint64_t burned = blockchain.get_db().get_total_burned_fees();
+        const vns_supply_t circulating =
+            (minted > treasury + burned) ? (minted - treasury - burned) : 0;
+        governance_params gp;
+        if (!blockchain.get_governance_params(gp))
+          gp = governance_params::default_params();
+        const vns_supply_t required_quorum =
+            circulating * gp.voting_quorum_percent / 100;
+        res.quorum_met = (participating >= required_quorum);
+        res.tally_passed = blockchain.governance().is_proposal_passed(
+            yes_w, no_w, yes_b, no_b, rec.voting_end_height);
+      }
+    }
   }
 res.status = CORE_RPC_STATUS_OK;
   return true;
