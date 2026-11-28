@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <vector>
+#include <string>
 
 #include "crypto/crypto.h"
 #include "ringct/rctOps.h"
@@ -54,8 +55,9 @@ bool build_dao_v2_vote(
     const crypto::hash& tally_key_id,
     const std::vector<uint8_t>& cl_key_context,
     uint8_t direction,
-    const std::vector<dao_v2_vote_source>& sources,
-    vote_proof_v2& out);
+        const std::vector<dao_v2_vote_source>& sources,
+    vote_proof_v2& out,
+    std::string* error = nullptr);
 
 // ---------------------------------------------------------------------
 // Shared V2 vote transaction construction
@@ -103,8 +105,9 @@ bool build_dao_v2_vote_tx(
     const crypto::hash& tally_key_id,
     const std::vector<uint8_t>& cl_key_context,
     uint8_t direction,
-    const std::vector<dao_v2_vote_output>& outputs,
-    transaction& tx_out);
+        const std::vector<dao_v2_vote_output>& outputs,
+    transaction& tx_out,
+    std::string* error = nullptr);
 
 } // namespace dao
 } // namespace cryptonote

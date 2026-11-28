@@ -103,9 +103,12 @@ bool build_dao_v2_vote(
     const crypto::hash& tally_key_id,
     const std::vector<uint8_t>& cl_key_context,
     uint8_t direction,
-    const std::vector<dao_v2_vote_source>& sources,
-    vote_proof_v2& out)
+        const std::vector<dao_v2_vote_source>& sources,
+    vote_proof_v2& out,
+    std::string* error)
 {
+    if (error) error->clear();
+    (void)error;
 #ifdef VEILROOT_ENABLE_CL
     out = vote_proof_v2{};
 
@@ -161,9 +164,10 @@ bool build_dao_v2_vote(
 
     bool ok = true;
 
-    for (const auto& s : sources)
+        for (size_t source_index = 0; source_index < sources.size(); ++source_index)
     {
         if (!ok) break;
+        const auto& s = sources[source_index];
 
         const size_t ring_size = s.P.size();
         const size_t real_index = s.real_index;
@@ -174,12 +178,26 @@ bool build_dao_v2_vote(
             age_factors.push_back(age_factor_from_height(
                 vote_height, s.output_heights[j]));
 
-        const uint8_t f_real = age_factors[real_index];
+                const uint8_t f_real = age_factors[real_index];
+
+        // Refuse to sign unless the supplied secret derives the exact real
+        // one-time output key selected by the wallet and reconstructed by consensus.
+        rct::key output_secret_scalar{};
+        std::memcpy(output_secret_scalar.bytes, s.real_spend_secret.data, 32);
+        rct::key derived_real_public_key{};
+        rct::scalarmultBase(derived_real_public_key, output_secret_scalar);
+        sc_0(output_secret_scalar.bytes);
+        if (!(derived_real_public_key == s.P[real_index])) {
+            if (error) *error = "DAO V2 input " + std::to_string(source_index) +
+                ": signing secret does not match the real ring public key";
+            return false;
+        }
 
         const rct::key C_real = rct::commit(s.real_amount, s.real_mask);
         if (std::memcmp(C_real.bytes, s.C[real_index].bytes, 32) != 0) {
-            ok = false;
-            break;
+            if (error) *error = "DAO V2 input " + std::to_string(source_index) +
+                ": amount commitment does not match the real ring member";
+            return false;
         }
 
         const rct::key f_scalar = scalar_from_u64(f_real);
@@ -229,10 +247,18 @@ bool build_dao_v2_vote(
         cc.V              = V_i;
 
         rct::clsag w_sig{};
-        if (!dao_clsag_generate(cc, real_index, s.real_spend_secret,
+                if (!dao_clsag_generate(cc, real_index, s.real_spend_secret,
                                 rho_W, w_sig)) {
-            ok = false;
-            break;
+            if (error) *error = "DAO V2 input " + std::to_string(source_index) +
+                ": weight CLSAG generation failed (ring size " +
+                std::to_string(ring_size) + ")";
+            return false;
+        }
+        if (!dao_clsag_verify(cc, w_sig)) {
+            if (error) *error = "DAO V2 input " + std::to_string(source_index) +
+                ": locally generated weight CLSAG failed self-verification (ring size " +
+                std::to_string(ring_size) + ")";
+            return false;
         }
 
         dao_clsag_context bcc = cc;
@@ -240,14 +266,23 @@ bool build_dao_v2_vote(
         bcc.V = B_i;
 
         rct::clsag b_sig{};
-        if (!dao_clsag_generate(bcc, real_index, s.real_spend_secret,
+                if (!dao_clsag_generate(bcc, real_index, s.real_spend_secret,
                                 rho_B, b_sig)) {
-            ok = false;
-            break;
+            if (error) *error = "DAO V2 input " + std::to_string(source_index) +
+                ": balance CLSAG generation failed (ring size " +
+                std::to_string(ring_size) + ")";
+            return false;
+        }
+        if (!dao_clsag_verify(bcc, b_sig)) {
+            if (error) *error = "DAO V2 input " + std::to_string(source_index) +
+                ": locally generated balance CLSAG failed self-verification (ring size " +
+                std::to_string(ring_size) + ")";
+            return false;
         }
         if (!(w_sig.I == b_sig.I)) {
-            ok = false;
-            break;
+            if (error) *error = "DAO V2 input " + std::to_string(source_index) +
+                ": weight and balance CLSAG nullifiers differ";
+            return false;
         }
 
         crypto::hash nf{};
@@ -432,26 +467,33 @@ bool build_dao_v2_vote_tx(
     const crypto::hash& tally_key_id,
     const std::vector<uint8_t>& cl_key_context,
     uint8_t direction,
-    const std::vector<dao_v2_vote_output>& outputs,
-    transaction& tx_out)
+        const std::vector<dao_v2_vote_output>& outputs,
+    transaction& tx_out,
+    std::string* error)
 {
+    if (error) error->clear();
     tx_out = transaction{};
 
-    if (outputs.empty()) return false;
+    if (outputs.empty()) {
+        if (error) *error = "No outputs supplied for DAO V2 vote";
+        return false;
+    }
 
     std::vector<dao_v2_vote_source> sources;
     sources.reserve(outputs.size());
     for (const auto& o : outputs) {
         dao_v2_vote_source src;
-        if (!prepare_dao_v2_vote_source(o, src))
+                if (!prepare_dao_v2_vote_source(o, src)) {
+            if (error) *error = "Failed to prepare a DAO V2 vote input ring";
             return false;
+        }
         sources.push_back(std::move(src));
     }
 
     vote_proof_v2 proof;
     if (!build_dao_v2_vote(proposal_id, proposal_submission_height,
                            vote_height, tally_key_id, cl_key_context,
-                           direction, sources, proof))
+                                                       direction, sources, proof, error))
         return false;
 
     const std::string proof_blob =

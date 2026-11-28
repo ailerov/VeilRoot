@@ -31,6 +31,7 @@
 #include <algorithm>
 #include <numeric>
 #include <tuple>
+#include <limits>
 #include <queue>
 #include <boost/format.hpp>
 #include <boost/optional/optional.hpp>
@@ -17428,9 +17429,14 @@ wallet2::vote_tx_result wallet2::create_vote_v2_tx(
       return result;
     }
   }
-  // /get_height returns blockchain height (top block height + 1),
-  // which is the height the daemon uses to validate a newly submitted vote.
-  const uint64_t vote_height = chain_height;
+    // /get_height returns the current chain height (top block height + 1).
+  // The mempool verifies a new DAO V2 vote for the next candidate block.
+  if (chain_height == std::numeric_limits<uint64_t>::max())
+  {
+    result.error = "Chain height overflow while preparing DAO V2 vote";
+    return result;
+  }
+  const uint64_t vote_height = chain_height + 1;
   result.vote_height = vote_height;
 
   COMMAND_RPC_GET_PROPOSAL::request prop_req = AUTO_VAL_INIT(prop_req);
@@ -17522,9 +17528,9 @@ wallet2::vote_tx_result wallet2::create_vote_v2_tx(
           std::to_string(td.m_global_output_index);
       return result;
     }
-    if (real_index == SIZE_MAX || ring.empty())
+        if (real_index >= ring.size())
     {
-      result.error = "Ring construction failed";
+      result.error = "Ring construction returned an invalid real-output index";
       return result;
     }
 
@@ -17555,10 +17561,17 @@ wallet2::vote_tx_result wallet2::create_vote_v2_tx(
           std::to_string(sel);
       return result;
     }
-    if (td.m_key_image_known && !td.m_key_image_partial &&
+        if (td.m_key_image_known && !td.m_key_image_partial &&
         real_output_key_image != td.m_key_image)
     {
       result.error = "Derived key image does not match wallet record for DAO vote transfer=" +
+          std::to_string(sel);
+      return result;
+    }
+    if (real_output_keypair.pub != td.get_public_key() ||
+        ring[real_index].P != td.get_public_key())
+    {
+      result.error = "Derived signing key does not match the real DAO vote ring member for transfer=" +
           std::to_string(sel);
       return result;
     }
@@ -17600,10 +17613,10 @@ wallet2::vote_tx_result wallet2::create_vote_v2_tx(
       return result;
     }
   }
-  if (final_chain_height != vote_height)
+    if (final_chain_height != chain_height)
   {
     result.error = "Chain height changed while preparing DAO V2 vote (from " +
-        std::to_string(vote_height) + " to " +
+        std::to_string(chain_height) + " to " +
         std::to_string(final_chain_height) + "); retry the vote";
     return result;
   }
@@ -17616,10 +17629,12 @@ wallet2::vote_tx_result wallet2::create_vote_v2_tx(
         tally_key_id,
         cl_key_ctx_bytes,
         direction,
-        outputs,
-        tx))
+                outputs,
+        tx,
+        &result.error))
   {
-    result.error = "Failed to build V2 vote transaction";
+    if (result.error.empty())
+      result.error = "Failed to build V2 vote transaction";
     return result;
   }
 

@@ -132,6 +132,46 @@ TEST(dao_clsag, generate_then_verify)
 }
 
 
+TEST(dao_clsag, two_member_ring_generate_then_verify_for_both_real_positions)
+{
+    const auto base = make_reference_context();
+    const crypto::secret_key sk = sec_from_hex(X_L_HEX);
+    const rct::key rho = hex_to_key(RHO_HEX);
+
+    for (size_t real_index = 0; real_index < 2; ++real_index)
+    {
+        auto ctx = base;
+        if (real_index == 0)
+        {
+            ctx.P = { base.P[2], base.P[3] };
+            ctx.C = { base.C[2], base.C[3] };
+            ctx.output_indices = { base.output_indices[2], base.output_indices[3] };
+        }
+        else
+        {
+            ctx.P = { base.P[0], base.P[2] };
+            ctx.C = { base.C[0], base.C[2] };
+            ctx.output_indices = { base.output_indices[0], base.output_indices[2] };
+        }
+        ctx.output_heights = { 40000, 40000 };
+        ctx.age_factors = { 4, 4 };
+
+        // Make V = 4*C_real + rho*G so the real commitment response is
+        // exactly the secret used by dao_clsag_generate().
+        rct::key age_factor = rct::zero();
+        age_factor.bytes[0] = 4;
+        rct::key weighted_real_C{}, rhoG{};
+        rct::scalarmultKey(weighted_real_C, base.C[2], age_factor);
+        rct::scalarmultBase(rhoG, rho);
+        rct::addKeys(ctx.V, weighted_real_C, rhoG);
+
+        rct::clsag sig;
+        ASSERT_TRUE(dao_clsag_generate(ctx, real_index, sk, rho, sig));
+        ASSERT_EQ(sig.s.size(), 2u);
+        EXPECT_TRUE(dao_clsag_verify(ctx, sig));
+    }
+}
+
 TEST(dao_clsag, singleton_ring_generate_then_verify)
 {
     auto ctx = make_reference_context();
