@@ -904,11 +904,18 @@ namespace levin
       if (!batch.empty())
         batches.emplace_back(std::move(batch));
 
+      
       // Preflight every serialized batch before marking any transaction as
-      // relayed or queueing any part of the set.
-      std::vector<epee::byte_slice> messages;
-      messages.reserve(batches.size());
-      for (const auto& tx_batch : batches)
+      // relayed or queueing any part of the set. A transaction may itself be
+      // larger than the Noise channel's per-notification capacity; such a
+      // batch cannot be split at the blob level because peers must receive a
+      // complete transaction. Keep it for the normal anonymous P2P fallback.
+      using covert_batch = std::pair<std::vector<blobdata>, epee::byte_slice>;
+      std::vector<covert_batch> covert_batches;
+      std::vector<std::vector<blobdata>> oversized_batches;
+      covert_batches.reserve(batches.size());
+      oversized_batches.reserve(batches.size());
+      for (auto& tx_batch : batches)
       {
         epee::byte_slice message = epee::levin::make_fragmented_notify(
           zone_->noise.size(), NOTIFY_NEW_TRANSACTIONS::ID,
@@ -916,33 +923,48 @@ namespace levin
         );
         if (max_covert_size < message.size())
         {
-          MERROR("notify::send_txs transaction batch exceeds covert fragment size: "
-                 << message.size() << " > " << max_covert_size);
-          return false;
+          MWARNING("notify::send_txs transaction batch exceeds covert fragment "
+                   "capacity; using normal anonymous P2P relay: "
+                   << message.size() << " > " << max_covert_size);
+          oversized_batches.emplace_back(std::move(tx_batch));
+          continue;
         }
-        messages.emplace_back(std::move(message));
+        covert_batches.emplace_back(
+          std::move(tx_batch), std::move(message));
       }
-
-      for (std::size_t batch_index = 0; batch_index < batches.size(); ++batch_index)
+      for (auto& batch : covert_batches)
       {
-        core_->on_transactions_relayed(epee::to_span(batches[batch_index]), tx_relay);
+        core_->on_transactions_relayed(epee::to_span(batch.first), tx_relay);
         for (std::size_t channel = 0; channel < zone_->channels.size(); ++channel)
         {
           boost::asio::dispatch(
             zone_->channels[channel].strand,
-            queue_covert_notify{zone_, messages[batch_index].clone(), channel}
+            queue_covert_notify{zone_, batch.second.clone(), channel}
           );
         }
-        // VeilRoot: deliver each batch to inbound anonymous peers using the
-        // fluff mechanism with its randomized delay.
+        // VeilRoot: deliver each covert batch to inbound anonymous peers
+        // using the normal fluff mechanism with its randomized delay.
         if (zone_->nzone != epee::net_utils::zone::public_)
         {
           boost::asio::dispatch(
             zone_->strand,
-            fluff_notify{zone_, std::move(batches[batch_index]), source, true}
+            fluff_notify{zone_, std::move(batch.first), source, true}
           );
         }
       }
+      // An oversized transaction cannot be carried by the fixed 20-fragment
+      // Noise budget. Send the complete transaction over the existing normal
+      // anonymous P2P fluff path. For Tor/I2P zones, fluff_notify's default
+      // mode selects outbound anonymous peers, just like the Noise channels.
+      for (auto& tx_batch : oversized_batches)
+      {
+        core_->on_transactions_relayed(epee::to_span(tx_batch), tx_relay);
+        boost::asio::dispatch(
+          zone_->strand,
+          fluff_notify{zone_, std::move(tx_batch), source}
+        );
+      }
+
     }
     else
     {

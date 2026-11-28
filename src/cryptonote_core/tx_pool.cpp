@@ -2010,19 +2010,22 @@ namespace cryptonote
         // END_VNS_NON_CONSUMING_TX
 
         // BEGIN_VNS_DAO_ZERO_FEE_MINING
-        // DAO V2 tally-result and DKG key-activation transactions are
-        // zero-fee protocol transactions. Mempool admission already
-        // exempts them from the fee check, but fill_block_template did
-        // not; without this exemption they entered the mempool and
-        // never reached a block. Same classifiers as admission, so the
-        // two paths stay consistent.
+        
+        // DAO V2 votes, tally-result, DKG key-activation and node_ready
+        // transactions are zero-fee protocol transactions. V2 votes have
+        // empty vin/vout, so they must be recognized by their strict payload
+        // classifier rather than the legacy input-based VNS checks above.
+        // This exemption is required both for the relay-method filter and
+        // the zero-fee coinbase-threshold check below.
         is_dkg_activation =
             m_blockchain.is_dao_v2_dkg_activation_tx(tx);
         if (!is_vns_special) {
-          is_vns_special = m_blockchain.is_dao_v2_tally_result_tx(tx) ||
+          is_vns_special = is_dao_v2_vote_tx(tx) ||
+                           m_blockchain.is_dao_v2_tally_result_tx(tx) ||
                            is_dkg_activation ||
                            m_blockchain.is_dao_v2_node_ready_tx(tx);
         }
+
         // END_VNS_DAO_ZERO_FEE_MINING
       }
       // END_VNS_VOTE

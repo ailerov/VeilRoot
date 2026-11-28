@@ -624,12 +624,37 @@ TEST(DaoV2Replay, RealVoteTxEntersPoolAndBlock)
         std::vector<crypto::hash> pool_hashes;
         fx.node->core->get_pool_transaction_hashes(pool_hashes);
         const crypto::hash vote_txid = get_transaction_hash(fx.vote_tx);
+        
         EXPECT_NE(std::find(pool_hashes.begin(), pool_hashes.end(),
                             vote_txid),
                   pool_hashes.end());
     }
+    // The normal miner template must select the zero-fee, zero-input V2
+    // vote from the pool. The manual block below is a consensus replay test
+    // and does not exercise tx-pool template selection.
+    {
+        block mining_template{};
+        difficulty_type template_difficulty = 0;
+        uint64_t template_height = 0;
+        uint64_t template_reward = 0;
+        uint64_t template_seed_height = 0;
+        crypto::hash template_seed_hash = crypto::null_hash;
+        const blobdata extra_nonce;
+        ASSERT_TRUE(fx.node->core->get_block_template(
+            mining_template,
+            fx.miner_acc.get_keys().m_account_address,
+            template_difficulty, template_height, template_reward,
+            extra_nonce, template_seed_height, template_seed_hash));
+        EXPECT_EQ(template_height, fx.chain_height);
+        
+        EXPECT_NE(std::find(mining_template.tx_hashes.begin(),
+                            mining_template.tx_hashes.end(),
+                            get_transaction_hash(fx.vote_tx)),
+                  mining_template.tx_hashes.end());
 
+    }
     // Mine and apply.
+
     {
         block blk;
         ASSERT_TRUE(construct_block_here(*fx.node, fx.miner_acc,
