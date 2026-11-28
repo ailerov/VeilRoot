@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <string>
 #include <unordered_set>
 #include <vector>
 
@@ -24,9 +25,9 @@ namespace cryptonote {
 
 namespace {
 
-verification_result fail(const char* why)
+verification_result fail(const std::string& why)
 {
-    return {false, std::string(why)};
+    return {false, why};
 }
 
 } // namespace
@@ -211,7 +212,9 @@ verification_result VoteProofVerifier::verify(
     for (size_t i = 0; i < proof.inputs.size(); ++i) {
         if (!dao_clsag_verify(clsag_ctxs[i],
                               proof.inputs[i].weight_signature))
-            return fail("step15: weight CLSAG verification failed");
+            return fail("step15: weight CLSAG verification failed at input " +
+                        std::to_string(i) + " (ring size " +
+                        std::to_string(proof.inputs[i].key_offsets.size()) + ")");
     }
 
     // Step 16: balance DAO CLSAG per input with age_factors = 1 and

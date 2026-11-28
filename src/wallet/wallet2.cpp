@@ -17428,7 +17428,9 @@ wallet2::vote_tx_result wallet2::create_vote_v2_tx(
       return result;
     }
   }
-  const uint64_t vote_height = chain_height + 1;
+  // /get_height returns blockchain height (top block height + 1),
+  // which is the height the daemon uses to validate a newly submitted vote.
+  const uint64_t vote_height = chain_height;
   result.vote_height = vote_height;
 
   COMMAND_RPC_GET_PROPOSAL::request prop_req = AUTO_VAL_INIT(prop_req);
@@ -17526,25 +17528,41 @@ wallet2::vote_tx_result wallet2::create_vote_v2_tx(
       return result;
     }
 
-    // Real output secret key.
-    crypto::secret_key real_sk;
+    // Derive the actual one-time output keypair. This is the same canonical
+    // path used by key-image export and handles subaddresses and additional
+    // transaction public keys; a primary-address-only derivation does not.
+    const crypto::public_key tx_pubkey = get_tx_pub_key_from_received_outs(td);
+    if (tx_pubkey == crypto::null_pkey)
     {
-      const crypto::public_key tx_pubkey = get_tx_pub_key_from_received_outs(td);
-      if (tx_pubkey == crypto::null_pkey)
-      {
-        result.error = "Failed to get tx pubkey";
-        return result;
-      }
-      crypto::key_derivation deriv;
-      if (!generate_key_derivation(tx_pubkey,
-            m_account.get_keys().m_view_secret_key, deriv))
-      {
-        result.error = "Failed to derive key";
-        return result;
-      }
-      derive_secret_key(deriv, td.m_internal_output_index,
-                        m_account.get_keys().m_spend_secret_key, real_sk);
+      result.error = "Failed to get tx pubkey for DAO vote output";
+      return result;
     }
+    if (!m_account.get_keys().m_multisig_keys.empty())
+    {
+      result.error = "DAO V2 voting from multisig wallets is not supported";
+      return result;
+    }
+    const std::vector<crypto::public_key> additional_tx_pub_keys =
+        get_additional_tx_pub_keys_from_extra(td.m_tx);
+    cryptonote::keypair real_output_keypair;
+    crypto::key_image real_output_key_image;
+    if (!cryptonote::generate_key_image_helper(
+            m_account.get_keys(), m_subaddresses, td.get_public_key(),
+            tx_pubkey, additional_tx_pub_keys, td.m_internal_output_index,
+            real_output_keypair, real_output_key_image, m_account.get_device()))
+    {
+      result.error = "Failed to derive real output key for DAO vote transfer=" +
+          std::to_string(sel);
+      return result;
+    }
+    if (td.m_key_image_known && !td.m_key_image_partial &&
+        real_output_key_image != td.m_key_image)
+    {
+      result.error = "Derived key image does not match wallet record for DAO vote transfer=" +
+          std::to_string(sel);
+      return result;
+    }
+    const crypto::secret_key real_sk = real_output_keypair.sec;
 
     // Ring member data in the order the helper produced them. The
     // conversion to the shared dao_v2_vote_output shape (and the
@@ -17569,6 +17587,26 @@ wallet2::vote_tx_result wallet2::create_vote_v2_tx(
     outputs.push_back(std::move(o));
   }
 
+  // Ring retrieval may take long enough for the chain to advance. The
+  // consensus verifier requires vote_height to match the height at admission;
+  // abort rather than submit a proof built against a stale chain height.
+  uint64_t final_chain_height = 0;
+  {
+    boost::optional<std::string> err =
+        m_node_rpc_proxy.get_height(final_chain_height);
+    if (err)
+    {
+      result.error = "Failed to recheck chain height before building V2 vote";
+      return result;
+    }
+  }
+  if (final_chain_height != vote_height)
+  {
+    result.error = "Chain height changed while preparing DAO V2 vote (from " +
+        std::to_string(vote_height) + " to " +
+        std::to_string(final_chain_height) + "); retry the vote";
+    return result;
+  }
   // ---- Build proof and wrap in one shared call ----
   transaction tx;
   if (!dao::build_dao_v2_vote_tx(
